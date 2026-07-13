@@ -1,3 +1,9 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quiniela Liga MX</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Work+Sans:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -249,6 +255,8 @@
   }
 </style>
 
+</head>
+<body>
 <div id="quiniela-root"></div>
 
 <script>
@@ -281,31 +289,47 @@
     };
   }
 
-  // ---------- storage ----------
+  // ---------- storage (talks to our own /api/kv backend) ----------
+  // IMPORTANT: kvGet distinguishes "genuinely doesn't exist yet" (404) from
+  // "the request failed" (network/server error). Callers that decide whether
+  // to initialize fresh data (boot()) must never treat an error as "not found" —
+  // doing so would silently overwrite real data on a transient failure.
+  async function kvGet(key){
+    const res = await fetch("/api/kv/" + encodeURIComponent(key));
+    if(res.status === 404) return { found: false };
+    if(!res.ok) throw new Error("kv get failed: HTTP " + res.status);
+    const data = await res.json();
+    return { found: true, value: data.value };
+  }
+  async function kvSet(key, value){
+    const res = await fetch("/api/kv/" + encodeURIComponent(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value })
+    });
+    return res.ok;
+  }
+  // getMeta: returns the saved meta, or null if it genuinely doesn't exist yet.
+  // Throws (does NOT return null) if the request itself failed — callers must
+  // handle that separately and must not initialize fresh data in that case.
   async function getMeta(){
-    try{
-      const r = await window.storage.get(META_KEY, true);
-      if(!r) return null;
-      return JSON.parse(r.value);
-    }catch(e){ return null; }
+    const r = await kvGet(META_KEY);
+    return r.found ? r.value : null;
   }
   async function setMeta(meta){
     try{
-      await window.storage.set(META_KEY, JSON.stringify(meta), true);
-      return true;
+      return await kvSet(META_KEY, meta);
     }catch(e){ console.error("save meta failed", e); return false; }
   }
   async function getPicks(pid){
     try{
-      const r = await window.storage.get(picksKey(pid), true);
-      if(!r) return {};
-      return JSON.parse(r.value);
-    }catch(e){ return {}; }
+      const r = await kvGet(picksKey(pid));
+      return r.found ? r.value : {};
+    }catch(e){ console.error("getPicks failed", e); return {}; }
   }
   async function setPicks(pid, data){
     try{
-      await window.storage.set(picksKey(pid), JSON.stringify(data), true);
-      return true;
+      return await kvSet(picksKey(pid), data);
     }catch(e){ console.error("save picks failed", e); return false; }
   }
 
@@ -574,9 +598,11 @@
         <div id="qz-clockbody-${round.id}">${clockDigitsHtml(round.deadline)}</div>
       </div>
       <div id="qz-matches-${round.id}"></div>
+      <p class="muted" id="qz-savestatus-${round.id}" style="text-align:center;">Tus picks se guardan solos apenas los eliges.</p>
       <button class="btn btn-primary" data-save="${round.id}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>
     `;
     const matchesDiv = document.getElementById("qz-matches-" + round.id);
+    const statusEl = document.getElementById("qz-savestatus-" + round.id);
     matchesDiv.innerHTML = round.matches.map(m => {
       const pick = roundPicks[m.id];
       return `
@@ -592,11 +618,16 @@
     }).join("");
     matchesDiv.querySelectorAll(".pick-row").forEach(row => {
       row.querySelectorAll(".pick-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", async () => {
+          if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
           const matchId = row.dataset.match;
           if(!myPicks[round.id]) myPicks[round.id] = {};
           myPicks[round.id][matchId] = btn.dataset.val;
           row.querySelectorAll(".pick-btn").forEach(b => b.classList.toggle("selected", b===btn));
+          statusEl.textContent = "Guardando…";
+          const ok = await setPicks(currentUser.id, myPicks);
+          statusEl.textContent = ok ? "✅ Guardado" : "❌ No se pudo guardar — revisa tu conexión e inténtalo de nuevo";
+          statusEl.style.color = ok ? "var(--pitch-light)" : "var(--red)";
         });
       });
     });
@@ -1410,11 +1441,44 @@
   }
 
   // ---------- boot ----------
-  async function boot(){
-    let m = await getMeta();
-    if(!m){
+  function renderBootError(message, onRetry){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card">
+          <div class="login-title display" style="font-size:26px;">No se pudo conectar</div>
+          <p class="login-sub">${esc(message)}</p>
+          <p class="muted" style="text-align:center;margin-bottom:16px;">Tus datos guardados no se tocaron — esto solo es un problema de conexión.</p>
+          <button class="btn btn-primary" id="qz-retry-boot" style="width:100%;padding:12px;">Reintentar</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("qz-retry-boot").addEventListener("click", onRetry);
+  }
+
+  async function boot(attempt){
+    attempt = attempt || 1;
+    root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
+    let m;
+    try{
+      m = await getMeta();
+    }catch(e){
+      console.error("boot: failed to load data", e);
+      // Never initialize fresh data on a failed request — only retry.
+      if(attempt < 3){
+        setTimeout(() => boot(attempt + 1), 1200);
+        return;
+      }
+      renderBootError("No pudimos cargar los datos de la quiniela. Puede ser que el servidor apenas esté despertando (tarda ~30-60 segundos la primera vez) o un problema de conexión.", () => boot(1));
+      return;
+    }
+    if(m === null){
+      // Confirmed by the server: nothing saved yet. Safe to create the first-time defaults.
       m = defaultMeta();
-      await setMeta(m);
+      const ok = await setMeta(m);
+      if(!ok){
+        renderBootError("No se pudo inicializar la quiniela por primera vez. Intenta de nuevo.", () => boot(1));
+        return;
+      }
     }
     meta = m;
     render();
@@ -1422,3 +1486,5 @@
   boot();
 })();
 </script>
+</body>
+</html>
