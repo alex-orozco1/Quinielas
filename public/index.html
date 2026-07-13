@@ -1,0 +1,1384 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quiniela Liga MX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Work+Sans:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+  :root{
+    --pitch-dark:#0F2E22;
+    --pitch:#173A2B;
+    --pitch-light:#2D6A4F;
+    --chalk:#F7F5EC;
+    --paper:#FFFFFF;
+    --gold:#E3B23C;
+    --gold-dim:#c99a2f;
+    --red:#C1443A;
+    --ink:#10231C;
+    --ink-soft:#4B5B53;
+    --line: rgba(16,35,28,0.12);
+    --shadow: 0 6px 20px rgba(15,46,34,0.12);
+    --radius: 14px;
+  }
+  *{box-sizing:border-box;}
+  #quiniela-root{
+    font-family:'Work Sans', sans-serif;
+    background:var(--chalk);
+    color:var(--ink);
+    min-height:100%;
+    line-height:1.4;
+  }
+  #quiniela-root .display{
+    font-family:'Teko', sans-serif;
+    font-weight:600;
+    letter-spacing:0.01em;
+  }
+  #quiniela-root .mono{
+    font-family:'Space Mono', monospace;
+  }
+  #quiniela-root button{
+    font-family:inherit;
+    cursor:pointer;
+  }
+  #quiniela-root .btn{
+    border:none;
+    border-radius:10px;
+    padding:10px 16px;
+    font-weight:600;
+    font-size:14px;
+    transition:transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+  }
+  #quiniela-root .btn:active{ transform:scale(0.97); }
+  #quiniela-root .btn:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; }
+  #quiniela-root .btn-primary{ background:var(--pitch-dark); color:var(--chalk); }
+  #quiniela-root .btn-primary:hover{ background:var(--pitch); }
+  #quiniela-root .btn-gold{ background:var(--gold); color:var(--pitch-dark); }
+  #quiniela-root .btn-gold:hover{ background:var(--gold-dim); }
+  #quiniela-root .btn-ghost{ background:transparent; color:var(--pitch-dark); border:1.5px solid var(--line); }
+  #quiniela-root .btn-ghost:hover{ background:rgba(15,46,34,0.06); }
+  #quiniela-root .btn-danger{ background:var(--red); color:#fff; }
+  #quiniela-root .btn-danger:hover{ opacity:0.88; }
+  #quiniela-root .btn:disabled{ opacity:0.4; cursor:not-allowed; }
+  #quiniela-root .btn-sm{ padding:6px 12px; font-size:12.5px; border-radius:8px; }
+
+  /* header / scoreboard */
+  #quiniela-root .qz-header{
+    background: linear-gradient(180deg, var(--pitch-dark), var(--pitch));
+    color:var(--chalk);
+    padding:18px 20px 16px;
+    position:sticky; top:0; z-index:20;
+    box-shadow:var(--shadow);
+  }
+  #quiniela-root .qz-header-top{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+  }
+  #quiniela-root .qz-brand{
+    display:flex; align-items:baseline; gap:8px;
+  }
+  #quiniela-root .qz-brand .display{
+    font-size:30px; text-transform:uppercase; line-height:1;
+  }
+  #quiniela-root .qz-brand .dot{ color:var(--gold); }
+  #quiniela-root .qz-user-chip{
+    display:flex; align-items:center; gap:8px;
+    background:rgba(247,245,236,0.1);
+    border:1px solid rgba(247,245,236,0.18);
+    padding:6px 10px 6px 12px; border-radius:999px;
+    font-size:13px; font-weight:600;
+  }
+  #quiniela-root .qz-user-chip button{
+    background:rgba(247,245,236,0.14); border:none; color:var(--chalk);
+    border-radius:999px; width:24px; height:24px; font-size:12px;
+  }
+  #quiniela-root .qz-tabs{
+    display:flex; gap:4px; margin-top:16px; overflow-x:auto; padding-bottom:2px;
+    scrollbar-width:none;
+  }
+  #quiniela-root .qz-tabs::-webkit-scrollbar{ display:none; }
+  #quiniela-root .qz-tab{
+    background:transparent; border:none; color:rgba(247,245,236,0.65);
+    padding:8px 4px; font-weight:600; font-size:13.5px; white-space:nowrap;
+    border-bottom:3px solid transparent; letter-spacing:0.01em;
+  }
+  #quiniela-root .qz-tab.active{ color:var(--chalk); border-bottom-color:var(--gold); }
+  #quiniela-root .qz-tab + .qz-tab{ margin-left:14px; }
+
+  #quiniela-root .qz-main{ max-width:760px; margin:0 auto; padding:20px 16px 80px; }
+
+  /* cards */
+  #quiniela-root .card{
+    background:var(--paper); border-radius:var(--radius); border:1px solid var(--line);
+    box-shadow:var(--shadow); padding:18px; margin-bottom:16px;
+  }
+  #quiniela-root .card h3{ margin:0 0 4px; font-size:15px; }
+  #quiniela-root .muted{ color:var(--ink-soft); font-size:13px; }
+  #quiniela-root .eyebrow{
+    text-transform:uppercase; letter-spacing:0.08em; font-size:11px; font-weight:700;
+    color:var(--pitch-light); margin-bottom:6px;
+  }
+
+  /* clock */
+  #quiniela-root .clock-card{
+    background: linear-gradient(180deg, var(--pitch-dark), var(--pitch));
+    color:var(--chalk); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;
+    box-shadow:var(--shadow); position:relative; overflow:hidden;
+  }
+  #quiniela-root .clock-card::after{
+    content:""; position:absolute; inset:0;
+    background: radial-gradient(circle at 90% -10%, rgba(227,178,60,0.25), transparent 55%);
+    pointer-events:none;
+  }
+  #quiniela-root .clock-label{ font-size:12px; text-transform:uppercase; letter-spacing:0.1em; opacity:0.75; margin-bottom:8px; }
+  #quiniela-root .clock-digits{
+    display:flex; gap:8px; flex-wrap:wrap;
+  }
+  #quiniela-root .clock-seg{
+    background:rgba(0,0,0,0.28); border:1px solid rgba(227,178,60,0.35);
+    border-radius:8px; padding:8px 12px; min-width:58px; text-align:center;
+  }
+  #quiniela-root .clock-seg .num{ font-size:26px; font-weight:700; color:var(--gold); display:block; }
+  #quiniela-root .clock-seg .unit{ font-size:9.5px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.7; }
+  #quiniela-root .clock-closed{ font-size:15px; font-weight:600; color:var(--gold); }
+
+  /* match card */
+  #quiniela-root .match-card{
+    background:var(--paper); border-radius:var(--radius); border:1px solid var(--line);
+    padding:14px 16px; margin-bottom:12px; box-shadow:var(--shadow);
+  }
+  #quiniela-root .match-teams{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px;
+  }
+  #quiniela-root .match-team{ font-weight:700; font-size:16px; flex:1; text-align:center; }
+  #quiniela-root .match-team.left{ text-align:right; }
+  #quiniela-root .match-team.right{ text-align:left; }
+  #quiniela-root .match-vs{
+    font-family:'Space Mono', monospace; font-size:11px; color:var(--ink-soft);
+    background:var(--chalk); border-radius:6px; padding:3px 7px; flex-shrink:0;
+  }
+  #quiniela-root .pick-row{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+  #quiniela-root .pick-btn{
+    border:1.5px solid var(--line); background:var(--chalk); border-radius:10px;
+    padding:10px 6px; font-weight:600; font-size:13px; color:var(--ink); text-align:center;
+  }
+  #quiniela-root .pick-btn.selected{ background:var(--pitch-dark); border-color:var(--pitch-dark); color:var(--chalk); }
+  #quiniela-root .pick-btn.correct{ background:#DCEFE1; border-color:#2D6A4F; color:#1B4332; }
+  #quiniela-root .pick-btn.wrong{ background:#F6E1DE; border-color:var(--red); color:#7d251d; }
+  #quiniela-root .pick-btn:disabled{ cursor:default; }
+  #quiniela-root .result-tag{
+    margin-top:8px; font-size:12px; font-weight:700; text-align:center;
+    color:var(--pitch-light);
+  }
+
+  /* login */
+  #quiniela-root .login-wrap{
+    min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+    background: radial-gradient(circle at 50% 0%, var(--pitch-light), var(--pitch-dark) 70%);
+  }
+  #quiniela-root .login-card{
+    background:var(--paper); border-radius:20px; padding:28px 24px; max-width:420px; width:100%;
+    box-shadow:0 20px 50px rgba(0,0,0,0.35);
+  }
+  #quiniela-root .login-title{ font-size:38px; text-align:center; line-height:1; margin-bottom:2px; }
+  #quiniela-root .login-sub{ text-align:center; color:var(--ink-soft); font-size:13px; margin-bottom:20px; }
+  #quiniela-root .name-grid{
+    display:grid; grid-template-columns:1fr 1fr; gap:8px; max-height:340px; overflow-y:auto; padding-right:2px;
+  }
+  #quiniela-root .name-btn{
+    border:1.5px solid var(--line); background:var(--chalk); border-radius:10px;
+    padding:11px 8px; font-weight:600; font-size:13.5px; text-align:center;
+  }
+  #quiniela-root .name-btn:hover{ border-color:var(--pitch-light); }
+  #quiniela-root .name-btn .role{ display:block; font-size:10px; color:var(--gold-dim); font-weight:700; margin-top:2px; }
+
+  /* table */
+  #quiniela-root table{ width:100%; border-collapse:collapse; font-size:13.5px; }
+  #quiniela-root th{
+    text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--ink-soft); padding:8px 6px; border-bottom:2px solid var(--line);
+  }
+  #quiniela-root td{ padding:9px 6px; border-bottom:1px solid var(--line); }
+  #quiniela-root tr.me{ background:rgba(227,178,60,0.14); }
+  #quiniela-root .pos{ font-family:'Space Mono', monospace; font-weight:700; color:var(--pitch-light); }
+  #quiniela-root .pos.top1{ color:var(--gold-dim); }
+
+  /* forms */
+  #quiniela-root input[type=text], #quiniela-root input[type=password], #quiniela-root input[type=number], #quiniela-root input[type=datetime-local], #quiniela-root select{
+    width:100%; padding:9px 11px; border-radius:8px; border:1.5px solid var(--line);
+    font-family:inherit; font-size:14px; background:var(--paper); color:var(--ink);
+  }
+  #quiniela-root label{ font-size:12px; font-weight:700; color:var(--ink-soft); display:block; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em; }
+  #quiniela-root .field{ margin-bottom:12px; }
+  #quiniela-root .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  #quiniela-root .match-edit-row{
+    display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:end; margin-bottom:10px;
+  }
+  #quiniela-root .icon-x{ background:var(--red); color:#fff; border:none; border-radius:8px; width:36px; height:36px; }
+
+  #quiniela-root .badge{ display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:700; padding:3px 9px; border-radius:999px; }
+  #quiniela-root .badge.paid{ background:#DCEFE1; color:#1B4332; }
+  #quiniela-root .badge.unpaid{ background:#F6E1DE; color:#7d251d; }
+  #quiniela-root .badge.admin{ background:rgba(227,178,60,0.25); color:var(--gold-dim); }
+
+  #quiniela-root .empty{
+    text-align:center; padding:40px 20px; color:var(--ink-soft);
+  }
+  #quiniela-root .empty .display{ font-size:26px; color:var(--pitch-dark); }
+
+  #quiniela-root .divider{ height:1px; background:var(--line); margin:16px 0; }
+  #quiniela-root .toast{
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    background:var(--pitch-dark); color:var(--chalk); padding:10px 18px; border-radius:999px;
+    font-size:13px; font-weight:600; box-shadow:var(--shadow); z-index:100;
+    opacity:0; pointer-events:none; transition:opacity .25s ease, transform .25s ease;
+  }
+  #quiniela-root .toast.show{ opacity:1; transform:translateX(-50%) translateY(-4px); }
+
+  #quiniela-root .history-item{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:12px 14px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; background:var(--paper);
+  }
+  #quiniela-root .history-item:hover{ border-color:var(--pitch-light); }
+
+  #quiniela-root .section-title{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  #quiniela-root .section-title .display{ font-size:24px; }
+
+  @media (max-width:480px){
+    #quiniela-root .qz-brand .display{ font-size:24px; }
+    #quiniela-root .name-grid{ grid-template-columns:1fr 1fr; }
+    #quiniela-root .clock-seg{ min-width:46px; padding:6px 8px; }
+    #quiniela-root .clock-seg .num{ font-size:20px; }
+  }
+</style>
+
+</head>
+<body>
+<div id="quiniela-root"></div>
+
+<script>
+(function(){
+  const TEAMS = ["América","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Mazatlán","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"];
+  const META_KEY = "quiniela_meta_v1";
+  const picksKey = (pid) => "quiniela_picks_" + pid + "_v1";
+
+  const DEFAULT_NAMES = ["Gerardo","Kareem","Nacho","Pablo","Rodrigo","Axel","Alan","Alejandro","Oski","Alexander","Germán","Mithcar","Kay","Luis","Pepe","Kevin","Memo","Esteban","Rober"];
+
+  function uid(prefix){ return prefix + "_" + Math.random().toString(36).slice(2,9); }
+
+  function defaultMeta(){
+    const participants = DEFAULT_NAMES.map((name,i) => ({
+      id: uid("p"),
+      name,
+      isAdmin: i===0 || i===4, // Gerardo & Rodrigo start as admins, editable later
+      paid: false
+    }));
+    return {
+      groupName: "Quiniela Liga MX",
+      participants,
+      rounds: [],
+      settings: {
+        ownerPassword: "gol2026",
+        entryFee: 500,
+        ownerParticipantId: participants[0].id,
+        sportsdbSeason: "2025-2026"
+      }
+    };
+  }
+
+  // ---------- storage (talks to our own /api/kv backend) ----------
+  async function kvGet(key){
+    const res = await fetch("/api/kv/" + encodeURIComponent(key));
+    if(res.status === 404) return null;
+    if(!res.ok) throw new Error("kv get failed: " + res.status);
+    const data = await res.json();
+    return data.value;
+  }
+  async function kvSet(key, value){
+    const res = await fetch("/api/kv/" + encodeURIComponent(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value })
+    });
+    return res.ok;
+  }
+  async function getMeta(){
+    try{
+      const v = await kvGet(META_KEY);
+      return v || null;
+    }catch(e){ console.error("getMeta failed", e); return null; }
+  }
+  async function setMeta(meta){
+    try{
+      return await kvSet(META_KEY, meta);
+    }catch(e){ console.error("save meta failed", e); return false; }
+  }
+  async function getPicks(pid){
+    try{
+      const v = await kvGet(picksKey(pid));
+      return v || {};
+    }catch(e){ console.error("getPicks failed", e); return {}; }
+  }
+  async function setPicks(pid, data){
+    try{
+      return await kvSet(picksKey(pid), data);
+    }catch(e){ console.error("save picks failed", e); return false; }
+  }
+
+  // ---------- app state ----------
+  let meta = null;
+  let currentUser = null; // participant object (from meta.participants) for this session
+  let myPicks = {};       // { roundId: { matchId: 'A'|'D'|'B' } }
+  let allPicksCache = {}; // { participantId: picksObj } - loaded on demand for standings/history/export
+  let activeTab = "jornada";
+  let adminSubTab = "rondas";
+  let ownerUnlocked = false;
+  let loadingAllPicks = false;
+  let jornadaFilter = "porjugar"; // porjugar | envivo | jugados
+  let chartSelectedIds = null; // set on first chart render (top 5)
+  const CHART_COLORS = ["#E3B23C","#2D6A4F","#C1443A","#3A6EA5","#8E44AD","#D2691E","#16A085","#B8860B","#7f8c8d","#E75480"];
+
+  const root = document.getElementById("quiniela-root");
+
+  function toast(msg){
+    let t = document.getElementById("qz-toast");
+    if(!t){
+      t = document.createElement("div");
+      t.id = "qz-toast";
+      t.className = "toast";
+      root.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(t._h);
+    t._h = setTimeout(()=> t.classList.remove("show"), 2200);
+  }
+
+  function esc(s){
+    return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+
+  // ---------- derived helpers ----------
+  function activeRound(){
+    // last round that has no results published yet
+    const open = meta.rounds.filter(r => !r.resultsPublished);
+    return open.length ? open[open.length-1] : null;
+  }
+  function isRoundLocked(round){
+    if(!round) return true;
+    return Date.now() > new Date(round.deadline).getTime();
+  }
+  function timeParts(deadline){
+    let diff = new Date(deadline).getTime() - Date.now();
+    if(diff < 0) diff = 0;
+    const d = Math.floor(diff/86400000);
+    const h = Math.floor((diff%86400000)/3600000);
+    const m = Math.floor((diff%3600000)/60000);
+    const s = Math.floor((diff%60000)/1000);
+    return {d,h,m,s};
+  }
+
+  async function ensureAllPicksLoaded(){
+    if(loadingAllPicks) return;
+    loadingAllPicks = true;
+    const entries = await Promise.all(meta.participants.map(async p => [p.id, await getPicks(p.id)]));
+    allPicksCache = Object.fromEntries(entries);
+    loadingAllPicks = false;
+  }
+
+  function pointsFor(participantId){
+    const picks = allPicksCache[participantId] || {};
+    let pts = 0, played = 0;
+    meta.rounds.forEach(r => {
+      if(!r.resultsPublished) return;
+      r.matches.forEach(m => {
+        const result = r.results ? r.results[m.id] : null;
+        if(!result) return;
+        played++;
+        const pick = picks[r.id] ? picks[r.id][m.id] : null;
+        if(pick && pick === result) pts++;
+      });
+    });
+    return {pts, played};
+  }
+
+  function standingsList(){
+    return meta.participants.map(p => {
+      const {pts} = pointsFor(p.id);
+      return {...p, pts};
+    }).sort((a,b) => b.pts - a.pts);
+  }
+
+  // ---------- render root ----------
+  async function render(){
+    if(!meta){
+      root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
+      return;
+    }
+    if(!currentUser){
+      renderLogin();
+      return;
+    }
+    renderApp();
+  }
+
+  function renderLogin(){
+    const names = meta.participants.map(p => `
+      <button class="name-btn" data-id="${p.id}">
+        ${esc(p.name)}
+        ${p.isAdmin ? `<span class="role">ADMIN</span>` : ``}
+      </button>
+    `).join("");
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card">
+          <div class="login-title display">${esc(meta.groupName)}</div>
+          <div class="login-sub">¿Quién eres? Elige tu nombre para continuar</div>
+          <div class="name-grid">${names}</div>
+        </div>
+      </div>
+    `;
+    root.querySelectorAll(".name-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const p = meta.participants.find(x => x.id === btn.dataset.id);
+        currentUser = p;
+        myPicks = await getPicks(p.id);
+        activeTab = "jornada";
+        render();
+      });
+    });
+  }
+
+  function tabList(){
+    const tabs = [
+      {id:"jornada", label:"Jornada"},
+      {id:"tabla", label:"Tabla"},
+      {id:"historial", label:"Historial"},
+      {id:"pagos", label:"Pagos"},
+    ];
+    if(currentUser.isAdmin) tabs.push({id:"admin", label:"Admin"});
+    return tabs;
+  }
+
+  function renderApp(){
+    const tabs = tabList();
+    root.innerHTML = `
+      <div class="qz-header">
+        <div class="qz-header-top">
+          <div class="qz-brand"><span class="display">${esc(meta.groupName)}</span><span class="display dot">.</span></div>
+          <div class="qz-user-chip">
+            ${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""}
+            <button id="qz-switch-user" title="Cambiar usuario">↺</button>
+          </div>
+        </div>
+        <div class="qz-tabs">
+          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}">${t.label}</button>`).join("")}
+        </div>
+      </div>
+      <div class="qz-main" id="qz-main"></div>
+    `;
+    document.getElementById("qz-switch-user").addEventListener("click", () => {
+      currentUser = null;
+      ownerUnlocked = false;
+      render();
+    });
+    root.querySelectorAll(".qz-tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        activeTab = btn.dataset.tab;
+        render();
+      });
+    });
+    const main = document.getElementById("qz-main");
+    if(activeTab === "jornada") renderJornada(main);
+    else if(activeTab === "tabla") renderTabla(main);
+    else if(activeTab === "historial") renderHistorial(main);
+    else if(activeTab === "pagos") renderPagos(main);
+    else if(activeTab === "admin") renderAdmin(main);
+  }
+
+  // ---------- JORNADA (voting, filtered like Por jugar / En vivo / Jugados) ----------
+  let clockInterval = null;
+
+  function classifyRound(round){
+    if(round.resultsPublished) return "jugados";
+    if(isRoundLocked(round)) return "envivo";
+    return "porjugar";
+  }
+
+  function renderJornada(main){
+    if(clockInterval){ clearInterval(clockInterval); clockInterval = null; }
+
+    const counts = {porjugar:0, envivo:0, jugados:0};
+    meta.rounds.forEach(r => counts[classifyRound(r)]++);
+    const filters = [
+      {id:"porjugar", label:"Por jugar"},
+      {id:"envivo", label:"En vivo"},
+      {id:"jugados", label:"Jugados"},
+    ];
+
+    main.innerHTML = `
+      <div class="qz-tabs" style="margin-bottom:14px;">
+        ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
+      </div>
+      <div id="qz-jornada-list"></div>
+    `;
+    root.querySelectorAll("[data-jf]").forEach(btn => {
+      btn.addEventListener("click", () => { jornadaFilter = btn.dataset.jf; renderJornada(main); });
+    });
+
+    const list = document.getElementById("qz-jornada-list");
+    const rounds = meta.rounds.filter(r => classifyRound(r) === jornadaFilter).slice().sort((a,b)=>a.number-b.number);
+
+    if(!rounds.length){
+      const emptyMsg = {
+        porjugar: "No hay jornadas abiertas para votar en este momento.",
+        envivo: "No hay jornadas cerradas esperando resultado.",
+        jugados: "Todavía no hay jornadas con resultados publicados."
+      }[jornadaFilter];
+      list.innerHTML = `<div class="card empty"><div class="display">Nada por aquí</div><p class="muted">${emptyMsg}</p></div>`;
+      return;
+    }
+
+    list.innerHTML = rounds.map(r => `<div class="card" id="qz-round-${r.id}" style="padding:16px;"></div>`).join("");
+
+    rounds.forEach(round => {
+      const box = document.getElementById("qz-round-" + round.id);
+      if(jornadaFilter === "porjugar") renderRoundVoting(box, round);
+      else if(jornadaFilter === "envivo") renderRoundLocked(box, round);
+      else renderRoundPlayed(box, round);
+    });
+
+    if(jornadaFilter === "porjugar"){
+      clockInterval = setInterval(() => {
+        rounds.forEach(round => {
+          if(isRoundLocked(round)){ renderJornada(main); return; }
+          const el = document.getElementById("qz-clockbody-" + round.id);
+          if(el) el.innerHTML = clockDigitsHtml(round.deadline);
+        });
+      }, 1000);
+    }
+  }
+
+  function clockDigitsHtml(deadline){
+    const {d,h,m,s} = timeParts(deadline);
+    return `
+      <div class="clock-digits">
+        <div class="clock-seg"><span class="num mono">${String(d).padStart(2,'0')}</span><span class="unit">días</span></div>
+        <div class="clock-seg"><span class="num mono">${String(h).padStart(2,'0')}</span><span class="unit">hrs</span></div>
+        <div class="clock-seg"><span class="num mono">${String(m).padStart(2,'0')}</span><span class="unit">min</span></div>
+        <div class="clock-seg"><span class="num mono">${String(s).padStart(2,'0')}</span><span class="unit">seg</span></div>
+      </div>
+    `;
+  }
+
+  function matchTeamsHtml(m){
+    return `
+      <div class="match-teams">
+        <span class="match-team left">${esc(m.teamA)}</span>
+        <span class="match-vs">VS</span>
+        <span class="match-team right">${esc(m.teamB)}</span>
+      </div>
+    `;
+  }
+
+  // "Por jugar": open for voting, live countdown
+  function renderRoundVoting(box, round){
+    const roundPicks = myPicks[round.id] || {};
+    box.innerHTML = `
+      <div class="clock-card" style="margin-bottom:14px;">
+        <div class="clock-label">Jornada ${round.number} · cierre de quiniela</div>
+        <div id="qz-clockbody-${round.id}">${clockDigitsHtml(round.deadline)}</div>
+      </div>
+      <div id="qz-matches-${round.id}"></div>
+      <button class="btn btn-primary" data-save="${round.id}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>
+    `;
+    const matchesDiv = document.getElementById("qz-matches-" + round.id);
+    matchesDiv.innerHTML = round.matches.map(m => {
+      const pick = roundPicks[m.id];
+      return `
+        <div class="match-card">
+          ${matchTeamsHtml(m)}
+          <div class="pick-row" data-match="${m.id}">
+            <button class="pick-btn ${pick==='A'?'selected':''}" data-val="A">${esc(m.teamA)}</button>
+            <button class="pick-btn ${pick==='D'?'selected':''}" data-val="D">Empate</button>
+            <button class="pick-btn ${pick==='B'?'selected':''}" data-val="B">${esc(m.teamB)}</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+    matchesDiv.querySelectorAll(".pick-row").forEach(row => {
+      row.querySelectorAll(".pick-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const matchId = row.dataset.match;
+          if(!myPicks[round.id]) myPicks[round.id] = {};
+          myPicks[round.id][matchId] = btn.dataset.val;
+          row.querySelectorAll(".pick-btn").forEach(b => b.classList.toggle("selected", b===btn));
+        });
+      });
+    });
+    box.querySelector("[data-save]").addEventListener("click", async () => {
+      if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
+      const ok = await setPicks(currentUser.id, myPicks);
+      toast(ok ? "Picks guardados ✅" : "No se pudo guardar, intenta de nuevo");
+    });
+  }
+
+  // "En vivo": locked, waiting for admin to publish results
+  function renderRoundLocked(box, round){
+    const roundPicks = myPicks[round.id] || {};
+    box.innerHTML = `
+      <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Jornada ${round.number}</span>
+        <span class="badge unpaid">🔒 Cerrada, esperando resultado</span>
+      </div>
+      ${round.matches.map(m => {
+        const pick = roundPicks[m.id];
+        return `
+          <div class="match-card">
+            ${matchTeamsHtml(m)}
+            <div class="pick-row">
+              <button class="pick-btn ${pick==='A'?'selected':''}" disabled>${esc(m.teamA)}</button>
+              <button class="pick-btn ${pick==='D'?'selected':''}" disabled>Empate</button>
+              <button class="pick-btn ${pick==='B'?'selected':''}" disabled>${esc(m.teamB)}</button>
+            </div>
+            ${!pick ? `<div class="result-tag" style="color:var(--red);">No guardaste un pick — 0 pts en este partido</div>` : ``}
+          </div>
+        `;
+      }).join("")}
+    `;
+  }
+
+  // "Jugados": results known, show correct/wrong
+  function renderRoundPlayed(box, round){
+    const roundPicks = myPicks[round.id] || {};
+    let correct = 0, total = 0;
+    const matchesHtml = round.matches.map(m => {
+      const pick = roundPicks[m.id];
+      const result = round.results[m.id];
+      if(result) total++;
+      const gotIt = pick && result && pick === result;
+      if(gotIt) correct++;
+      const cls = (val) => pick !== val ? '' : (gotIt ? 'correct' : 'wrong');
+      return `
+        <div class="match-card">
+          ${matchTeamsHtml(m)}
+          <div class="pick-row">
+            <button class="pick-btn ${cls('A')}" disabled>${esc(m.teamA)}</button>
+            <button class="pick-btn ${cls('D')}" disabled>Empate</button>
+            <button class="pick-btn ${cls('B')}" disabled>${esc(m.teamB)}</button>
+          </div>
+          <div class="result-tag">Resultado: ${result==='A'?esc(m.teamA):result==='B'?esc(m.teamB):'Empate'} ${gotIt ? '· acertaste ✅' : (pick ? '· fallaste ❌' : '· no participaste')}</div>
+        </div>
+      `;
+    }).join("");
+    box.innerHTML = `
+      <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Jornada ${round.number}</span>
+        <span class="badge paid">${correct}/${total} aciertos</span>
+      </div>
+      ${matchesHtml}
+    `;
+  }
+
+  // ---------- TABLA (standings) ----------
+  async function renderTabla(main){
+    main.innerHTML = `<div class="card"><p class="muted">Calculando posiciones…</p></div>`;
+    await ensureAllPicksLoaded();
+    const list = standingsList();
+    main.innerHTML = `
+      <div class="section-title">
+        <span class="display">Tabla de posiciones</span>
+        <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Descargar Excel</button>
+      </div>
+      <div class="card" style="padding:8px 12px;">
+        <table>
+          <thead><tr><th>#</th><th>Participante</th><th style="text-align:right;">Pts</th><th></th></tr></thead>
+          <tbody>
+            ${list.map((p,i) => `
+              <tr class="${p.id===currentUser.id?'me':''}">
+                <td class="pos ${i===0?'top1':''}">${i+1}</td>
+                <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
+                <td style="text-align:right;font-weight:700;">${p.pts}</td>
+                <td>${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente</p>
+      <div class="card">
+        <div class="section-title"><span class="display" style="font-size:20px;">Cómo llegaron aquí</span></div>
+        <p class="muted" style="margin-top:-4px;">Puntos acumulados después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
+        <div id="qz-chart-legend" style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0;"></div>
+        <div id="qz-chart-svg" style="overflow-x:auto;"></div>
+      </div>
+    `;
+    document.getElementById("qz-export").addEventListener("click", exportExcel);
+    renderProgressChart(list);
+  }
+
+  function progressData(){
+    const played = meta.rounds.filter(r => r.resultsPublished).slice().sort((a,b)=>a.number-b.number);
+    const series = {};
+    meta.participants.forEach(p => {
+      let cum = 0;
+      series[p.id] = played.map(r => {
+        r.matches.forEach(m => {
+          const result = r.results[m.id];
+          if(!result) return;
+          const pick = (allPicksCache[p.id]||{})[r.id] ? (allPicksCache[p.id][r.id]||{})[m.id] : null;
+          if(pick && pick === result) cum++;
+        });
+        return cum;
+      });
+    });
+    return { rounds: played.map(r=>r.number), series };
+  }
+
+  function renderProgressChart(orderedList){
+    const legendEl = document.getElementById("qz-chart-legend");
+    const svgEl = document.getElementById("qz-chart-svg");
+    if(!legendEl || !svgEl) return;
+    const { rounds, series } = progressData();
+
+    if(!rounds.length){
+      legendEl.innerHTML = "";
+      svgEl.innerHTML = `<p class="muted">Aún no hay jornadas jugadas para mostrar el progreso.</p>`;
+      return;
+    }
+    if(chartSelectedIds === null){
+      chartSelectedIds = new Set(orderedList.slice(0,5).map(p=>p.id));
+    }
+    const colorOf = (pid) => CHART_COLORS[orderedList.findIndex(p=>p.id===pid) % CHART_COLORS.length];
+
+    legendEl.innerHTML = orderedList.map(p => {
+      const on = chartSelectedIds.has(p.id);
+      const color = colorOf(p.id);
+      return `<button class="btn btn-sm" data-chip="${p.id}" style="border:1.5px solid ${on?color:'var(--line)'};background:${on?color+'22':'var(--chalk)'};color:${on?'var(--ink)':'var(--ink-soft)'};">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;"></span>${esc(p.name)}
+      </button>`;
+    }).join("");
+    legendEl.querySelectorAll("[data-chip]").forEach(chip => {
+      chip.addEventListener("click", () => {
+        const id = chip.dataset.chip;
+        if(chartSelectedIds.has(id)) chartSelectedIds.delete(id); else chartSelectedIds.add(id);
+        renderProgressChart(orderedList);
+      });
+    });
+
+    const W = Math.max(420, rounds.length * 60), H = 240, padL = 34, padR = 14, padT = 14, padB = 28;
+    const maxY = Math.max(1, ...Array.from(chartSelectedIds).flatMap(id => series[id] || [0]));
+    const x = (i) => padL + (i * (W - padL - padR) / Math.max(1, rounds.length-1));
+    const y = (v) => H - padB - (v * (H - padT - padB) / maxY);
+
+    const gridLines = [];
+    const steps = 4;
+    for(let i=0;i<=steps;i++){
+      const val = Math.round((maxY/steps)*i);
+      const yy = y(val);
+      gridLines.push(`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`);
+      gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Space Mono, monospace">${val}</text>`);
+    }
+    const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Space Mono, monospace">J${rn}</text>`).join("");
+
+    const lines = Array.from(chartSelectedIds).map(id => {
+      const pts = (series[id]||[]).map((v,i) => `${x(i)},${y(v)}`).join(" ");
+      const dots = (series[id]||[]).map((v,i) => `<circle cx="${x(i)}" cy="${y(v)}" r="3" fill="${colorOf(id)}"/>`).join("");
+      return `<polyline points="${pts}" fill="none" stroke="${colorOf(id)}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
+    }).join("");
+
+    svgEl.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%;">
+        ${gridLines.join("")}
+        ${xLabels}
+        ${lines}
+      </svg>
+    `;
+  }
+
+  // ---------- HISTORIAL ----------
+  async function renderHistorial(main){
+    const published = meta.rounds.filter(r => r.resultsPublished).slice().reverse();
+    if(!published.length){
+      main.innerHTML = `<div class="card empty"><div class="display">Todavía no hay jornadas cerradas</div><p class="muted">Aquí verás el detalle de cada jornada una vez que el admin capture los resultados.</p></div>`;
+      return;
+    }
+    main.innerHTML = `<div class="section-title"><span class="display">Historial de jornadas</span></div>
+      <div id="qz-hist-list"></div><div id="qz-hist-detail"></div>`;
+    const list = document.getElementById("qz-hist-list");
+    list.innerHTML = published.map(r => `
+      <div class="history-item">
+        <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos</span></div>
+        <button class="btn btn-ghost btn-sm" data-round="${r.id}">Ver detalle</button>
+      </div>
+    `).join("");
+    list.querySelectorAll("button[data-round]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await ensureAllPicksLoaded();
+        renderHistDetail(meta.rounds.find(r => r.id === btn.dataset.round));
+      });
+    });
+  }
+
+  function renderHistDetail(round){
+    const detail = document.getElementById("qz-hist-detail");
+    const rows = meta.participants.map(p => {
+      const picks = (allPicksCache[p.id] || {})[round.id] || {};
+      let correct = 0;
+      const cells = round.matches.map(m => {
+        const pick = picks[m.id];
+        const result = round.results[m.id];
+        const label = pick === 'A' ? m.teamA : pick === 'B' ? m.teamB : pick === 'D' ? 'Empate' : '—';
+        const isCorrect = pick && result && pick === result;
+        if(isCorrect) correct++;
+        return `<td style="${isCorrect?'color:#1B4332;font-weight:700;':pick?'color:#7d251d;':'color:var(--ink-soft);'}">${esc(label)}</td>`;
+      }).join("");
+      return `<tr><td>${esc(p.name)}</td>${cells}<td style="font-weight:700;">${correct}</td></tr>`;
+    }).join("");
+    const resultRow = round.matches.map(m => {
+      const r = round.results[m.id];
+      const label = r==='A'? m.teamA : r==='B'? m.teamB : r==='D'?'Empate':'—';
+      return `<td style="font-weight:700;">${esc(label)}</td>`;
+    }).join("");
+    detail.innerHTML = `
+      <div class="card" style="overflow-x:auto;">
+        <h3>Jornada ${round.number} — detalle</h3>
+        <table>
+          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th>${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th>Pts</th></tr></thead>
+          <tbody>
+            <tr style="background:var(--chalk);"><td><strong>Resultado real</strong></td>${resultRow}<td></td></tr>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // ---------- PAGOS ----------
+  function renderPagos(main){
+    const fee = meta.settings.entryFee;
+    const paidCount = meta.participants.filter(p=>p.paid).length;
+    const total = meta.participants.length;
+    main.innerHTML = `
+      <div class="section-title"><span class="display">Pagos del torneo</span></div>
+      <div class="card">
+        <div class="row2">
+          <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
+          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Work Sans';font-size:13px;">de $${total*fee}</span></div></div>
+        </div>
+      </div>
+      <div class="card" style="padding:8px 12px;">
+        <table>
+          <thead><tr><th>Participante</th><th>Estatus</th></tr></thead>
+          <tbody>
+            ${meta.participants.map(p => `
+              <tr class="${p.id===currentUser.id?'me':''}">
+                <td>${esc(p.name)}</td>
+                <td>${p.paid ? '<span class="badge paid">✅ Pagó</span>' : '<span class="badge unpaid">❌ Pendiente</span>'}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+      ${currentUser.isAdmin ? `<p class="muted">Para marcar pagos ve a la pestaña <strong>Admin → Participantes</strong>.</p>` : ``}
+    `;
+  }
+
+  // ---------- ADMIN ----------
+  function renderAdmin(main){
+    const subtabs = [
+      {id:"rondas", label:"Rondas"},
+      {id:"resultados", label:"Resultados"},
+      {id:"participantes", label:"Participantes"},
+      {id:"dueno", label:"Ajustes"},
+    ];
+    main.innerHTML = `
+      <div class="section-title"><span class="display">Panel de administración</span></div>
+      <div class="qz-tabs" style="margin-bottom:14px;">
+        ${subtabs.map(t=>`<button class="qz-tab" style="color:${t.id===adminSubTab?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${t.id===adminSubTab?'var(--gold)':'transparent'};" data-sub="${t.id}">${t.label}</button>`).join("")}
+      </div>
+      <div id="qz-admin-body"></div>
+    `;
+    root.querySelectorAll("[data-sub]").forEach(btn => {
+      btn.addEventListener("click", () => { adminSubTab = btn.dataset.sub; renderAdmin(main); });
+    });
+    const body = document.getElementById("qz-admin-body");
+    if(adminSubTab==="rondas") renderAdminRondas(body);
+    else if(adminSubTab==="resultados") renderAdminResultados(body);
+    else if(adminSubTab==="participantes") renderAdminParticipantes(body);
+    else if(adminSubTab==="dueno") renderAdminOwner(body);
+  }
+
+  function blankMatch(){ return {id: uid("m"), teamA:"", teamB:""}; }
+
+  function renderAdminRondas(body){
+    const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r=>r.number))+1 : 1;
+    let draft = renderAdminRondas._draft;
+    if(!draft){
+      draft = {matches:[blankMatch(), blankMatch()], deadline:""};
+      renderAdminRondas._draft = draft;
+    }
+    const teamOptions = TEAMS.map(t=>`<option value="${esc(t)}">`).join("");
+
+    function matchRowHtml(m, idx){
+      return `
+        <div class="match-edit-row" data-mid="${m.id}">
+          <div class="field" style="margin-bottom:0;"><label>Local</label><input list="qz-teams" type="text" value="${esc(m.teamA)}" data-role="teamA"></div>
+          <div class="field" style="margin-bottom:0;"><label>Visitante</label><input list="qz-teams" type="text" value="${esc(m.teamB)}" data-role="teamB"></div>
+          <button class="icon-x" data-remove="${m.id}" title="Quitar partido">✕</button>
+        </div>
+      `;
+    }
+
+    body.innerHTML = `
+      <datalist id="qz-teams">${teamOptions}</datalist>
+      <div class="card">
+        <div class="eyebrow">Crear jornada ${nextNumber}</div>
+        <div id="qz-match-rows">${draft.matches.map(matchRowHtml).join("")}</div>
+        <button class="btn btn-ghost btn-sm" id="qz-add-match" style="margin-bottom:14px;">+ Agregar partido</button>
+        <div class="field">
+          <label>Fecha y hora límite para votar</label>
+          <input type="datetime-local" id="qz-deadline" value="${draft.deadline}">
+        </div>
+        <button class="btn btn-primary" id="qz-publish-round" style="width:100%;padding:12px;">Publicar jornada ${nextNumber}</button>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Jornadas existentes</div>
+        ${meta.rounds.length ? meta.rounds.slice().reverse().map(r => `
+          <div class="history-item">
+            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${r.resultsPublished ? 'resultados capturados' : (isRoundLocked(r) ? 'cerrada, sin resultados' : 'abierta')}</span></div>
+            <button class="btn btn-ghost btn-sm" data-del-round="${r.id}">Eliminar</button>
+          </div>
+        `).join("") : `<p class="muted">Aún no has creado ninguna jornada.</p>`}
+      </div>
+    `;
+
+    function wireRows(){
+      document.querySelectorAll("#qz-match-rows [data-mid]").forEach(row => {
+        const mid = row.dataset.mid;
+        row.querySelectorAll("input").forEach(inp => {
+          inp.addEventListener("input", () => {
+            const m = draft.matches.find(x=>x.id===mid);
+            m[inp.dataset.role] = inp.value;
+          });
+        });
+        row.querySelector("[data-remove]").addEventListener("click", () => {
+          draft.matches = draft.matches.filter(x=>x.id!==mid);
+          renderAdminRondas(body);
+        });
+      });
+    }
+    wireRows();
+
+    document.getElementById("qz-add-match").addEventListener("click", () => {
+      draft.matches.push(blankMatch());
+      renderAdminRondas(body);
+    });
+    document.getElementById("qz-deadline").addEventListener("input", (e) => { draft.deadline = e.target.value; });
+
+    document.getElementById("qz-publish-round").addEventListener("click", async () => {
+      const clean = draft.matches.filter(m => m.teamA.trim() && m.teamB.trim());
+      if(!clean.length){ toast("Agrega al menos un partido con ambos equipos"); return; }
+      if(!draft.deadline){ toast("Selecciona la fecha y hora límite"); return; }
+      const round = {
+        id: uid("r"),
+        number: nextNumber,
+        matches: clean,
+        deadline: new Date(draft.deadline).toISOString(),
+        results: {},
+        resultsPublished: false
+      };
+      meta.rounds.push(round);
+      const ok = await setMeta(meta);
+      if(ok){
+        toast("Jornada " + nextNumber + " publicada ✅");
+        renderAdminRondas._draft = null;
+        renderAdmin(document.getElementById("qz-main"));
+      } else {
+        toast("No se pudo guardar, intenta otra vez");
+      }
+    });
+
+    body.querySelectorAll("[data-del-round]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if(!confirm("¿Eliminar esta jornada y sus resultados? Esta acción no se puede deshacer.")) return;
+        meta.rounds = meta.rounds.filter(r => r.id !== btn.dataset.delRound);
+        await setMeta(meta);
+        renderAdmin(document.getElementById("qz-main"));
+      });
+    });
+  }
+
+  // ---------- TheSportsDB auto-fill (free API, best-effort suggestions) ----------
+  const SPORTSDB_LEAGUE_ID = "4350"; // Mexican Primera League / Liga MX
+  const SPORTSDB_TEAM_MAP = {
+    "América": "CF America",
+    "Atlas": "Atlas",
+    "Atlético San Luis": "Atletico de San Luis",
+    "Cruz Azul": "Cruz Azul",
+    "Chivas": "CD Guadalajara",
+    "Juárez": "FC Juarez",
+    "León": "León",
+    "Mazatlán": "Mazatlán",
+    "Monterrey": "Monterrey",
+    "Necaxa": "Necaxa",
+    "Pachuca": "Pachuca",
+    "Puebla": "Puebla",
+    "Pumas": "Pumas",
+    "Querétaro": "Queretaro FC",
+    "Santos": "Santos Laguna",
+    "Tigres": "Tigres",
+    "Toluca": "Toluca",
+    "Xolos": "Tijuana"
+  };
+  let sportsdbCache = null; // {season, events}
+
+  async function fetchSportsdbSeason(season){
+    if(sportsdbCache && sportsdbCache.season === season) return sportsdbCache.events;
+    const url = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${SPORTSDB_LEAGUE_ID}&s=${encodeURIComponent(season)}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const events = data.events || [];
+    sportsdbCache = { season, events };
+    return events;
+  }
+
+  function findAutoResult(events, m, roundDeadline){
+    const mappedA = SPORTSDB_TEAM_MAP[m.teamA];
+    const mappedB = SPORTSDB_TEAM_MAP[m.teamB];
+    if(!mappedA || !mappedB) return null;
+    const targetTime = new Date(roundDeadline).getTime();
+    let best = null, bestDiff = Infinity;
+    events.forEach(ev => {
+      const home = ev.strHomeTeam, away = ev.strAwayTeam;
+      const straight = home === mappedA && away === mappedB;
+      const swapped = home === mappedB && away === mappedA;
+      if(!straight && !swapped) return;
+      if(ev.intHomeScore === null || ev.intHomeScore === undefined || ev.intHomeScore === "") return; // not played yet
+      const evTime = new Date(ev.dateEvent).getTime();
+      const diff = Math.abs(evTime - targetTime);
+      if(diff < bestDiff && diff < 1000*60*60*24*20){ // within ~20 days of our deadline
+        bestDiff = diff;
+        const hs = Number(ev.intHomeScore), as = Number(ev.intAwayScore);
+        let result;
+        if(straight) result = hs > as ? 'A' : hs < as ? 'B' : 'D';
+        else result = hs > as ? 'B' : hs < as ? 'A' : 'D';
+        best = { result, date: ev.dateEvent, score: hs + "-" + as };
+      }
+    });
+    return best;
+  }
+
+
+  async function renderAdminResultados(body){
+    const candidateRounds = meta.rounds.filter(r => !r.resultsPublished);
+    const closedRounds = meta.rounds.filter(r => r.resultsPublished);
+    if(!candidateRounds.length && !closedRounds.length){
+      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas todavía</div><p class="muted">Crea una jornada primero en la pestaña Rondas.</p></div>`;
+      return;
+    }
+    let target = renderAdminResultados._target;
+    if(!target && candidateRounds.length) target = candidateRounds[candidateRounds.length-1].id;
+    body.innerHTML = `
+      <div class="card">
+        <div class="eyebrow">Elige la jornada</div>
+        <select id="qz-round-select">
+          ${meta.rounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>Jornada ${r.number} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
+        </select>
+      </div>
+      <div id="qz-results-form"></div>
+    `;
+    const select = document.getElementById("qz-round-select");
+    select.addEventListener("change", () => {
+      renderAdminResultados._target = select.value;
+      renderAdminResultados(body);
+    });
+    if(!select.value) return;
+    const round = meta.rounds.find(r => r.id === select.value);
+    renderAdminResultados._target = round.id;
+    const form = document.getElementById("qz-results-form");
+    form.innerHTML = `
+      <div class="card">
+        <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Jornada ${round.number} — resultado de cada partido</span>
+          <button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>
+        </div>
+        <p class="muted" id="qz-autofill-status" style="margin-top:-4px;"></p>
+        ${round.matches.map(m => `
+          <div class="match-card" style="margin-bottom:10px;" id="qz-rescard-${m.id}">
+            <div class="match-teams">
+              <span class="match-team left">${esc(m.teamA)}</span>
+              <span class="match-vs">VS</span>
+              <span class="match-team right">${esc(m.teamB)}</span>
+            </div>
+            <div class="pick-row" data-result-match="${m.id}">
+              <button class="pick-btn ${round.results[m.id]==='A'?'selected':''}" data-val="A">${esc(m.teamA)}</button>
+              <button class="pick-btn ${round.results[m.id]==='D'?'selected':''}" data-val="D">Empate</button>
+              <button class="pick-btn ${round.results[m.id]==='B'?'selected':''}" data-val="B">${esc(m.teamB)}</button>
+            </div>
+            <div class="result-tag" id="qz-suggest-${m.id}"></div>
+          </div>
+        `).join("")}
+        <button class="btn btn-primary" id="qz-save-results" style="width:100%;padding:12px;">
+          ${round.resultsPublished ? "Actualizar resultados" : "Guardar y publicar resultados"}
+        </button>
+        ${round.resultsPublished ? `<button class="btn btn-ghost btn-sm" id="qz-reopen-round" style="width:100%;margin-top:8px;">Reabrir jornada (permitir votos de nuevo)</button>` : ``}
+      </div>
+    `;
+    document.getElementById("qz-autofill").addEventListener("click", async () => {
+      const statusEl = document.getElementById("qz-autofill-status");
+      statusEl.textContent = "Consultando TheSportsDB…";
+      try{
+        const season = meta.settings.sportsdbSeason || "2025-2026";
+        const events = await fetchSportsdbSeason(season);
+        let found = 0;
+        round.matches.forEach(m => {
+          const hit = findAutoResult(events, m, round.deadline);
+          const tag = document.getElementById("qz-suggest-" + m.id);
+          if(hit){
+            found++;
+            tag.textContent = `Sugerido: ${hit.score} (${hit.date}) — clic en el resultado para aceptarlo`;
+            tag.style.color = "var(--pitch-light)";
+          } else {
+            tag.textContent = "Sin resultado automático todavía";
+            tag.style.color = "var(--ink-soft)";
+          }
+        });
+        statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta temporada/fecha — puede que la temporada no coincida o los partidos no estén jugados. Puedes ajustarla en Admin → Ajustes.";
+      }catch(e){
+        console.error(e);
+        statusEl.textContent = "No se pudo conectar con TheSportsDB. Ingresa los resultados manualmente.";
+      }
+    });
+    form.querySelectorAll(".pick-row").forEach(row => {
+      row.querySelectorAll(".pick-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          round.results[row.dataset.resultMatch] = btn.dataset.val;
+          row.querySelectorAll(".pick-btn").forEach(b => b.classList.toggle("selected", b===btn));
+        });
+      });
+    });
+    document.getElementById("qz-save-results").addEventListener("click", async () => {
+      const missing = round.matches.some(m => !round.results[m.id]);
+      if(missing){ toast("Falta el resultado de algún partido"); return; }
+      round.resultsPublished = true;
+      const ok = await setMeta(meta);
+      toast(ok ? "Resultados publicados ✅ puntos actualizados" : "No se pudo guardar");
+      allPicksCache = {};
+      renderAdminResultados(body);
+    });
+    const reopenBtn = document.getElementById("qz-reopen-round");
+    if(reopenBtn){
+      reopenBtn.addEventListener("click", async () => {
+        round.resultsPublished = false;
+        await setMeta(meta);
+        toast("Jornada reabierta");
+        renderAdminResultados(body);
+      });
+    }
+  }
+
+  function renderAdminParticipantes(body){
+    body.innerHTML = `
+      <div class="card">
+        <div class="eyebrow">Agregar participante</div>
+        <div class="row2">
+          <input type="text" id="qz-new-name" placeholder="Nombre">
+          <button class="btn btn-gold" id="qz-add-participant">+ Agregar</button>
+        </div>
+      </div>
+      <div class="card" style="padding:8px 12px;">
+        <table>
+          <thead><tr><th>Nombre</th><th>Admin</th><th>Pagó</th><th></th></tr></thead>
+          <tbody>
+            ${meta.participants.map(p => `
+              <tr data-pid="${p.id}">
+                <td><input type="text" value="${esc(p.name)}" data-role="rename" style="border:none;background:transparent;padding:2px;font-weight:600;"></td>
+                <td><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
+                <td><input type="checkbox" data-role="paid" ${p.paid?'checked':''}></td>
+                <td><button class="btn btn-danger btn-sm" data-role="remove">Borrar</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">Solo el dueño puede quitarle el permiso de admin a alguien más — desde <strong>Admin → Ajustes</strong> si esta casilla no responde.</p>
+    `;
+    document.getElementById("qz-add-participant").addEventListener("click", async () => {
+      const inp = document.getElementById("qz-new-name");
+      const name = inp.value.trim();
+      if(!name) return;
+      meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false});
+      await setMeta(meta);
+      renderAdminParticipantes(body);
+      toast("Participante agregado");
+    });
+    body.querySelectorAll("tr[data-pid]").forEach(row => {
+      const pid = row.dataset.pid;
+      const p = meta.participants.find(x=>x.id===pid);
+      row.querySelector("[data-role=rename]").addEventListener("change", async (e) => {
+        p.name = e.target.value.trim() || p.name;
+        await setMeta(meta);
+        toast("Nombre actualizado");
+      });
+      row.querySelector("[data-role=admin]").addEventListener("change", async (e) => {
+        p.isAdmin = e.target.checked;
+        await setMeta(meta);
+        toast(p.isAdmin ? (esc(p.name)+" ahora es admin") : (esc(p.name)+" ya no es admin"));
+      });
+      row.querySelector("[data-role=paid]").addEventListener("change", async (e) => {
+        p.paid = e.target.checked;
+        await setMeta(meta);
+      });
+      row.querySelector("[data-role=remove]").addEventListener("click", async () => {
+        if(!confirm("¿Borrar a " + p.name + "? Sus picks guardados dejarán de contarse.")) return;
+        meta.participants = meta.participants.filter(x=>x.id!==pid);
+        await setMeta(meta);
+        renderAdminParticipantes(body);
+      });
+    });
+  }
+
+  function renderAdminOwner(body){
+    if(!ownerUnlocked){
+      body.innerHTML = `
+        <div class="card">
+          <div class="eyebrow">Ajustes del dueño</div>
+          <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de dueño.</p>
+          <div class="field"><input type="password" id="qz-owner-pw" placeholder="Contraseña de dueño"></div>
+          <button class="btn btn-primary" id="qz-owner-unlock">Entrar</button>
+        </div>
+      `;
+      document.getElementById("qz-owner-unlock").addEventListener("click", () => {
+        const val = document.getElementById("qz-owner-pw").value;
+        if(val === meta.settings.ownerPassword){
+          ownerUnlocked = true;
+          renderAdminOwner(body);
+        } else {
+          toast("Contraseña incorrecta");
+        }
+      });
+      return;
+    }
+    body.innerHTML = `
+      <div class="card">
+        <div class="eyebrow">Nombre del grupo</div>
+        <div class="field"><input type="text" id="qz-group-name" value="${esc(meta.groupName)}"></div>
+        <div class="eyebrow">Cuota por participante (MXN)</div>
+        <div class="field"><input type="number" id="qz-fee" value="${meta.settings.entryFee}"></div>
+        <div class="eyebrow">Contraseña de dueño</div>
+        <div class="field"><input type="text" id="qz-owner-pw-set" value="${esc(meta.settings.ownerPassword)}"></div>
+        <div class="eyebrow">Temporada para resultados automáticos (TheSportsDB)</div>
+        <div class="field"><input type="text" id="qz-sportsdb-season" value="${esc(meta.settings.sportsdbSeason || '2025-2026')}" placeholder="2025-2026"></div>
+        <p class="muted" style="margin-top:-8px;">Formato AAAA-AAAA. Si "Buscar resultados automáticos" no encuentra nada en Admin → Resultados, prueba ajustando este valor.</p>
+        <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Reiniciar torneo</div>
+        <p class="muted">Borra todas las jornadas, resultados y marca a todos como "no pagó". Los participantes se conservan. Útil para empezar un torneo nuevo.</p>
+        <button class="btn btn-danger" id="qz-reset-tournament">Reiniciar torneo</button>
+      </div>
+    `;
+    document.getElementById("qz-save-settings").addEventListener("click", async () => {
+      meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
+      meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
+      meta.settings.ownerPassword = document.getElementById("qz-owner-pw-set").value.trim() || meta.settings.ownerPassword;
+      meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
+      sportsdbCache = null;
+      await setMeta(meta);
+      toast("Ajustes guardados ✅");
+      renderApp();
+    });
+    document.getElementById("qz-reset-tournament").addEventListener("click", async () => {
+      if(!confirm("Esto borra todas las jornadas y resultados. ¿Seguro?")) return;
+      meta.rounds = [];
+      meta.participants.forEach(p => p.paid = false);
+      await setMeta(meta);
+      toast("Torneo reiniciado");
+      renderAdmin(document.getElementById("qz-main"));
+    });
+  }
+
+  // ---------- EXCEL EXPORT ----------
+  async function exportExcel(){
+    toast("Generando Excel…");
+    await ensureAllPicksLoaded();
+    const wb = XLSX.utils.book_new();
+
+    // Standings
+    const standings = standingsList().map((p,i) => ({
+      "#": i+1, "Participante": p.name, "Puntos": p.pts, "Pagó": p.paid ? "Sí" : "No"
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(standings), "Tabla");
+
+    // Jornada detail (matrix)
+    const detailRows = [];
+    meta.rounds.filter(r=>r.resultsPublished).forEach(r => {
+      r.matches.forEach(m => {
+        const row = { "Jornada": r.number, "Partido": m.teamA + " vs " + m.teamB, "Resultado": r.results[m.id] === 'A' ? m.teamA : r.results[m.id]==='B' ? m.teamB : "Empate" };
+        meta.participants.forEach(p => {
+          const pick = ((allPicksCache[p.id]||{})[r.id]||{})[m.id];
+          row[p.name] = pick === 'A' ? m.teamA : pick === 'B' ? m.teamB : pick === 'D' ? "Empate" : "";
+        });
+        detailRows.push(row);
+      });
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), "Jornada detalle");
+
+    // Participant stats
+    const statsRows = meta.participants.map(p => {
+      let correct=0, total=0, best=0, worst=null;
+      meta.rounds.filter(r=>r.resultsPublished).forEach(r => {
+        let roundCorrect=0, roundTotal=0;
+        r.matches.forEach(m => {
+          const result = r.results[m.id];
+          const pick = ((allPicksCache[p.id]||{})[r.id]||{})[m.id];
+          if(result){ roundTotal++; total++; if(pick===result){ roundCorrect++; correct++; } }
+        });
+        if(roundTotal>0){
+          best = Math.max(best, roundCorrect);
+          worst = worst===null ? roundCorrect : Math.min(worst, roundCorrect);
+        }
+      });
+      return {
+        "Participante": p.name,
+        "Puntos totales": correct,
+        "Partidos jugados": total,
+        "% Acierto": total ? Math.round((correct/total)*1000)/10 + "%" : "0%",
+        "Mejor jornada (aciertos)": best,
+        "Peor jornada (aciertos)": worst===null?0:worst
+      };
+    }).sort((a,b)=>b["Puntos totales"]-a["Puntos totales"]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(statsRows), "Estadísticas");
+
+    // Payments
+    const paymentRows = meta.participants.map(p => ({
+      "Participante": p.name,
+      "Cuota": meta.settings.entryFee,
+      "Pagó": p.paid ? "Sí" : "No"
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), "Pagos");
+
+    XLSX.writeFile(wb, "quiniela_" + meta.groupName.replace(/\s+/g,"_") + ".xlsx");
+    toast("Excel descargado ✅");
+  }
+
+  // ---------- boot ----------
+  async function boot(){
+    let m = await getMeta();
+    if(!m){
+      m = defaultMeta();
+      await setMeta(m);
+    }
+    meta = m;
+    render();
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
