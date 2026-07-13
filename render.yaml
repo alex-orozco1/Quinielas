@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: quiniela-liga-mx
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        sync: false
