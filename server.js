@@ -30,7 +30,6 @@ async function ensureTable() {
     );
   `);
 }
-ensureTable().catch(err => console.error("Failed to ensure kv table", err));
 
 // GET a value by key
 app.get("/api/kv/:key", async (req, res) => {
@@ -71,4 +70,20 @@ app.get("*", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Quiniela server listening on port " + PORT));
+
+async function start(retriesLeft){
+  try{
+    await ensureTable();
+    app.listen(PORT, () => console.log("Quiniela server listening on port " + PORT));
+  }catch(err){
+    console.error("Database not ready yet:", err.message);
+    if(retriesLeft > 0){
+      console.log("Retrying in 3s... (" + retriesLeft + " attempts left)");
+      setTimeout(() => start(retriesLeft - 1), 3000);
+    }else{
+      console.error("Giving up waiting for the database. Check DATABASE_URL.");
+      process.exit(1);
+    }
+  }
+}
+start(5);
