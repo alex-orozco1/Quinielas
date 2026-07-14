@@ -531,11 +531,35 @@
           <div class="login-title display">${esc(meta.groupName)}</div>
           <div class="login-sub">Toca tu nombre para entrar 👇</div>
           <div class="name-grid">${names}</div>
+          <button class="btn btn-gold" id="qz-self-register" style="width:100%;padding:14px;margin-top:16px;">+ No apareces? Agrégate aquí</button>
           <p class="muted" style="text-align:center;margin-top:14px;">🔒 = ya tiene PIN configurado. Si es tu nombre y no tiene candado, tócalo y ponle un PIN antes que alguien más lo haga.</p>
           <p class="muted" style="text-align:center;margin-top:8px;">¿Quieres tu propia quiniela? <a href="/crear" style="color:var(--pitch-light);font-weight:700;">Créala aquí</a></p>
         </div>
       </div>
     `;
+    document.getElementById("qz-self-register").addEventListener("click", async () => {
+      const newName = window.prompt("¿Cuál es tu nombre?");
+      if(newName === null) return;
+      const cleanName = newName.trim();
+      if(!cleanName){ toast("Escribe un nombre válido"); return; }
+      if(meta.participants.some(p => p.name.toLowerCase() === cleanName.toLowerCase())){
+        toast("Ya existe alguien con ese nombre — búscalo en la lista de arriba en vez de crear otro.");
+        return;
+      }
+      const newPin = window.prompt("Ponle un PIN de 4 dígitos para proteger tu nombre:");
+      if(newPin === null) return;
+      const cleanPin = newPin.trim();
+      if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
+      const newParticipant = { id: uid("p"), name: cleanName, isAdmin: false, paid: false, pin: cleanPin };
+      meta.participants.push(newParticipant);
+      const ok = await setMeta(meta);
+      if(!ok){ meta.participants.pop(); toast("No se pudo guardar, intenta de nuevo"); return; }
+      toast("¡Bienvenido, " + cleanName + "! ✅");
+      currentUser = newParticipant;
+      myPicks = await getPicks(newParticipant.id);
+      activeTab = "jornada";
+      render();
+    });
     root.querySelectorAll(".name-btn").forEach(btn => {
       btn.addEventListener("click", async () => {
         const p = meta.participants.find(x => x.id === btn.dataset.id);
