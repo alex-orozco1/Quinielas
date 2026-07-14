@@ -1,4 +1,4 @@
-## Quinielas — plataforma de quinielas de Liga MX
+# Quinielas — plataforma de quinielas de Liga MX
 
 Sitio donde cualquier grupo de amigos puede armar su propia quiniela: se eligen
 los partidos de cada jornada, cada quien vota antes de la hora límite, y los
@@ -6,7 +6,7 @@ puntos se calculan solos en cuanto se capturan los resultados. Empezó como la
 quiniela de un solo grupo y se convirtió en una plataforma donde cualquiera
 puede crear la suya.
 
-# Qué incluye esta carpeta
+## Qué incluye esta carpeta
 
 
 public/index.html — todo el sitio (frontend): una sola página que
