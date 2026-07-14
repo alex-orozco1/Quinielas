@@ -1489,6 +1489,15 @@
         <p class="muted">Borra todas las jornadas, resultados y marca a todos como "no pagó". Los participantes se conservan. Útil para empezar un torneo nuevo.</p>
         <button class="btn btn-danger" id="qz-reset-tournament">Reiniciar torneo</button>
       </div>
+      ${ROUTE === "root" ? `
+      <div class="card">
+        <div class="eyebrow">Mover esta quiniela a su propio link</div>
+        <p class="muted">Ahora mismo esta quiniela vive en la página principal. Como las demás quinielas de la plataforma, puede tener su propio link fijo (ej. tusitio.com/q/mi-quiniela). Se copian todos los datos — jornadas, resultados, picks — nada se pierde.</p>
+        <div class="field"><label>Link para esta quiniela</label><input type="text" id="qz-migrate-slug" value="poderosa-quiniela-liga-mx"></div>
+        <p class="muted" id="qz-migrate-status" style="min-height:16px;"></p>
+        <button class="btn btn-primary" id="qz-migrate-btn">Mover mi quiniela a este link</button>
+      </div>
+      ` : ``}
     `;
     document.getElementById("qz-save-settings").addEventListener("click", async () => {
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
@@ -1508,6 +1517,69 @@
       toast("Torneo reiniciado");
       renderAdmin(document.getElementById("qz-main"));
     });
+
+    const migrateBtn = document.getElementById("qz-migrate-btn");
+    if(migrateBtn){
+      migrateBtn.addEventListener("click", async () => {
+        const statusEl = document.getElementById("qz-migrate-status");
+        const slug = slugify(document.getElementById("qz-migrate-slug").value);
+        if(!slug){ statusEl.textContent = "Escribe un link válido."; statusEl.style.color = "var(--red)"; return; }
+        if(!confirm(`¿Mover esta quiniela a tusitio.com/q/${slug}? El link principal dejará de mostrarla — tendrás que compartir el nuevo link con tu grupo.`)) return;
+
+        migrateBtn.disabled = true;
+        statusEl.textContent = "Moviendo datos…";
+        statusEl.style.color = "var(--ink-soft)";
+        try{
+          const idx = await getPlatformIndex();
+          if(idx.quinielas.some(q => q.slug === slug)){
+            statusEl.textContent = "Ese link ya está en uso, elige otro.";
+            statusEl.style.color = "var(--red)";
+            migrateBtn.disabled = false;
+            return;
+          }
+          const okMeta = await kvSet(metaKeyFor(slug), meta);
+          if(!okMeta) throw new Error("no se pudo copiar la quiniela");
+
+          for(const p of meta.participants){
+            const picks = await getPicks(p.id); // still resolves to the root/legacy key at this point
+            await kvSet("quiniela:" + slug + ":picks:" + p.id, picks);
+          }
+
+          idx.quinielas.push({
+            slug, name: meta.groupName, creatorName: currentUser.name,
+            createdAt: new Date().toISOString(), exempt: true
+          });
+          const okIdx = await setPlatformIndex(idx);
+          if(!okIdx) throw new Error("no se pudo registrar en la plataforma");
+
+          const okFlag = await kvSet(currentMetaKey(), { migratedTo: slug });
+          if(!okFlag) throw new Error("no se pudo cerrar el link viejo");
+
+          statusEl.textContent = "";
+          body.innerHTML = `
+            <div class="card">
+              <div class="eyebrow">✅ Listo</div>
+              <p class="muted">Tu quiniela ya vive en su propio link. Comparte este link nuevo con tu grupo — el link principal ya no la mostrará.</p>
+              <div class="field"><input type="text" readonly value="${window.location.origin}/q/${esc(slug)}" id="qz-migrate-newlink"></div>
+              <button class="btn btn-gold" id="qz-migrate-copy">Copiar link</button>
+            </div>
+          `;
+          document.getElementById("qz-migrate-copy").addEventListener("click", async () => {
+            try{
+              await navigator.clipboard.writeText(window.location.origin + "/q/" + slug);
+              toast("Link copiado ✅");
+            }catch(e){
+              toast("Cópialo manualmente del cuadro de texto");
+            }
+          });
+        }catch(e){
+          console.error(e);
+          statusEl.textContent = "Algo falló durante el movimiento: " + e.message + ". Tus datos originales siguen intactos, puedes reintentar.";
+          statusEl.style.color = "var(--red)";
+          migrateBtn.disabled = false;
+        }
+      });
+    }
   }
 
   // ---------- EXCEL EXPORT ----------
@@ -1779,6 +1851,32 @@
     });
   }
 
+  function renderHome(){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="max-width:440px;text-align:center;">
+          <div class="login-title display" style="font-size:36px;">Quinielas</div>
+          <p class="login-sub">Crea tu propia quiniela de Liga MX para tu grupo de amigos — jornadas, resultados y tabla de posiciones, todo en un link que solo ustedes usan.</p>
+          <a href="/crear" class="btn btn-primary" style="display:block;padding:14px;text-decoration:none;margin-top:8px;">Crear mi quiniela</a>
+          <p class="muted" style="margin-top:18px;">¿Ya tienes una? Pídele el link a quien la creó.</p>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMigratedNotice(slug){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="text-align:center;">
+          <div class="login-title display" style="font-size:28px;">Esta quiniela se movió</div>
+          <p class="login-sub">Tiene un nuevo link permanente:</p>
+          <a href="/q/${encodeURIComponent(slug)}" class="btn btn-primary" style="display:block;padding:14px;text-decoration:none;margin-bottom:8px;">Ir a la quiniela</a>
+          <p class="muted">Actualiza tus favoritos/enlaces compartidos a: <strong>${esc(window.location.origin)}/q/${esc(slug)}</strong></p>
+        </div>
+      </div>
+    `;
+  }
+
   async function boot(attempt){
     attempt = attempt || 1;
 
@@ -1805,13 +1903,13 @@
         renderQuinielaNotFound();
         return;
       }
-      // ROUTE === "root": the original group quiniela, genuinely first run. Safe to initialize.
-      m = defaultMeta();
-      const ok = await setMeta(m);
-      if(!ok){
-        renderBootError("No se pudo inicializar la quiniela por primera vez. Intenta de nuevo.", () => boot(1));
-        return;
-      }
+      // ROUTE === "root": nothing here anymore (or never was) — show the public home page.
+      renderHome();
+      return;
+    }
+    if(ROUTE === "root" && m.migratedTo){
+      renderMigratedNotice(m.migratedTo);
+      return;
     }
     meta = m;
     render();
