@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quinielas</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjIyIiBmaWxsPSIjMTczQTJCIi8+CiAgPHRleHQgeD0iNTAiIHk9Ijc0IiBmb250LWZhbWlseT0iQXJpYWwsIEhlbHZldGljYSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI2OCIgZm9udC13ZWlnaHQ9IjkwMCIgZmlsbD0iI0UzQjIzQyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UTwvdGV4dD4KPC9zdmc+Cg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Work+Sans:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -1390,50 +1391,65 @@
   }
 
   // ---------- TheSportsDB auto-fill (free API, best-effort suggestions) ----------
-  const SPORTSDB_LEAGUE_ID = "4350"; // Mexican Primera League / Liga MX
-  const SPORTSDB_TEAM_MAP = {
+  // Curated list of common competitions — each quiniela picks one in Ajustes.
+  const SPORTSDB_LEAGUES = [
+    { id: "4350", label: "Liga MX" },
+    { id: "4328", label: "Premier League (Inglaterra)" },
+    { id: "4335", label: "La Liga (España)" },
+    { id: "4331", label: "Bundesliga (Alemania)" },
+    { id: "4332", label: "Serie A (Italia)" },
+    { id: "4334", label: "Ligue 1 (Francia)" },
+    { id: "4480", label: "UEFA Champions League" }
+  ];
+  // Known aliases where the typed name and TheSportsDB's name don't share any
+  // text in common (e.g. "Chivas" vs "CD Guadalajara") — mostly Liga MX quirks.
+  // For any team not listed here, matching falls back to fuzzy name comparison,
+  // which works fine for most leagues since names are usually similar enough
+  // (e.g. "Real Madrid" vs "Real Madrid", "Barcelona" vs "FC Barcelona").
+  const SPORTSDB_TEAM_ALIASES = {
     "América": "CF America",
-    "Atlas": "Atlas",
-    "Atlético San Luis": "Atletico de San Luis",
-    "Cruz Azul": "Cruz Azul",
     "Chivas": "CD Guadalajara",
     "Juárez": "FC Juarez",
-    "León": "León",
-    "Mazatlán": "Mazatlán",
-    "Monterrey": "Monterrey",
-    "Necaxa": "Necaxa",
-    "Pachuca": "Pachuca",
-    "Puebla": "Puebla",
-    "Pumas": "Pumas",
     "Querétaro": "Queretaro FC",
     "Santos": "Santos Laguna",
-    "Tigres": "Tigres",
-    "Toluca": "Toluca",
     "Xolos": "Tijuana"
   };
-  let sportsdbCache = null; // {season, events}
+  let sportsdbCache = null; // {leagueId, season, events}
 
-  async function fetchSportsdbSeason(season){
-    if(sportsdbCache && sportsdbCache.season === season) return sportsdbCache.events;
-    const url = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${SPORTSDB_LEAGUE_ID}&s=${encodeURIComponent(season)}`;
+  async function fetchSportsdbSeason(leagueId, season){
+    if(sportsdbCache && sportsdbCache.leagueId === leagueId && sportsdbCache.season === season) return sportsdbCache.events;
+    const url = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${leagueId}&s=${encodeURIComponent(season)}`;
     const res = await fetch(url);
     if(!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     const events = data.events || [];
-    sportsdbCache = { season, events };
+    sportsdbCache = { leagueId, season, events };
     return events;
   }
 
+  function normalizeTeamName(s){
+    return (s || "")
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/\b(fc|cf|cd|afc|sc|ac|club|de)\b/g, "")
+      .replace(/[^a-z0-9]+/g, "");
+  }
+
+  function teamsMatch(ourName, sportsdbName){
+    const resolved = SPORTSDB_TEAM_ALIASES[ourName] || ourName;
+    const a = normalizeTeamName(resolved);
+    const b = normalizeTeamName(sportsdbName);
+    if(!a || !b) return false;
+    return a === b || a.includes(b) || b.includes(a);
+  }
+
   function findAutoResult(events, m, roundDeadline){
-    const mappedA = SPORTSDB_TEAM_MAP[m.teamA];
-    const mappedB = SPORTSDB_TEAM_MAP[m.teamB];
-    if(!mappedA || !mappedB) return null;
     const targetTime = new Date(roundDeadline).getTime();
     let best = null, bestDiff = Infinity;
     events.forEach(ev => {
       const home = ev.strHomeTeam, away = ev.strAwayTeam;
-      const straight = home === mappedA && away === mappedB;
-      const swapped = home === mappedB && away === mappedA;
+      const straight = teamsMatch(m.teamA, home) && teamsMatch(m.teamB, away);
+      const swapped = teamsMatch(m.teamB, home) && teamsMatch(m.teamA, away);
       if(!straight && !swapped) return;
       if(ev.intHomeScore === null || ev.intHomeScore === undefined || ev.intHomeScore === "") return; // not played yet
       const evTime = new Date(ev.dateEvent).getTime();
@@ -1511,7 +1527,8 @@
       statusEl.textContent = "Consultando TheSportsDB…";
       try{
         const season = meta.settings.sportsdbSeason || "2025-2026";
-        const events = await fetchSportsdbSeason(season);
+        const leagueId = meta.settings.sportsdbLeagueId || "4350";
+        const events = await fetchSportsdbSeason(leagueId, season);
         let found = 0;
         round.matches.forEach(m => {
           const hit = findAutoResult(events, m, round.deadline);
@@ -1662,9 +1679,15 @@
         <div class="field"><input type="number" id="qz-fee" value="${meta.settings.entryFee}"></div>
         <div class="eyebrow">Contraseña de dueño</div>
         <div class="field"><input type="text" id="qz-owner-pw-set" value="${esc(meta.settings.ownerPassword)}"></div>
+        <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
+        <div class="field">
+          <select id="qz-sportsdb-league">
+            ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${(meta.settings.sportsdbLeagueId || "4350") === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
+          </select>
+        </div>
         <div class="eyebrow">Temporada para resultados automáticos (TheSportsDB)</div>
         <div class="field"><input type="text" id="qz-sportsdb-season" value="${esc(meta.settings.sportsdbSeason || '2025-2026')}" placeholder="2025-2026"></div>
-        <p class="muted" style="margin-top:-8px;">Formato AAAA-AAAA. Si "Buscar resultados automáticos" no encuentra nada en Admin → Resultados, prueba ajustando este valor.</p>
+        <p class="muted" style="margin-top:-8px;">Formato AAAA-AAAA. Si "Buscar resultados automáticos" no encuentra nada en Admin → Resultados, prueba ajustando la liga o la temporada.</p>
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
@@ -1686,6 +1709,7 @@
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
       meta.settings.ownerPassword = document.getElementById("qz-owner-pw-set").value.trim() || meta.settings.ownerPassword;
+      meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbCache = null;
       await setMeta(meta);
