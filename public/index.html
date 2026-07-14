@@ -443,6 +443,16 @@
     return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
 
+  // Lets a text/password field submit on Enter, same as clicking its button.
+  function enterSubmits(inputId, buttonId){
+    const input = document.getElementById(inputId);
+    const btn = document.getElementById(buttonId);
+    if(!input || !btn) return;
+    input.addEventListener("keydown", (e) => {
+      if(e.key === "Enter"){ e.preventDefault(); btn.click(); }
+    });
+  }
+
   // ---------- derived helpers ----------
   function activeRound(){
     // last round that has no results published yet
@@ -1528,6 +1538,7 @@
           toast("Contraseña incorrecta");
         }
       });
+      enterSubmits("qz-owner-pw", "qz-owner-unlock");
       return;
     }
     body.innerHTML = `
@@ -1843,6 +1854,7 @@
         if(val === settings.dashboardPassword){ platformUnlocked = true; renderPlatformDashboard(); }
         else toast("Contraseña incorrecta");
       });
+      enterSubmits("qz-p-pass", "qz-p-unlock");
       return;
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;"><p class="muted">Cargando quinielas…</p></div>`;
