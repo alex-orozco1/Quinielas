@@ -372,6 +372,10 @@
     });
     return res.ok;
   }
+  async function kvDelete(key){
+    const res = await fetch("/api/kv/" + encodeURIComponent(key), { method: "DELETE" });
+    return res.ok;
+  }
   // getMeta: returns the saved meta, or null if it genuinely doesn't exist yet.
   // Throws (does NOT return null) if the request itself failed — callers must
   // handle that separately and must not initialize fresh data in that case.
@@ -1788,22 +1792,52 @@
       return `<span class="badge paid">🟢 Debajo del límite</span>`;
     }
 
+    const editingSlug = renderPlatformDashboard._editingSlug || null;
+
+    function rowHtml(q){
+      if(q.slug === editingSlug){
+        return `
+          <tr data-slug="${esc(q.slug)}">
+            <td colspan="5">
+              <div style="padding:10px 0;">
+                <div class="eyebrow">Editando: /q/${esc(q.slug)}</div>
+                <div class="row2">
+                  <div class="field"><label>Nombre de la quiniela</label><input type="text" id="qz-edit-name" value="${esc(q.name)}"></div>
+                  <div class="field"><label>Nueva contraseña de admin (opcional)</label><input type="text" id="qz-edit-pass" placeholder="Dejar en blanco para no cambiar"></div>
+                </div>
+                <p class="muted">El link (/q/${esc(q.slug)}) no se puede cambiar aquí — crear un link nuevo requeriría una quiniela nueva.</p>
+                <div style="display:flex;gap:8px;">
+                  <button class="btn btn-primary btn-sm" data-save-edit="${esc(q.slug)}">Guardar cambios</button>
+                  <button class="btn btn-ghost btn-sm" data-cancel-edit>Cancelar</button>
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+      }
+      return `
+        <tr data-slug="${esc(q.slug)}">
+          <td><a href="/q/${encodeURIComponent(q.slug)}" target="_blank" style="color:var(--pitch-dark);font-weight:700;">${esc(q.name)}</a><br><span class="muted">/q/${esc(q.slug)}</span></td>
+          <td>${esc(q.creatorName)}</td>
+          <td>${q.count === null ? "?" : q.count}</td>
+          <td class="qz-status-cell">${statusBadge(q)}</td>
+          <td><input type="checkbox" data-exempt-toggle ${q.exempt ? "checked" : ""}></td>
+          <td style="white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" data-edit-slug="${esc(q.slug)}">Editar</button>
+            <button class="btn btn-danger btn-sm" data-delete-slug="${esc(q.slug)}">Eliminar</button>
+          </td>
+        </tr>
+      `;
+    }
+
     root.innerHTML = `
       <div class="qz-main" style="padding-top:24px;">
         <div class="section-title"><span class="display">Panel de la plataforma</span></div>
-        <div class="card">
+        <div class="card" style="overflow-x:auto;">
           <table>
-            <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Estatus</th><th>Exenta</th></tr></thead>
+            <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Estatus</th><th>Exenta</th><th>Acciones</th></tr></thead>
             <tbody>
-              ${rows.length ? rows.map(q => `
-                <tr data-slug="${esc(q.slug)}">
-                  <td><a href="/q/${encodeURIComponent(q.slug)}" target="_blank" style="color:var(--pitch-dark);font-weight:700;">${esc(q.name)}</a><br><span class="muted">/q/${esc(q.slug)}</span></td>
-                  <td>${esc(q.creatorName)}</td>
-                  <td>${q.count === null ? "?" : q.count}</td>
-                  <td class="qz-status-cell">${statusBadge(q)}</td>
-                  <td><input type="checkbox" data-exempt-toggle ${q.exempt ? "checked" : ""}></td>
-                </tr>
-              `).join("") : `<tr><td colspan="5" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
+              ${rows.length ? rows.map(rowHtml).join("") : `<tr><td colspan="6" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
             </tbody>
           </table>
           <p class="muted" style="margin-top:8px;">Marca "Exenta" en cualquier quiniela que no quieras cobrar, sin importar cuántos participantes tenga — por ejemplo, la tuya o la de un amigo.</p>
@@ -1830,6 +1864,72 @@
       renderPlatformDashboard();
     });
 
+    root.querySelectorAll("[data-edit-slug]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        renderPlatformDashboard._editingSlug = btn.dataset.editSlug;
+        renderPlatformDashboard();
+      });
+    });
+    const cancelEditBtn = root.querySelector("[data-cancel-edit]");
+    if(cancelEditBtn){
+      cancelEditBtn.addEventListener("click", () => {
+        renderPlatformDashboard._editingSlug = null;
+        renderPlatformDashboard();
+      });
+    }
+    const saveEditBtn = root.querySelector("[data-save-edit]");
+    if(saveEditBtn){
+      saveEditBtn.addEventListener("click", async () => {
+        const slug = saveEditBtn.dataset.saveEdit;
+        const newName = document.getElementById("qz-edit-name").value.trim();
+        const newPass = document.getElementById("qz-edit-pass").value.trim();
+        saveEditBtn.disabled = true;
+        try{
+          const r = await kvGet(metaKeyFor(slug));
+          if(!r.found) throw new Error("no se encontró la quiniela");
+          const tenantMeta = r.value;
+          if(newName) tenantMeta.groupName = newName;
+          if(newPass) tenantMeta.settings.ownerPassword = newPass;
+          const ok = await kvSet(metaKeyFor(slug), tenantMeta);
+          if(!ok) throw new Error("no se pudo guardar");
+          const entry = idx.quinielas.find(q => q.slug === slug);
+          if(entry && newName) entry.name = newName;
+          await setPlatformIndex(idx);
+          toast("Quiniela actualizada ✅");
+          renderPlatformDashboard._editingSlug = null;
+          renderPlatformDashboard();
+        }catch(e){
+          console.error(e);
+          toast("No se pudo guardar: " + e.message);
+          saveEditBtn.disabled = false;
+        }
+      });
+    }
+
+    root.querySelectorAll("[data-delete-slug]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const slug = btn.dataset.deleteSlug;
+        const q = rows.find(r => r.slug === slug);
+        if(!confirm(`¿Eliminar "${q ? q.name : slug}" para siempre? Se borran todas sus jornadas, resultados y picks. Esto NO se puede deshacer.`)) return;
+        btn.disabled = true;
+        try{
+          const r = await kvGet(metaKeyFor(slug));
+          if(r.found){
+            const participants = r.value.participants || [];
+            await Promise.all(participants.map(p => kvDelete("quiniela:" + slug + ":picks:" + p.id)));
+          }
+          await kvDelete(metaKeyFor(slug));
+          idx.quinielas = idx.quinielas.filter(x => x.slug !== slug);
+          await setPlatformIndex(idx);
+          toast("Quiniela eliminada");
+          renderPlatformDashboard();
+        }catch(e){
+          console.error(e);
+          toast("No se pudo eliminar, intenta de nuevo");
+          btn.disabled = false;
+        }
+      });
+    });
     root.querySelectorAll("[data-exempt-toggle]").forEach(checkbox => {
       checkbox.addEventListener("change", async () => {
         const tr = checkbox.closest("tr");
