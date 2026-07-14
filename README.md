@@ -18,11 +18,11 @@ package.json, render.yaml, .gitignore — configuración para
 desplegarlo en Render.
 
 
-Cómo está organizado el sitio
+### Cómo está organizado el sitio
 
 RutaQué es/Página de inicio pública, invita a crear una quiniela/crearFormulario para que cualquiera cree su propia quiniela/q/mi-quinielaUna quiniela específica (una por cada grupo)/panel-plataformaPanel privado del dueño de la plataforma: ve todas las quinielas creadas, cuánto debe cobrar cada una, y puede inspeccionarlas sin modificarlas
 
-Funciones para los participantes de una quiniela
+### Funciones para los participantes de una quiniela
 
 
 Eligen su nombre de una lista (ordenada alfabéticamente) o se agregan ellos
@@ -38,7 +38,7 @@ Tabla de posiciones en vivo, historial de jornadas jugadas, y una gráfica de
 cómo ha ido cambiando el lugar de cada quien a lo largo del torneo.
 
 
-Funciones para el administrador de una quiniela
+### Funciones para el administrador de una quiniela
 
 Panel de Admin con estas secciones:
 
@@ -55,7 +55,7 @@ Ajustes — nombre de la quiniela, cuota, contraseña de administrador, y
 la opción de mover la quiniela de la página principal a su propio link fijo.
 
 
-Funciones para el dueño de la plataforma (/panel-plataforma)
+### Funciones para el dueño de la plataforma (/panel-plataforma)
 
 
 Lista de todas las quinielas creadas, con link directo, creador, datos de
@@ -70,7 +70,7 @@ los datos de depósito que se le muestran automáticamente al admin de una
 quiniela cuando le toca pagar.
 
 
-Cómo se guardan los datos
+## Cómo se guardan los datos
 
 Todo pasa por una API genérica de "guardar/leer por clave" (/api/kv/:key)
 respaldada por una tabla de Postgres. El frontend nunca sabe que es SQL por
@@ -120,7 +120,7 @@ Create Web Service. Toma 2-4 minutos la primera vez.
 Tu link final se ve como https://tu-app.onrender.com.
 
 
-Cosas que debes saber
+## Cosas que debes saber
 
 
 Primer acceso más lento: el plan gratis de Render "duerme" el sitio
