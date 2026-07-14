@@ -1,74 +1,139 @@
-# Quiniela Liga MX — Guía para publicarlo en tu propio dominio (gratis)
+## Quinielas — plataforma de quinielas de Liga MX
 
-Esta carpeta ya tiene todo el código: el sitio (`public/index.html`) y un pequeño
-servidor (`server.js`) que guarda los datos en una base de datos real, en vez de
-depender de Claude. Para que quede en línea con un link propio como el de tu
-amigo (`algo.onrender.com`) necesitas 3 cosas gratuitas: una base de datos, un
-repositorio de GitHub, y una cuenta de Render. Toma unos 15-20 minutos la
-primera vez.
+Sitio donde cualquier grupo de amigos puede armar su propia quiniela: se eligen
+los partidos de cada jornada, cada quien vota antes de la hora límite, y los
+puntos se calculan solos en cuanto se capturan los resultados. Empezó como la
+quiniela de un solo grupo y se convirtió en una plataforma donde cualquiera
+puede crear la suya.
 
-## Paso 1 — Crear la base de datos (Supabase, gratis)
+# Qué incluye esta carpeta
 
-Usamos Supabase en vez de la base de datos gratuita de Render porque la de
-Render **se borra automáticamente a los 30 días**. La de Supabase no expira.
 
-1. Ve a https://supabase.com y crea una cuenta gratis (con GitHub es más rápido).
-2. Crea un **New Project**. Ponle un nombre, elige una contraseña para la base
-   de datos (guárdala) y espera 1-2 minutos a que se cree.
-3. Ya dentro del proyecto, click en el botón **Connect** (arriba a la derecha
-   del dashboard). Se abre una ventana con varias opciones de conexión.
-4. Ahí eliges la pestaña **Session pooler** (NO "Direct connection"). Esto es
-   importante: la conexión directa de Supabase solo funciona por IPv6, y el
-   plan gratis de Render solo tiene salida por IPv4 — si usas la conexión
-   directa, Render no va a poder conectarse a la base de datos.
-5. Copia esa URI. Se ve algo así:
-   `postgresql://postgres.xxxxxxxxxxxx:[YOUR-PASSWORD]@aws-0-region.pooler.supabase.com:5432/postgres`
-6. Reemplaza `[YOUR-PASSWORD]` con la contraseña que pusiste en el paso 2.
-   Guarda esta URL completa — la vas a necesitar en el Paso 3.
+public/index.html — todo el sitio (frontend): una sola página que
+cambia de vista según la URL.
+server.js — un servidor pequeño en Node/Express que guarda los datos
+en una base de datos Postgres real (no depende de Claude ni de esta
+conversación).
+package.json, render.yaml, .gitignore — configuración para
+desplegarlo en Render.
 
-## Paso 2 — Subir el código a GitHub
 
-1. Ve a https://github.com y crea una cuenta si no tienes.
-2. Crea un repositorio nuevo (botón verde **New**), por ejemplo
-   `quiniela-liga-mx`. Puede ser privado o público, no importa.
-3. Sube todos los archivos de esta carpeta al repositorio. La forma más fácil
-   sin usar la terminal: en la página del repo, click **"uploading an existing
-   file"** y arrastra todos los archivos (incluyendo la carpeta `public/`).
+Cómo está organizado el sitio
 
-## Paso 3 — Publicar en Render (gratis)
+RutaQué es/Página de inicio pública, invita a crear una quiniela/crearFormulario para que cualquiera cree su propia quiniela/q/mi-quinielaUna quiniela específica (una por cada grupo)/panel-plataformaPanel privado del dueño de la plataforma: ve todas las quinielas creadas, cuánto debe cobrar cada una, y puede inspeccionarlas sin modificarlas
 
-1. Ve a https://render.com y crea una cuenta (con GitHub es más rápido — así
-   Render ya puede ver tu repositorio).
-2. Click **New → Web Service**.
-3. Conecta el repositorio `quiniela-liga-mx` que acabas de subir.
-4. Configuración:
-   - **Runtime**: Node
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Plan**: Free
-5. Antes de crear el servicio, agrega la variable de entorno:
-   - **Key**: `DATABASE_URL`
-   - **Value**: la URL de Supabase que guardaste en el Paso 1
-6. Click **Create Web Service**. Render va a instalar todo y publicarlo — toma
-   2-3 minutos la primera vez.
-7. Cuando termine, Render te da un link como
-   `https://quiniela-liga-mx.onrender.com` — ese es tu link final, compártelo
-   con el grupo.
+Funciones para los participantes de una quiniela
 
-## Cosas que debes saber
 
-- **Primer acceso más lento**: el plan gratis de Render "duerme" el sitio
-  después de 15 minutos sin visitas. La primera persona que entre después de
-  eso espera unos 30-60 segundos mientras despierta. Después va normal. (El
-  link de Claude que usábamos antes no tenía este problema — es el trade-off
-  de tener tu propio dominio gratis.)
-  - Opcional: si quieres evitarlo, un servicio gratis como
-    https://uptimerobot.com puede visitar `https://tu-link.onrender.com/api/health`
-    cada 10 minutos para mantenerlo despierto.
-- **Los datos ahora viven en Supabase**, no en Claude. Son tuyos, permanentes,
-  y no dependen de esta conversación ni de tu cuenta de Claude.
-- **Contraseña de dueño por defecto**: `gol2026` — cámbiala en cuanto entres
-  (Admin → Ajustes).
-- **Actualizaciones futuras**: si quieres que yo (Claude) le haga cambios al
-  sitio más adelante, dame los archivos actualizados y solo tienes que subir
-  los cambios a GitHub — Render vuelve a publicar automáticamente.
+Eligen su nombre de una lista (ordenada alfabéticamente) o se agregan ellos
+mismos si no aparecen.
+Cada nombre se protege con un PIN de 4 dígitos que la misma persona
+elige la primera vez que entra, y puede cambiar cuando quiera — así nadie
+más puede votar en su lugar.
+Votan quién gana cada partido (o empate) mientras la jornada sigue abierta;
+un reloj de cuenta regresiva muestra cuánto falta para el cierre.
+Una vez que una jornada cierra, pueden ver lo que votó todo el grupo (ya no
+hay ventaja en ocultarlo).
+Tabla de posiciones en vivo, historial de jornadas jugadas, y una gráfica de
+cómo ha ido cambiando el lugar de cada quien a lo largo del torneo.
+
+
+Funciones para el administrador de una quiniela
+
+Panel de Admin con estas secciones:
+
+
+Rondas — crear y editar jornadas (equipos, fecha y hora límite).
+Resultados — capturar el resultado real de cada partido; incluye un
+botón para buscar resultados automáticos en TheSportsDB (API gratuita)
+y solo hay que confirmarlos.
+Participación — ver quién ya contestó una jornada abierta y quién no
+(sin mostrar los votos), con un botón para copiar un recordatorio.
+Participantes — agregar, quitar, renombrar, marcar quién pagó su cuota,
+resetear el PIN de alguien que lo olvidó.
+Ajustes — nombre de la quiniela, cuota, contraseña de administrador, y
+la opción de mover la quiniela de la página principal a su propio link fijo.
+
+
+Funciones para el dueño de la plataforma (/panel-plataforma)
+
+
+Lista de todas las quinielas creadas, con link directo, creador, datos de
+contacto, número de participantes y estatus de cobro.
+Exenta — marca cualquier quiniela para que nunca se le cobre.
+Pagado — marca cuando ya se recibió el depósito de una quiniela que
+pasó el límite gratuito.
+👁 Ver — inspecciona cualquier quiniela (tabla de posiciones, jornadas)
+sin necesitar su contraseña y sin poder modificar nada.
+Configuración: umbral de participantes gratis, precio por participante, y
+los datos de depósito que se le muestran automáticamente al admin de una
+quiniela cuando le toca pagar.
+
+
+Cómo se guardan los datos
+
+Todo pasa por una API genérica de "guardar/leer por clave" (/api/kv/:key)
+respaldada por una tabla de Postgres. El frontend nunca sabe que es SQL por
+debajo — solo pide guardar o leer un valor con un nombre. Esto hace que el
+mismo código sirva tanto para la quiniela original como para cualquier
+quiniela nueva creada después, sin duplicar lógica.
+
+Publicarlo en tu propio dominio (gratis)
+
+Necesitas 3 cosas gratuitas: una base de datos, un repositorio de GitHub, y
+una cuenta de Render. Toma unos 15-20 minutos la primera vez.
+
+Paso 1 — Base de datos (Supabase)
+
+Se usa Supabase en vez de la base de datos gratuita de Render porque la de
+Render se borra automáticamente a los 30 días; la de Supabase no expira.
+
+
+Crea una cuenta gratis en https://supabase.com.
+Crea un New Project, ponle nombre, elige una contraseña (guárdala).
+Dentro del proyecto, click en Connect (arriba a la derecha).
+Elige la pestaña Session pooler (NO "Direct connection" — esa solo
+funciona por IPv6, y Render solo tiene salida por IPv4).
+Copia la URI que aparece y reemplaza [YOUR-PASSWORD] con tu contraseña
+real. Guárdala, se usa en el Paso 3.
+
+
+Paso 2 — Subir el código a GitHub
+
+
+Crea una cuenta en https://github.com si no tienes.
+Crea un repositorio nuevo.
+Sube todos los archivos de esta carpeta (incluida la carpeta public/),
+usando "uploading an existing file" en la página del repositorio.
+
+
+Paso 3 — Publicar en Render
+
+
+Crea una cuenta gratis en https://render.com (con GitHub es más rápido).
+New → Web Service → conecta tu repositorio.
+Configuración: Runtime Node, Build Command npm install, Start Command
+npm start, Plan Free.
+Antes de crear el servicio, agrega la variable de entorno DATABASE_URL
+con la URI de Supabase del Paso 1.
+Create Web Service. Toma 2-4 minutos la primera vez.
+Tu link final se ve como https://tu-app.onrender.com.
+
+
+Cosas que debes saber
+
+
+Primer acceso más lento: el plan gratis de Render "duerme" el sitio
+después de 15 minutos sin visitas — la primera persona que entra después
+espera 30-60 segundos. Un servicio gratis como https://uptimerobot.com
+puede pingear /api/health cada 10 minutos para evitarlo.
+Seguridad, con honestidad: los PIN de participantes y las contraseñas de
+administrador se guardan tal cual, sin encriptar. Está pensado para frenar
+bromas o errores entre amigos, no para proteger dinero real de un ataque
+serio — no lo uses para algo más sensible que esto.
+Cobro manual, a propósito: la plataforma no procesa pagos ni bloquea el
+acceso si alguien no paga — solo avisa a quién y cuánto cobrar. La cobranza
+real (transferencia, efectivo, etc.) la haces tú, fuera del sitio.
+Actualizaciones futuras: para pedir cambios, se le puede seguir dando
+seguimiento a esto con Claude — da los archivos actualizados y solo hay que
+subirlos a GitHub; Render vuelve a publicar solo.
