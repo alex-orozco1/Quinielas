@@ -1051,24 +1051,37 @@
   }
 
   // ---------- ADMIN ----------
-  async function renderPaymentBanner(){
-    const banner = document.getElementById("qz-payment-banner");
-    if(!banner) return;
+  // Returns null if this quiniela is fine (exempt, paid, or under threshold),
+  // or {amount, depositInfo, threshold} if it owes money and should be gated.
+  async function getPaymentStatus(){
+    if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
     try{
       const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
       const entry = idx.quinielas.find(q => q.slug === SLUG);
-      if(!entry || entry.exempt || entry.paid) return;
+      if(!entry || entry.exempt || entry.paid) return null;
+      const threshold = (entry.customThreshold !== undefined && entry.customThreshold !== null) ? entry.customThreshold : settings.threshold;
       const count = meta.participants.length;
-      if(count < settings.threshold) return;
-      const amount = settings.pricePerParticipant * count;
-      banner.innerHTML = `
-        <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
-          <div class="eyebrow" style="color:var(--gold-dim);">💰 Esta quiniela ya pasó los ${settings.threshold} participantes gratis</div>
-          <p style="margin:6px 0;">Para seguir usándola sin interrupciones, deposita <strong>$${amount} MXN</strong>:</p>
-          <p class="muted" style="white-space:pre-wrap;">${esc(settings.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.")}</p>
-        </div>
-      `;
-    }catch(e){ console.error("renderPaymentBanner failed", e); }
+      if(count < threshold) return null;
+      return {
+        amount: settings.pricePerParticipant * count,
+        depositInfo: settings.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
+        threshold
+      };
+    }catch(e){ console.error("getPaymentStatus failed", e); return null; }
+  }
+
+  async function renderPaymentBanner(){
+    const banner = document.getElementById("qz-payment-banner");
+    if(!banner) return;
+    const status = await getPaymentStatus();
+    if(!status) return;
+    banner.innerHTML = `
+      <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
+        <div class="eyebrow" style="color:var(--gold-dim);">💰 Esta quiniela ya pasó los ${status.threshold} participantes gratis</div>
+        <p style="margin:6px 0;">Para seguir usándola sin interrupciones, deposita <strong>$${status.amount} MXN</strong>:</p>
+        <p class="muted" style="white-space:pre-wrap;">${esc(status.depositInfo)}</p>
+      </div>
+    `;
   }
 
   function renderAdmin(main){
@@ -1166,10 +1179,14 @@
     return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
 
-  function renderAdminRondas(body){
+  async function renderAdminRondas(body){
     const editingId = renderAdminRondas._editingId || null;
     const editingRound = editingId ? meta.rounds.find(r => r.id === editingId) : null;
     const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r=>r.number))+1 : 1;
+
+    // Only block creating brand-new rounds — editing/managing existing ones stays available.
+    const blockingStatus = !editingRound ? await getPaymentStatus() : null;
+
     let draft = renderAdminRondas._draft;
     if(!draft){
       draft = editingRound
@@ -1189,8 +1206,14 @@
       `;
     }
 
-    body.innerHTML = `
-      <datalist id="qz-teams">${teamOptions}</datalist>
+    const createCardHtml = blockingStatus ? `
+      <div class="card" style="border-color:var(--red);">
+        <div class="eyebrow" style="color:var(--red);">🔒 No se pueden crear jornadas nuevas</div>
+        <p>Esta quiniela pasó los ${blockingStatus.threshold} participantes gratis y todavía no se registra el pago. Deposita <strong>$${blockingStatus.amount} MXN</strong>:</p>
+        <p class="muted" style="white-space:pre-wrap;">${esc(blockingStatus.depositInfo)}</p>
+        <p class="muted">En cuanto se confirme el pago, se vuelve a habilitar automáticamente. Mientras tanto puedes seguir usando todo lo demás (resultados, tabla, editar jornadas existentes).</p>
+      </div>
+    ` : `
       <div class="card">
         <div class="eyebrow">${editingRound ? `Editando jornada ${editingRound.number}` : `Crear jornada ${nextNumber}`}</div>
         ${editingRound && editingRound.resultsPublished ? `<p class="muted" style="color:var(--red);">Esta jornada ya tiene resultados publicados. Si cambias los equipos, los resultados guardados podrían dejar de tener sentido — revísalos después de guardar.</p>` : ``}
@@ -1205,6 +1228,11 @@
           ${editingRound ? `<button class="btn btn-ghost" id="qz-cancel-edit" style="padding:12px;">Cancelar</button>` : ``}
         </div>
       </div>
+    `;
+
+    body.innerHTML = `
+      <datalist id="qz-teams">${teamOptions}</datalist>
+      ${createCardHtml}
       <div class="card">
         <div class="eyebrow">Jornadas existentes</div>
         ${meta.rounds.length ? meta.rounds.slice().reverse().map(r => `
@@ -1218,6 +1246,26 @@
         `).join("") : `<p class="muted">Aún no has creado ninguna jornada.</p>`}
       </div>
     `;
+
+    if(blockingStatus){
+      // Only the "edit existing round" and "delete round" actions apply while blocked.
+      body.querySelectorAll("[data-edit-round]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          renderAdminRondas._editingId = btn.dataset.editRound;
+          renderAdminRondas._draft = null;
+          renderAdminRondas(body);
+        });
+      });
+      body.querySelectorAll("[data-del-round]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          if(!confirm("¿Eliminar esta jornada y sus resultados? Esta acción no se puede deshacer.")) return;
+          meta.rounds = meta.rounds.filter(r => r.id !== btn.dataset.delRound);
+          await setMeta(meta);
+          renderAdmin(document.getElementById("qz-main"));
+        });
+      });
+      return;
+    }
 
     function wireRows(){
       document.querySelectorAll("#qz-match-rows [data-mid]").forEach(row => {
@@ -1894,19 +1942,20 @@
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
     const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
     const rows = await Promise.all(idx.quinielas.map(async q => {
+      const effectiveThreshold = (q.customThreshold !== undefined && q.customThreshold !== null) ? q.customThreshold : settings.threshold;
       try{
         const r = await kvGet(metaKeyFor(q.slug));
         const count = r.found ? r.value.participants.length : 0;
-        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, overThreshold: count >= settings.threshold };
+        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, effectiveThreshold, overThreshold: count >= effectiveThreshold };
       }catch(e){
-        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count: null, overThreshold: false };
+        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count: null, effectiveThreshold, overThreshold: false };
       }
     }));
     rows.sort((a,b) => (b.count||0) - (a.count||0));
 
     function statusBadge(q){
       if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
-      if(!q.overThreshold) return `<span class="badge paid">🟢 Debajo del límite</span>`;
+      if(!q.overThreshold) return `<span class="badge paid">🟢 Debajo del límite (${q.effectiveThreshold})</span>`;
       if(q.paid) return `<span class="badge paid">✅ Pagado</span>`;
       return `<span class="badge unpaid">🟡 Cobrar $${settings.pricePerParticipant * q.count} MXN</span>`;
     }
@@ -1923,6 +1972,11 @@
                 <div class="row2">
                   <div class="field"><label>Nombre de la quiniela</label><input type="text" id="qz-edit-name" value="${esc(q.name)}"></div>
                   <div class="field"><label>Nueva contraseña de admin (opcional)</label><input type="text" id="qz-edit-pass" placeholder="Dejar en blanco para no cambiar"></div>
+                </div>
+                <div class="field">
+                  <label>Límite de participantes gratis para esta quiniela (opcional)</label>
+                  <input type="number" id="qz-edit-threshold" placeholder="Global: ${settings.threshold}" value="${q.customThreshold !== undefined && q.customThreshold !== null ? q.customThreshold : ''}">
+                  <p class="muted" style="margin-top:4px;">Déjalo vacío para usar el límite global (${settings.threshold}). Ponle un número para que esta quiniela en particular tenga su propio límite.</p>
                 </div>
                 <p class="muted">El link (/q/${esc(q.slug)}) no se puede cambiar aquí — crear un link nuevo requeriría una quiniela nueva.</p>
                 <div style="display:flex;gap:8px;">
@@ -2012,6 +2066,7 @@
         const slug = saveEditBtn.dataset.saveEdit;
         const newName = document.getElementById("qz-edit-name").value.trim();
         const newPass = document.getElementById("qz-edit-pass").value.trim();
+        const thresholdRaw = document.getElementById("qz-edit-threshold").value.trim();
         saveEditBtn.disabled = true;
         try{
           const r = await kvGet(metaKeyFor(slug));
@@ -2023,6 +2078,7 @@
           if(!ok) throw new Error("no se pudo guardar");
           const entry = idx.quinielas.find(q => q.slug === slug);
           if(entry && newName) entry.name = newName;
+          if(entry) entry.customThreshold = thresholdRaw === "" ? null : Number(thresholdRaw);
           await setPlatformIndex(idx);
           toast("Quiniela actualizada ✅");
           renderPlatformDashboard._editingSlug = null;
