@@ -963,14 +963,45 @@
   }
 
   // ---------- HISTORIAL ----------
+  function pastTournamentsHtml(){
+    if(!meta.pastTournaments || !meta.pastTournaments.length) return "";
+    const list = meta.pastTournaments.slice().reverse();
+    return `
+      <div class="card">
+        <div class="eyebrow">Torneos anteriores</div>
+        ${list.map(t => {
+          const date = new Date(t.closedAt).toLocaleDateString("es-MX", {year:"numeric", month:"long", day:"numeric"});
+          return `
+            <div style="padding:10px 0;border-bottom:1px solid var(--line);">
+              <div>
+                ${t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${t.champion.pts} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`}
+              </div>
+              <div class="muted" style="margin-bottom:6px;">Cerrado el ${date} · ${t.rounds.length} jornadas jugadas</div>
+              ${t.standings && t.standings.length ? `
+                <details>
+                  <summary class="muted" style="cursor:pointer;">Ver tabla final completa</summary>
+                  <table style="margin-top:6px;">
+                    <tbody>
+                      ${t.standings.map((s,i) => `<tr><td class="pos ${i===0?'top1':''}">${i+1}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${s.pts}</td></tr>`).join("")}
+                    </tbody>
+                  </table>
+                </details>
+              ` : ``}
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
   async function renderHistorial(main){
     const published = meta.rounds.filter(r => r.resultsPublished).slice().reverse();
     if(!published.length){
-      main.innerHTML = `<div class="card empty"><div class="display">Todavía no hay jornadas cerradas</div><p class="muted">Aquí verás el detalle de cada jornada una vez que el admin capture los resultados.</p></div>`;
+      main.innerHTML = `<div class="card empty"><div class="display">Todavía no hay jornadas cerradas</div><p class="muted">Aquí verás el detalle de cada jornada una vez que el admin capture los resultados.</p></div>${pastTournamentsHtml()}`;
       return;
     }
     main.innerHTML = `<div class="section-title"><span class="display">Historial de jornadas</span></div>
-      <div id="qz-hist-list"></div><div id="qz-hist-detail"></div>`;
+      <div id="qz-hist-list"></div><div id="qz-hist-detail"></div>${pastTournamentsHtml()}`;
     const list = document.getElementById("qz-hist-list");
     list.innerHTML = published.map(r => `
       <div class="history-item">
@@ -1637,9 +1668,9 @@
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
-        <div class="eyebrow">Reiniciar torneo</div>
-        <p class="muted">Borra todas las jornadas, resultados y marca a todos como "no pagó". Los participantes se conservan. Útil para empezar un torneo nuevo.</p>
-        <button class="btn btn-danger" id="qz-reset-tournament">Reiniciar torneo</button>
+        <div class="eyebrow">Cerrar torneo</div>
+        <p class="muted">Cuando termine el torneo (o cuando el grupo decida dejarlo hasta ahí), esto anuncia al campeón, guarda la tabla final y las jornadas en el historial, y deja todo listo para empezar un torneo nuevo — sin perder nada de lo anterior.</p>
+        <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
       </div>
       ${ROUTE === "root" ? `
       <div class="card">
@@ -1661,12 +1692,34 @@
       toast("Ajustes guardados ✅");
       renderApp();
     });
-    document.getElementById("qz-reset-tournament").addEventListener("click", async () => {
-      if(!confirm("Esto borra todas las jornadas y resultados. ¿Seguro?")) return;
+    document.getElementById("qz-close-tournament").addEventListener("click", async () => {
+      const playedRounds = meta.rounds.filter(r => r.resultsPublished);
+      if(!playedRounds.length){
+        if(!confirm("Todavía no hay jornadas con resultados. ¿De todos modos quieres cerrar y limpiar el torneo?")) return;
+      }
+      await ensureAllPicksLoaded();
+      const finalStandings = standingsList().map(p => ({ name: p.name, pts: p.pts }));
+      const champion = finalStandings.length ? finalStandings[0] : null;
+      const confirmMsg = champion
+        ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nEsto se va a guardar en el historial y se van a borrar las jornadas activas para empezar un torneo nuevo. ¿Confirmas?`
+        : "Se va a cerrar el torneo (sin jornadas jugadas) y se van a borrar las jornadas activas. ¿Confirmas?";
+      if(!confirm(confirmMsg)) return;
+
+      if(!meta.pastTournaments) meta.pastTournaments = [];
+      meta.pastTournaments.push({
+        closedAt: new Date().toISOString(),
+        champion,
+        standings: finalStandings,
+        rounds: meta.rounds
+      });
       meta.rounds = [];
       meta.participants.forEach(p => p.paid = false);
-      await setMeta(meta);
-      toast("Torneo reiniciado");
+      const ok = await setMeta(meta);
+      if(ok){
+        toast(champion ? `Torneo cerrado 🏆 Campeón: ${champion.name}` : "Torneo cerrado");
+      } else {
+        toast("No se pudo guardar, intenta de nuevo");
+      }
       renderAdmin(document.getElementById("qz-main"));
     });
 
