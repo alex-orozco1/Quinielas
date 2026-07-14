@@ -330,7 +330,7 @@
     };
   }
 
-  // ---------- platform-level storage (list of all quinielas, threshold/pricing settings) ----------
+  // ---------- platform-level storage (list of all quinielas, jornada limit/pricing settings) ----------
   async function getPlatformIndex(){
     try{
       const r = await kvGet(PLATFORM_INDEX_KEY);
@@ -344,8 +344,8 @@
   async function getPlatformSettings(){
     try{
       const r = await kvGet(PLATFORM_SETTINGS_KEY);
-      return r.found ? r.value : { threshold: 10, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" };
-    }catch(e){ console.error("getPlatformSettings failed", e); return { threshold: 10, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" }; }
+      return r.found ? r.value : { jornadaLimit: 5, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" };
+    }catch(e){ console.error("getPlatformSettings failed", e); return { jornadaLimit: 5, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" }; }
   }
   async function setPlatformSettings(s){
     try{ return await kvSet(PLATFORM_SETTINGS_KEY, s); }
@@ -1051,21 +1051,24 @@
   }
 
   // ---------- ADMIN ----------
-  // Returns null if this quiniela is fine (exempt, paid, or under threshold),
-  // or {amount, depositInfo, threshold} if it owes money and should be gated.
+  // Returns null if this quiniela is fine (exempt, paid, or hasn't reached the free jornada limit yet),
+  // or {amount, depositInfo, jornadaLimit} if it owes money and new jornadas should be gated.
+  // The trigger is how many jornadas have been created; the amount owed is based on the
+  // CURRENT participant count, so growth after a previous payment still gets captured.
   async function getPaymentStatus(){
     if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
     try{
       const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
       const entry = idx.quinielas.find(q => q.slug === SLUG);
       if(!entry || entry.exempt || entry.paid) return null;
-      const threshold = (entry.customThreshold !== undefined && entry.customThreshold !== null) ? entry.customThreshold : settings.threshold;
-      const count = meta.participants.length;
-      if(count < threshold) return null;
+      const jornadaLimit = (entry.customJornadaLimit !== undefined && entry.customJornadaLimit !== null) ? entry.customJornadaLimit : settings.jornadaLimit;
+      const roundCount = meta.rounds.length;
+      if(roundCount < jornadaLimit) return null;
+      const participantCount = meta.participants.length;
       return {
-        amount: settings.pricePerParticipant * count,
+        amount: settings.pricePerParticipant * participantCount,
         depositInfo: settings.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
-        threshold
+        jornadaLimit
       };
     }catch(e){ console.error("getPaymentStatus failed", e); return null; }
   }
@@ -1077,7 +1080,7 @@
     if(!status) return;
     banner.innerHTML = `
       <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
-        <div class="eyebrow" style="color:var(--gold-dim);">💰 Esta quiniela ya pasó los ${status.threshold} participantes gratis</div>
+        <div class="eyebrow" style="color:var(--gold-dim);">💰 Esta quiniela ya pasó las ${status.jornadaLimit} jornadas gratis</div>
         <p style="margin:6px 0;">Para seguir usándola sin interrupciones, deposita <strong>$${status.amount} MXN</strong>:</p>
         <p class="muted" style="white-space:pre-wrap;">${esc(status.depositInfo)}</p>
       </div>
@@ -1209,7 +1212,7 @@
     const createCardHtml = blockingStatus ? `
       <div class="card" style="border-color:var(--red);">
         <div class="eyebrow" style="color:var(--red);">🔒 No se pueden crear jornadas nuevas</div>
-        <p>Esta quiniela pasó los ${blockingStatus.threshold} participantes gratis y todavía no se registra el pago. Deposita <strong>$${blockingStatus.amount} MXN</strong>:</p>
+        <p>Esta quiniela ya jugó sus ${blockingStatus.jornadaLimit} jornadas gratis y todavía no se registra el pago. Deposita <strong>$${blockingStatus.amount} MXN</strong>:</p>
         <p class="muted" style="white-space:pre-wrap;">${esc(blockingStatus.depositInfo)}</p>
         <p class="muted">En cuanto se confirme el pago, se vuelve a habilitar automáticamente. Mientras tanto puedes seguir usando todo lo demás (resultados, tabla, editar jornadas existentes).</p>
       </div>
@@ -1843,11 +1846,12 @@
   async function renderCrear(){
     const draft = renderCrear._draft || { groupName: "", creatorName: "", contact: "", slug: "", password: "", slugTouched: false };
     renderCrear._draft = draft;
+    const settings = await getPlatformSettings();
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card" style="max-width:440px;">
           <div class="login-title display">Crea tu quiniela</div>
-          <div class="login-sub">Gratis hasta 10 participantes. Después, $10 MXN por participante.</div>
+          <div class="login-sub">Gratis las primeras ${settings.jornadaLimit} jornadas. Después, $${settings.pricePerParticipant} MXN por participante.</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
           <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando toque cobrar" value="${esc(draft.contact)}"></div>
@@ -1942,20 +1946,21 @@
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
     const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
     const rows = await Promise.all(idx.quinielas.map(async q => {
-      const effectiveThreshold = (q.customThreshold !== undefined && q.customThreshold !== null) ? q.customThreshold : settings.threshold;
+      const effectiveJornadaLimit = (q.customJornadaLimit !== undefined && q.customJornadaLimit !== null) ? q.customJornadaLimit : settings.jornadaLimit;
       try{
         const r = await kvGet(metaKeyFor(q.slug));
         const count = r.found ? r.value.participants.length : 0;
-        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, effectiveThreshold, overThreshold: count >= effectiveThreshold };
+        const roundCount = r.found ? r.value.rounds.length : 0;
+        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, roundCount, effectiveJornadaLimit, overThreshold: roundCount >= effectiveJornadaLimit };
       }catch(e){
-        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count: null, effectiveThreshold, overThreshold: false };
+        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count: null, roundCount: null, effectiveJornadaLimit, overThreshold: false };
       }
     }));
     rows.sort((a,b) => (b.count||0) - (a.count||0));
 
     function statusBadge(q){
       if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
-      if(!q.overThreshold) return `<span class="badge paid">🟢 Debajo del límite (${q.effectiveThreshold})</span>`;
+      if(!q.overThreshold) return `<span class="badge paid">🟢 Jornada ${q.roundCount ?? 0}/${q.effectiveJornadaLimit}</span>`;
       if(q.paid) return `<span class="badge paid">✅ Pagado</span>`;
       return `<span class="badge unpaid">🟡 Cobrar $${settings.pricePerParticipant * q.count} MXN</span>`;
     }
@@ -1974,9 +1979,9 @@
                   <div class="field"><label>Nueva contraseña de admin (opcional)</label><input type="text" id="qz-edit-pass" placeholder="Dejar en blanco para no cambiar"></div>
                 </div>
                 <div class="field">
-                  <label>Límite de participantes gratis para esta quiniela (opcional)</label>
-                  <input type="number" id="qz-edit-threshold" placeholder="Global: ${settings.threshold}" value="${q.customThreshold !== undefined && q.customThreshold !== null ? q.customThreshold : ''}">
-                  <p class="muted" style="margin-top:4px;">Déjalo vacío para usar el límite global (${settings.threshold}). Ponle un número para que esta quiniela en particular tenga su propio límite.</p>
+                  <label>A partir de qué jornada se cobra, para esta quiniela (opcional)</label>
+                  <input type="number" id="qz-edit-threshold" placeholder="Global: ${settings.jornadaLimit}" value="${q.customJornadaLimit !== undefined && q.customJornadaLimit !== null ? q.customJornadaLimit : ''}">
+                  <p class="muted" style="margin-top:4px;">Déjalo vacío para usar el límite global (${settings.jornadaLimit} jornadas gratis). Ponle un número para que esta quiniela en particular tenga su propio límite.</p>
                 </div>
                 <p class="muted">El link (/q/${esc(q.slug)}) no se puede cambiar aquí — crear un link nuevo requeriría una quiniela nueva.</p>
                 <div style="display:flex;gap:8px;">
@@ -2022,7 +2027,7 @@
         <div class="card">
           <div class="eyebrow">Configuración de cobro</div>
           <div class="row2">
-            <div class="field"><label>Umbral de participantes</label><input type="number" id="qz-p-threshold" value="${settings.threshold}"></div>
+            <div class="field"><label>Jornadas gratis antes de cobrar</label><input type="number" id="qz-p-threshold" value="${settings.jornadaLimit}"></div>
             <div class="field"><label>Precio por participante (MXN)</label><input type="number" id="qz-p-price" value="${settings.pricePerParticipant}"></div>
           </div>
           <div class="field"><label>Contraseña del panel</label><input type="text" id="qz-p-newpass" value="${esc(settings.dashboardPassword)}"></div>
@@ -2037,7 +2042,7 @@
     `;
     document.getElementById("qz-p-save").addEventListener("click", async () => {
       const newSettings = {
-        threshold: Number(document.getElementById("qz-p-threshold").value) || settings.threshold,
+        jornadaLimit: Number(document.getElementById("qz-p-threshold").value) || settings.jornadaLimit,
         pricePerParticipant: Number(document.getElementById("qz-p-price").value) || settings.pricePerParticipant,
         dashboardPassword: document.getElementById("qz-p-newpass").value.trim() || settings.dashboardPassword,
         depositInfo: document.getElementById("qz-p-deposit").value
@@ -2078,7 +2083,7 @@
           if(!ok) throw new Error("no se pudo guardar");
           const entry = idx.quinielas.find(q => q.slug === slug);
           if(entry && newName) entry.name = newName;
-          if(entry) entry.customThreshold = thresholdRaw === "" ? null : Number(thresholdRaw);
+          if(entry) entry.customJornadaLimit = thresholdRaw === "" ? null : Number(thresholdRaw);
           await setPlatformIndex(idx);
           toast("Quiniela actualizada ✅");
           renderPlatformDashboard._editingSlug = null;
