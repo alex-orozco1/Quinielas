@@ -300,29 +300,7 @@
       .slice(0, 40) || "quiniela";
   }
 
-  const DEFAULT_NAMES = ["Gerardo","Kareem","Nacho","Pablo","Rodrigo","Axel","Alan","Alejandro","Oski","Alexander","Germán","Mithcar","Kay","Luis","Pepe","Kevin","Memo","Esteban","Rober"];
-
   function uid(prefix){ return prefix + "_" + Math.random().toString(36).slice(2,9); }
-
-  function defaultMeta(){
-    const participants = DEFAULT_NAMES.map((name,i) => ({
-      id: uid("p"),
-      name,
-      isAdmin: i===0 || i===4, // Gerardo & Rodrigo start as admins, editable later
-      paid: false
-    }));
-    return {
-      groupName: "Quiniela Liga MX",
-      participants,
-      rounds: [],
-      settings: {
-        ownerPassword: "gol2026",
-        entryFee: 500,
-        ownerParticipantId: participants[0].id,
-        sportsdbSeason: "2025-2026"
-      }
-    };
-  }
 
   // Used when someone creates their own new quiniela via /crear — no prefilled names.
   function freshTenantMeta(groupName, creatorName, ownerPassword){
@@ -334,7 +312,6 @@
       settings: {
         ownerPassword: ownerPassword || "admin123",
         entryFee: 0,
-        ownerParticipantId: creator.id,
         sportsdbSeason: "2025-2026"
       }
     };
@@ -454,11 +431,6 @@
   }
 
   // ---------- derived helpers ----------
-  function activeRound(){
-    // last round that has no results published yet
-    const open = meta.rounds.filter(r => !r.resultsPublished);
-    return open.length ? open[open.length-1] : null;
-  }
   function isRoundLocked(round){
     if(!round) return true;
     return Date.now() > new Date(round.deadline).getTime();
