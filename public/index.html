@@ -576,7 +576,6 @@
       {id:"jornada", label:"Jornada"},
       {id:"tabla", label:"Tabla"},
       {id:"historial", label:"Historial"},
-      {id:"pagos", label:"Pagos"},
     ];
     if(currentUser.isAdmin) tabs.push({id:"admin", label:"Admin"});
     return tabs;
@@ -631,7 +630,6 @@
     if(activeTab === "jornada") renderJornada(main);
     else if(activeTab === "tabla") renderTabla(main);
     else if(activeTab === "historial") renderHistorial(main);
-    else if(activeTab === "pagos") renderPagos(main);
     else if(activeTab === "admin") renderAdmin(main);
   }
 
@@ -852,10 +850,19 @@
     main.innerHTML = `<div class="card"><p class="muted">Calculando posiciones…</p></div>`;
     await ensureAllPicksLoaded();
     const list = standingsList();
+    const fee = meta.settings.entryFee;
+    const paidCount = meta.participants.filter(p=>p.paid).length;
+    const totalP = meta.participants.length;
     main.innerHTML = `
       <div class="section-title">
         <span class="display">Tabla de posiciones</span>
         <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Descargar Excel</button>
+      </div>
+      <div class="card">
+        <div class="row2">
+          <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
+          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Work Sans';font-size:13px;">de $${totalP*fee}</span></div></div>
+        </div>
       </div>
       <div class="card" style="padding:8px 12px;">
         <table>
@@ -1049,36 +1056,6 @@
           </tbody>
         </table>
       </div>
-    `;
-  }
-
-  // ---------- PAGOS ----------
-  function renderPagos(main){
-    const fee = meta.settings.entryFee;
-    const paidCount = meta.participants.filter(p=>p.paid).length;
-    const total = meta.participants.length;
-    main.innerHTML = `
-      <div class="section-title"><span class="display">Pagos del torneo</span></div>
-      <div class="card">
-        <div class="row2">
-          <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
-          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Work Sans';font-size:13px;">de $${total*fee}</span></div></div>
-        </div>
-      </div>
-      <div class="card" style="padding:8px 12px;">
-        <table>
-          <thead><tr><th>Participante</th><th>Estatus</th></tr></thead>
-          <tbody>
-            ${meta.participants.map(p => `
-              <tr class="${p.id===currentUser.id?'me':''}">
-                <td>${esc(p.name)}</td>
-                <td>${p.paid ? '<span class="badge paid">✅ Pagó</span>' : '<span class="badge unpaid">❌ Pendiente</span>'}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-      ${currentUser.isAdmin ? `<p class="muted">Para marcar pagos ve a la pestaña <strong>Admin → Participantes</strong>.</p>` : ``}
     `;
   }
 
