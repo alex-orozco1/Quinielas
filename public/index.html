@@ -281,9 +281,11 @@
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   let ROUTE = "root";
   let SLUG = null;
-  if(pathParts[0] === "q" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); }
+  if(pathParts.length === 0){ ROUTE = "root"; }
+  else if(pathParts[0] === "q" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); }
   else if(pathParts[0] === "crear"){ ROUTE = "crear"; }
   else if(pathParts[0] === "panel-plataforma"){ ROUTE = "platform"; }
+  else { ROUTE = "unknown"; }
 
   function currentMetaKey(){ return SLUG ? ("quiniela:" + SLUG + ":meta") : "quiniela_meta_v1"; }
   function currentPicksKey(pid){ return SLUG ? ("quiniela:" + SLUG + ":picks:" + pid) : ("quiniela_picks_" + pid + "_v1"); }
@@ -324,7 +326,7 @@
 
   // Used when someone creates their own new quiniela via /crear — no prefilled names.
   function freshTenantMeta(groupName, creatorName, ownerPassword){
-    const creator = { id: uid("p"), name: creatorName, isAdmin: true, paid: false };
+    const creator = { id: uid("p"), name: creatorName, isAdmin: true, paid: false, pin: null };
     return {
       groupName,
       participants: [creator],
@@ -508,7 +510,7 @@
   function renderLogin(){
     const names = meta.participants.map(p => `
       <button class="name-btn" data-id="${p.id}">
-        ${esc(p.name)}
+        ${esc(p.name)} ${p.pin ? "🔒" : ""}
         ${p.isAdmin ? `<span class="role">ADMIN</span>` : ``}
       </button>
     `).join("");
@@ -518,13 +520,28 @@
           <div class="login-title display">${esc(meta.groupName)}</div>
           <div class="login-sub">Toca tu nombre para entrar 👇</div>
           <div class="name-grid">${names}</div>
-          <p class="muted" style="text-align:center;margin-top:18px;">¿Quieres tu propia quiniela? <a href="/crear" style="color:var(--pitch-light);font-weight:700;">Créala aquí</a></p>
+          <p class="muted" style="text-align:center;margin-top:14px;">🔒 = ya tiene PIN configurado. Si es tu nombre y no tiene candado, tócalo y ponle un PIN antes que alguien más lo haga.</p>
+          <p class="muted" style="text-align:center;margin-top:8px;">¿Quieres tu propia quiniela? <a href="/crear" style="color:var(--pitch-light);font-weight:700;">Créala aquí</a></p>
         </div>
       </div>
     `;
     root.querySelectorAll(".name-btn").forEach(btn => {
       btn.addEventListener("click", async () => {
         const p = meta.participants.find(x => x.id === btn.dataset.id);
+        if(!p.pin){
+          const newPin = window.prompt("Este nombre todavía no tiene PIN. Ponle uno de 4 dígitos para que nadie más pueda entrar como tú:");
+          if(newPin === null) return;
+          const cleanPin = newPin.trim();
+          if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
+          p.pin = cleanPin;
+          const ok = await setMeta(meta);
+          if(!ok){ p.pin = null; toast("No se pudo guardar el PIN, intenta de nuevo"); return; }
+          toast("PIN configurado ✅ — no lo olvides");
+        } else {
+          const entered = window.prompt("Escribe el PIN de " + p.name + " para entrar:");
+          if(entered === null) return;
+          if(entered.trim() !== p.pin){ toast("PIN incorrecto"); return; }
+        }
         currentUser = p;
         myPicks = await getPicks(p.id);
         activeTab = "jornada";
@@ -552,6 +569,7 @@
           <div class="qz-brand"><span class="display">${esc(meta.groupName)}</span><span class="display dot">.</span></div>
           <div class="qz-user-chip">
             ${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""}
+            <button id="qz-change-pin" title="Cambiar mi PIN">🔑</button>
             <button id="qz-switch-user" title="Cambiar usuario">↺</button>
           </div>
         </div>
@@ -565,6 +583,22 @@
       currentUser = null;
       ownerUnlocked = false;
       render();
+    });
+    document.getElementById("qz-change-pin").addEventListener("click", async () => {
+      if(currentUser.pin){
+        const current = window.prompt("Escribe tu PIN actual:");
+        if(current === null) return;
+        if(current.trim() !== currentUser.pin){ toast("PIN actual incorrecto"); return; }
+      }
+      const newPin = window.prompt("Escribe tu nuevo PIN (4 dígitos):");
+      if(newPin === null) return;
+      const cleanPin = newPin.trim();
+      if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
+      const previousPin = currentUser.pin;
+      currentUser.pin = cleanPin;
+      const ok = await setMeta(meta);
+      if(!ok){ currentUser.pin = previousPin; toast("No se pudo cambiar el PIN, intenta de nuevo"); return; }
+      toast("PIN actualizado ✅");
     });
     root.querySelectorAll(".qz-tab").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -1412,13 +1446,14 @@
       </div>
       <div class="card" style="padding:8px 12px;">
         <table>
-          <thead><tr><th>Nombre</th><th>Admin</th><th>Pagó</th><th></th></tr></thead>
+          <thead><tr><th>Nombre</th><th>Admin</th><th>Pagó</th><th>PIN</th><th></th></tr></thead>
           <tbody>
             ${meta.participants.map(p => `
               <tr data-pid="${p.id}">
                 <td><input type="text" value="${esc(p.name)}" data-role="rename" style="border:none;background:transparent;padding:2px;font-weight:600;"></td>
                 <td><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
                 <td><input type="checkbox" data-role="paid" ${p.paid?'checked':''}></td>
+                <td>${p.pin ? `<button class="btn btn-ghost btn-sm" data-role="resetpin">🔒 Resetear</button>` : `<span class="muted">Sin PIN</span>`}</td>
                 <td><button class="btn btn-danger btn-sm" data-role="remove">Borrar</button></td>
               </tr>
             `).join("")}
@@ -1426,12 +1461,13 @@
         </table>
       </div>
       <p class="muted">Solo el dueño puede quitarle el permiso de admin a alguien más — desde <strong>Admin → Ajustes</strong> si esta casilla no responde.</p>
+      <p class="muted">Si alguien olvida su PIN, dale "Resetear" — la próxima vez que toque su nombre podrá poner uno nuevo.</p>
     `;
     document.getElementById("qz-add-participant").addEventListener("click", async () => {
       const inp = document.getElementById("qz-new-name");
       const name = inp.value.trim();
       if(!name) return;
-      meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false});
+      meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false, pin:null});
       await setMeta(meta);
       renderAdminParticipantes(body);
       toast("Participante agregado");
@@ -1449,6 +1485,16 @@
         await setMeta(meta);
         toast(p.isAdmin ? (esc(p.name)+" ahora es admin") : (esc(p.name)+" ya no es admin"));
       });
+      const resetBtn = row.querySelector("[data-role=resetpin]");
+      if(resetBtn){
+        resetBtn.addEventListener("click", async () => {
+          if(!confirm(`¿Resetear el PIN de ${p.name}? La próxima vez que toque su nombre podrá poner uno nuevo.`)) return;
+          p.pin = null;
+          await setMeta(meta);
+          toast("PIN reseteado");
+          renderAdminParticipantes(body);
+        });
+      }
       row.querySelector("[data-role=paid]").addEventListener("change", async (e) => {
         p.paid = e.target.checked;
         await setMeta(meta);
@@ -1680,6 +1726,23 @@
           <div class="login-title display" style="font-size:30px;">No encontramos esa quiniela</div>
           <p class="login-sub">El link "${esc(SLUG)}" no existe o se escribió mal.</p>
           <a href="/crear" class="btn btn-primary" style="display:block;text-align:center;padding:12px;text-decoration:none;">Crear una quiniela nueva</a>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderUnknownRoute(){
+    const guess = pathParts.join("/");
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card">
+          <div class="login-title display" style="font-size:28px;">Esa página no existe</div>
+          <p class="login-sub">El link que abriste no es válido.</p>
+          ${guess ? `
+            <p class="muted" style="text-align:center;">¿Buscabas una quiniela? El link correcto lleva <strong>/q/</strong> antes:</p>
+            <a href="/q/${encodeURIComponent(guess)}" class="btn btn-primary" style="display:block;text-align:center;padding:12px;text-decoration:none;margin-bottom:10px;">Ir a /q/${esc(guess)}</a>
+          ` : ``}
+          <a href="/" class="btn btn-ghost" style="display:block;text-align:center;padding:12px;text-decoration:none;">Ir al inicio</a>
         </div>
       </div>
     `;
@@ -1989,6 +2052,7 @@
     attempt = attempt || 1;
 
     if(ROUTE === "crear"){ renderCrear(); return; }
+    if(ROUTE === "unknown"){ renderUnknownRoute(); return; }
     if(ROUTE === "platform"){ renderPlatformDashboard(); return; }
 
     root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
