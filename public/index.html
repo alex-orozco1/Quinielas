@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Quiniela Liga MX</title>
+<title>Quinielas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Work+Sans:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -189,10 +189,18 @@
     display:grid; grid-template-columns:1fr 1fr; gap:8px; max-height:340px; overflow-y:auto; padding-right:2px;
   }
   #quiniela-root .name-btn{
-    border:1.5px solid var(--line); background:var(--chalk); border-radius:10px;
-    padding:11px 8px; font-weight:600; font-size:13.5px; text-align:center;
+    border:1.5px solid var(--line); background:var(--paper); border-radius:10px;
+    padding:13px 10px; font-weight:700; font-size:14px; text-align:center;
+    box-shadow:0 2px 6px rgba(15,46,34,0.08);
+    transition:transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+    cursor:pointer;
   }
-  #quiniela-root .name-btn:hover{ border-color:var(--pitch-light); }
+  #quiniela-root .name-btn:hover{
+    border-color:var(--pitch-dark); background:var(--pitch-dark); color:var(--chalk);
+    transform:translateY(-1px); box-shadow:0 4px 10px rgba(15,46,34,0.18);
+  }
+  #quiniela-root .name-btn:active{ transform:translateY(0); }
+  #quiniela-root .name-btn:hover .role{ color:var(--gold); }
   #quiniela-root .name-btn .role{ display:block; font-size:10px; color:var(--gold-dim); font-weight:700; margin-top:2px; }
 
   /* table */
@@ -508,7 +516,7 @@
       <div class="login-wrap">
         <div class="login-card">
           <div class="login-title display">${esc(meta.groupName)}</div>
-          <div class="login-sub">¿Quién eres? Elige tu nombre para continuar</div>
+          <div class="login-sub">Toca tu nombre para entrar 👇</div>
           <div class="name-grid">${names}</div>
           <p class="muted" style="text-align:center;margin-top:18px;">¿Quieres tu propia quiniela? <a href="/crear" style="color:var(--pitch-light);font-weight:700;">Créala aquí</a></p>
         </div>
