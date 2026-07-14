@@ -180,17 +180,17 @@
     background: radial-gradient(circle at 50% 0%, var(--pitch-light), var(--pitch-dark) 70%);
   }
   #quiniela-root .login-card{
-    background:var(--paper); border-radius:20px; padding:28px 24px; max-width:420px; width:100%;
+    background:var(--paper); border-radius:20px; padding:32px 28px; max-width:460px; width:100%;
     box-shadow:0 20px 50px rgba(0,0,0,0.35);
   }
-  #quiniela-root .login-title{ font-size:38px; text-align:center; line-height:1; margin-bottom:2px; }
-  #quiniela-root .login-sub{ text-align:center; color:var(--ink-soft); font-size:13px; margin-bottom:20px; }
+  #quiniela-root .login-title{ font-size:46px; text-align:center; line-height:1; margin-bottom:6px; }
+  #quiniela-root .login-sub{ text-align:center; color:var(--ink-soft); font-size:17px; font-weight:600; margin-bottom:26px; }
   #quiniela-root .name-grid{
-    display:grid; grid-template-columns:1fr 1fr; gap:8px; max-height:340px; overflow-y:auto; padding-right:2px;
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px; max-height:380px; overflow-y:auto; padding-right:2px;
   }
   #quiniela-root .name-btn{
-    border:1.5px solid var(--line); background:var(--paper); border-radius:10px;
-    padding:13px 10px; font-weight:700; font-size:14px; text-align:center;
+    border:1.5px solid var(--line); background:var(--paper); border-radius:12px;
+    padding:20px 14px; font-weight:700; font-size:18px; text-align:center;
     box-shadow:0 2px 6px rgba(15,46,34,0.08);
     transition:transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
     cursor:pointer;
@@ -201,7 +201,7 @@
   }
   #quiniela-root .name-btn:active{ transform:translateY(0); }
   #quiniela-root .name-btn:hover .role{ color:var(--gold); }
-  #quiniela-root .name-btn .role{ display:block; font-size:10px; color:var(--gold-dim); font-weight:700; margin-top:2px; }
+  #quiniela-root .name-btn .role{ display:block; font-size:12px; color:var(--gold-dim); font-weight:700; margin-top:4px; }
 
   /* table */
   #quiniela-root table{ width:100%; border-collapse:collapse; font-size:13.5px; }
@@ -257,7 +257,7 @@
 
   @media (max-width:480px){
     #quiniela-root .qz-brand .display{ font-size:24px; }
-    #quiniela-root .name-grid{ grid-template-columns:1fr 1fr; }
+    #quiniela-root .name-grid{ grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); }
     #quiniela-root .clock-seg{ min-width:46px; padding:6px 8px; }
     #quiniela-root .clock-seg .num{ font-size:20px; }
   }
