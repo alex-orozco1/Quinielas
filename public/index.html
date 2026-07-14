@@ -508,7 +508,8 @@
   }
 
   function renderLogin(){
-    const names = meta.participants.map(p => `
+    const sortedParticipants = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
+    const names = sortedParticipants.map(p => `
       <button class="name-btn" data-id="${p.id}">
         ${esc(p.name)} ${p.pin ? "🔒" : ""}
         ${p.isAdmin ? `<span class="role">ADMIN</span>` : ``}
