@@ -262,8 +262,33 @@
 <script>
 (function(){
   const TEAMS = ["América","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Mazatlán","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"];
-  const META_KEY = "quiniela_meta_v1";
-  const picksKey = (pid) => "quiniela_picks_" + pid + "_v1";
+
+  // ---------- routing ----------
+  // "/"              -> the original group's quiniela (unchanged, same keys as always)
+  // "/crear"         -> landing page to create a brand new, independent quiniela
+  // "/q/:slug"       -> someone else's independently-created quiniela
+  // "/panel-plataforma" -> owner-only dashboard listing every quiniela created on the platform
+  const PLATFORM_INDEX_KEY = "platform_index";
+  const PLATFORM_SETTINGS_KEY = "platform_settings";
+  const pathParts = window.location.pathname.split("/").filter(Boolean);
+  let ROUTE = "root";
+  let SLUG = null;
+  if(pathParts[0] === "q" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); }
+  else if(pathParts[0] === "crear"){ ROUTE = "crear"; }
+  else if(pathParts[0] === "panel-plataforma"){ ROUTE = "platform"; }
+
+  function currentMetaKey(){ return SLUG ? ("quiniela:" + SLUG + ":meta") : "quiniela_meta_v1"; }
+  function currentPicksKey(pid){ return SLUG ? ("quiniela:" + SLUG + ":picks:" + pid) : ("quiniela_picks_" + pid + "_v1"); }
+  function metaKeyFor(slug){ return "quiniela:" + slug + ":meta"; }
+
+  function slugify(str){
+    return (str || "")
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // strip accents
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "quiniela";
+  }
 
   const DEFAULT_NAMES = ["Gerardo","Kareem","Nacho","Pablo","Rodrigo","Axel","Alan","Alejandro","Oski","Alexander","Germán","Mithcar","Kay","Luis","Pepe","Kevin","Memo","Esteban","Rober"];
 
@@ -289,7 +314,45 @@
     };
   }
 
-  // ---------- storage (talks to our own /api/kv backend) ----------
+  // Used when someone creates their own new quiniela via /crear — no prefilled names.
+  function freshTenantMeta(groupName, creatorName, ownerPassword){
+    const creator = { id: uid("p"), name: creatorName, isAdmin: true, paid: false };
+    return {
+      groupName,
+      participants: [creator],
+      rounds: [],
+      settings: {
+        ownerPassword: ownerPassword || "admin123",
+        entryFee: 0,
+        ownerParticipantId: creator.id,
+        sportsdbSeason: "2025-2026"
+      }
+    };
+  }
+
+  // ---------- platform-level storage (list of all quinielas, threshold/pricing settings) ----------
+  async function getPlatformIndex(){
+    try{
+      const r = await kvGet(PLATFORM_INDEX_KEY);
+      return r.found ? r.value : { quinielas: [] };
+    }catch(e){ console.error("getPlatformIndex failed", e); return { quinielas: [] }; }
+  }
+  async function setPlatformIndex(idx){
+    try{ return await kvSet(PLATFORM_INDEX_KEY, idx); }
+    catch(e){ console.error("setPlatformIndex failed", e); return false; }
+  }
+  async function getPlatformSettings(){
+    try{
+      const r = await kvGet(PLATFORM_SETTINGS_KEY);
+      return r.found ? r.value : { threshold: 10, pricePerParticipant: 10, dashboardPassword: "plataforma2026" };
+    }catch(e){ console.error("getPlatformSettings failed", e); return { threshold: 10, pricePerParticipant: 10, dashboardPassword: "plataforma2026" }; }
+  }
+  async function setPlatformSettings(s){
+    try{ return await kvSet(PLATFORM_SETTINGS_KEY, s); }
+    catch(e){ console.error("setPlatformSettings failed", e); return false; }
+  }
+
+
   // IMPORTANT: kvGet distinguishes "genuinely doesn't exist yet" (404) from
   // "the request failed" (network/server error). Callers that decide whether
   // to initialize fresh data (boot()) must never treat an error as "not found" —
@@ -313,23 +376,23 @@
   // Throws (does NOT return null) if the request itself failed — callers must
   // handle that separately and must not initialize fresh data in that case.
   async function getMeta(){
-    const r = await kvGet(META_KEY);
+    const r = await kvGet(currentMetaKey());
     return r.found ? r.value : null;
   }
   async function setMeta(meta){
     try{
-      return await kvSet(META_KEY, meta);
+      return await kvSet(currentMetaKey(), meta);
     }catch(e){ console.error("save meta failed", e); return false; }
   }
   async function getPicks(pid){
     try{
-      const r = await kvGet(picksKey(pid));
+      const r = await kvGet(currentPicksKey(pid));
       return r.found ? r.value : {};
     }catch(e){ console.error("getPicks failed", e); return {}; }
   }
   async function setPicks(pid, data){
     try{
-      return await kvSet(picksKey(pid), data);
+      return await kvSet(currentPicksKey(pid), data);
     }catch(e){ console.error("save picks failed", e); return false; }
   }
 
@@ -443,6 +506,7 @@
           <div class="login-title display">${esc(meta.groupName)}</div>
           <div class="login-sub">¿Quién eres? Elige tu nombre para continuar</div>
           <div class="name-grid">${names}</div>
+          <p class="muted" style="text-align:center;margin-top:18px;">¿Quieres tu propia quiniela? <a href="/crear" style="color:var(--pitch-light);font-weight:700;">Créala aquí</a></p>
         </div>
       </div>
     `;
@@ -513,7 +577,7 @@
     return "porjugar";
   }
 
-  function renderJornada(main){
+  async function renderJornada(main){
     if(clockInterval){ clearInterval(clockInterval); clockInterval = null; }
 
     const counts = {porjugar:0, envivo:0, jugados:0};
@@ -545,6 +609,12 @@
       }[jornadaFilter];
       list.innerHTML = `<div class="card empty"><div class="display">Nada por aquí</div><p class="muted">${emptyMsg}</p></div>`;
       return;
+    }
+
+    // "En vivo" reveals everyone's picks (fair game — the deadline already passed for these)
+    if(jornadaFilter === "envivo"){
+      list.innerHTML = `<div class="card"><p class="muted">Cargando picks de todos…</p></div>`;
+      await ensureAllPicksLoaded();
     }
 
     list.innerHTML = rounds.map(r => `<div class="card" id="qz-round-${r.id}" style="padding:16px;"></div>`).join("");
@@ -641,6 +711,7 @@
   // "En vivo": locked, waiting for admin to publish results
   function renderRoundLocked(box, round){
     const roundPicks = myPicks[round.id] || {};
+    const pickLabel = (val, m) => val==='A' ? m.teamA : val==='B' ? m.teamB : val==='D' ? 'Empate' : '—';
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
         <span>Jornada ${round.number}</span>
@@ -660,6 +731,20 @@
           </div>
         `;
       }).join("")}
+      <div class="divider"></div>
+      <div class="eyebrow">Lo que votó todo el mundo</div>
+      <p class="muted" style="margin-top:-4px;">Ya se cerró la jornada, así que no hay ventaja en verlo — solo para tus cálculos.</p>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th>${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${meta.participants.map(p => {
+              const picks = (allPicksCache[p.id] || {})[round.id] || {};
+              return `<tr class="${p.id===currentUser.id?'me':''}"><td>${esc(p.name)}</td>${round.matches.map(m => `<td>${esc(pickLabel(picks[m.id], m))}</td>`).join("")}</tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 
@@ -987,11 +1072,21 @@
 
   function blankMatch(){ return {id: uid("m"), teamA:"", teamB:""}; }
 
+  function toLocalInputValue(iso){
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2,'0');
+    return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
   function renderAdminRondas(body){
+    const editingId = renderAdminRondas._editingId || null;
+    const editingRound = editingId ? meta.rounds.find(r => r.id === editingId) : null;
     const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r=>r.number))+1 : 1;
     let draft = renderAdminRondas._draft;
     if(!draft){
-      draft = {matches:[blankMatch(), blankMatch()], deadline:""};
+      draft = editingRound
+        ? { matches: editingRound.matches.map(m => ({...m})), deadline: toLocalInputValue(editingRound.deadline) }
+        : { matches: [blankMatch(), blankMatch()], deadline: "" };
       renderAdminRondas._draft = draft;
     }
     const teamOptions = TEAMS.map(t=>`<option value="${esc(t)}">`).join("");
@@ -1009,21 +1104,28 @@
     body.innerHTML = `
       <datalist id="qz-teams">${teamOptions}</datalist>
       <div class="card">
-        <div class="eyebrow">Crear jornada ${nextNumber}</div>
+        <div class="eyebrow">${editingRound ? `Editando jornada ${editingRound.number}` : `Crear jornada ${nextNumber}`}</div>
+        ${editingRound && editingRound.resultsPublished ? `<p class="muted" style="color:var(--red);">Esta jornada ya tiene resultados publicados. Si cambias los equipos, los resultados guardados podrían dejar de tener sentido — revísalos después de guardar.</p>` : ``}
         <div id="qz-match-rows">${draft.matches.map(matchRowHtml).join("")}</div>
         <button class="btn btn-ghost btn-sm" id="qz-add-match" style="margin-bottom:14px;">+ Agregar partido</button>
         <div class="field">
           <label>Fecha y hora límite para votar</label>
           <input type="datetime-local" id="qz-deadline" value="${draft.deadline}">
         </div>
-        <button class="btn btn-primary" id="qz-publish-round" style="width:100%;padding:12px;">Publicar jornada ${nextNumber}</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-primary" id="qz-publish-round" style="flex:1;padding:12px;">${editingRound ? "Guardar cambios" : `Publicar jornada ${nextNumber}`}</button>
+          ${editingRound ? `<button class="btn btn-ghost" id="qz-cancel-edit" style="padding:12px;">Cancelar</button>` : ``}
+        </div>
       </div>
       <div class="card">
         <div class="eyebrow">Jornadas existentes</div>
         ${meta.rounds.length ? meta.rounds.slice().reverse().map(r => `
           <div class="history-item">
             <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${r.resultsPublished ? 'resultados capturados' : (isRoundLocked(r) ? 'cerrada, sin resultados' : 'abierta')}</span></div>
-            <button class="btn btn-ghost btn-sm" data-del-round="${r.id}">Eliminar</button>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>
+              <button class="btn btn-danger btn-sm" data-del-round="${r.id}">Eliminar</button>
+            </div>
           </div>
         `).join("") : `<p class="muted">Aún no has creado ninguna jornada.</p>`}
       </div>
@@ -1052,10 +1154,42 @@
     });
     document.getElementById("qz-deadline").addEventListener("input", (e) => { draft.deadline = e.target.value; });
 
+    body.querySelectorAll("[data-edit-round]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        renderAdminRondas._editingId = btn.dataset.editRound;
+        renderAdminRondas._draft = null;
+        renderAdminRondas(body);
+      });
+    });
+    const cancelBtn = document.getElementById("qz-cancel-edit");
+    if(cancelBtn){
+      cancelBtn.addEventListener("click", () => {
+        renderAdminRondas._editingId = null;
+        renderAdminRondas._draft = null;
+        renderAdminRondas(body);
+      });
+    }
+
     document.getElementById("qz-publish-round").addEventListener("click", async () => {
       const clean = draft.matches.filter(m => m.teamA.trim() && m.teamB.trim());
       if(!clean.length){ toast("Agrega al menos un partido con ambos equipos"); return; }
       if(!draft.deadline){ toast("Selecciona la fecha y hora límite"); return; }
+
+      if(editingRound){
+        editingRound.matches = clean;
+        editingRound.deadline = new Date(draft.deadline).toISOString();
+        const ok = await setMeta(meta);
+        if(ok){
+          toast("Jornada " + editingRound.number + " actualizada ✅");
+          renderAdminRondas._editingId = null;
+          renderAdminRondas._draft = null;
+          renderAdmin(document.getElementById("qz-main"));
+        } else {
+          toast("No se pudo guardar, intenta otra vez");
+        }
+        return;
+      }
+
       const round = {
         id: uid("r"),
         number: nextNumber,
@@ -1455,8 +1589,202 @@
     document.getElementById("qz-retry-boot").addEventListener("click", onRetry);
   }
 
+  function renderQuinielaNotFound(){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card">
+          <div class="login-title display" style="font-size:30px;">No encontramos esa quiniela</div>
+          <p class="login-sub">El link "${esc(SLUG)}" no existe o se escribió mal.</p>
+          <a href="/crear" class="btn btn-primary" style="display:block;text-align:center;padding:12px;text-decoration:none;">Crear una quiniela nueva</a>
+        </div>
+      </div>
+    `;
+  }
+
+  // ---------- /crear : create a brand new, independent quiniela ----------
+  async function renderCrear(){
+    const draft = renderCrear._draft || { groupName: "", creatorName: "", slug: "", password: "", slugTouched: false };
+    renderCrear._draft = draft;
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="max-width:440px;">
+          <div class="login-title display">Crea tu quiniela</div>
+          <div class="login-sub">Gratis hasta 10 participantes. Después, $10 MXN por participante.</div>
+          <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
+          <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
+          <div class="field">
+            <label>Link de tu quiniela</label>
+            <input type="text" id="qz-c-slug" placeholder="mi-quiniela" value="${esc(draft.slug)}">
+            <p class="muted" style="margin-top:4px;">tusitio.com/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
+          </div>
+          <div class="field"><label>Contraseña de administrador</label><input type="text" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}"></div>
+          <p class="muted" id="qz-c-status" style="min-height:16px;"></p>
+          <button class="btn btn-primary" id="qz-c-submit" style="width:100%;padding:12px;">Crear mi quiniela</button>
+        </div>
+      </div>
+    `;
+    const nameInput = document.getElementById("qz-c-name");
+    const slugInput = document.getElementById("qz-c-slug");
+    const slugPreview = document.getElementById("qz-c-slug-preview");
+    nameInput.addEventListener("input", () => {
+      draft.groupName = nameInput.value;
+      if(!draft.slugTouched){
+        draft.slug = slugify(nameInput.value);
+        slugInput.value = draft.slug;
+        slugPreview.textContent = draft.slug || "mi-quiniela";
+      }
+    });
+    slugInput.addEventListener("input", () => {
+      draft.slugTouched = true;
+      draft.slug = slugify(slugInput.value);
+      slugPreview.textContent = draft.slug || "mi-quiniela";
+    });
+    document.getElementById("qz-c-creator").addEventListener("input", (e) => { draft.creatorName = e.target.value; });
+    document.getElementById("qz-c-pass").addEventListener("input", (e) => { draft.password = e.target.value; });
+
+    document.getElementById("qz-c-submit").addEventListener("click", async () => {
+      const statusEl = document.getElementById("qz-c-status");
+      const groupName = draft.groupName.trim();
+      const creatorName = draft.creatorName.trim();
+      const slug = slugify(draft.slug);
+      const password = draft.password.trim();
+      if(!groupName || !creatorName || !slug || !password){
+        statusEl.textContent = "Llena todos los campos.";
+        statusEl.style.color = "var(--red)";
+        return;
+      }
+      statusEl.textContent = "Creando…";
+      statusEl.style.color = "var(--ink-soft)";
+      try{
+        const idx = await getPlatformIndex();
+        if(idx.quinielas.some(q => q.slug === slug)){
+          statusEl.textContent = "Ese link ya está en uso, prueba otro.";
+          statusEl.style.color = "var(--red)";
+          return;
+        }
+        const tenantMeta = freshTenantMeta(groupName, creatorName, password);
+        const ok = await kvSet(metaKeyFor(slug), tenantMeta);
+        if(!ok){ statusEl.textContent = "No se pudo crear, intenta de nuevo."; statusEl.style.color = "var(--red)"; return; }
+        idx.quinielas.push({ slug, name: groupName, creatorName, createdAt: new Date().toISOString() });
+        await setPlatformIndex(idx);
+        window.location.href = "/q/" + encodeURIComponent(slug);
+      }catch(e){
+        console.error(e);
+        statusEl.textContent = "No se pudo crear, intenta de nuevo.";
+        statusEl.style.color = "var(--red)";
+      }
+    });
+  }
+
+  // ---------- /panel-plataforma : owner dashboard across every quiniela ----------
+  let platformUnlocked = false;
+  async function renderPlatformDashboard(){
+    if(!platformUnlocked){
+      root.innerHTML = `
+        <div class="login-wrap">
+          <div class="login-card">
+            <div class="login-title display" style="font-size:28px;">Panel de la plataforma</div>
+            <div class="field"><input type="password" id="qz-p-pass" placeholder="Contraseña del panel"></div>
+            <button class="btn btn-primary" id="qz-p-unlock" style="width:100%;padding:12px;">Entrar</button>
+          </div>
+        </div>
+      `;
+      document.getElementById("qz-p-unlock").addEventListener("click", async () => {
+        const val = document.getElementById("qz-p-pass").value;
+        const settings = await getPlatformSettings();
+        if(val === settings.dashboardPassword){ platformUnlocked = true; renderPlatformDashboard(); }
+        else toast("Contraseña incorrecta");
+      });
+      return;
+    }
+    root.innerHTML = `<div class="qz-main" style="padding-top:24px;"><p class="muted">Cargando quinielas…</p></div>`;
+    const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
+    const rows = await Promise.all(idx.quinielas.map(async q => {
+      try{
+        const r = await kvGet(metaKeyFor(q.slug));
+        const count = r.found ? r.value.participants.length : 0;
+        return { ...q, exempt: !!q.exempt, count, overThreshold: count >= settings.threshold };
+      }catch(e){
+        return { ...q, exempt: !!q.exempt, count: null, overThreshold: false };
+      }
+    }));
+    rows.sort((a,b) => (b.count||0) - (a.count||0));
+
+    function statusBadge(q){
+      if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
+      if(q.overThreshold) return `<span class="badge unpaid">🟡 Cobrar $${settings.pricePerParticipant * q.count} MXN</span>`;
+      return `<span class="badge paid">🟢 Debajo del límite</span>`;
+    }
+
+    root.innerHTML = `
+      <div class="qz-main" style="padding-top:24px;">
+        <div class="section-title"><span class="display">Panel de la plataforma</span></div>
+        <div class="card">
+          <table>
+            <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Estatus</th><th>Exenta</th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.map(q => `
+                <tr data-slug="${esc(q.slug)}">
+                  <td><a href="/q/${encodeURIComponent(q.slug)}" target="_blank" style="color:var(--pitch-dark);font-weight:700;">${esc(q.name)}</a><br><span class="muted">/q/${esc(q.slug)}</span></td>
+                  <td>${esc(q.creatorName)}</td>
+                  <td>${q.count === null ? "?" : q.count}</td>
+                  <td class="qz-status-cell">${statusBadge(q)}</td>
+                  <td><input type="checkbox" data-exempt-toggle ${q.exempt ? "checked" : ""}></td>
+                </tr>
+              `).join("") : `<tr><td colspan="5" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
+            </tbody>
+          </table>
+          <p class="muted" style="margin-top:8px;">Marca "Exenta" en cualquier quiniela que no quieras cobrar, sin importar cuántos participantes tenga — por ejemplo, la tuya o la de un amigo.</p>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Configuración de cobro</div>
+          <div class="row2">
+            <div class="field"><label>Umbral de participantes</label><input type="number" id="qz-p-threshold" value="${settings.threshold}"></div>
+            <div class="field"><label>Precio por participante (MXN)</label><input type="number" id="qz-p-price" value="${settings.pricePerParticipant}"></div>
+          </div>
+          <div class="field"><label>Contraseña del panel</label><input type="text" id="qz-p-newpass" value="${esc(settings.dashboardPassword)}"></div>
+          <button class="btn btn-primary" id="qz-p-save">Guardar configuración</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("qz-p-save").addEventListener("click", async () => {
+      const newSettings = {
+        threshold: Number(document.getElementById("qz-p-threshold").value) || settings.threshold,
+        pricePerParticipant: Number(document.getElementById("qz-p-price").value) || settings.pricePerParticipant,
+        dashboardPassword: document.getElementById("qz-p-newpass").value.trim() || settings.dashboardPassword
+      };
+      const ok = await setPlatformSettings(newSettings);
+      toast(ok ? "Configuración guardada ✅" : "No se pudo guardar");
+      renderPlatformDashboard();
+    });
+
+    root.querySelectorAll("[data-exempt-toggle]").forEach(checkbox => {
+      checkbox.addEventListener("change", async () => {
+        const tr = checkbox.closest("tr");
+        const slug = tr.dataset.slug;
+        const entry = idx.quinielas.find(q => q.slug === slug);
+        if(!entry) return;
+        entry.exempt = checkbox.checked;
+        const ok = await setPlatformIndex(idx);
+        if(ok){
+          const rowData = rows.find(r => r.slug === slug);
+          rowData.exempt = checkbox.checked;
+          tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
+          toast(checkbox.checked ? "Marcada como exenta ⭐" : "Ya no está exenta");
+        } else {
+          checkbox.checked = !checkbox.checked;
+          toast("No se pudo guardar, intenta de nuevo");
+        }
+      });
+    });
+  }
+
   async function boot(attempt){
     attempt = attempt || 1;
+
+    if(ROUTE === "crear"){ renderCrear(); return; }
+    if(ROUTE === "platform"){ renderPlatformDashboard(); return; }
+
     root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
     let m;
     try{
@@ -1472,7 +1800,12 @@
       return;
     }
     if(m === null){
-      // Confirmed by the server: nothing saved yet. Safe to create the first-time defaults.
+      if(ROUTE === "quiniela"){
+        // A /q/:slug that doesn't exist — never silently create data under someone else's link.
+        renderQuinielaNotFound();
+        return;
+      }
+      // ROUTE === "root": the original group quiniela, genuinely first run. Safe to initialize.
       m = defaultMeta();
       const ok = await setMeta(m);
       if(!ok){
