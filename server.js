@@ -60,6 +60,17 @@ app.post("/api/kv/:key", async (req, res) => {
   }
 });
 
+// DELETE a value by key
+app.delete("/api/kv/:key", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM kv WHERE key = $1", [req.params.key]);
+    res.json({ key: req.params.key, deleted: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
 // Simple health check (also useful for uptime pingers to avoid free-tier sleep)
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
