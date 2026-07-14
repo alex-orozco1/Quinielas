@@ -214,6 +214,19 @@
   #quiniela-root .pos{ font-family:'Space Mono', monospace; font-weight:700; color:var(--pitch-light); }
   #quiniela-root .pos.top1{ color:var(--gold-dim); }
 
+  /* platform dashboard table: roomier, centered headers, centered narrow columns */
+  #quiniela-root .qz-platform-table th{ text-align:center; padding:10px 12px; }
+  #quiniela-root .qz-platform-table td{ padding:14px 12px; vertical-align:middle; }
+  #quiniela-root .qz-platform-table th:first-child, #quiniela-root .qz-platform-table td:first-child{ text-align:left; }
+  #quiniela-root .qz-platform-table th:nth-child(2), #quiniela-root .qz-platform-table td:nth-child(2){ text-align:left; }
+  #quiniela-root .qz-platform-table td:nth-child(3),
+  #quiniela-root .qz-platform-table td:nth-child(4),
+  #quiniela-root .qz-platform-table td:nth-child(5),
+  #quiniela-root .qz-platform-table td:nth-child(6){ text-align:center; }
+  #quiniela-root .qz-platform-table td:nth-child(5) input, #quiniela-root .qz-platform-table td:nth-child(6) input{
+    width:20px; height:20px; cursor:pointer;
+  }
+
   /* forms */
   #quiniela-root input[type=text], #quiniela-root input[type=password], #quiniela-root input[type=number], #quiniela-root input[type=datetime-local], #quiniela-root select{
     width:100%; padding:9px 11px; border-radius:8px; border:1.5px solid var(--line);
@@ -1878,7 +1891,7 @@
       enterSubmits("qz-p-pass", "qz-p-unlock");
       return;
     }
-    root.innerHTML = `<div class="qz-main" style="padding-top:24px;"><p class="muted">Cargando quinielas…</p></div>`;
+    root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
     const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
     const rows = await Promise.all(idx.quinielas.map(async q => {
       try{
@@ -1939,16 +1952,17 @@
     }
 
     root.innerHTML = `
-      <div class="qz-main" style="padding-top:24px;">
+      <div class="qz-main" style="padding-top:24px;max-width:1000px;">
         <div class="section-title"><span class="display">Panel de la plataforma</span></div>
-        <div class="card" style="overflow-x:auto;">
-          <table>
+        <div class="card" style="overflow-x:auto;padding:16px 12px;">
+          <table class="qz-platform-table" style="min-width:800px;">
             <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Estatus</th><th>Exenta</th><th>Pagado</th><th>Acciones</th></tr></thead>
             <tbody>
               ${rows.length ? rows.map(rowHtml).join("") : `<tr><td colspan="7" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
             </tbody>
           </table>
           <p class="muted" style="margin-top:8px;">"Exenta" = nunca se le cobra. "Pagado" = ya depositó por este periodo — quita la palomita cuando quieras volver a cobrarle (ej. después de que empiece un torneo nuevo).</p>
+          <p class="muted" style="margin-top:2px;">👉 Desliza hacia los lados para ver toda la tabla en pantallas angostas.</p>
         </div>
         <div id="qz-inspect-panel"></div>
         <div class="card">
