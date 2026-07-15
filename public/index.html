@@ -694,12 +694,12 @@
 
     const pending = pendingPicksInfo();
     main.innerHTML = `
-      ${pending ? `
+      <div id="qz-pending-banner">${pending ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
-          <p style="margin:4px 0 0;">Te faltan <strong>${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
+          <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
         </div>
-      ` : ``}
+      ` : ``}</div>
       <div class="qz-tabs" style="margin-bottom:14px;">
         ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
       </div>
@@ -809,10 +809,19 @@
           const ok = await setPicks(currentUser.id, myPicks);
           statusEl.textContent = ok ? "✅ Guardado" : "❌ No se pudo guardar — revisa tu conexión e inténtalo de nuevo";
           statusEl.style.color = ok ? "var(--pitch-light)" : "var(--red)";
-          if(ok && !pendingPicksInfo()){
-            // Just finished the last pending pick — refresh header so the red dot clears.
-            const dot = document.querySelector('.qz-tab[data-tab="jornada"] .qz-dot, .qz-tabs .qz-tab .qz-dot');
-            if(dot) dot.remove();
+          if(ok){
+            const stillPending = pendingPicksInfo();
+            if(!stillPending){
+              // Just finished the last pending pick anywhere — clear the banner and the tab dot.
+              const bannerWrap = document.getElementById("qz-pending-banner");
+              if(bannerWrap) bannerWrap.innerHTML = "";
+              const dot = document.querySelector('.qz-tabs .qz-tab .qz-dot');
+              if(dot) dot.remove();
+            } else if(stillPending.round.id === round.id){
+              // Same round — update the count in place without a full re-render.
+              const countEl = document.getElementById("qz-pending-count");
+              if(countEl) countEl.textContent = stillPending.missing + " de " + stillPending.total;
+            }
           }
         });
       });
