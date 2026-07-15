@@ -330,7 +330,8 @@
       settings: {
         ownerPassword: ownerPassword || "admin123",
         entryFee: 0,
-        sportsdbSeason: "2025-2026"
+        sportsdbSeason: "2025-2026",
+        pointsPerCorrectPick: 1
       }
     };
   }
@@ -504,6 +505,7 @@
 
   function pointsFor(participantId){
     const picks = allPicksCache[participantId] || {};
+    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
     let pts = 0, played = 0;
     meta.rounds.forEach(r => {
       if(!r.resultsPublished) return;
@@ -512,13 +514,13 @@
         if(!result) return;
         played++;
         const pick = picks[r.id] ? picks[r.id][m.id] : null;
-        if(pick && pick === result) pts++;
+        if(pick && pick === result) pts += perPick;
       });
     });
     const gsb = meta.golScorerBet;
     if(gsb && gsb.enabled){
       const p = meta.participants.find(x => x.id === participantId);
-      if(p && p.golScorerCorrect === true) pts += 3;
+      if(p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
     }
     return {pts, played};
   }
@@ -717,7 +719,7 @@
       ` : ``}</div>
       ${gsb && gsb.enabled ? `
         <div class="card" style="margin-bottom:14px;">
-          <div class="eyebrow">🥇 Goleador de la liga (+3 pts si le atinas)</div>
+          <div class="eyebrow">🥇 Goleador de la liga (+${gsb.bonusPoints != null ? gsb.bonusPoints : 3} pts si le atinas)</div>
           <p class="muted" style="margin-top:-4px;">${gsbLocked ? "Ya cerró — no se puede cambiar." : (gsb.closesAtRound ? `Puedes cambiarlo hasta que cierre la Jornada ${gsb.closesAtRound}.` : "Escribe tu apuesta.")}</p>
           <div class="row2">
             <input type="text" id="qz-gsb-input" placeholder="Nombre, apellido o apodo" value="${esc(myGuess)}" ${gsbLocked ? "disabled" : ""}>
@@ -1330,8 +1332,9 @@
         </div>
         <div class="row2">
           <div class="field"><label>Se cierra al empezar la jornada</label><input type="number" id="qz-gsb-round" value="${gsb.closesAtRound || ''}" placeholder="Ej. 5"></div>
-          <div class="field"><label>Goleador real (opcional, informativo)</label><input type="text" id="qz-gsb-winner" value="${esc(gsb.actualWinner || '')}" placeholder="Se llena al final del torneo"></div>
+          <div class="field"><label>Puntos si le atina</label><input type="number" id="qz-gsb-bonus" value="${gsb.bonusPoints != null ? gsb.bonusPoints : 3}"></div>
         </div>
+        <div class="field"><label>Goleador real (opcional, informativo)</label><input type="text" id="qz-gsb-winner" value="${esc(gsb.actualWinner || '')}" placeholder="Se llena al final del torneo"></div>
         <button class="btn btn-primary" id="qz-gsb-save-settings">Guardar</button>
       </div>
       <div class="card" style="padding:8px 12px;">
@@ -1354,6 +1357,8 @@
       gsb.enabled = document.getElementById("qz-gsb-enabled").checked;
       const roundVal = document.getElementById("qz-gsb-round").value.trim();
       gsb.closesAtRound = roundVal ? Number(roundVal) : null;
+      const bonusRaw = document.getElementById("qz-gsb-bonus").value.trim();
+      gsb.bonusPoints = bonusRaw === "" ? 3 : Number(bonusRaw);
       gsb.actualWinner = document.getElementById("qz-gsb-winner").value.trim();
       const ok = await setMeta(meta);
       toast(ok ? "Guardado ✅" : "No se pudo guardar");
@@ -1365,7 +1370,7 @@
         if(!p) return;
         p.golScorerCorrect = checkbox.checked;
         const ok = await setMeta(meta);
-        if(ok) toast(checkbox.checked ? `${p.name} +3 puntos ✅` : `Se quitó el bono de ${p.name}`);
+        if(ok) toast(checkbox.checked ? `${p.name} +${gsb.bonusPoints != null ? gsb.bonusPoints : 3} puntos ✅` : `Se quitó el bono de ${p.name}`);
         else { checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
       });
     });
@@ -1976,6 +1981,8 @@
         <div class="field"><input type="text" id="qz-group-name" value="${esc(meta.groupName)}"></div>
         <div class="eyebrow">Cuota por participante (MXN)</div>
         <div class="field"><input type="number" id="qz-fee" value="${meta.settings.entryFee}"></div>
+        <div class="eyebrow">Puntos por acierto</div>
+        <div class="field"><input type="number" id="qz-points-per-pick" value="${meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1}"></div>
         <div class="eyebrow">Contraseña de dueño</div>
         <div class="field"><input type="text" id="qz-owner-pw-set" value="${esc(meta.settings.ownerPassword)}"></div>
         <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
@@ -2039,6 +2046,8 @@
     document.getElementById("qz-save-settings").addEventListener("click", async () => {
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
+      const pppRaw = document.getElementById("qz-points-per-pick").value.trim();
+      meta.settings.pointsPerCorrectPick = pppRaw === "" ? 1 : Number(pppRaw);
       meta.settings.ownerPassword = document.getElementById("qz-owner-pw-set").value.trim() || meta.settings.ownerPassword;
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
@@ -2185,7 +2194,7 @@
       });
       return {
         "Participante": p.name,
-        "Puntos totales": correct,
+        "Puntos totales": pointsFor(p.id).pts,
         "Partidos jugados": total,
         "% Acierto": total ? Math.round((correct/total)*1000)/10 + "%" : "0%",
         "Mejor jornada (aciertos)": best,
@@ -2620,6 +2629,7 @@
             }catch(e){ picksCache[p.id] = {}; }
           }));
           function pointsForInspect(pid){
+            const perPick = (tenantMeta.settings && tenantMeta.settings.pointsPerCorrectPick != null) ? tenantMeta.settings.pointsPerCorrectPick : 1;
             let pts = 0;
             tenantMeta.rounds.forEach(rnd => {
               if(!rnd.resultsPublished) return;
@@ -2627,9 +2637,14 @@
                 const result = rnd.results ? rnd.results[m.id] : null;
                 if(!result) return;
                 const pick = picksCache[pid] && picksCache[pid][rnd.id] ? picksCache[pid][rnd.id][m.id] : null;
-                if(pick && pick === result) pts++;
+                if(pick && pick === result) pts += perPick;
               });
             });
+            const gsb = tenantMeta.golScorerBet;
+            if(gsb && gsb.enabled){
+              const p = tenantMeta.participants.find(x => x.id === pid);
+              if(p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
+            }
             return pts;
           }
           const standings = tenantMeta.participants
