@@ -1148,9 +1148,12 @@
       const missingNames = rows.filter(r => r.count < total).map(r => r.name);
       return `
         <div class="card">
-          <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
             <span>Jornada ${round.number} · ${total} partidos</span>
-            ${missingNames.length ? `<button class="btn btn-ghost btn-sm" data-copy="${round.id}">📋 Copiar recordatorio</button>` : ``}
+            <div style="display:flex;gap:6px;">
+              ${missingNames.length ? `<button class="btn btn-ghost btn-sm" data-copy="${round.id}">📋 Copiar</button>` : ``}
+              ${missingNames.length ? `<button class="btn btn-gold btn-sm" data-whatsapp="${round.id}">🟢 Abrir en WhatsApp</button>` : ``}
+            </div>
           </div>
           <p class="muted" style="margin-top:-4px;">No se muestran los picks de nadie, solo si ya contestaron.</p>
           <table>
@@ -1163,22 +1166,38 @@
       `;
     }).join("");
 
+    function reminderText(round, missing){
+      const bullets = missing.map(n => `• ${n}`).join("\n");
+      return `⏰ Faltan por contestar la Jornada ${round.number}:\n${bullets}\n\n¡No se les olvide antes del cierre!`;
+    }
+
+    function missingFor(round){
+      const total = round.matches.length;
+      return meta.participants.filter(p => {
+        const picks = (allPicksCache[p.id] || {})[round.id] || {};
+        const count = round.matches.filter(m => picks[m.id]).length;
+        return count < total;
+      }).map(p => p.name);
+    }
+
     body.querySelectorAll("[data-copy]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const round = openRounds.find(r => r.id === btn.dataset.copy);
-        const total = round.matches.length;
-        const missing = meta.participants.filter(p => {
-          const picks = (allPicksCache[p.id] || {})[round.id] || {};
-          const count = round.matches.filter(m => picks[m.id]).length;
-          return count < total;
-        }).map(p => p.name);
-        const text = `⏰ Faltan por contestar la Jornada ${round.number}: ${missing.join(", ")}. ¡No se les olvide antes del cierre!`;
+        const text = reminderText(round, missingFor(round));
         try{
           await navigator.clipboard.writeText(text);
           toast("Recordatorio copiado ✅ pégalo donde quieras");
         }catch(e){
           toast("No se pudo copiar automáticamente, cópialo manualmente: " + text);
         }
+      });
+    });
+
+    body.querySelectorAll("[data-whatsapp]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const round = openRounds.find(r => r.id === btn.dataset.whatsapp);
+        const text = reminderText(round, missingFor(round));
+        window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
       });
     });
   }
