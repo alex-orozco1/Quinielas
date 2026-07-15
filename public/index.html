@@ -107,6 +107,10 @@
     border-bottom:3px solid transparent; letter-spacing:0.01em;
   }
   #quiniela-root .qz-tab.active{ color:var(--chalk); border-bottom-color:var(--gold); }
+  #quiniela-root .qz-dot{
+    display:inline-block; width:8px; height:8px; border-radius:50%;
+    background:var(--red); margin-left:5px; vertical-align:middle;
+  }
   #quiniela-root .qz-tab + .qz-tab{ margin-left:14px; }
 
   #quiniela-root .qz-main{ max-width:760px; margin:0 auto; padding:20px 16px 80px; }
@@ -352,6 +356,17 @@
     try{ return await kvSet(PLATFORM_SETTINGS_KEY, s); }
     catch(e){ console.error("setPlatformSettings failed", e); return false; }
   }
+  const PLATFORM_PAYMENTLOG_KEY = "platform_payment_log";
+  async function getPlatformPaymentLog(){
+    try{
+      const r = await kvGet(PLATFORM_PAYMENTLOG_KEY);
+      return r.found ? r.value : { payments: [] };
+    }catch(e){ console.error("getPlatformPaymentLog failed", e); return { payments: [] }; }
+  }
+  async function setPlatformPaymentLog(log){
+    try{ return await kvSet(PLATFORM_PAYMENTLOG_KEY, log); }
+    catch(e){ console.error("setPlatformPaymentLog failed", e); return false; }
+  }
 
 
   // IMPORTANT: kvGet distinguishes "genuinely doesn't exist yet" (404) from
@@ -432,6 +447,19 @@
 
   function esc(s){
     return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+
+  // Appends an entry to the results audit trail (kept in meta so it travels with the quiniela).
+  // Caller is responsible for calling setMeta() afterward to persist it.
+  function logAudit(action, detail){
+    if(!meta.auditLog) meta.auditLog = [];
+    meta.auditLog.push({
+      ts: new Date().toISOString(),
+      admin: currentUser ? currentUser.name : "?",
+      action,
+      detail
+    });
+    if(meta.auditLog.length > 200) meta.auditLog = meta.auditLog.slice(-200);
   }
 
   // Lets a text/password field submit on Enter, same as clicking its button.
@@ -581,8 +609,19 @@
     return tabs;
   }
 
+  function pendingPicksInfo(){
+    const openRounds = meta.rounds.filter(r => classifyRound(r) === "porjugar");
+    for(const r of openRounds){
+      const picks = myPicks[r.id] || {};
+      const missing = r.matches.filter(m => !picks[m.id]).length;
+      if(missing > 0) return { round: r, missing, total: r.matches.length };
+    }
+    return null;
+  }
+
   function renderApp(){
     const tabs = tabList();
+    const pending = pendingPicksInfo();
     root.innerHTML = `
       <div class="qz-header">
         <div class="qz-header-top">
@@ -594,7 +633,7 @@
           </div>
         </div>
         <div class="qz-tabs">
-          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}">${t.label}</button>`).join("")}
+          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}">${t.label}${t.id==='jornada' && pending ? '<span class="qz-dot"></span>' : ''}</button>`).join("")}
         </div>
       </div>
       <div class="qz-main" id="qz-main"></div>
@@ -653,7 +692,14 @@
       {id:"jugados", label:"Jugados"},
     ];
 
+    const pending = pendingPicksInfo();
     main.innerHTML = `
+      ${pending ? `
+        <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
+          <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
+          <p style="margin:4px 0 0;">Te faltan <strong>${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
+        </div>
+      ` : ``}
       <div class="qz-tabs" style="margin-bottom:14px;">
         ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
       </div>
@@ -763,6 +809,11 @@
           const ok = await setPicks(currentUser.id, myPicks);
           statusEl.textContent = ok ? "✅ Guardado" : "❌ No se pudo guardar — revisa tu conexión e inténtalo de nuevo";
           statusEl.style.color = ok ? "var(--pitch-light)" : "var(--red)";
+          if(ok && !pendingPicksInfo()){
+            // Just finished the last pending pick — refresh header so the red dot clears.
+            const dot = document.querySelector('.qz-tab[data-tab="jornada"] .qz-dot, .qz-tabs .qz-tab .qz-dot');
+            if(dot) dot.remove();
+          }
         });
       });
     });
@@ -856,7 +907,10 @@
     main.innerHTML = `
       <div class="section-title">
         <span class="display">Tabla de posiciones</span>
-        <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Descargar Excel</button>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Tarjeta para compartir</button>
+          <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Excel</button>
+        </div>
       </div>
       <div class="card">
         <div class="row2">
@@ -888,7 +942,88 @@
       </div>
     `;
     document.getElementById("qz-export").addEventListener("click", exportExcel);
+    document.getElementById("qz-share-card").addEventListener("click", () => shareResultsCard(list));
     renderProgressChart(list);
+  }
+
+  function drawResultsCardCanvas(list){
+    const shown = list.slice(0, 15); // keep the image a reasonable height
+    const width = 800;
+    const rowH = 56;
+    const headerH = 190;
+    const footerH = 70;
+    const height = headerH + shown.length * rowH + footerH;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    const grad = ctx.createLinearGradient(0, 0, 0, height);
+    grad.addColorStop(0, "#0F2E22");
+    grad.addColorStop(1, "#173A2B");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#E3B23C";
+    ctx.font = "700 40px Arial, sans-serif";
+    ctx.fillText(meta.groupName, width / 2, 78, width - 80);
+    ctx.fillStyle = "#F7F5EC";
+    ctx.font = "600 20px Arial, sans-serif";
+    ctx.fillText("TABLA DE POSICIONES", width / 2, 112);
+
+    ctx.strokeStyle = "rgba(227,178,60,0.4)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(60, 140);
+    ctx.lineTo(width - 60, 140);
+    ctx.stroke();
+
+    shown.forEach((p, i) => {
+      const rowY = headerH + i * rowH;
+      if(i % 2 === 0){
+        ctx.fillStyle = "rgba(255,255,255,0.035)";
+        ctx.fillRect(40, rowY, width - 80, rowH);
+      }
+      const textY = rowY + rowH / 2 + 9;
+      ctx.textAlign = "left";
+      ctx.fillStyle = i === 0 ? "#E3B23C" : "#F7F5EC";
+      ctx.font = "700 26px Arial, sans-serif";
+      ctx.fillText((i + 1) + ".", 60, textY);
+      ctx.fillText(p.name, 115, textY, width - 260);
+      ctx.textAlign = "right";
+      ctx.fillText(String(p.pts), width - 60, textY);
+    });
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(247,245,236,0.5)";
+    ctx.font = "400 15px Arial, sans-serif";
+    ctx.fillText("quinielas · " + new Date().toLocaleDateString("es-MX", {year:"numeric", month:"long", day:"numeric"}), width / 2, height - 26);
+
+    return canvas;
+  }
+
+  function shareResultsCard(list){
+    if(!list.length){ toast("Todavía no hay nada que compartir"); return; }
+    const canvas = drawResultsCardCanvas(list);
+    canvas.toBlob(async (blob) => {
+      if(!blob){ toast("No se pudo generar la imagen"); return; }
+      const filename = "tabla-" + slugify(meta.groupName) + ".png";
+      const file = new File([blob], filename, { type: "image/png" });
+      if(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })){
+        try{
+          await navigator.share({ files: [file], title: meta.groupName, text: "Tabla de posiciones" });
+          return;
+        }catch(e){ /* user cancelled or share failed — fall back to download */ }
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("Imagen descargada ✅");
+    }, "image/png");
   }
 
   function progressData(){
@@ -1027,7 +1162,7 @@
 
   function renderHistDetail(round){
     const detail = document.getElementById("qz-hist-detail");
-    const rows = meta.participants.map(p => {
+    const perParticipant = meta.participants.map(p => {
       const picks = (allPicksCache[p.id] || {})[round.id] || {};
       let correct = 0;
       const cells = round.matches.map(m => {
@@ -1038,14 +1173,23 @@
         if(isCorrect) correct++;
         return `<td style="${isCorrect?'color:#1B4332;font-weight:700;':pick?'color:#7d251d;':'color:var(--ink-soft);'}">${esc(label)}</td>`;
       }).join("");
-      return `<tr><td>${esc(p.name)}</td>${cells}<td style="font-weight:700;">${correct}</td></tr>`;
-    }).join("");
+      return { name: p.name, correct, cellsHtml: cells };
+    });
+    const maxCorrect = Math.max(0, ...perParticipant.map(p => p.correct));
+    const mvps = maxCorrect > 0 ? perParticipant.filter(p => p.correct === maxCorrect).map(p => p.name) : [];
+    const rows = perParticipant.map(p => `<tr><td>${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</td>${p.cellsHtml}<td style="font-weight:700;">${p.correct}</td></tr>`).join("");
     const resultRow = round.matches.map(m => {
       const r = round.results[m.id];
       const label = r==='A'? m.teamA : r==='B'? m.teamB : r==='D'?'Empate':'—';
       return `<td style="font-weight:700;">${esc(label)}</td>`;
     }).join("");
     detail.innerHTML = `
+      ${mvps.length ? `
+        <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
+          <div class="eyebrow" style="color:var(--gold-dim);">🏅 MVP de la Jornada ${round.number}</div>
+          <p style="margin:4px 0 0;">${mvps.map(esc).join(", ")} — ${maxCorrect} de ${round.matches.length} aciertos</p>
+        </div>
+      ` : ``}
       <div class="card" style="overflow-x:auto;">
         <h3>Jornada ${round.number} — detalle</h3>
         <table>
@@ -1555,7 +1699,12 @@
     document.getElementById("qz-save-results").addEventListener("click", async () => {
       const missing = round.matches.some(m => !round.results[m.id]);
       if(missing){ toast("Falta el resultado de algún partido"); return; }
+      const wasAlreadyPublished = round.resultsPublished;
       round.resultsPublished = true;
+      logAudit(
+        wasAlreadyPublished ? "Corrigió resultados" : "Publicó resultados",
+        `Jornada ${round.number}`
+      );
       const ok = await setMeta(meta);
       toast(ok ? "Resultados publicados ✅ puntos actualizados" : "No se pudo guardar");
       allPicksCache = {};
@@ -1565,10 +1714,34 @@
     if(reopenBtn){
       reopenBtn.addEventListener("click", async () => {
         round.resultsPublished = false;
+        logAudit("Reabrió jornada", `Jornada ${round.number}`);
         await setMeta(meta);
         toast("Jornada reabierta");
         renderAdminResultados(body);
       });
+    }
+
+    const logEntries = (meta.auditLog || []).slice().reverse().slice(0, 20);
+    if(logEntries.length){
+      const logDiv = document.createElement("div");
+      logDiv.className = "card";
+      logDiv.innerHTML = `
+        <div class="eyebrow">Bitácora de resultados</div>
+        <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${logEntries.length}.</p>
+        <table>
+          <tbody>
+            ${logEntries.map(e => `
+              <tr>
+                <td class="muted" style="white-space:nowrap;">${new Date(e.ts).toLocaleString("es-MX", {dateStyle:"short", timeStyle:"short"})}</td>
+                <td><strong>${esc(e.admin)}</strong></td>
+                <td>${esc(e.action)}</td>
+                <td class="muted">${esc(e.detail)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+      body.appendChild(logDiv);
     }
   }
 
@@ -1580,6 +1753,13 @@
           <input type="text" id="qz-new-name" placeholder="Nombre">
           <button class="btn btn-gold" id="qz-add-participant">+ Agregar</button>
         </div>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Agregar varios de un jalón</div>
+        <p class="muted" style="margin-top:-4px;">Pega una lista de nombres, uno por línea (o separados por comas).</p>
+        <textarea id="qz-bulk-names" rows="4" style="width:100%;padding:9px 11px;border-radius:8px;border:1.5px solid var(--line);font-family:inherit;font-size:14px;" placeholder="Pablo&#10;Kevin&#10;Memo&#10;..."></textarea>
+        <p class="muted" id="qz-bulk-status" style="min-height:16px;margin-top:6px;"></p>
+        <button class="btn btn-gold" id="qz-bulk-add" style="margin-top:4px;">+ Agregar a todos</button>
       </div>
       <div class="card" style="padding:8px 12px;">
         <table>
@@ -1608,6 +1788,26 @@
       await setMeta(meta);
       renderAdminParticipantes(body);
       toast("Participante agregado");
+    });
+    document.getElementById("qz-bulk-add").addEventListener("click", async () => {
+      const raw = document.getElementById("qz-bulk-names").value;
+      const statusEl = document.getElementById("qz-bulk-status");
+      const names = raw.split(/[\n,]+/).map(n => n.trim()).filter(Boolean);
+      if(!names.length){ statusEl.textContent = "Pega al menos un nombre."; statusEl.style.color = "var(--red)"; return; }
+      const existing = new Set(meta.participants.map(p => p.name.toLowerCase()));
+      const added = [];
+      const skipped = [];
+      names.forEach(name => {
+        if(existing.has(name.toLowerCase())){ skipped.push(name); return; }
+        meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false, pin:null});
+        existing.add(name.toLowerCase());
+        added.push(name);
+      });
+      if(!added.length){ statusEl.textContent = "Todos esos nombres ya existían, no se agregó ninguno."; statusEl.style.color = "var(--red)"; return; }
+      const ok = await setMeta(meta);
+      if(!ok){ statusEl.textContent = "No se pudo guardar, intenta de nuevo."; statusEl.style.color = "var(--red)"; return; }
+      toast(`${added.length} participante${added.length===1?'':'s'} agregado${added.length===1?'':'s'} ✅`);
+      renderAdminParticipantes(body);
     });
     body.querySelectorAll("tr[data-pid]").forEach(row => {
       const pid = row.dataset.pid;
@@ -1687,6 +1887,11 @@
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
+        <div class="eyebrow">Respaldo de esta quiniela</div>
+        <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
+        <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
+      </div>
+      <div class="card">
         <div class="eyebrow">Cerrar torneo</div>
         <p class="muted">Cuando termine el torneo (o cuando el grupo decida dejarlo hasta ahí), esto anuncia al campeón, guarda la tabla final y las jornadas en el historial, y deja todo listo para empezar un torneo nuevo — sin perder nada de lo anterior.</p>
         <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
@@ -1701,6 +1906,33 @@
       </div>
       ` : ``}
     `;
+    document.getElementById("qz-export-backup").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = "Preparando…";
+      try{
+        await ensureAllPicksLoaded();
+        const backup = {
+          exportedAt: new Date().toISOString(),
+          meta,
+          picks: allPicksCache
+        };
+        const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "respaldo-" + slugify(meta.groupName) + "-" + new Date().toISOString().slice(0,10) + ".json";
+        a.click();
+        URL.revokeObjectURL(url);
+        toast("Respaldo descargado ✅");
+      }catch(e){
+        console.error(e);
+        toast("No se pudo generar el respaldo");
+      }
+      btn.disabled = false;
+      btn.textContent = originalText;
+    });
     document.getElementById("qz-save-settings").addEventListener("click", async () => {
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
@@ -2031,6 +2263,17 @@
     }));
     rows.sort((a,b) => (b.count||0) - (a.count||0));
 
+    const paymentLog = await getPlatformPaymentLog();
+    const totalCollected = paymentLog.payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const byMonth = {};
+    idx.quinielas.forEach(q => {
+      const d = new Date(q.createdAt);
+      const key = isNaN(d) ? "?" : d.toLocaleDateString("es-MX", { year: "numeric", month: "long" });
+      byMonth[key] = (byMonth[key] || 0) + 1;
+    });
+    const monthEntries = Object.entries(byMonth); // insertion order ≈ creation order since quinielas.push() appends
+    const totalParticipants = rows.reduce((sum, r) => sum + (r.count || 0), 0);
+
     function statusBadge(q){
       if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
       if(!q.overThreshold) return `<span class="badge paid">🟢 Jornada ${q.roundCount ?? 0}/${q.effectiveJornadaLimit}</span>`;
@@ -2086,6 +2329,20 @@
     root.innerHTML = `
       <div class="qz-main" style="padding-top:24px;max-width:1000px;">
         <div class="section-title"><span class="display">Panel de la plataforma</span></div>
+        <div class="card">
+          <div class="eyebrow">Crecimiento</div>
+          <div class="row2" style="margin-bottom:10px;">
+            <div><div class="eyebrow">Quinielas totales</div><div class="display" style="font-size:28px;">${idx.quinielas.length}</div></div>
+            <div><div class="eyebrow">Participantes totales</div><div class="display" style="font-size:28px;">${totalParticipants}</div></div>
+          </div>
+          <div class="row2">
+            <div><div class="eyebrow">Cobrado históricamente</div><div class="display" style="font-size:28px;">$${totalCollected} MXN</div></div>
+            <div>
+              <div class="eyebrow">Nuevas por mes</div>
+              ${monthEntries.length ? `<p class="muted" style="margin:4px 0 0;">${monthEntries.map(([m,c]) => `${esc(m)}: <strong>${c}</strong>`).join(" · ")}</p>` : `<p class="muted" style="margin:4px 0 0;">Sin datos todavía</p>`}
+            </div>
+          </div>
+        </div>
         <div class="card" style="overflow-x:auto;padding:16px 12px;">
           <table class="qz-platform-table" style="min-width:800px;">
             <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Estatus</th><th>Exenta</th><th>Pagado</th><th>Acciones</th></tr></thead>
@@ -2219,13 +2476,22 @@
         const slug = tr.dataset.slug;
         const entry = idx.quinielas.find(q => q.slug === slug);
         if(!entry) return;
+        const rowData = rows.find(r => r.slug === slug);
         entry.paid = checkbox.checked;
         const ok = await setPlatformIndex(idx);
         if(ok){
-          const rowData = rows.find(r => r.slug === slug);
           rowData.paid = checkbox.checked;
           tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
           toast(checkbox.checked ? "Marcada como pagada ✅" : "Ya no está marcada como pagada");
+          if(checkbox.checked){
+            const paymentLog = await getPlatformPaymentLog();
+            paymentLog.payments.push({
+              slug, name: entry.name,
+              amount: settings.pricePerParticipant * (rowData.count || 0),
+              date: new Date().toISOString()
+            });
+            await setPlatformPaymentLog(paymentLog);
+          }
         } else {
           checkbox.checked = !checkbox.checked;
           toast("No se pudo guardar, intenta de nuevo");
