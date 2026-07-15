@@ -287,7 +287,7 @@
 
 <script>
 (function(){
-  const TEAMS = ["América","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Mazatlán","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"];
+  const TEAMS = ["América","Atlante","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"];
 
   // ---------- routing ----------
   // "/"              -> the original group's quiniela (unchanged, same keys as always)
@@ -477,6 +477,13 @@
     if(!round) return true;
     return Date.now() > new Date(round.deadline).getTime();
   }
+  function golScorerBetLocked(){
+    const gsb = meta.golScorerBet;
+    if(!gsb || !gsb.enabled || !gsb.closesAtRound) return false;
+    const closingRound = meta.rounds.find(r => r.number === gsb.closesAtRound);
+    if(!closingRound) return false; // that jornada doesn't exist yet — still open
+    return isRoundLocked(closingRound);
+  }
   function timeParts(deadline){
     let diff = new Date(deadline).getTime() - Date.now();
     if(diff < 0) diff = 0;
@@ -508,6 +515,11 @@
         if(pick && pick === result) pts++;
       });
     });
+    const gsb = meta.golScorerBet;
+    if(gsb && gsb.enabled){
+      const p = meta.participants.find(x => x.id === participantId);
+      if(p && p.golScorerCorrect === true) pts += 3;
+    }
     return {pts, played};
   }
 
@@ -693,6 +705,9 @@
     ];
 
     const pending = pendingPicksInfo();
+    const gsb = meta.golScorerBet;
+    const gsbLocked = golScorerBetLocked();
+    const myGuess = currentUser.golScorerGuess || "";
     main.innerHTML = `
       <div id="qz-pending-banner">${pending ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
@@ -700,11 +715,31 @@
           <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
         </div>
       ` : ``}</div>
+      ${gsb && gsb.enabled ? `
+        <div class="card" style="margin-bottom:14px;">
+          <div class="eyebrow">🥇 Goleador de la liga (+3 pts si le atinas)</div>
+          <p class="muted" style="margin-top:-4px;">${gsbLocked ? "Ya cerró — no se puede cambiar." : (gsb.closesAtRound ? `Puedes cambiarlo hasta que cierre la Jornada ${gsb.closesAtRound}.` : "Escribe tu apuesta.")}</p>
+          <div class="row2">
+            <input type="text" id="qz-gsb-input" placeholder="Nombre, apellido o apodo" value="${esc(myGuess)}" ${gsbLocked ? "disabled" : ""}>
+            ${gsbLocked ? "" : `<button class="btn btn-gold" id="qz-gsb-save">Guardar</button>`}
+          </div>
+        </div>
+      ` : ``}
       <div class="qz-tabs" style="margin-bottom:14px;">
         ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
       </div>
       <div id="qz-jornada-list"></div>
     `;
+    const gsbSaveBtn = document.getElementById("qz-gsb-save");
+    if(gsbSaveBtn){
+      gsbSaveBtn.addEventListener("click", async () => {
+        const val = document.getElementById("qz-gsb-input").value.trim();
+        if(!val){ toast("Escribe un nombre"); return; }
+        currentUser.golScorerGuess = val;
+        const ok = await setMeta(meta);
+        toast(ok ? "Guardado ✅" : "No se pudo guardar, intenta de nuevo");
+      });
+    }
     root.querySelectorAll("[data-jf]").forEach(btn => {
       btn.addEventListener("click", () => { jornadaFilter = btn.dataset.jf; renderJornada(main); });
     });
@@ -917,7 +952,7 @@
       <div class="section-title">
         <span class="display">Tabla de posiciones</span>
         <div style="display:flex;gap:6px;">
-          <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Tarjeta para compartir</button>
+          <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Imagen de la tabla</button>
           <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Excel</button>
         </div>
       </div>
@@ -956,7 +991,7 @@
   }
 
   function drawResultsCardCanvas(list){
-    const shown = list.slice(0, 15); // keep the image a reasonable height
+    const shown = list; // show everyone, not just a cut-off top
     const width = 800;
     const rowH = 56;
     const headerH = 190;
@@ -1255,6 +1290,7 @@
       {id:"resultados", label:"Resultados"},
       {id:"participacion", label:"Participación"},
       {id:"participantes", label:"Participantes"},
+      {id:"goleador", label:"Goleador"},
       {id:"dueno", label:"Ajustes"},
     ];
     main.innerHTML = `
@@ -1274,7 +1310,65 @@
     else if(adminSubTab==="resultados") renderAdminResultados(body);
     else if(adminSubTab==="participacion") renderAdminParticipacion(body);
     else if(adminSubTab==="participantes") renderAdminParticipantes(body);
+    else if(adminSubTab==="goleador") renderAdminGolScorer(body);
     else if(adminSubTab==="dueno") renderAdminOwner(body);
+  }
+
+  // "Goleador de la liga": optional bonus bet — participants guess a name in free text,
+  // admin manually marks who nailed it (since names can be typed many different ways),
+  // and +3 points get added automatically to whoever is marked correct.
+  function renderAdminGolScorer(body){
+    if(!meta.golScorerBet) meta.golScorerBet = { enabled: false, closesAtRound: null, actualWinner: "" };
+    const gsb = meta.golScorerBet;
+    const guesses = meta.participants.filter(p => p.golScorerGuess);
+    body.innerHTML = `
+      <div class="card">
+        <div class="eyebrow">Apuesta del goleador</div>
+        <p class="muted" style="margin-top:-4px;">Cada quien escribe libremente a quién cree que va a ser el goleador de la liga. Si le atina, suma +3 puntos a su total. Tú decides manualmente quién le atinó, porque la gente puede escribir el nombre de formas distintas.</p>
+        <div class="field">
+          <label><input type="checkbox" id="qz-gsb-enabled" ${gsb.enabled ? "checked" : ""}> Activar esta apuesta en la quiniela</label>
+        </div>
+        <div class="row2">
+          <div class="field"><label>Se cierra al empezar la jornada</label><input type="number" id="qz-gsb-round" value="${gsb.closesAtRound || ''}" placeholder="Ej. 5"></div>
+          <div class="field"><label>Goleador real (opcional, informativo)</label><input type="text" id="qz-gsb-winner" value="${esc(gsb.actualWinner || '')}" placeholder="Se llena al final del torneo"></div>
+        </div>
+        <button class="btn btn-primary" id="qz-gsb-save-settings">Guardar</button>
+      </div>
+      <div class="card" style="padding:8px 12px;">
+        <div class="eyebrow" style="padding:10px 12px 0;">Apuestas de cada participante</div>
+        <table>
+          <thead><tr><th>Participante</th><th>Apostó a</th><th>¿Le atinó?</th></tr></thead>
+          <tbody>
+            ${meta.participants.map(p => `
+              <tr data-pid="${p.id}">
+                <td>${esc(p.name)}</td>
+                <td>${p.golScorerGuess ? esc(p.golScorerGuess) : '<span class="muted">Sin apuesta</span>'}</td>
+                <td><input type="checkbox" data-role="gsb-correct" ${p.golScorerCorrect ? "checked" : ""} ${p.golScorerGuess ? "" : "disabled"}></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    document.getElementById("qz-gsb-save-settings").addEventListener("click", async () => {
+      gsb.enabled = document.getElementById("qz-gsb-enabled").checked;
+      const roundVal = document.getElementById("qz-gsb-round").value.trim();
+      gsb.closesAtRound = roundVal ? Number(roundVal) : null;
+      gsb.actualWinner = document.getElementById("qz-gsb-winner").value.trim();
+      const ok = await setMeta(meta);
+      toast(ok ? "Guardado ✅" : "No se pudo guardar");
+    });
+    body.querySelectorAll("[data-role=gsb-correct]").forEach(checkbox => {
+      checkbox.addEventListener("change", async (e) => {
+        const pid = checkbox.closest("tr").dataset.pid;
+        const p = meta.participants.find(x => x.id === pid);
+        if(!p) return;
+        p.golScorerCorrect = checkbox.checked;
+        const ok = await setMeta(meta);
+        if(ok) toast(checkbox.checked ? `${p.name} +3 puntos ✅` : `Se quitó el bono de ${p.name}`);
+        else { checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
+      });
+    });
   }
 
   // "Participación": who has/hasn't submitted picks for open rounds — status only, never reveals picks
