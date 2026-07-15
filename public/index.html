@@ -929,14 +929,14 @@
       </div>
       <div class="card" style="padding:8px 12px;">
         <table>
-          <thead><tr><th>#</th><th>Participante</th><th style="text-align:right;">Pts</th><th></th></tr></thead>
+          <thead><tr><th style="text-align:center;">#</th><th>Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">Pagó</th></tr></thead>
           <tbody>
             ${list.map((p,i) => `
               <tr class="${p.id===currentUser.id?'me':''}">
-                <td class="pos ${i===0?'top1':''}">${i+1}</td>
+                <td class="pos ${i===0?'top1':''}" style="text-align:center;">${i+1}</td>
                 <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
-                <td style="text-align:right;font-weight:700;">${p.pts}</td>
-                <td>${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>
+                <td style="text-align:center;font-weight:700;">${p.pts}</td>
+                <td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>
               </tr>
             `).join("")}
           </tbody>
