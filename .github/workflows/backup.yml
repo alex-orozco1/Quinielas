@@ -26,7 +26,7 @@ jobs:
       - name: Crear el respaldo
         run: |
           mkdir -p backups
-          pg_dump "${{ secrets.DATABASE_URL }}" --no-owner --no-privileges > backups/backup-$(date +%Y-%m-%d).sql
+          /usr/lib/postgresql/17/bin/pg_dump "${{ secrets.DATABASE_URL }}" --no-owner --no-privileges > backups/backup-$(date +%Y-%m-%d).sql
 
       - name: Borrar respaldos de más de 90 días
         run: find backups/ -name "*.sql" -mtime +90 -delete || true
