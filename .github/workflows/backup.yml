@@ -14,8 +14,14 @@ jobs:
       - name: Descargar el repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar cliente de Postgres
-        run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client
+      - name: Instalar cliente de Postgres (versión 17, igual que Supabase)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client-17
 
       - name: Crear el respaldo
         run: |
