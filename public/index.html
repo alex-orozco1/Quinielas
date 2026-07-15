@@ -1012,7 +1012,7 @@
       const file = new File([blob], filename, { type: "image/png" });
       if(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })){
         try{
-          await navigator.share({ files: [file], title: meta.groupName, text: "Tabla de posiciones" });
+          await navigator.share({ files: [file] });
           return;
         }catch(e){ /* user cancelled or share failed — fall back to download */ }
       }
