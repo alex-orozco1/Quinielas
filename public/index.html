@@ -1315,7 +1315,7 @@
       {id:"resultados", label:"Resultados"},
       {id:"participacion", label:"Participación"},
       {id:"participantes", label:"Participantes"},
-      {id:"goleador", label:"Goleador"},
+      {id:"adicionales", label:"Adicionales"},
       {id:"dueno", label:"Ajustes"},
     ];
     main.innerHTML = `
@@ -1335,21 +1335,22 @@
     else if(adminSubTab==="resultados") renderAdminResultados(body);
     else if(adminSubTab==="participacion") renderAdminParticipacion(body);
     else if(adminSubTab==="participantes") renderAdminParticipantes(body);
-    else if(adminSubTab==="goleador") renderAdminGolScorer(body);
+    else if(adminSubTab==="adicionales") renderAdminAdicionales(body);
     else if(adminSubTab==="dueno") renderAdminOwner(body);
   }
 
-  // "Goleador de la liga": optional bonus bet — participants guess a name in free text,
-  // admin manually marks who nailed it (since names can be typed many different ways),
-  // and +3 points get added automatically to whoever is marked correct.
-  function renderAdminGolScorer(body){
+  // "Adicionales": catch-all tab for extra scoring features that don't fit the core
+  // flow (jornadas/resultados) — top-scorer bet, unpaid-participant penalty, and
+  // whatever similar features get added later. Keeps Ajustes from getting cluttered.
+  function renderAdminAdicionales(body){
     if(!meta.golScorerBet) meta.golScorerBet = { enabled: false, closesAtRound: null, actualWinner: "" };
+    if(!meta.paymentPenalty) meta.paymentPenalty = { enabled: false, startsAtRound: null, pointsPerRound: 1 };
     const gsb = meta.golScorerBet;
-    const guesses = meta.participants.filter(p => p.golScorerGuess);
+    const penalty = meta.paymentPenalty;
     body.innerHTML = `
       <div class="card">
         <div class="eyebrow">Apuesta del goleador</div>
-        <p class="muted" style="margin-top:-4px;">Cada quien escribe libremente a quién cree que va a ser el goleador de la liga. Si le atina, suma +3 puntos a su total. Tú decides manualmente quién le atinó, porque la gente puede escribir el nombre de formas distintas.</p>
+        <p class="muted" style="margin-top:-4px;">Cada quien escribe libremente a quién cree que va a ser el goleador de la liga. Si le atina, suma puntos extra a su total. Tú decides manualmente quién le atinó, porque la gente puede escribir el nombre de formas distintas.</p>
         <div class="field">
           <label><input type="checkbox" id="qz-gsb-enabled" ${gsb.enabled ? "checked" : ""}> Activar esta apuesta en la quiniela</label>
         </div>
@@ -1375,6 +1376,18 @@
           </tbody>
         </table>
       </div>
+      <div class="card">
+        <div class="eyebrow">Penalización por no pagar</div>
+        <p class="muted" style="margin-top:-4px;">A quien ya está marcado como "Pagó" en Participantes nunca se le resta nada. A quien no ha pagado, se le empiezan a restar puntos a partir de la jornada que elijas, uno por cada jornada que pase mientras siga sin pagar — se detiene en cuanto lo marques como pagado.</p>
+        <div class="field">
+          <label><input type="checkbox" id="qz-penalty-enabled" ${penalty.enabled ? "checked" : ""}> Activar penalización</label>
+        </div>
+        <div class="row2">
+          <div class="field"><label>A partir de la jornada</label><input type="number" id="qz-penalty-round" value="${penalty.startsAtRound ? penalty.startsAtRound : ''}" placeholder="Ej. 5"></div>
+          <div class="field"><label>Puntos a restar por jornada</label><input type="number" id="qz-penalty-points" value="${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1}"></div>
+        </div>
+        <button class="btn btn-primary" id="qz-save-penalty">Guardar</button>
+      </div>
     `;
     document.getElementById("qz-gsb-save-settings").addEventListener("click", async () => {
       gsb.enabled = document.getElementById("qz-gsb-enabled").checked;
@@ -1387,7 +1400,7 @@
       toast(ok ? "Guardado ✅" : "No se pudo guardar");
     });
     body.querySelectorAll("[data-role=gsb-correct]").forEach(checkbox => {
-      checkbox.addEventListener("change", async (e) => {
+      checkbox.addEventListener("change", async () => {
         const pid = checkbox.closest("tr").dataset.pid;
         const p = meta.participants.find(x => x.id === pid);
         if(!p) return;
@@ -1396,6 +1409,15 @@
         if(ok) toast(checkbox.checked ? `${p.name} +${gsb.bonusPoints != null ? gsb.bonusPoints : 3} puntos ✅` : `Se quitó el bono de ${p.name}`);
         else { checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
       });
+    });
+    document.getElementById("qz-save-penalty").addEventListener("click", async () => {
+      penalty.enabled = document.getElementById("qz-penalty-enabled").checked;
+      const roundRaw = document.getElementById("qz-penalty-round").value.trim();
+      penalty.startsAtRound = roundRaw === "" ? null : Number(roundRaw);
+      const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
+      penalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
+      const ok = await setMeta(meta);
+      toast(ok ? "Penalización guardada ✅" : "No se pudo guardar");
     });
   }
 
@@ -2020,18 +2042,6 @@
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
-        <div class="eyebrow">Penalización por no pagar</div>
-        <p class="muted" style="margin-top:-4px;">A quien ya está marcado como "Pagó" en Participantes nunca se le resta nada. A quien no ha pagado, se le empiezan a restar puntos a partir de la jornada que elijas, uno por cada jornada que pase mientras siga sin pagar — se detiene en cuanto lo marques como pagado.</p>
-        <div class="field">
-          <label><input type="checkbox" id="qz-penalty-enabled" ${meta.paymentPenalty && meta.paymentPenalty.enabled ? "checked" : ""}> Activar penalización</label>
-        </div>
-        <div class="row2">
-          <div class="field"><label>A partir de la jornada</label><input type="number" id="qz-penalty-round" value="${meta.paymentPenalty && meta.paymentPenalty.startsAtRound ? meta.paymentPenalty.startsAtRound : ''}" placeholder="Ej. 5"></div>
-          <div class="field"><label>Puntos a restar por jornada</label><input type="number" id="qz-penalty-points" value="${meta.paymentPenalty && meta.paymentPenalty.pointsPerRound != null ? meta.paymentPenalty.pointsPerRound : 1}"></div>
-        </div>
-        <button class="btn btn-primary" id="qz-save-penalty">Guardar</button>
-      </div>
-      <div class="card">
         <div class="eyebrow">Respaldo de esta quiniela</div>
         <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
@@ -2090,16 +2100,6 @@
       await setMeta(meta);
       toast("Ajustes guardados ✅");
       renderApp();
-    });
-    document.getElementById("qz-save-penalty").addEventListener("click", async () => {
-      if(!meta.paymentPenalty) meta.paymentPenalty = {};
-      meta.paymentPenalty.enabled = document.getElementById("qz-penalty-enabled").checked;
-      const roundRaw = document.getElementById("qz-penalty-round").value.trim();
-      meta.paymentPenalty.startsAtRound = roundRaw === "" ? null : Number(roundRaw);
-      const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
-      meta.paymentPenalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
-      const ok = await setMeta(meta);
-      toast(ok ? "Penalización guardada ✅" : "No se pudo guardar");
     });
     document.getElementById("qz-close-tournament").addEventListener("click", async () => {
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
