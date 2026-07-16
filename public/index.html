@@ -920,7 +920,7 @@
       }).join("")}
       <div class="divider"></div>
       <div class="eyebrow">Lo que votó todo el mundo</div>
-      <p class="muted" style="margin-top:-4px;">Ya se cerró la jornada, puedes revisar las respuestas de otros participates solo para tus cálculos.</p>
+      <p class="muted" style="margin-top:-4px;">Ya se cerró la jornada, así que no hay ventaja en verlo — solo para tus cálculos.</p>
       <div style="overflow-x:auto;">
         <table>
           <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr></thead>
@@ -2045,6 +2045,12 @@
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
+        <div class="eyebrow">Link de "solo ver"</div>
+        <p class="muted">Para familiares o curiosos que quieren checar la tabla sin ser parte de la quiniela — no necesitan elegir nombre ni PIN, solo ven la tabla de posiciones, en modo lectura.</p>
+        <div class="field"><input type="text" id="qz-spectator-link" readonly value="${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}?ver=1"></div>
+        <button class="btn btn-gold" id="qz-spectator-copy">Copiar link</button>
+      </div>
+      <div class="card">
         <div class="eyebrow">Respaldo de esta quiniela</div>
         <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
@@ -2064,6 +2070,15 @@
       </div>
       ` : ``}
     `;
+    document.getElementById("qz-spectator-copy").addEventListener("click", async () => {
+      const val = document.getElementById("qz-spectator-link").value;
+      try{
+        await navigator.clipboard.writeText(val);
+        toast("Link copiado ✅");
+      }catch(e){
+        toast("Cópialo manualmente del cuadro de texto");
+      }
+    });
     document.getElementById("qz-export-backup").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -2765,6 +2780,56 @@
     `;
   }
 
+  // "Solo ver": read-only view for people who aren't participants — no name, no PIN,
+  // just the standings and a list of jornadas played. Reached via /q/slug?ver=1
+  async function renderSpectatorView(){
+    root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
+    await ensureAllPicksLoaded();
+    const list = standingsList();
+    const fee = meta.settings.entryFee;
+    const paidCount = meta.participants.filter(p=>p.paid).length;
+    const totalP = meta.participants.length;
+    const published = meta.rounds.filter(r=>r.resultsPublished).slice().reverse();
+    root.innerHTML = `
+      <div class="qz-header">
+        <div class="qz-header-top">
+          <div class="qz-brand"><span class="display">${esc(meta.groupName)}</span><span class="display dot">.</span></div>
+          <div class="qz-user-chip">👁 Solo ver</div>
+        </div>
+      </div>
+      <div class="qz-main">
+        <div class="section-title"><span class="display">Tabla de posiciones</span></div>
+        <div class="card">
+          <div class="row2">
+            <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
+            <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Work Sans';font-size:13px;">de $${totalP*fee}</span></div></div>
+          </div>
+        </div>
+        <div class="card" style="padding:8px 12px;">
+          <table>
+            <thead><tr><th style="text-align:center;">#</th><th>Participante</th><th style="text-align:center;">Pts</th></tr></thead>
+            <tbody>
+              ${list.map((p,i) => `
+                <tr>
+                  <td class="pos ${i===0?'top1':''}" style="text-align:center;">${i+1}</td>
+                  <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
+                  <td style="text-align:center;font-weight:700;">${p.pts}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${published.length ? `
+          <div class="section-title" style="margin-top:20px;"><span class="display" style="font-size:22px;">Jornadas jugadas</span></div>
+          <div class="card">
+            ${published.map(r => `<div class="history-item"><div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos</span></div></div>`).join("")}
+          </div>
+        ` : ``}
+        <p class="muted" style="text-align:center;margin-top:20px;">👁 Estás viendo esta quiniela en modo solo lectura — no puedes votar ni modificar nada.</p>
+      </div>
+    `;
+  }
+
   async function boot(attempt){
     attempt = attempt || 1;
 
@@ -2801,6 +2866,10 @@
       return;
     }
     meta = m;
+    if(new URLSearchParams(window.location.search).has("ver")){
+      renderSpectatorView();
+      return;
+    }
     render();
   }
   boot();
