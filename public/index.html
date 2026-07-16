@@ -725,6 +725,8 @@
     const gsb = meta.golScorerBet;
     const gsbLocked = golScorerBetLocked();
     const myGuess = currentUser.golScorerGuess || "";
+    const penalty = meta.paymentPenalty;
+    const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     main.innerHTML = `
       <div id="qz-pending-banner">${pending ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
@@ -732,6 +734,12 @@
           <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
         </div>
       ` : ``}</div>
+      ${showPaymentNote ? `
+        <div class="card" style="border-color:var(--red);background:#F6E1DE;margin-bottom:14px;">
+          <div class="eyebrow" style="color:#7d251d;">💰 Falta tu pago</div>
+          <p style="margin:4px 0 0;">Si no pagas tu cuota, se te van a restar <strong>${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1} punto${(penalty.pointsPerRound===1)?'':'s'}</strong> por cada jornada a partir de la <strong>Jornada ${penalty.startsAtRound}</strong>, hasta que se marque que ya pagaste.</p>
+        </div>
+      ` : ``}
       ${gsb && gsb.enabled ? `
         <div class="card" style="margin-bottom:14px;">
           <div class="eyebrow">🥇 Goleador de la liga (+${gsb.bonusPoints != null ? gsb.bonusPoints : 3} pts si le atinas)</div>
