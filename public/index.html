@@ -210,6 +210,10 @@
 
   /* table */
   #quiniela-root table{ width:100%; border-collapse:collapse; font-size:13.5px; }
+  #quiniela-root .qz-sticky-col{
+    position:sticky; left:0; background:var(--paper); z-index:1;
+    box-shadow:2px 0 4px rgba(0,0,0,0.06); white-space:nowrap;
+  }
   #quiniela-root th{
     text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.06em;
     color:var(--ink-soft); padding:8px 6px; border-bottom:2px solid var(--line);
@@ -1483,26 +1487,42 @@
         ${!draft ? `<button class="btn btn-gold" id="qz-cb-new" style="margin-top:10px;">+ Nueva apuesta</button>` : ``}
       </div>
       ${draft ? formHtml() : ``}
-      ${(meta.customBets || []).filter(b => b.scope === "temporada").map(bet => `
-        <div class="card" style="padding:8px 12px;">
-          <div class="eyebrow" style="padding:10px 12px 0;">Validar: ${esc(bet.label)}</div>
-          <table>
-            <thead><tr><th>Participante</th><th style="text-align:center;">Apostó a</th><th style="text-align:center;">¿Le atinó?</th></tr></thead>
-            <tbody>
-              ${meta.participants.map(p => {
-                const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
-                return `
-                  <tr data-pid="${p.id}" data-bet="${bet.id}">
-                    <td>${esc(p.name)}</td>
-                    <td style="text-align:center;">${ans && ans.guess ? esc(ans.guess) : '<span class="muted">Sin apuesta</span>'}</td>
-                    <td style="text-align:center;"><input type="checkbox" data-role="cb-correct" ${ans && ans.correct ? "checked" : ""} ${ans && ans.guess ? "" : "disabled"}></td>
+      ${(() => {
+        const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
+        if(!temporadaBets.length) return "";
+        return `
+          <div class="card" style="padding:8px 12px;overflow-x:auto;">
+            <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas personalizadas</div>
+            <p class="muted" style="padding:0 12px;margin-top:-4px;">Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
+            <table>
+              <thead>
+                <tr>
+                  <th class="qz-sticky-col">Participante</th>
+                  ${temporadaBets.map(bet => `<th colspan="2" style="text-align:center;">${esc(bet.label)}</th>`).join("")}
+                </tr>
+                <tr>
+                  <th class="qz-sticky-col"></th>
+                  ${temporadaBets.map(() => `<th style="text-align:center;">Apostó a</th><th style="text-align:center;">¿Atinó?</th>`).join("")}
+                </tr>
+              </thead>
+              <tbody>
+                ${meta.participants.map(p => `
+                  <tr>
+                    <td class="qz-sticky-col">${esc(p.name)}</td>
+                    ${temporadaBets.map(bet => {
+                      const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
+                      return `
+                        <td style="text-align:center;">${ans && ans.guess ? esc(ans.guess) : '<span class="muted">—</span>'}</td>
+                        <td style="text-align:center;"><input type="checkbox" data-role="cb-correct" data-pid="${p.id}" data-bet="${bet.id}" ${ans && ans.correct ? "checked" : ""} ${ans && ans.guess ? "" : "disabled"}></td>
+                      `;
+                    }).join("")}
                   </tr>
-                `;
-              }).join("")}
-            </tbody>
-          </table>
-        </div>
-      `).join("")}
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      })()}
       ${(meta.customBets || []).some(b => b.scope === "jornada") ? `
         <div class="card">
           <p class="muted">Las apuestas "de cada jornada" se validan jornada por jornada, en <strong>Admin → Resultados</strong>, junto con el resultado de esa jornada.</p>
@@ -1582,9 +1602,8 @@
     });
     body.querySelectorAll("[data-role=cb-correct]").forEach(checkbox => {
       checkbox.addEventListener("change", async () => {
-        const tr = checkbox.closest("tr");
-        const pid = tr.dataset.pid;
-        const betId = tr.dataset.bet;
+        const pid = checkbox.dataset.pid;
+        const betId = checkbox.dataset.bet;
         const p = meta.participants.find(x => x.id === pid);
         if(!p || !p.customBetAnswers || !p.customBetAnswers[betId]) return;
         p.customBetAnswers[betId].correct = checkbox.checked;
@@ -2026,27 +2045,39 @@
         </button>
         ${round.resultsPublished ? `<button class="btn btn-ghost btn-sm" id="qz-reopen-round" style="width:100%;margin-top:8px;">Reabrir jornada (permitir votos de nuevo)</button>` : ``}
       </div>
-      ${jornadaBets.map(bet => `
-        <div class="card" style="padding:8px 12px;">
-          <div class="eyebrow" style="padding:10px 12px 0;">Validar: ${esc(bet.label)} (Jornada ${round.number})</div>
+      ${jornadaBets.length ? `
+        <div class="card" style="padding:8px 12px;overflow-x:auto;">
+          <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas de esta jornada (Jornada ${round.number})</div>
+          <p class="muted" style="padding:0 12px;margin-top:-4px;">Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
           <table>
-            <thead><tr><th>Participante</th><th style="text-align:center;">Respondió</th><th style="text-align:center;">¿Le atinó?</th></tr></thead>
+            <thead>
+              <tr>
+                <th class="qz-sticky-col">Participante</th>
+                ${jornadaBets.map(bet => `<th colspan="2" style="text-align:center;">${esc(bet.label)}</th>`).join("")}
+              </tr>
+              <tr>
+                <th class="qz-sticky-col"></th>
+                ${jornadaBets.map(() => `<th style="text-align:center;">Respondió</th><th style="text-align:center;">¿Atinó?</th>`).join("")}
+              </tr>
+            </thead>
             <tbody>
-              ${meta.participants.map(p => {
-                const guess = ((allPicksCache[p.id] || {})[round.id] || {}).__extra ? (allPicksCache[p.id][round.id].__extra[bet.id] || "") : "";
-                const correct = round.customBetResults && round.customBetResults[bet.id] ? round.customBetResults[bet.id][p.id] : false;
-                return `
-                  <tr data-pid="${p.id}" data-bet="${bet.id}">
-                    <td>${esc(p.name)}</td>
-                    <td style="text-align:center;">${guess ? esc(guess) : '<span class="muted">Sin respuesta</span>'}</td>
-                    <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
-                  </tr>
-                `;
-              }).join("")}
+              ${meta.participants.map(p => `
+                <tr>
+                  <td class="qz-sticky-col">${esc(p.name)}</td>
+                  ${jornadaBets.map(bet => {
+                    const guess = ((allPicksCache[p.id] || {})[round.id] || {}).__extra ? (allPicksCache[p.id][round.id].__extra[bet.id] || "") : "";
+                    const correct = round.customBetResults && round.customBetResults[bet.id] ? round.customBetResults[bet.id][p.id] : false;
+                    return `
+                      <td style="text-align:center;">${guess ? esc(guess) : '<span class="muted">—</span>'}</td>
+                      <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" data-pid="${p.id}" data-bet="${bet.id}" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
+                    `;
+                  }).join("")}
+                </tr>
+              `).join("")}
             </tbody>
           </table>
         </div>
-      `).join("")}
+      ` : ``}
     `;
     document.getElementById("qz-autofill").addEventListener("click", async () => {
       const statusEl = document.getElementById("qz-autofill-status");
@@ -2108,9 +2139,8 @@
     }
     form.querySelectorAll("[data-role=jornada-bet-correct]").forEach(checkbox => {
       checkbox.addEventListener("change", async () => {
-        const tr = checkbox.closest("tr");
-        const pid = tr.dataset.pid;
-        const betId = tr.dataset.bet;
+        const pid = checkbox.dataset.pid;
+        const betId = checkbox.dataset.bet;
         if(!round.customBetResults) round.customBetResults = {};
         if(!round.customBetResults[betId]) round.customBetResults[betId] = {};
         round.customBetResults[betId][pid] = checkbox.checked;
