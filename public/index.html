@@ -239,7 +239,7 @@
   }
   #quiniela-root label{ font-size:12px; font-weight:700; color:var(--ink-soft); display:block; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em; }
   #quiniela-root .field{ margin-bottom:12px; }
-  #quiniela-root .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  #quiniela-root .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
   #quiniela-root .match-edit-row{
     display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:end; margin-bottom:10px;
   }
@@ -1916,15 +1916,15 @@
       </div>
       <div class="card" style="padding:8px 12px;">
         <table>
-          <thead><tr><th>Nombre</th><th>Admin</th><th>Pagó</th><th>PIN</th><th></th></tr></thead>
+          <thead><tr><th>Nombre</th><th style="text-align:center;">Admin</th><th style="text-align:center;">Pagó</th><th style="text-align:center;">PIN</th><th style="text-align:center;"></th></tr></thead>
           <tbody>
             ${meta.participants.map(p => `
               <tr data-pid="${p.id}">
                 <td><input type="text" value="${esc(p.name)}" data-role="rename" style="border:none;background:transparent;padding:2px;font-weight:600;"></td>
-                <td><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
-                <td><input type="checkbox" data-role="paid" ${p.paid?'checked':''}></td>
-                <td>${p.pin ? `<button class="btn btn-ghost btn-sm" data-role="resetpin">🔒 Resetear</button>` : `<span class="muted">Sin PIN</span>`}</td>
-                <td><button class="btn btn-danger btn-sm" data-role="remove">Borrar</button></td>
+                <td style="text-align:center;"><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
+                <td style="text-align:center;"><input type="checkbox" data-role="paid" ${p.paid?'checked':''}></td>
+                <td style="text-align:center;">${p.pin ? `<button class="btn btn-ghost btn-sm" data-role="resetpin">🔒 Resetear</button>` : `<span class="muted">Sin PIN</span>`}</td>
+                <td style="text-align:center;"><button class="btn btn-danger btn-sm" data-role="remove">Borrar</button></td>
               </tr>
             `).join("")}
           </tbody>
