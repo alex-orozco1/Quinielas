@@ -922,11 +922,11 @@
       <p class="muted" style="margin-top:-4px;">Ya se cerró la jornada, así que no hay ventaja en verlo — solo para tus cálculos.</p>
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th>${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr></thead>
+          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr></thead>
           <tbody>
-            ${meta.participants.map(p => {
+            ${meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
               const picks = (allPicksCache[p.id] || {})[round.id] || {};
-              return `<tr class="${p.id===currentUser.id?'me':''}"><td>${esc(p.name)}</td>${round.matches.map(m => `<td>${esc(pickLabel(picks[m.id], m))}</td>`).join("")}</tr>`;
+              return `<tr class="${p.id===currentUser.id?'me':''}"><td>${esc(p.name)}</td>${round.matches.map(m => `<td style="text-align:center;">${esc(pickLabel(picks[m.id], m))}</td>`).join("")}</tr>`;
             }).join("")}
           </tbody>
         </table>
@@ -1232,7 +1232,7 @@
 
   function renderHistDetail(round){
     const detail = document.getElementById("qz-hist-detail");
-    const perParticipant = meta.participants.map(p => {
+    const perParticipant = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const picks = (allPicksCache[p.id] || {})[round.id] || {};
       let correct = 0;
       const cells = round.matches.map(m => {
@@ -1241,17 +1241,17 @@
         const label = pick === 'A' ? m.teamA : pick === 'B' ? m.teamB : pick === 'D' ? 'Empate' : '—';
         const isCorrect = pick && result && pick === result;
         if(isCorrect) correct++;
-        return `<td style="${isCorrect?'color:#1B4332;font-weight:700;':pick?'color:#7d251d;':'color:var(--ink-soft);'}">${esc(label)}</td>`;
+        return `<td style="text-align:center;${isCorrect?'color:#1B4332;font-weight:700;':pick?'color:#7d251d;':'color:var(--ink-soft);'}">${esc(label)}</td>`;
       }).join("");
       return { name: p.name, correct, cellsHtml: cells };
     });
     const maxCorrect = Math.max(0, ...perParticipant.map(p => p.correct));
     const mvps = maxCorrect > 0 ? perParticipant.filter(p => p.correct === maxCorrect).map(p => p.name) : [];
-    const rows = perParticipant.map(p => `<tr><td>${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</td>${p.cellsHtml}<td style="font-weight:700;">${p.correct}</td></tr>`).join("");
+    const rows = perParticipant.map(p => `<tr><td>${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</td>${p.cellsHtml}<td style="font-weight:700;text-align:center;">${p.correct}</td></tr>`).join("");
     const resultRow = round.matches.map(m => {
       const r = round.results[m.id];
       const label = r==='A'? m.teamA : r==='B'? m.teamB : r==='D'?'Empate':'—';
-      return `<td style="font-weight:700;">${esc(label)}</td>`;
+      return `<td style="font-weight:700;text-align:center;">${esc(label)}</td>`;
     }).join("");
     detail.innerHTML = `
       ${mvps.length ? `
@@ -1263,7 +1263,7 @@
       <div class="card" style="overflow-x:auto;">
         <h3>Jornada ${round.number} — detalle</h3>
         <table>
-          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th>${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th>Pts</th></tr></thead>
+          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Pts</th></tr></thead>
           <tbody>
             <tr style="background:var(--chalk);"><td><strong>Resultado real</strong></td>${resultRow}<td></td></tr>
             ${rows}
