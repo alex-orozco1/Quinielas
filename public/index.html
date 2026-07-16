@@ -480,13 +480,6 @@
     if(!round) return true;
     return Date.now() > new Date(round.deadline).getTime();
   }
-  function golScorerBetLocked(){
-    const gsb = meta.golScorerBet;
-    if(!gsb || !gsb.enabled || !gsb.closesAtRound) return false;
-    const closingRound = meta.rounds.find(r => r.number === gsb.closesAtRound);
-    if(!closingRound) return false; // that jornada doesn't exist yet — still open
-    return isRoundLocked(closingRound);
-  }
   function timeParts(deadline){
     let diff = new Date(deadline).getTime() - Date.now();
     if(diff < 0) diff = 0;
@@ -505,6 +498,60 @@
     loadingAllPicks = false;
   }
 
+  // ---------- casuísticas / apuestas personalizadas (motor genérico) ----------
+  // Migrates the old single-purpose golScorerBet into the new flexible list, once.
+  // Returns true if it changed meta (caller should persist with setMeta).
+  function ensureCustomBets(){
+    if(!meta.customBets) meta.customBets = [];
+    if(meta.customBetsMigrated) return false;
+    meta.customBetsMigrated = true;
+    const old = meta.golScorerBet;
+    if(old && old.enabled){
+      const id = uid("cb");
+      meta.customBets.push({
+        id,
+        label: "Goleador de la liga",
+        scope: "temporada",
+        points: old.bonusPoints != null ? old.bonusPoints : 3,
+        closesAtRound: old.closesAtRound || null
+      });
+      meta.participants.forEach(p => {
+        if(p.golScorerGuess){
+          if(!p.customBetAnswers) p.customBetAnswers = {};
+          p.customBetAnswers[id] = { guess: p.golScorerGuess, correct: p.golScorerCorrect === true };
+        }
+      });
+      return true;
+    }
+    return true; // still mark migrated even if there was nothing to migrate
+  }
+
+  function customBetsLocked(bet){
+    if(bet.scope !== "temporada" || !bet.closesAtRound) return false;
+    const closingRound = meta.rounds.find(r => r.number === bet.closesAtRound);
+    if(!closingRound) return false;
+    return isRoundLocked(closingRound);
+  }
+
+  function customBetPointsFor(participantId){
+    let pts = 0;
+    if(!meta.customBets || !meta.customBets.length) return pts;
+    const p = meta.participants.find(x => x.id === participantId);
+    if(!p) return pts;
+    meta.customBets.forEach(bet => {
+      if(bet.scope === "temporada"){
+        const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
+        if(ans && ans.correct === true) pts += bet.points;
+      } else if(bet.scope === "jornada"){
+        meta.rounds.forEach(r => {
+          const res = r.customBetResults && r.customBetResults[bet.id];
+          if(res && res[participantId] === true) pts += bet.points;
+        });
+      }
+    });
+    return pts;
+  }
+
   function pointsFor(participantId){
     const picks = allPicksCache[participantId] || {};
     const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
@@ -519,11 +566,8 @@
         if(pick && pick === result) pts += perPick;
       });
     });
-    const gsb = meta.golScorerBet;
     const p = meta.participants.find(x => x.id === participantId);
-    if(gsb && gsb.enabled){
-      if(p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
-    }
+    pts += customBetPointsFor(participantId);
     const penalty = meta.paymentPenalty;
     if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
       const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
@@ -724,9 +768,9 @@
     ];
 
     const pending = pendingPicksInfo();
-    const gsb = meta.golScorerBet;
-    const gsbLocked = golScorerBetLocked();
-    const myGuess = currentUser.golScorerGuess || "";
+    const migratedBets = ensureCustomBets();
+    if(migratedBets) await setMeta(meta);
+    const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
     const penalty = meta.paymentPenalty;
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     main.innerHTML = `
@@ -742,31 +786,37 @@
           <p style="margin:4px 0 0;">Si no pagas tu cuota, se te van a restar <strong>${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1} punto${(penalty.pointsPerRound===1)?'':'s'}</strong> por cada jornada a partir de la <strong>Jornada ${penalty.startsAtRound}</strong>, hasta que el admin haya recibido tu pago.</p>
         </div>
       ` : ``}
-      ${gsb && gsb.enabled ? `
+      ${temporadaBets.map(bet => {
+        const locked = customBetsLocked(bet);
+        const myGuess = (currentUser.customBetAnswers && currentUser.customBetAnswers[bet.id]) ? currentUser.customBetAnswers[bet.id].guess : "";
+        return `
         <div class="card" style="margin-bottom:14px;">
-          <div class="eyebrow">🥇 Goleador de la liga (+${gsb.bonusPoints != null ? gsb.bonusPoints : 3} pts si le atinas)</div>
-          <p class="muted" style="margin-top:-4px;">${gsbLocked ? "Ya cerró — no se puede cambiar." : (gsb.closesAtRound ? `Se elige a más tardar antes de que inicie la Jornada ${gsb.closesAtRound}.` : "Escribe tu apuesta.")}</p>
+          <div class="eyebrow">🎯 ${esc(bet.label)} (+${bet.points} pts si le atinas)</div>
+          <p class="muted" style="margin-top:-4px;">${locked ? "Ya cerró — no se puede cambiar." : (bet.closesAtRound ? `Se elige a más tardar antes de que inicie la Jornada ${bet.closesAtRound}.` : "Escribe tu apuesta.")}</p>
           <div class="row2">
-            <input type="text" id="qz-gsb-input" placeholder="Nombre, apellido o apodo" value="${esc(myGuess)}" ${gsbLocked ? "disabled" : ""}>
-            ${gsbLocked ? "" : `<button class="btn btn-gold" id="qz-gsb-save">Guardar</button>`}
+            <input type="text" id="qz-cb-input-${bet.id}" placeholder="Escribe tu respuesta" value="${esc(myGuess)}" ${locked ? "disabled" : ""}>
+            ${locked ? "" : `<button class="btn btn-gold" data-cb-save="${bet.id}">Guardar</button>`}
           </div>
         </div>
-      ` : ``}
+      `;
+      }).join("")}
       <div class="qz-tabs" style="margin-bottom:14px;">
         ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
       </div>
       <div id="qz-jornada-list"></div>
     `;
-    const gsbSaveBtn = document.getElementById("qz-gsb-save");
-    if(gsbSaveBtn){
-      gsbSaveBtn.addEventListener("click", async () => {
-        const val = document.getElementById("qz-gsb-input").value.trim();
-        if(!val){ toast("Escribe un nombre"); return; }
-        currentUser.golScorerGuess = val;
+    root.querySelectorAll("[data-cb-save]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const betId = btn.dataset.cbSave;
+        const val = document.getElementById("qz-cb-input-" + betId).value.trim();
+        if(!val){ toast("Escribe una respuesta"); return; }
+        if(!currentUser.customBetAnswers) currentUser.customBetAnswers = {};
+        const prev = currentUser.customBetAnswers[betId];
+        currentUser.customBetAnswers[betId] = { guess: val, correct: prev ? prev.correct : null };
         const ok = await setMeta(meta);
         toast(ok ? "Guardado ✅" : "No se pudo guardar, intenta de nuevo");
       });
-    }
+    });
     root.querySelectorAll("[data-jf]").forEach(btn => {
       btn.addEventListener("click", () => { jornadaFilter = btn.dataset.jf; renderJornada(main); });
     });
@@ -835,6 +885,7 @@
   // "Por jugar": open for voting, live countdown
   function renderRoundVoting(box, round){
     const roundPicks = myPicks[round.id] || {};
+    const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     box.innerHTML = `
       <div class="clock-card" style="margin-bottom:14px;">
         <div class="clock-label">Jornada ${round.number} · cierre de quiniela</div>
@@ -843,6 +894,22 @@
       <div id="qz-matches-${round.id}"></div>
       <p class="muted" id="qz-savestatus-${round.id}" style="text-align:center;">Tus picks se guardan solos apenas los eliges.</p>
       <button class="btn btn-primary" data-save="${round.id}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>
+      ${jornadaBets.length ? `
+        <div class="card" style="margin-top:14px;">
+          <div class="eyebrow">🎯 Preguntas de esta jornada</div>
+          ${jornadaBets.map(bet => {
+            const extra = roundPicks.__extra || {};
+            return `
+              <div class="field">
+                <label>${esc(bet.label)} (+${bet.points} pts)</label>
+                <input type="text" data-cb-jornada="${bet.id}" placeholder="Escribe tu respuesta" value="${esc(extra[bet.id] || '')}">
+              </div>
+            `;
+          }).join("")}
+          <button class="btn btn-gold" id="qz-cb-jornada-save-${round.id}" style="width:100%;padding:10px;">Guardar respuestas</button>
+          <p class="muted" id="qz-cb-jornada-status-${round.id}" style="text-align:center;margin-top:6px;"></p>
+        </div>
+      ` : ``}
     `;
     const matchesDiv = document.getElementById("qz-matches-" + round.id);
     const statusEl = document.getElementById("qz-savestatus-" + round.id);
@@ -859,6 +926,22 @@
         </div>
       `;
     }).join("");
+    const jornadaSaveBtn = document.getElementById("qz-cb-jornada-save-" + round.id);
+    if(jornadaSaveBtn){
+      jornadaSaveBtn.addEventListener("click", async () => {
+        if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
+        if(!myPicks[round.id]) myPicks[round.id] = {};
+        if(!myPicks[round.id].__extra) myPicks[round.id].__extra = {};
+        box.querySelectorAll("[data-cb-jornada]").forEach(inp => {
+          myPicks[round.id].__extra[inp.dataset.cbJornada] = inp.value.trim();
+        });
+        const stEl = document.getElementById("qz-cb-jornada-status-" + round.id);
+        stEl.textContent = "Guardando…";
+        const ok = await setPicks(currentUser.id, myPicks);
+        stEl.textContent = ok ? "✅ Guardado" : "❌ No se pudo guardar";
+        stEl.style.color = ok ? "var(--pitch-light)" : "var(--red)";
+      });
+    }
     matchesDiv.querySelectorAll(".pick-row").forEach(row => {
       row.querySelectorAll(".pick-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
@@ -1345,40 +1428,86 @@
   // flow (jornadas/resultados) — top-scorer bet, unpaid-participant penalty, and
   // whatever similar features get added later. Keeps Ajustes from getting cluttered.
   function renderAdminAdicionales(body){
-    if(!meta.golScorerBet) meta.golScorerBet = { enabled: false, closesAtRound: null, actualWinner: "" };
+    const migrated = ensureCustomBets();
     if(!meta.paymentPenalty) meta.paymentPenalty = { enabled: false, startsAtRound: null, pointsPerRound: 1 };
-    const gsb = meta.golScorerBet;
     const penalty = meta.paymentPenalty;
+    const draft = renderAdminAdicionales._draft;
+
+    function betRowHtml(bet){
+      const scopeLabel = bet.scope === "temporada" ? "De toda la temporada" : "Se pregunta cada jornada";
+      return `
+        <div class="history-item">
+          <div>
+            <strong>${esc(bet.label)}</strong> <span class="muted">· ${scopeLabel} · +${bet.points} pts${bet.scope==="temporada" && bet.closesAtRound ? ` · cierra en Jornada ${bet.closesAtRound}` : ""}</span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-ghost btn-sm" data-edit-bet="${bet.id}">Editar</button>
+            <button class="btn btn-danger btn-sm" data-del-bet="${bet.id}">Eliminar</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function formHtml(){
+      const editing = draft && draft.id;
+      const scope = draft ? draft.scope : "temporada";
+      return `
+        <div class="card">
+          <div class="eyebrow">${editing ? "Editar apuesta" : "Nueva apuesta"}</div>
+          <div class="field"><label>Nombre</label><input type="text" id="qz-cb-label" value="${esc(draft ? draft.label : '')}" placeholder="Ej. Campeón de goleo, Quién anota hoy..."></div>
+          <div class="field">
+            <label>¿Cuándo se contesta?</label>
+            <select id="qz-cb-scope">
+              <option value="temporada" ${scope==="temporada"?"selected":""}>Una sola vez, para toda la temporada</option>
+              <option value="jornada" ${scope==="jornada"?"selected":""}>Se vuelve a preguntar en cada jornada</option>
+            </select>
+          </div>
+          <div class="row2">
+            <div class="field"><label>Puntos si le atina</label><input type="number" id="qz-cb-points" value="${draft ? draft.points : 3}"></div>
+            <div class="field" id="qz-cb-closes-wrap" style="${scope==='jornada' ? 'display:none;' : ''}"><label>Se cierra antes de que inicie la jornada</label><input type="number" id="qz-cb-closes" value="${draft && draft.closesAtRound ? draft.closesAtRound : ''}" placeholder="Opcional"></div>
+          </div>
+          <p class="muted" style="margin-top:-8px;">Los participantes escriben su respuesta libremente. Tú decides a mano quién le atinó — todavía no validamos esto en automático.</p>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" id="qz-cb-save-bet">${editing ? "Guardar cambios" : "Crear apuesta"}</button>
+            <button class="btn btn-ghost" id="qz-cb-cancel-bet">Cancelar</button>
+          </div>
+        </div>
+      `;
+    }
+
     body.innerHTML = `
       <div class="card">
-        <div class="eyebrow">Apuesta del goleador</div>
-        <p class="muted" style="margin-top:-4px;">Cada quien escribe libremente a quién cree que va a ser el goleador de la liga. Si le atina, suma puntos extra a su total. Tú decides manualmente quién le atinó, porque la gente puede escribir el nombre de formas distintas.</p>
-        <div class="field">
-          <label><input type="checkbox" id="qz-gsb-enabled" ${gsb.enabled ? "checked" : ""}> Activar esta apuesta en la quiniela</label>
-        </div>
-        <div class="row2">
-          <div class="field"><label>Se elige a más tardar antes de que inicie la jornada</label><input type="number" id="qz-gsb-round" value="${gsb.closesAtRound || ''}" placeholder="Ej. 5"></div>
-          <div class="field"><label>Puntos si le atina</label><input type="number" id="qz-gsb-bonus" value="${gsb.bonusPoints != null ? gsb.bonusPoints : 3}"></div>
-        </div>
-        <p class="muted" style="margin-top:-8px;">En cuanto pase la hora límite de esa jornada, ya nadie podrá cambiar su apuesta.</p>
-        <div class="field"><label>Goleador real (opcional, informativo)</label><input type="text" id="qz-gsb-winner" value="${esc(gsb.actualWinner || '')}" placeholder="Se llena al final del torneo"></div>
-        <button class="btn btn-primary" id="qz-gsb-save-settings">Guardar</button>
+        <div class="eyebrow">Apuestas personalizadas</div>
+        <p class="muted" style="margin-top:-4px;">Arma las tuyas: goleador, campeón de goleo, quién anota esta jornada, lo que se les ocurra. Cada una suma puntos si el participante le atina, y tú validas a mano quién ganó (porque cada quien escribe distinto).</p>
+        ${(meta.customBets && meta.customBets.length) ? meta.customBets.map(betRowHtml).join("") : `<p class="muted">Todavía no has creado ninguna.</p>`}
+        ${!draft ? `<button class="btn btn-gold" id="qz-cb-new" style="margin-top:10px;">+ Nueva apuesta</button>` : ``}
       </div>
-      <div class="card" style="padding:8px 12px;">
-        <div class="eyebrow" style="padding:10px 12px 0;">Apuestas de cada participante</div>
-        <table>
-          <thead><tr><th>Participante</th><th style="text-align:center;">Apostó a</th><th style="text-align:center;">¿Le atinó?</th></tr></thead>
-          <tbody>
-            ${meta.participants.map(p => `
-              <tr data-pid="${p.id}">
-                <td>${esc(p.name)}</td>
-                <td style="text-align:center;">${p.golScorerGuess ? esc(p.golScorerGuess) : '<span class="muted">Sin apuesta</span>'}</td>
-                <td style="text-align:center;"><input type="checkbox" data-role="gsb-correct" ${p.golScorerCorrect ? "checked" : ""} ${p.golScorerGuess ? "" : "disabled"}></td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
+      ${draft ? formHtml() : ``}
+      ${(meta.customBets || []).filter(b => b.scope === "temporada").map(bet => `
+        <div class="card" style="padding:8px 12px;">
+          <div class="eyebrow" style="padding:10px 12px 0;">Validar: ${esc(bet.label)}</div>
+          <table>
+            <thead><tr><th>Participante</th><th style="text-align:center;">Apostó a</th><th style="text-align:center;">¿Le atinó?</th></tr></thead>
+            <tbody>
+              ${meta.participants.map(p => {
+                const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
+                return `
+                  <tr data-pid="${p.id}" data-bet="${bet.id}">
+                    <td>${esc(p.name)}</td>
+                    <td style="text-align:center;">${ans && ans.guess ? esc(ans.guess) : '<span class="muted">Sin apuesta</span>'}</td>
+                    <td style="text-align:center;"><input type="checkbox" data-role="cb-correct" ${ans && ans.correct ? "checked" : ""} ${ans && ans.guess ? "" : "disabled"}></td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `).join("")}
+      ${(meta.customBets || []).some(b => b.scope === "jornada") ? `
+        <div class="card">
+          <p class="muted">Las apuestas "de cada jornada" se validan jornada por jornada, en <strong>Admin → Resultados</strong>, junto con el resultado de esa jornada.</p>
+        </div>
+      ` : ``}
       <div class="card">
         <div class="eyebrow">Penalización por no pagar</div>
         <p class="muted" style="margin-top:-4px;">A quien ya está marcado como "Pagó" en Participantes nunca se le resta nada. A quien no ha pagado, se le empiezan a restar puntos a partir de la jornada que elijas, uno por cada jornada que pase mientras siga sin pagar — se detiene en cuanto lo marques como pagado.</p>
@@ -1392,27 +1521,79 @@
         <button class="btn btn-primary" id="qz-save-penalty">Guardar</button>
       </div>
     `;
-    document.getElementById("qz-gsb-save-settings").addEventListener("click", async () => {
-      gsb.enabled = document.getElementById("qz-gsb-enabled").checked;
-      const roundVal = document.getElementById("qz-gsb-round").value.trim();
-      gsb.closesAtRound = roundVal ? Number(roundVal) : null;
-      const bonusRaw = document.getElementById("qz-gsb-bonus").value.trim();
-      gsb.bonusPoints = bonusRaw === "" ? 3 : Number(bonusRaw);
-      gsb.actualWinner = document.getElementById("qz-gsb-winner").value.trim();
-      const ok = await setMeta(meta);
-      toast(ok ? "Guardado ✅" : "No se pudo guardar");
-    });
-    body.querySelectorAll("[data-role=gsb-correct]").forEach(checkbox => {
-      checkbox.addEventListener("change", async () => {
-        const pid = checkbox.closest("tr").dataset.pid;
-        const p = meta.participants.find(x => x.id === pid);
-        if(!p) return;
-        p.golScorerCorrect = checkbox.checked;
+
+    if(migrated) setMeta(meta);
+
+    const newBtn = document.getElementById("qz-cb-new");
+    if(newBtn) newBtn.addEventListener("click", () => { renderAdminAdicionales._draft = {}; renderAdminAdicionales(body); });
+
+    const scopeSelect = document.getElementById("qz-cb-scope");
+    if(scopeSelect){
+      scopeSelect.addEventListener("change", () => {
+        document.getElementById("qz-cb-closes-wrap").style.display = scopeSelect.value === "jornada" ? "none" : "";
+      });
+    }
+    const cancelBtn = document.getElementById("qz-cb-cancel-bet");
+    if(cancelBtn) cancelBtn.addEventListener("click", () => { renderAdminAdicionales._draft = null; renderAdminAdicionales(body); });
+
+    const saveBetBtn = document.getElementById("qz-cb-save-bet");
+    if(saveBetBtn){
+      saveBetBtn.addEventListener("click", async () => {
+        const label = document.getElementById("qz-cb-label").value.trim();
+        if(!label){ toast("Ponle un nombre"); return; }
+        const scope = document.getElementById("qz-cb-scope").value;
+        const points = Number(document.getElementById("qz-cb-points").value) || 0;
+        const closesRaw = document.getElementById("qz-cb-closes").value.trim();
+        const closesAtRound = (scope === "temporada" && closesRaw) ? Number(closesRaw) : null;
+        if(!meta.customBets) meta.customBets = [];
+        if(draft.id){
+          const bet = meta.customBets.find(b => b.id === draft.id);
+          if(bet){ bet.label = label; bet.scope = scope; bet.points = points; bet.closesAtRound = closesAtRound; }
+        } else {
+          meta.customBets.push({ id: uid("cb"), label, scope, points, closesAtRound });
+        }
         const ok = await setMeta(meta);
-        if(ok) toast(checkbox.checked ? `${p.name} +${gsb.bonusPoints != null ? gsb.bonusPoints : 3} puntos ✅` : `Se quitó el bono de ${p.name}`);
+        if(ok){
+          toast("Guardado ✅");
+          renderAdminAdicionales._draft = null;
+          renderAdminAdicionales(body);
+        } else {
+          toast("No se pudo guardar, intenta de nuevo");
+        }
+      });
+    }
+
+    body.querySelectorAll("[data-edit-bet]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const bet = meta.customBets.find(b => b.id === btn.dataset.editBet);
+        renderAdminAdicionales._draft = { ...bet };
+        renderAdminAdicionales(body);
+      });
+    });
+    body.querySelectorAll("[data-del-bet]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if(!confirm("¿Eliminar esta apuesta? Se pierden las respuestas de todos.")) return;
+        meta.customBets = meta.customBets.filter(b => b.id !== btn.dataset.delBet);
+        meta.participants.forEach(p => { if(p.customBetAnswers) delete p.customBetAnswers[btn.dataset.delBet]; });
+        meta.rounds.forEach(r => { if(r.customBetResults) delete r.customBetResults[btn.dataset.delBet]; });
+        await setMeta(meta);
+        renderAdminAdicionales(body);
+      });
+    });
+    body.querySelectorAll("[data-role=cb-correct]").forEach(checkbox => {
+      checkbox.addEventListener("change", async () => {
+        const tr = checkbox.closest("tr");
+        const pid = tr.dataset.pid;
+        const betId = tr.dataset.bet;
+        const p = meta.participants.find(x => x.id === pid);
+        if(!p || !p.customBetAnswers || !p.customBetAnswers[betId]) return;
+        p.customBetAnswers[betId].correct = checkbox.checked;
+        const ok = await setMeta(meta);
+        if(ok) toast(checkbox.checked ? `${p.name} ✅` : `Se quitó el punto de ${p.name}`);
         else { checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
       });
     });
+
     document.getElementById("qz-save-penalty").addEventListener("click", async () => {
       penalty.enabled = document.getElementById("qz-penalty-enabled").checked;
       const roundRaw = document.getElementById("qz-penalty-round").value.trim();
@@ -1815,6 +1996,8 @@
     if(!select.value) return;
     const round = meta.rounds.find(r => r.id === select.value);
     renderAdminResultados._target = round.id;
+    const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
+    if(jornadaBets.length) await ensureAllPicksLoaded();
     const form = document.getElementById("qz-results-form");
     form.innerHTML = `
       <div class="card">
@@ -1843,6 +2026,27 @@
         </button>
         ${round.resultsPublished ? `<button class="btn btn-ghost btn-sm" id="qz-reopen-round" style="width:100%;margin-top:8px;">Reabrir jornada (permitir votos de nuevo)</button>` : ``}
       </div>
+      ${jornadaBets.map(bet => `
+        <div class="card" style="padding:8px 12px;">
+          <div class="eyebrow" style="padding:10px 12px 0;">Validar: ${esc(bet.label)} (Jornada ${round.number})</div>
+          <table>
+            <thead><tr><th>Participante</th><th style="text-align:center;">Respondió</th><th style="text-align:center;">¿Le atinó?</th></tr></thead>
+            <tbody>
+              ${meta.participants.map(p => {
+                const guess = ((allPicksCache[p.id] || {})[round.id] || {}).__extra ? (allPicksCache[p.id][round.id].__extra[bet.id] || "") : "";
+                const correct = round.customBetResults && round.customBetResults[bet.id] ? round.customBetResults[bet.id][p.id] : false;
+                return `
+                  <tr data-pid="${p.id}" data-bet="${bet.id}">
+                    <td>${esc(p.name)}</td>
+                    <td style="text-align:center;">${guess ? esc(guess) : '<span class="muted">Sin respuesta</span>'}</td>
+                    <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `).join("")}
     `;
     document.getElementById("qz-autofill").addEventListener("click", async () => {
       const statusEl = document.getElementById("qz-autofill-status");
@@ -1902,6 +2106,18 @@
         renderAdminResultados(body);
       });
     }
+    form.querySelectorAll("[data-role=jornada-bet-correct]").forEach(checkbox => {
+      checkbox.addEventListener("change", async () => {
+        const tr = checkbox.closest("tr");
+        const pid = tr.dataset.pid;
+        const betId = tr.dataset.bet;
+        if(!round.customBetResults) round.customBetResults = {};
+        if(!round.customBetResults[betId]) round.customBetResults[betId] = {};
+        round.customBetResults[betId][pid] = checkbox.checked;
+        const ok = await setMeta(meta);
+        if(!ok){ checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
+      });
+    });
 
     const logEntries = (meta.auditLog || []).slice().reverse().slice(0, 20);
     if(logEntries.length){
@@ -2714,10 +2930,22 @@
                 if(pick && pick === result) pts += perPick;
               });
             });
-            const gsb = tenantMeta.golScorerBet;
             const p = tenantMeta.participants.find(x => x.id === pid);
-            if(gsb && gsb.enabled){
-              if(p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
+            (tenantMeta.customBets || []).forEach(bet => {
+              if(bet.scope === "temporada"){
+                const ans = p && p.customBetAnswers && p.customBetAnswers[bet.id];
+                if(ans && ans.correct === true) pts += bet.points;
+              } else if(bet.scope === "jornada"){
+                tenantMeta.rounds.forEach(r => {
+                  const res = r.customBetResults && r.customBetResults[bet.id];
+                  if(res && res[pid] === true) pts += bet.points;
+                });
+              }
+            });
+            if(!tenantMeta.customBetsMigrated){
+              // This quiniela hasn't opened its own app since the upgrade yet — fall back to the old field.
+              const gsb = tenantMeta.golScorerBet;
+              if(gsb && gsb.enabled && p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
             }
             const penalty = tenantMeta.paymentPenalty;
             if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
