@@ -1425,10 +1425,35 @@
   }
 
   // "Participación": who has/hasn't submitted picks for open rounds — status only, never reveals picks
+  function spectatorLinkCardHtml(){
+    const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}?ver=1`;
+    return `
+      <div class="card">
+        <div class="eyebrow">Link de "solo ver"</div>
+        <p class="muted">Para familiares o curiosos que quieren checar la tabla sin ser parte de la quiniela — no necesitan elegir nombre ni PIN, solo ven la tabla de posiciones, en modo lectura.</p>
+        <button class="btn btn-gold" id="qz-spectator-copy" data-link="${link}">Copiar link</button>
+      </div>
+    `;
+  }
+  function wireSpectatorLinkCard(body){
+    const btn = body.querySelector("#qz-spectator-copy");
+    if(!btn) return;
+    btn.addEventListener("click", async (e) => {
+      const val = e.currentTarget.dataset.link;
+      try{
+        await navigator.clipboard.writeText(val);
+        toast("Link copiado ✅");
+      }catch(e){
+        toast("No se pudo copiar, intenta de nuevo");
+      }
+    });
+  }
+
   async function renderAdminParticipacion(body){
     const openRounds = meta.rounds.filter(r => classifyRound(r) === "porjugar").slice().sort((a,b)=>a.number-b.number);
     if(!openRounds.length){
-      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay ninguna jornada aceptando picks en este momento.</p></div>`;
+      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay ninguna jornada aceptando picks en este momento.</p></div>${spectatorLinkCardHtml()}`;
+      wireSpectatorLinkCard(body);
       return;
     }
     body.innerHTML = `<div class="card"><p class="muted">Cargando estatus de participación…</p></div>`;
@@ -1464,7 +1489,7 @@
           </table>
         </div>
       `;
-    }).join("");
+    }).join("") + spectatorLinkCardHtml();
 
     function reminderText(round, missing){
       const bullets = missing.map(n => `• ${n}`).join("\n");
@@ -1500,6 +1525,7 @@
         window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
       });
     });
+    wireSpectatorLinkCard(body);
   }
 
   function blankMatch(){ return {id: uid("m"), teamA:"", teamB:""}; }
@@ -2045,12 +2071,6 @@
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
-        <div class="eyebrow">Link de "solo ver"</div>
-        <p class="muted">Para familiares o curiosos que quieren checar la tabla sin ser parte de la quiniela — no necesitan elegir nombre ni PIN, solo ven la tabla de posiciones, en modo lectura.</p>
-        <div class="field"><input type="text" id="qz-spectator-link" readonly value="${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}?ver=1"></div>
-        <button class="btn btn-gold" id="qz-spectator-copy">Copiar link</button>
-      </div>
-      <div class="card">
         <div class="eyebrow">Respaldo de esta quiniela</div>
         <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
@@ -2070,15 +2090,6 @@
       </div>
       ` : ``}
     `;
-    document.getElementById("qz-spectator-copy").addEventListener("click", async () => {
-      const val = document.getElementById("qz-spectator-link").value;
-      try{
-        await navigator.clipboard.writeText(val);
-        toast("Link copiado ✅");
-      }catch(e){
-        toast("Cópialo manualmente del cuadro de texto");
-      }
-    });
     document.getElementById("qz-export-backup").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
