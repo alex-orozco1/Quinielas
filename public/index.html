@@ -737,7 +737,7 @@
       ${showPaymentNote ? `
         <div class="card" style="border-color:var(--red);background:#F6E1DE;margin-bottom:14px;">
           <div class="eyebrow" style="color:#7d251d;">💰 Falta tu pago</div>
-          <p style="margin:4px 0 0;">Si no pagas tu cuota, se te van a restar <strong>${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1} punto${(penalty.pointsPerRound===1)?'':'s'}</strong> por cada jornada a partir de la <strong>Jornada ${penalty.startsAtRound}</strong>, hasta que se marque que ya pagaste.</p>
+          <p style="margin:4px 0 0;">Si no pagas tu cuota, se te van a restar <strong>${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1} punto${(penalty.pointsPerRound===1)?'':'s'}</strong> por cada jornada a partir de la <strong>Jornada ${penalty.startsAtRound}</strong>, hasta que el admin haya recibido tu pago.</p>
         </div>
       ` : ``}
       ${gsb && gsb.enabled ? `
