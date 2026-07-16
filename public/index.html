@@ -518,17 +518,32 @@
       });
     });
     const gsb = meta.golScorerBet;
+    const p = meta.participants.find(x => x.id === participantId);
     if(gsb && gsb.enabled){
-      const p = meta.participants.find(x => x.id === participantId);
       if(p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
     }
+    const penalty = meta.paymentPenalty;
+    if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
+      const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
+      const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+      pts -= passedRounds * perRound;
+    }
     return {pts, played};
+  }
+
+  function penaltyFor(participantId){
+    const penalty = meta.paymentPenalty;
+    const p = meta.participants.find(x => x.id === participantId);
+    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p || p.paid) return 0;
+    const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
+    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+    return passedRounds * perRound;
   }
 
   function standingsList(){
     return meta.participants.map(p => {
       const {pts} = pointsFor(p.id);
-      return {...p, pts};
+      return {...p, pts, penalty: penaltyFor(p.id)};
     }).sort((a,b) => b.pts - a.pts);
   }
 
@@ -971,7 +986,7 @@
             ${list.map((p,i) => `
               <tr class="${p.id===currentUser.id?'me':''}">
                 <td class="pos ${i===0?'top1':''}" style="text-align:center;">${i+1}</td>
-                <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
+                <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${p.penalty} por no pagar</span>` : ''}</td>
                 <td style="text-align:center;font-weight:700;">${p.pts}</td>
                 <td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>
               </tr>
@@ -1997,6 +2012,18 @@
         <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
+        <div class="eyebrow">Penalización por no pagar</div>
+        <p class="muted" style="margin-top:-4px;">A quien ya está marcado como "Pagó" en Participantes nunca se le resta nada. A quien no ha pagado, se le empiezan a restar puntos a partir de la jornada que elijas, uno por cada jornada que pase mientras siga sin pagar — se detiene en cuanto lo marques como pagado.</p>
+        <div class="field">
+          <label><input type="checkbox" id="qz-penalty-enabled" ${meta.paymentPenalty && meta.paymentPenalty.enabled ? "checked" : ""}> Activar penalización</label>
+        </div>
+        <div class="row2">
+          <div class="field"><label>A partir de la jornada</label><input type="number" id="qz-penalty-round" value="${meta.paymentPenalty && meta.paymentPenalty.startsAtRound ? meta.paymentPenalty.startsAtRound : ''}" placeholder="Ej. 5"></div>
+          <div class="field"><label>Puntos a restar por jornada</label><input type="number" id="qz-penalty-points" value="${meta.paymentPenalty && meta.paymentPenalty.pointsPerRound != null ? meta.paymentPenalty.pointsPerRound : 1}"></div>
+        </div>
+        <button class="btn btn-primary" id="qz-save-penalty">Guardar</button>
+      </div>
+      <div class="card">
         <div class="eyebrow">Respaldo de esta quiniela</div>
         <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
@@ -2055,6 +2082,16 @@
       await setMeta(meta);
       toast("Ajustes guardados ✅");
       renderApp();
+    });
+    document.getElementById("qz-save-penalty").addEventListener("click", async () => {
+      if(!meta.paymentPenalty) meta.paymentPenalty = {};
+      meta.paymentPenalty.enabled = document.getElementById("qz-penalty-enabled").checked;
+      const roundRaw = document.getElementById("qz-penalty-round").value.trim();
+      meta.paymentPenalty.startsAtRound = roundRaw === "" ? null : Number(roundRaw);
+      const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
+      meta.paymentPenalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
+      const ok = await setMeta(meta);
+      toast(ok ? "Penalización guardada ✅" : "No se pudo guardar");
     });
     document.getElementById("qz-close-tournament").addEventListener("click", async () => {
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
@@ -2641,9 +2678,15 @@
               });
             });
             const gsb = tenantMeta.golScorerBet;
+            const p = tenantMeta.participants.find(x => x.id === pid);
             if(gsb && gsb.enabled){
-              const p = tenantMeta.participants.find(x => x.id === pid);
               if(p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
+            }
+            const penalty = tenantMeta.paymentPenalty;
+            if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
+              const passedRounds = tenantMeta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
+              const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+              pts -= passedRounds * perRound;
             }
             return pts;
           }
