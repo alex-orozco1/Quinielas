@@ -743,7 +743,7 @@
       ${gsb && gsb.enabled ? `
         <div class="card" style="margin-bottom:14px;">
           <div class="eyebrow">🥇 Goleador de la liga (+${gsb.bonusPoints != null ? gsb.bonusPoints : 3} pts si le atinas)</div>
-          <p class="muted" style="margin-top:-4px;">${gsbLocked ? "Ya cerró — no se puede cambiar." : (gsb.closesAtRound ? `Puedes cambiarlo hasta que cierre la Jornada ${gsb.closesAtRound}.` : "Escribe tu apuesta.")}</p>
+          <p class="muted" style="margin-top:-4px;">${gsbLocked ? "Ya cerró — no se puede cambiar." : (gsb.closesAtRound ? `Se elige a más tardar cuando inicie la Jornada ${gsb.closesAtRound}.` : "Escribe tu apuesta.")}</p>
           <div class="row2">
             <input type="text" id="qz-gsb-input" placeholder="Nombre, apellido o apodo" value="${esc(myGuess)}" ${gsbLocked ? "disabled" : ""}>
             ${gsbLocked ? "" : `<button class="btn btn-gold" id="qz-gsb-save">Guardar</button>`}
@@ -1354,7 +1354,7 @@
           <label><input type="checkbox" id="qz-gsb-enabled" ${gsb.enabled ? "checked" : ""}> Activar esta apuesta en la quiniela</label>
         </div>
         <div class="row2">
-          <div class="field"><label>Se bloquea cuando cierre esta jornada</label><input type="number" id="qz-gsb-round" value="${gsb.closesAtRound || ''}" placeholder="Ej. 5"><p class="muted" style="margin-top:4px;">Cuando pase la hora límite de esa jornada, ya nadie podrá cambiar su apuesta.</p></div>
+          <div class="field"><label>Se bloquea cuando inicie esta jornada</label><input type="number" id="qz-gsb-round" value="${gsb.closesAtRound || ''}" placeholder="Ej. 5"><p class="muted" style="margin-top:4px;">En cuanto pase la hora límite de esa jornada, ya nadie podrá cambiar su apuesta.</p></div>
           <div class="field"><label>Puntos si le atina</label><input type="number" id="qz-gsb-bonus" value="${gsb.bonusPoints != null ? gsb.bonusPoints : 3}"></div>
         </div>
         <div class="field"><label>Goleador real (opcional, informativo)</label><input type="text" id="qz-gsb-winner" value="${esc(gsb.actualWinner || '')}" placeholder="Se llena al final del torneo"></div>
