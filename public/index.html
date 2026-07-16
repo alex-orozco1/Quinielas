@@ -1364,13 +1364,13 @@
       <div class="card" style="padding:8px 12px;">
         <div class="eyebrow" style="padding:10px 12px 0;">Apuestas de cada participante</div>
         <table>
-          <thead><tr><th>Participante</th><th>Apostó a</th><th>¿Le atinó?</th></tr></thead>
+          <thead><tr><th>Participante</th><th style="text-align:center;">Apostó a</th><th style="text-align:center;">¿Le atinó?</th></tr></thead>
           <tbody>
             ${meta.participants.map(p => `
               <tr data-pid="${p.id}">
                 <td>${esc(p.name)}</td>
-                <td>${p.golScorerGuess ? esc(p.golScorerGuess) : '<span class="muted">Sin apuesta</span>'}</td>
-                <td><input type="checkbox" data-role="gsb-correct" ${p.golScorerCorrect ? "checked" : ""} ${p.golScorerGuess ? "" : "disabled"}></td>
+                <td style="text-align:center;">${p.golScorerGuess ? esc(p.golScorerGuess) : '<span class="muted">Sin apuesta</span>'}</td>
+                <td style="text-align:center;"><input type="checkbox" data-role="gsb-correct" ${p.golScorerCorrect ? "checked" : ""} ${p.golScorerGuess ? "" : "disabled"}></td>
               </tr>
             `).join("")}
           </tbody>
