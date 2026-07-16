@@ -349,10 +349,11 @@
     catch(e){ console.error("setPlatformIndex failed", e); return false; }
   }
   async function getPlatformSettings(){
+    const defaults = { jornadaLimit: 5, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" };
     try{
       const r = await kvGet(PLATFORM_SETTINGS_KEY);
-      return r.found ? r.value : { jornadaLimit: 5, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" };
-    }catch(e){ console.error("getPlatformSettings failed", e); return { jornadaLimit: 5, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" }; }
+      return r.found ? { ...defaults, ...r.value } : defaults;
+    }catch(e){ console.error("getPlatformSettings failed", e); return defaults; }
   }
   async function setPlatformSettings(s){
     try{ return await kvSet(PLATFORM_SETTINGS_KEY, s); }
@@ -2315,7 +2316,7 @@
       <div class="login-wrap">
         <div class="login-card" style="max-width:440px;">
           <div class="login-title display">Crea tu quiniela</div>
-          <div class="login-sub">Gratis las primeras ${settings.jornadaLimit} jornadas. Después, $${settings.pricePerParticipant} MXN por participante.</div>
+          <div class="login-sub">Gratis las primeras ${settings.jornadaLimit} jornadas. Después, $${settings.pricePerParticipant} MXN por participante para toda la quiniela.</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
           <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando toque cobrar" value="${esc(draft.contact)}"></div>
