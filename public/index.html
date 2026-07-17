@@ -1493,7 +1493,7 @@
         return `
           <div class="card" style="padding:8px 12px;overflow-x:auto;">
             <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas personalizadas</div>
-            <p class="muted" style="padding:0 12px;margin-top:-4px;">Desliza hacia los lados para ver todas las apuestas personalizadas, el nombre se queda fijo.</p>
+            <p class="muted" style="padding:0 12px;margin-top:-4px;">Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
             <table>
               <thead>
                 <tr>
@@ -2092,7 +2092,8 @@
           const tag = document.getElementById("qz-suggest-" + m.id);
           if(hit){
             found++;
-            tag.textContent = `Sugerido: ${hit.score} (${hit.date}) — clic en el resultado para aceptarlo`;
+            const niceDate = new Date(hit.date + "T00:00:00").toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
+            tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${m.id}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
             tag.style.color = "var(--pitch-light)";
           } else {
             tag.textContent = "Sin resultado automático todavía";
@@ -2100,6 +2101,15 @@
           }
         });
         statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta temporada/fecha — puede que la temporada no coincida o los partidos no estén jugados. Puedes ajustarla en Admin → Ajustes.";
+        form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const matchId = btn.dataset.acceptSuggestion;
+            const val = btn.dataset.suggestedVal;
+            const row = form.querySelector(`.pick-row[data-result-match="${matchId}"]`);
+            const targetBtn = row ? row.querySelector(`[data-val="${val}"]`) : null;
+            if(targetBtn) targetBtn.click();
+          });
+        });
       }catch(e){
         console.error(e);
         statusEl.textContent = "No se pudo conectar con TheSportsDB. Ingresa los resultados manualmente.";
