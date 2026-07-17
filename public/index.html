@@ -3295,6 +3295,10 @@
       renderBootError("No pudimos cargar los datos de la quiniela. Puede ser que el servidor apenas esté despertando (tarda ~30-60 segundos la primera vez) o un problema de conexión.", () => boot(1));
       return;
     }
+    if(ROUTE === "root"){
+      renderHome();
+      return;
+    }
     if(m === null){
       if(ROUTE === "quiniela"){
         // A /q/:slug that doesn't exist — never silently create data under someone else's link.
