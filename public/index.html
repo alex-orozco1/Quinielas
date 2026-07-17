@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Quinielas</title>
+<title>QRACKS</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjIyIiBmaWxsPSIjMTczQTJCIi8+CiAgPHRleHQgeD0iNTAiIHk9Ijc0IiBmb250LWZhbWlseT0iQXJpYWwsIEhlbHZldGljYSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI2OCIgZm9udC13ZWlnaHQ9IjkwMCIgZmlsbD0iI0UzQjIzQyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UTwvdGV4dD4KPC9zdmc+Cg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Work+Sans:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <style>
@@ -17,8 +17,8 @@
     --pitch-light:#2D6A4F;
     --chalk:#F7F5EC;
     --paper:#FFFFFF;
-    --gold:#E3B23C;
-    --gold-dim:#c99a2f;
+    --gold:#D6A73C;
+    --gold-dim:#B58F34;
     --red:#C1443A;
     --ink:#10231C;
     --ink-soft:#4B5B53;
@@ -28,19 +28,21 @@
   }
   *{box-sizing:border-box;}
   #quiniela-root{
-    font-family:'Work Sans', sans-serif;
+    font-family:'Manrope', sans-serif;
     background:var(--chalk);
     color:var(--ink);
     min-height:100%;
     line-height:1.4;
   }
   #quiniela-root .display{
-    font-family:'Teko', sans-serif;
-    font-weight:600;
-    letter-spacing:0.01em;
+    font-family:'Manrope', sans-serif;
+    font-weight:800;
+    letter-spacing:-0.01em;
   }
   #quiniela-root .mono{
-    font-family:'Space Mono', monospace;
+    font-family:'Manrope', sans-serif;
+    font-variant-numeric:tabular-nums;
+    font-weight:700;
   }
   #quiniela-root button{
     font-family:inherit;
@@ -71,33 +73,44 @@
   #quiniela-root .qz-header{
     background: linear-gradient(180deg, var(--pitch-dark), var(--pitch));
     color:var(--chalk);
-    padding:18px 20px 16px;
+    padding:16px 20px 14px;
     position:sticky; top:0; z-index:20;
     box-shadow:var(--shadow);
   }
   #quiniela-root .qz-header-top{
-    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
   }
-  #quiniela-root .qz-brand{
-    display:flex; align-items:baseline; gap:8px;
+  #quiniela-root .qz-brand-mark{
+    font-weight:800; font-size:15px; letter-spacing:0.08em; color:var(--gold);
+    display:block; margin-bottom:2px;
   }
-  #quiniela-root .qz-brand .display{
-    font-size:30px; text-transform:uppercase; line-height:1;
+  #quiniela-root .qz-brand-context{
+    font-weight:700; font-size:19px; line-height:1.25; color:var(--chalk);
   }
-  #quiniela-root .qz-brand .dot{ color:var(--gold); }
-  #quiniela-root .qz-user-chip{
-    display:flex; align-items:center; gap:8px;
+  #quiniela-root .qz-brand-round{
+    font-weight:600; font-size:12.5px; color:rgba(247,245,236,0.65); margin-top:1px;
+  }
+  #quiniela-root .qz-user-dropdown{ position:relative; flex-shrink:0; }
+  #quiniela-root .qz-user-toggle{
+    display:flex; align-items:center; gap:6px;
     background:rgba(247,245,236,0.1);
     border:1px solid rgba(247,245,236,0.18);
-    padding:6px 10px 6px 12px; border-radius:999px;
-    font-size:13px; font-weight:600;
+    padding:7px 12px; border-radius:999px; color:var(--chalk);
+    font-size:13px; font-weight:700;
   }
-  #quiniela-root .qz-user-chip button{
-    background:rgba(247,245,236,0.14); border:none; color:var(--chalk);
-    border-radius:999px; width:24px; height:24px; font-size:12px;
+  #quiniela-root .qz-user-menu{
+    position:absolute; right:0; top:calc(100% + 6px); z-index:30;
+    background:var(--paper); border-radius:12px; box-shadow:0 12px 28px rgba(0,0,0,0.25);
+    min-width:180px; overflow:hidden; border:1px solid var(--line);
   }
+  #quiniela-root .qz-user-menu button{
+    display:block; width:100%; text-align:left; padding:11px 14px; background:none; border:none;
+    color:var(--ink); font-size:13.5px; font-weight:600;
+  }
+  #quiniela-root .qz-user-menu button:hover{ background:var(--chalk); }
+  #quiniela-root .qz-user-menu button + button{ border-top:1px solid var(--line); }
   #quiniela-root .qz-tabs{
-    display:flex; gap:4px; margin-top:16px; overflow-x:auto; padding-bottom:2px;
+    display:flex; gap:4px; margin-top:14px; overflow-x:auto; padding-bottom:2px;
     scrollbar-width:none;
   }
   #quiniela-root .qz-tabs::-webkit-scrollbar{ display:none; }
@@ -119,6 +132,14 @@
   #quiniela-root .card{
     background:var(--paper); border-radius:var(--radius); border:1px solid var(--line);
     box-shadow:var(--shadow); padding:18px; margin-bottom:16px;
+  }
+  #quiniela-root .card-primary{
+    background:var(--paper); border-radius:var(--radius); border:1.5px solid var(--pitch-dark);
+    box-shadow:0 8px 24px rgba(15,46,34,0.16); padding:22px; margin-bottom:16px;
+  }
+  #quiniela-root .card-info{
+    background:transparent; border-radius:var(--radius); border:1px dashed var(--line);
+    box-shadow:none; padding:14px 18px; margin-bottom:16px;
   }
   #quiniela-root .card h3{ margin:0 0 4px; font-size:15px; }
   #quiniela-root .muted{ color:var(--ink-soft); font-size:13px; }
@@ -162,7 +183,7 @@
   #quiniela-root .match-team.left{ text-align:right; }
   #quiniela-root .match-team.right{ text-align:left; }
   #quiniela-root .match-vs{
-    font-family:'Space Mono', monospace; font-size:11px; color:var(--ink-soft);
+    font-family:'Manrope', sans-serif; font-weight:700; font-size:11px; color:var(--ink-soft);
     background:var(--chalk); border-radius:6px; padding:3px 7px; flex-shrink:0;
   }
   #quiniela-root .pick-row{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
@@ -220,7 +241,7 @@
   }
   #quiniela-root td{ padding:9px 6px; border-bottom:1px solid var(--line); }
   #quiniela-root tr.me{ background:rgba(227,178,60,0.14); }
-  #quiniela-root .pos{ font-family:'Space Mono', monospace; font-weight:700; color:var(--pitch-light); }
+  #quiniela-root .pos{ font-family:'Manrope', sans-serif; font-weight:800; color:var(--pitch-light); }
   #quiniela-root .pos.top1{ color:var(--gold-dim); }
 
   /* platform dashboard table: roomier, centered headers, centered narrow columns */
@@ -597,6 +618,30 @@
     }).sort((a,b) => b.pts - a.pts);
   }
 
+  function previousRanks(){
+    const published = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>a.number-b.number);
+    if(published.length < 1) return null;
+    const lastId = published[published.length-1].id;
+    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
+    const prev = meta.participants.map(p => {
+      const picks = allPicksCache[p.id] || {};
+      let pts = 0;
+      published.forEach(r => {
+        if(r.id === lastId) return;
+        r.matches.forEach(m => {
+          const result = r.results[m.id];
+          if(!result) return;
+          const pick = picks[r.id] ? picks[r.id][m.id] : null;
+          if(pick && pick === result) pts += perPick;
+        });
+      });
+      return { id: p.id, pts };
+    }).sort((a,b) => b.pts - a.pts);
+    const ranks = {};
+    prev.forEach((p,i) => { ranks[p.id] = i + 1; });
+    return ranks;
+  }
+
   // ---------- render root ----------
   async function render(){
     if(!meta){
@@ -621,6 +666,7 @@
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card">
+          <div style="text-align:center;font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);margin-bottom:6px;">QRACKS</div>
           <div class="login-title display">${esc(meta.groupName)}</div>
           <div class="login-sub">Toca tu nombre para entrar 👇</div>
           <div class="name-grid">${names}</div>
@@ -698,17 +744,34 @@
     return null;
   }
 
+  function currentRoundContext(){
+    const open = meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number);
+    if(open.length) return open[0];
+    const enVivo = meta.rounds.filter(r => classifyRound(r) === "envivo").sort((a,b)=>b.number-a.number);
+    if(enVivo.length) return enVivo[0];
+    const played = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>b.number-a.number);
+    return played.length ? played[0] : null;
+  }
+
+  let userMenuOpen = false;
   function renderApp(){
     const tabs = tabList();
     const pending = pendingPicksInfo();
+    const contextRound = currentRoundContext();
     root.innerHTML = `
       <div class="qz-header">
         <div class="qz-header-top">
-          <div class="qz-brand"><span class="display">${esc(meta.groupName)}</span><span class="display dot">.</span></div>
-          <div class="qz-user-chip">
-            ${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""}
-            <button id="qz-change-pin" title="Cambiar mi PIN">🔑</button>
-            <button id="qz-switch-user" title="Cambiar usuario">↺</button>
+          <div>
+            <span class="qz-brand-mark">QRACKS</span>
+            <div class="qz-brand-context">${esc(meta.groupName)}</div>
+            ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
+          </div>
+          <div class="qz-user-dropdown">
+            <button class="qz-user-toggle" id="qz-user-toggle">${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""} <span>▾</span></button>
+            <div class="qz-user-menu" id="qz-user-menu" ${userMenuOpen ? "" : "hidden"}>
+              <button id="qz-change-pin">🔑 Cambiar mi PIN</button>
+              <button id="qz-switch-user">↺ Cambiar usuario</button>
+            </div>
           </div>
         </div>
         <div class="qz-tabs">
@@ -717,6 +780,14 @@
       </div>
       <div class="qz-main" id="qz-main"></div>
     `;
+    document.getElementById("qz-user-toggle").addEventListener("click", (e) => {
+      e.stopPropagation();
+      userMenuOpen = !userMenuOpen;
+      document.getElementById("qz-user-menu").hidden = !userMenuOpen;
+    });
+    document.addEventListener("click", () => {
+      if(userMenuOpen){ userMenuOpen = false; const m = document.getElementById("qz-user-menu"); if(m) m.hidden = true; }
+    }, { once: true });
     document.getElementById("qz-switch-user").addEventListener("click", () => {
       currentUser = null;
       ownerUnlocked = false;
@@ -777,7 +848,18 @@
     const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
     const penalty = meta.paymentPenalty;
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
+    const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
     main.innerHTML = `
+      ${heroRound ? `
+        <div class="card-primary" style="text-align:center;">
+          <div class="eyebrow" style="justify-content:center;display:flex;">🔥 Jornada ${heroRound.number}</div>
+          <div class="mono" id="qz-hero-clock" style="font-size:30px;margin:6px 0 10px;color:var(--pitch-dark);">⏰ ${esc(shortCountdown(heroRound.deadline))}</div>
+          ${pending && pending.round.id === heroRound.id
+            ? `<p style="margin:0 0 16px;">Te faltan <strong>${pending.missing}</strong> de ${pending.total} partidos.</p>`
+            : `<p style="margin:0 0 16px;color:var(--pitch-light);font-weight:700;">✅ Ya completaste tus picks</p>`}
+          <button class="btn btn-primary" id="qz-hero-continue" style="width:100%;padding:14px;font-size:16px;">Continuar</button>
+        </div>
+      ` : ``}
       <div id="qz-pending-banner">${pending ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
@@ -809,6 +891,12 @@
       </div>
       <div id="qz-jornada-list"></div>
     `;
+    const heroContinueBtn = document.getElementById("qz-hero-continue");
+    if(heroContinueBtn){
+      heroContinueBtn.addEventListener("click", () => {
+        document.getElementById("qz-jornada-list").scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
     root.querySelectorAll("[data-cb-save]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const betId = btn.dataset.cbSave;
@@ -860,8 +948,19 @@
           const el = document.getElementById("qz-clockbody-" + round.id);
           if(el) el.innerHTML = clockDigitsHtml(round.deadline);
         });
+        if(heroRound && !isRoundLocked(heroRound)){
+          const heroEl = document.getElementById("qz-hero-clock");
+          if(heroEl) heroEl.textContent = "⏰ " + shortCountdown(heroRound.deadline);
+        }
       }, 1000);
     }
+  }
+
+  function shortCountdown(deadline){
+    const {d,h,m,s} = timeParts(deadline);
+    if(d > 0) return `${d}d ${h}h`;
+    if(h > 0) return `${h}h ${m}m`;
+    return `${m}m ${s}s`;
   }
 
   function clockDigitsHtml(deadline){
@@ -1059,6 +1158,17 @@
     main.innerHTML = `<div class="card"><p class="muted">Calculando posiciones…</p></div>`;
     await ensureAllPicksLoaded();
     const list = standingsList();
+    const prevRanks = previousRanks();
+    const leaderPts = list.length ? list[0].pts : 0;
+    const medal = (i) => i===0 ? "🥇" : i===1 ? "🥈" : i===2 ? "🥉" : null;
+    function movementHtml(p, i){
+      if(!prevRanks || prevRanks[p.id] == null) return `<span class="muted">–</span>`;
+      const prev = prevRanks[p.id];
+      const now = i + 1;
+      if(prev === now) return `<span class="muted">–</span>`;
+      if(prev > now) return `<span style="color:var(--pitch-light);font-weight:700;">▲${prev - now}</span>`;
+      return `<span style="color:var(--red);font-weight:700;">▼${now - prev}</span>`;
+    }
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
@@ -1073,25 +1183,27 @@
       <div class="card">
         <div class="row2">
           <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
-          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Work Sans';font-size:13px;">de $${totalP*fee}</span></div></div>
+          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span></div></div>
         </div>
       </div>
       <div class="card" style="padding:8px 12px;">
         <table>
-          <thead><tr><th style="text-align:center;">#</th><th>Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">Pagó</th></tr></thead>
+          <thead><tr><th style="text-align:center;">#</th><th></th><th>Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th><th style="text-align:center;">Pagó</th></tr></thead>
           <tbody>
             ${list.map((p,i) => `
               <tr class="${p.id===currentUser.id?'me':''}">
-                <td class="pos ${i===0?'top1':''}" style="text-align:center;">${i+1}</td>
+                <td class="pos ${i===0?'top1':''}" style="text-align:center;">${medal(i) || (i+1)}</td>
+                <td style="text-align:center;">${movementHtml(p, i)}</td>
                 <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${p.penalty} por no pagar</span>` : ''}</td>
                 <td style="text-align:center;font-weight:700;">${p.pts}</td>
+                <td style="text-align:center;" class="muted">${i===0 ? "líder" : "−" + (leaderPts - p.pts)}</td>
                 <td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>
               </tr>
             `).join("")}
           </tbody>
         </table>
       </div>
-      <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente</p>
+      <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente · ▲▼ = movimiento desde la jornada pasada</p>
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Cómo llegaron aquí</span></div>
         <p class="muted" style="margin-top:-4px;">Puntos acumulados después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
@@ -1107,14 +1219,15 @@
   function drawResultsCardCanvas(list){
     const shown = list; // show everyone, not just a cut-off top
     const width = 800;
-    const rowH = 56;
-    const headerH = 190;
-    const footerH = 70;
+    const rowH = 58;
+    const headerH = 210;
+    const footerH = 60;
     const height = headerH + shown.length * rowH + footerH;
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
+    const F = "'Manrope', Arial, sans-serif";
 
     const grad = ctx.createLinearGradient(0, 0, 0, height);
     grad.addColorStop(0, "#0F2E22");
@@ -1122,20 +1235,30 @@
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, width, height);
 
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#E3B23C";
-    ctx.font = "700 40px Arial, sans-serif";
-    ctx.fillText(meta.groupName, width / 2, 78, width - 80);
-    ctx.fillStyle = "#F7F5EC";
-    ctx.font = "600 20px Arial, sans-serif";
-    ctx.fillText("TABLA DE POSICIONES", width / 2, 112);
+    ctx.fillStyle = "#D6A73C";
+    ctx.fillRect(0, 0, width, 6);
 
-    ctx.strokeStyle = "rgba(227,178,60,0.4)";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#D6A73C";
+    ctx.font = `800 18px ${F}`;
+    ctx.fillText("QRACKS", width / 2, 46);
+
+    const context = currentRoundContext();
+    ctx.fillStyle = "#F7F5EC";
+    ctx.font = `800 34px ${F}`;
+    ctx.fillText(meta.groupName, width / 2, 90, width - 80);
+    ctx.fillStyle = "rgba(247,245,236,0.75)";
+    ctx.font = `600 17px ${F}`;
+    ctx.fillText("TABLA DE POSICIONES" + (context ? " · JORNADA " + context.number : ""), width / 2, 120);
+
+    ctx.strokeStyle = "rgba(214,167,60,0.4)";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(60, 140);
-    ctx.lineTo(width - 60, 140);
+    ctx.moveTo(60, 150);
+    ctx.lineTo(width - 60, 150);
     ctx.stroke();
+
+    const medalColor = (i) => i===0 ? "#D6A73C" : i===1 ? "#C9CDD3" : i===2 ? "#B9784A" : null;
 
     shown.forEach((p, i) => {
       const rowY = headerH + i * rowH;
@@ -1143,26 +1266,52 @@
         ctx.fillStyle = "rgba(255,255,255,0.035)";
         ctx.fillRect(40, rowY, width - 80, rowH);
       }
-      const textY = rowY + rowH / 2 + 9;
+      const textY = rowY + rowH / 2 + 8;
+      const mColor = medalColor(i);
+      if(mColor){
+        ctx.beginPath();
+        ctx.arc(76, rowY + rowH / 2, 17, 0, Math.PI * 2);
+        ctx.fillStyle = mColor;
+        ctx.fill();
+        ctx.fillStyle = "#0F2E22";
+        ctx.font = `800 16px ${F}`;
+        ctx.textAlign = "center";
+        ctx.fillText(String(i + 1), 76, rowY + rowH / 2 + 5);
+      } else {
+        ctx.fillStyle = "rgba(247,245,236,0.55)";
+        ctx.font = `700 18px ${F}`;
+        ctx.textAlign = "center";
+        ctx.fillText(String(i + 1), 76, textY - 1);
+      }
       ctx.textAlign = "left";
-      ctx.fillStyle = i === 0 ? "#E3B23C" : "#F7F5EC";
-      ctx.font = "700 26px Arial, sans-serif";
-      ctx.fillText((i + 1) + ".", 60, textY);
-      ctx.fillText(p.name, 115, textY, width - 260);
+      ctx.fillStyle = mColor ? mColor : "#F7F5EC";
+      ctx.font = `800 24px ${F}`;
+      ctx.fillText(p.name, 105, textY, width - 260);
       ctx.textAlign = "right";
+      ctx.fillStyle = "#F7F5EC";
+      ctx.font = `800 26px ${F}`;
       ctx.fillText(String(p.pts), width - 60, textY);
     });
 
     ctx.textAlign = "center";
     ctx.fillStyle = "rgba(247,245,236,0.5)";
-    ctx.font = "400 15px Arial, sans-serif";
-    ctx.fillText("quinielas · " + new Date().toLocaleDateString("es-MX", {year:"numeric", month:"long", day:"numeric"}), width / 2, height - 26);
+    ctx.font = `600 13px ${F}`;
+    ctx.fillText("QRACKS · " + new Date().toLocaleDateString("es-MX", {year:"numeric", month:"long", day:"numeric"}), width / 2, height - 24);
 
     return canvas;
   }
 
-  function shareResultsCard(list){
+  async function shareResultsCard(list){
     if(!list.length){ toast("Todavía no hay nada que compartir"); return; }
+    try{
+      if(document.fonts && document.fonts.load){
+        await Promise.all([
+          document.fonts.load("800 34px Manrope"),
+          document.fonts.load("700 18px Manrope"),
+          document.fonts.load("600 17px Manrope")
+        ]);
+      }
+    }catch(e){ /* fall back to system font if this fails */ }
     const canvas = drawResultsCardCanvas(list);
     canvas.toBlob(async (blob) => {
       if(!blob){ toast("No se pudo generar la imagen"); return; }
@@ -1244,9 +1393,9 @@
       const val = Math.round((maxY/steps)*i);
       const yy = y(val);
       gridLines.push(`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`);
-      gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Space Mono, monospace">${val}</text>`);
+      gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Manrope, sans-serif">${val}</text>`);
     }
-    const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Space Mono, monospace">J${rn}</text>`).join("");
+    const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Manrope, sans-serif">J${rn}</text>`).join("");
 
     const lines = Array.from(chartSelectedIds).map(id => {
       const pts = (series[id]||[]).map((v,i) => `${x(i)},${y(v)}`).join(" ");
@@ -2597,6 +2746,7 @@
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card" style="max-width:440px;">
+          <div style="text-align:center;font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);margin-bottom:6px;">QRACKS</div>
           <div class="login-title display">Crea tu quiniela</div>
           <div class="login-sub">Gratis las primeras ${settings.jornadaLimit} jornadas. Después, $${settings.pricePerParticipant} MXN por participante para toda la quiniela.</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
@@ -2675,6 +2825,7 @@
       root.innerHTML = `
         <div class="login-wrap">
           <div class="login-card">
+            <div style="text-align:center;font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);margin-bottom:6px;">QRACKS</div>
             <div class="login-title display" style="font-size:28px;">Panel de la plataforma</div>
             <div class="field"><input type="password" id="qz-p-pass" placeholder="Contraseña del panel"></div>
             <button class="btn btn-primary" id="qz-p-unlock" style="width:100%;padding:12px;">Entrar</button>
@@ -3037,8 +3188,8 @@
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card" style="max-width:440px;text-align:center;">
-          <div class="login-title display" style="font-size:36px;">Quinielas</div>
-          <p class="login-sub">Crea tu propia quiniela de Liga MX para tu grupo de amigos — jornadas, resultados y tabla de posiciones, todo en un link que solo ustedes usan.</p>
+          <div class="login-title display" style="font-size:42px;letter-spacing:-0.02em;">QRACKS</div>
+          <p class="login-sub" style="font-weight:700;margin-top:2px;margin-bottom:18px;">Crea quinielas privadas.<br>Compite. Gana.</p>
           <a href="/crear" class="btn btn-primary" style="display:block;padding:14px;text-decoration:none;margin-top:8px;">Crear mi quiniela</a>
           <p class="muted" style="margin-top:18px;">¿Ya tienes una? Pídele el link a quien la creó.</p>
         </div>
@@ -3081,7 +3232,7 @@
         <div class="card">
           <div class="row2">
             <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
-            <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Work Sans';font-size:13px;">de $${totalP*fee}</span></div></div>
+            <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span></div></div>
           </div>
         </div>
         <div class="card" style="padding:8px 12px;">
