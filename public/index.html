@@ -629,6 +629,23 @@
     }).sort((a,b) => b.pts - a.pts);
   }
 
+  // Dense ranking: participants tied on points share the same position, and the
+  // next distinct point value takes the very next position (no skipped numbers).
+  // Assumes `list` is already sorted by points descending.
+  function computeDenseRanks(list){
+    const ranks = new Array(list.length);
+    let currentRank = 0;
+    let lastPts;
+    list.forEach((p, i) => {
+      if(i === 0 || p.pts !== lastPts){
+        currentRank++;
+        lastPts = p.pts;
+      }
+      ranks[i] = currentRank;
+    });
+    return ranks;
+  }
+
   function previousRanks(){
     const published = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>a.number-b.number);
     if(published.length < 1) return null;
@@ -648,8 +665,9 @@
       });
       return { id: p.id, pts };
     }).sort((a,b) => b.pts - a.pts);
+    const denseRanks = computeDenseRanks(prev);
     const ranks = {};
-    prev.forEach((p,i) => { ranks[p.id] = i + 1; });
+    prev.forEach((p,i) => { ranks[p.id] = denseRanks[i]; });
     return ranks;
   }
 
@@ -1169,16 +1187,16 @@
     main.innerHTML = `<div class="card"><p class="muted">Calculando posiciones…</p></div>`;
     await ensureAllPicksLoaded();
     const list = standingsList();
+    const ranks = computeDenseRanks(list);
     const prevRanks = previousRanks();
     const leaderPts = list.length ? list[0].pts : 0;
-    const medal = (i) => i===0 ? "🥇" : i===1 ? "🥈" : i===2 ? "🥉" : null;
-    function movementHtml(p, i){
+    const medal = (rank) => rank===1 ? "🥇" : rank===2 ? "🥈" : rank===3 ? "🥉" : null;
+    function movementHtml(p, rank){
       if(!prevRanks || prevRanks[p.id] == null) return `<span class="muted">–</span>`;
       const prev = prevRanks[p.id];
-      const now = i + 1;
-      if(prev === now) return `<span class="muted">–</span>`;
-      if(prev > now) return `<span style="color:var(--pitch-light);font-weight:700;">▲${prev - now}</span>`;
-      return `<span style="color:var(--red);font-weight:700;">▼${now - prev}</span>`;
+      if(prev === rank) return `<span class="muted">–</span>`;
+      if(prev > rank) return `<span style="color:var(--pitch-light);font-weight:700;">▲${prev - rank}</span>`;
+      return `<span style="color:var(--red);font-weight:700;">▼${rank - prev}</span>`;
     }
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
@@ -1203,8 +1221,8 @@
           <tbody>
             ${list.map((p,i) => `
               <tr class="${p.id===currentUser.id?'me':''}">
-                <td class="pos ${i===0?'top1':''}" style="text-align:center;">${medal(i) || (i+1)}</td>
-                <td style="text-align:center;">${movementHtml(p, i)}</td>
+                <td class="pos ${ranks[i]===1?'top1':''}" style="text-align:center;">${medal(ranks[i]) || ranks[i]}</td>
+                <td style="text-align:center;">${movementHtml(p, ranks[i])}</td>
                 <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${p.penalty} por no pagar</span>` : ''}</td>
                 <td style="text-align:center;font-weight:700;">${p.pts}</td>
                 <td style="text-align:center;" class="muted">${i===0 ? "líder" : "−" + (leaderPts - p.pts)}</td>
@@ -1269,16 +1287,18 @@
     ctx.lineTo(width - 60, 150);
     ctx.stroke();
 
-    const medalColor = (i) => i===0 ? "#D6A73C" : i===1 ? "#C9CDD3" : i===2 ? "#B9784A" : null;
+    const ranks = computeDenseRanks(shown);
+    const medalColor = (rank) => rank===1 ? "#D6A73C" : rank===2 ? "#C9CDD3" : rank===3 ? "#B9784A" : null;
 
     shown.forEach((p, i) => {
+      const rank = ranks[i];
       const rowY = headerH + i * rowH;
       if(i % 2 === 0){
         ctx.fillStyle = "rgba(255,255,255,0.035)";
         ctx.fillRect(40, rowY, width - 80, rowH);
       }
       const textY = rowY + rowH / 2 + 8;
-      const mColor = medalColor(i);
+      const mColor = medalColor(rank);
       if(mColor){
         ctx.beginPath();
         ctx.arc(76, rowY + rowH / 2, 17, 0, Math.PI * 2);
@@ -1287,12 +1307,12 @@
         ctx.fillStyle = "#0F2E22";
         ctx.font = `800 16px ${F}`;
         ctx.textAlign = "center";
-        ctx.fillText(String(i + 1), 76, rowY + rowH / 2 + 5);
+        ctx.fillText(String(rank), 76, rowY + rowH / 2 + 5);
       } else {
         ctx.fillStyle = "rgba(247,245,236,0.55)";
         ctx.font = `700 18px ${F}`;
         ctx.textAlign = "center";
-        ctx.fillText(String(i + 1), 76, textY - 1);
+        ctx.fillText(String(rank), 76, textY - 1);
       }
       ctx.textAlign = "left";
       ctx.fillStyle = mColor ? mColor : "#F7F5EC";
@@ -1443,7 +1463,10 @@
                   <summary class="muted" style="cursor:pointer;">Ver tabla final completa</summary>
                   <table style="margin-top:6px;">
                     <tbody>
-                      ${t.standings.map((s,i) => `<tr><td class="pos ${i===0?'top1':''}">${i+1}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${s.pts}</td></tr>`).join("")}
+                      ${(() => {
+                        const tRanks = computeDenseRanks(t.standings);
+                        return t.standings.map((s,i) => `<tr><td class="pos ${tRanks[i]===1?'top1':''}">${tRanks[i]}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${s.pts}</td></tr>`).join("");
+                      })()}
                     </tbody>
                   </table>
                 </details>
@@ -2648,8 +2671,10 @@
     const wb = XLSX.utils.book_new();
 
     // Standings
-    const standings = standingsList().map((p,i) => ({
-      "#": i+1, "Participante": p.name, "Puntos": p.pts, "Pagó": p.paid ? "Sí" : "No"
+    const standingsSrc = standingsList();
+    const standingsRanks = computeDenseRanks(standingsSrc);
+    const standings = standingsSrc.map((p,i) => ({
+      "#": standingsRanks[i], "Participante": p.name, "Puntos": p.pts, "Pagó": p.paid ? "Sí" : "No"
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(standings), "Tabla");
 
@@ -3230,6 +3255,7 @@
     root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
     await ensureAllPicksLoaded();
     const list = standingsList();
+    const spectatorRanks = computeDenseRanks(list);
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
@@ -3255,7 +3281,7 @@
             <tbody>
               ${list.map((p,i) => `
                 <tr>
-                  <td class="pos ${i===0?'top1':''}" style="text-align:center;">${i+1}</td>
+                  <td class="pos ${spectatorRanks[i]===1?'top1':''}" style="text-align:center;">${spectatorRanks[i]}</td>
                   <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
                   <td style="text-align:center;font-weight:700;">${p.pts}</td>
                 </tr>
