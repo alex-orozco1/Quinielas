@@ -365,7 +365,7 @@
       participants: [creator],
       rounds: [],
       settings: {
-        ownerPassword: ownerPassword || "admin123",
+        ownerPassword: ownerPassword,
         entryFee: 0,
         sportsdbSeason: "2025-2026",
         pointsPerCorrectPick: 1
@@ -385,7 +385,7 @@
     catch(e){ console.error("setPlatformIndex failed", e); return false; }
   }
   async function getPlatformSettings(){
-    const defaults = { jornadaLimit: 5, pricePerParticipant: 10, dashboardPassword: "plataforma2026", depositInfo: "" };
+    const defaults = { jornadaLimit: 5, pricePerParticipant: 10, depositInfo: "" };
     try{
       const r = await kvGet(PLATFORM_SETTINGS_KEY);
       return r.found ? { ...defaults, ...r.value } : defaults;
@@ -418,14 +418,31 @@
       return res.ok;
     }catch(e){ console.error("apiRegisterQuiniela failed", e); return false; }
   }
+  // Moving a quiniela to its own link happens entirely on the server in one
+  // transaction — the browser never touches the password hash or anyone's PIN,
+  // and if anything fails partway through, nothing changes.
+  async function apiMigrateQuiniela(toSlug){
+    try{
+      const res = await fetch("/api/migrate-quiniela", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Qracks-Auth": ownerPasswordCache || "" },
+        body: JSON.stringify({ toSlug })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, ...data };
+    }catch(e){ console.error("apiMigrateQuiniela failed", e); return { ok: false }; }
+  }
 
 
   // IMPORTANT: kvGet distinguishes "genuinely doesn't exist yet" (404) from
   // "the request failed" (network/server error). Callers that decide whether
   // to initialize fresh data (boot()) must never treat an error as "not found" —
   // doing so would silently overwrite real data on a transient failure.
-  async function kvGet(key){
-    const res = await fetch("/api/kv/" + encodeURIComponent(key));
+  async function kvGet(key, creds){
+    const headers = {};
+    if(creds && creds.owner) headers["X-Qracks-Auth"] = creds.owner;
+    if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
+    const res = await fetch("/api/kv/" + encodeURIComponent(key), { headers });
     if(res.status === 404) return { found: false };
     if(!res.ok) throw new Error("kv get failed: HTTP " + res.status);
     const data = await res.json();
@@ -461,17 +478,27 @@
   let ownerPasswordCache = null;
   let platformPasswordCache = null;
   let currentUserPinCache = null;
+  function adminOrOwnerCred(){
+    return ownerPasswordCache || ((currentUser && currentUser.isAdmin) ? currentUserPinCache : null);
+  }
   async function setMeta(meta, opts){
     try{
-      const ownerCred = (opts && opts.owner) || ownerPasswordCache
-        || ((currentUser && currentUser.isAdmin) ? currentUserPinCache : null);
+      const ownerCred = (opts && opts.owner) || adminOrOwnerCred();
       const creds = { owner: ownerCred, platform: platformPasswordCache };
       return await kvSet(currentMetaKey(), meta, creds);
     }catch(e){ console.error("save meta failed", e); return false; }
   }
-  async function getPicks(pid){
+  // Reads a participant's picks. Before that round's deadline, the server only
+  // hands back the full picks to the participant themselves (their own PIN) or
+  // an admin/owner — everyone else gets the closed-rounds-only view, so no one
+  // can see in-progress predictions early. Pass `asAdmin: true` when loading
+  // picks for people other than the current user (Tabla/Historial/Participación
+  // only ever need closed-round data anyway, which the safe view already has).
+  async function getPicks(pid, opts){
     try{
-      const r = await kvGet(currentPicksKey(pid));
+      const isOwnPicks = currentUser && pid === currentUser.id;
+      const creds = { owner: isOwnPicks ? currentUserPinCache : ((opts && opts.asAdmin) ? adminOrOwnerCred() : null) };
+      const r = await kvGet(currentPicksKey(pid), creds);
       return r.found ? r.value : {};
     }catch(e){ console.error("getPicks failed", e); return {}; }
   }
@@ -707,7 +734,8 @@
   async function ensureAllPicksLoaded(){
     if(loadingAllPicks) return;
     loadingAllPicks = true;
-    const entries = await Promise.all(meta.participants.map(async p => [p.id, await getPicks(p.id)]));
+    const isAdmin = !!(currentUser && currentUser.isAdmin);
+    const entries = await Promise.all(meta.participants.map(async p => [p.id, await getPicks(p.id, { asAdmin: isAdmin })]));
     allPicksCache = Object.fromEntries(entries);
     loadingAllPicks = false;
   }
@@ -2810,28 +2838,16 @@
         statusEl.textContent = "Moviendo datos…";
         statusEl.style.color = "var(--ink-soft)";
         try{
-          const idx = await getPlatformIndex();
-          if(idx.quinielas.some(q => q.slug === slug)){
-            statusEl.textContent = "Ese link ya está en uso, elige otro.";
+          const result = await apiMigrateQuiniela(slug);
+          if(!result.ok){
+            const msg = result.error === "slug_taken" ? "Ese link ya está en uso, elige otro."
+              : result.error === "unauthorized" ? "No se pudo verificar tu contraseña de dueño, vuelve a desbloquear Ajustes."
+              : "No se pudo mover la quiniela, intenta de nuevo.";
+            statusEl.textContent = msg;
             statusEl.style.color = "var(--red)";
             migrateBtn.disabled = false;
             return;
           }
-          const okMeta = await kvSet(metaKeyFor(slug), meta);
-          if(!okMeta) throw new Error("no se pudo copiar la quiniela");
-
-          for(const p of meta.participants){
-            const picks = await getPicks(p.id); // still resolves to the root/legacy key at this point
-            await kvSet("quiniela:" + slug + ":picks:" + p.id, picks);
-          }
-
-          const okIdx = await apiRegisterQuiniela({
-            slug, name: meta.groupName, creatorName: currentUser.name, exempt: true
-          });
-          if(!okIdx) throw new Error("no se pudo registrar en la plataforma");
-
-          const okFlag = await kvSet(currentMetaKey(), { migratedTo: slug }, { owner: ownerPasswordCache });
-          if(!okFlag) throw new Error("no se pudo cerrar el link viejo");
 
           statusEl.textContent = "";
           body.innerHTML = `
@@ -3184,7 +3200,8 @@
             <div class="field"><label>Jornadas gratis antes de cobrar</label><input type="number" id="qz-p-threshold" value="${settings.jornadaLimit}"></div>
             <div class="field"><label>Precio por participante (MXN)</label><input type="number" id="qz-p-price" value="${settings.pricePerParticipant}"></div>
           </div>
-          <div class="field"><label>Contraseña del panel</label><input type="text" id="qz-p-newpass" value="${esc(settings.dashboardPassword)}"></div>
+          <div class="field"><label>Contraseña del panel</label><input type="text" id="qz-p-newpass" placeholder="Dejar en blanco para no cambiarla" value=""></div>
+          <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos la contraseña actual aquí — solo escribe algo si quieres cambiarla.</p>
           <div class="field">
             <label>Datos para depositar</label>
             <textarea id="qz-p-deposit" rows="3" style="width:100%;padding:9px 11px;border-radius:8px;border:1.5px solid var(--line);font-family:inherit;font-size:14px;" placeholder="Ej. Banco XYZ, CLABE 0123456789, a nombre de...">${esc(settings.depositInfo || "")}</textarea>
@@ -3195,12 +3212,13 @@
       </div>
     `;
     document.getElementById("qz-p-save").addEventListener("click", async () => {
+      const newPass = document.getElementById("qz-p-newpass").value.trim();
       const newSettings = {
         jornadaLimit: Number(document.getElementById("qz-p-threshold").value) || settings.jornadaLimit,
         pricePerParticipant: Number(document.getElementById("qz-p-price").value) || settings.pricePerParticipant,
-        dashboardPassword: document.getElementById("qz-p-newpass").value.trim() || settings.dashboardPassword,
         depositInfo: document.getElementById("qz-p-deposit").value
       };
+      if(newPass) newSettings.dashboardPassword = newPass;
       const ok = await setPlatformSettings(newSettings);
       toast(ok ? "✅ Listo, la configuración quedó guardada." : "No se pudo guardar, intenta de nuevo");
       renderPlatformDashboard();
