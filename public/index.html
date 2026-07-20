@@ -488,19 +488,19 @@
   const ONBOARDING_CONTENT = {
     jornada: {
       title: "Haz tus pronósticos",
-      text: "Elige el resultado de cada partido. Puedes cambiar tus pronósticos hasta que comience el encuentro. Cada acierto suma puntos para subir en la tabla."
+      text: "Elige el resultado de cada partido. Puedes cambiarlo hasta que empiece, y cada acierto suma puntos."
     },
     tabla: {
       title: "Tabla de posiciones",
-      text: "Aquí puedes ver cómo vas comparado con los demás participantes. Los puntos se actualizan conforme se registran los resultados."
+      text: "Aquí ves tu posición frente a los demás. Se actualiza con cada resultado."
     },
     historial: {
       title: "Historial",
-      text: "Consulta jornadas anteriores y revisa cómo ha evolucionado la competencia."
+      text: "Revisa jornadas anteriores y cómo va la competencia."
     },
     admin: {
       title: "Panel del administrador",
-      text: "Desde aquí puedes administrar participantes, jornadas y resultados."
+      text: "Administra participantes, jornadas y resultados."
     }
   };
   const SCREEN_INTRO = {
@@ -555,7 +555,7 @@
         <span class="display">${esc(title)}</span>
         <div style="display:flex;gap:6px;align-items:center;">
           ${extraButtonsHtml || ""}
-          <button class="btn btn-ghost btn-sm" data-help-btn="${tabId}" title="Ayuda" style="border-radius:50%;width:30px;height:30px;padding:0;font-weight:800;">?</button>
+          <button class="btn btn-ghost btn-sm" data-help-btn="${tabId}" title="Ver consejos" style="border-radius:50%;width:30px;height:30px;padding:0;font-size:15px;">💡</button>
         </div>
       </div>
       ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:14px;">${esc(intro)}</p>` : ``}
@@ -936,7 +936,7 @@
       currentUser.pin = cleanPin;
       const ok = await setMeta(meta);
       if(!ok){ currentUser.pin = previousPin; toast("No se pudo cambiar el PIN, intenta de nuevo"); return; }
-      toast("PIN actualizado ✅");
+      toast("✅ Listo, tu PIN quedó actualizado.");
     });
     root.querySelectorAll(".qz-tab").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -1037,7 +1037,7 @@
         const prev = currentUser.customBetAnswers[betId];
         currentUser.customBetAnswers[betId] = { guess: val, correct: prev ? prev.correct : null };
         const ok = await setMeta(meta);
-        toast(ok ? "Guardado ✅" : "No se pudo guardar, intenta de nuevo");
+        toast(ok ? "✅ Listo, tu respuesta quedó guardada." : "No se pudo guardar, intenta de nuevo");
       });
     });
     root.querySelectorAll("[data-jf]").forEach(btn => {
@@ -1049,9 +1049,9 @@
 
     if(!rounds.length){
       const emptyMsg = {
-        porjugar: "No hay jornadas abiertas para votar en este momento.",
-        envivo: "No hay jornadas cerradas esperando resultado.",
-        jugados: "Todavía no hay jornadas con resultados publicados."
+        porjugar: "No hay jornadas abiertas para votar ahora. Vuelve cuando el admin publique una nueva.",
+        envivo: "No hay jornadas cerradas esperando resultado. En cuanto cierre una, aparecerá aquí.",
+        jugados: "Todavía no hay jornadas con resultados publicados. Aparecerán aquí en cuanto el admin los capture."
       }[jornadaFilter];
       list.innerHTML = `<div class="card empty"><div class="display">Nada por aquí</div><p class="muted">${emptyMsg}</p></div>`;
       return;
@@ -1207,7 +1207,7 @@
     box.querySelector("[data-save]").addEventListener("click", async () => {
       if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
       const ok = await setPicks(currentUser.id, myPicks);
-      toast(ok ? "Picks guardados ✅" : "No se pudo guardar, intenta de nuevo");
+      toast(ok ? "✅ Listo, tus pronósticos quedaron guardados." : "No se pudo guardar, intenta de nuevo");
     });
   }
 
@@ -1459,7 +1459,7 @@
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      toast("Imagen descargada ✅");
+      toast("✅ Listo, la imagen se descargó.");
     }, "image/png");
   }
 
@@ -1684,7 +1684,7 @@
 
   function renderAdmin(main){
     const subtabs = [
-      {id:"rondas", label:"Rondas"},
+      {id:"rondas", label:"Jornadas"},
       {id:"resultados", label:"Resultados"},
       {id:"participacion", label:"Participación"},
       {id:"participantes", label:"Participantes"},
@@ -1768,7 +1768,7 @@
       <div class="card">
         <div class="eyebrow">Apuestas personalizadas</div>
         <p class="muted" style="margin-top:-4px;">Arma las tuyas: goleador, campeón de goleo, quién anota esta jornada, lo que se les ocurra. Cada una suma puntos si el participante le atina, y tú validas a mano quién ganó (porque cada quien escribe distinto).</p>
-        ${(meta.customBets && meta.customBets.length) ? meta.customBets.map(betRowHtml).join("") : `<p class="muted">Todavía no has creado ninguna.</p>`}
+        ${(meta.customBets && meta.customBets.length) ? meta.customBets.map(betRowHtml).join("") : `<p class="muted">Todavía no has creado ninguna — usa el botón de abajo para armar la primera.</p>`}
         ${!draft ? `<button class="btn btn-gold" id="qz-cb-new" style="margin-top:10px;">+ Nueva apuesta</button>` : ``}
       </div>
       ${draft ? formHtml() : ``}
@@ -1859,7 +1859,7 @@
         }
         const ok = await setMeta(meta);
         if(ok){
-          toast("Guardado ✅");
+          toast("✅ Listo, la apuesta quedó guardada.");
           renderAdminAdicionales._draft = null;
           renderAdminAdicionales(body);
         } else {
@@ -1905,7 +1905,7 @@
       const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
       penalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
       const ok = await setMeta(meta);
-      toast(ok ? "Penalización guardada ✅" : "No se pudo guardar, intenta de nuevo");
+      toast(ok ? "✅ Listo, la penalización quedó guardada." : "No se pudo guardar, intenta de nuevo");
     });
   }
 
@@ -1927,7 +1927,7 @@
       const val = e.currentTarget.dataset.link;
       try{
         await navigator.clipboard.writeText(val);
-        toast("Link copiado ✅");
+        toast("✅ Listo, el link se copió.");
       }catch(e){
         toast("No se pudo copiar, intenta de nuevo");
       }
@@ -1937,7 +1937,7 @@
   async function renderAdminParticipacion(body){
     const openRounds = meta.rounds.filter(r => classifyRound(r) === "porjugar").slice().sort((a,b)=>a.number-b.number);
     if(!openRounds.length){
-      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay ninguna jornada aceptando picks en este momento.</p></div>${spectatorLinkCardHtml()}`;
+      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay nadie por contestar en este momento. En cuanto crees una jornada nueva en Admin → Jornadas, aquí verás quién ya votó y quién falta.</p></div>${spectatorLinkCardHtml()}`;
       wireSpectatorLinkCard(body);
       return;
     }
@@ -2158,7 +2158,7 @@
         editingRound.deadline = new Date(draft.deadline).toISOString();
         const ok = await setMeta(meta);
         if(ok){
-          toast("Jornada " + editingRound.number + " actualizada ✅");
+          toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");
           renderAdminRondas._editingId = null;
           renderAdminRondas._draft = null;
           renderAdmin(document.getElementById("qz-main"));
@@ -2179,7 +2179,7 @@
       meta.rounds.push(round);
       const ok = await setMeta(meta);
       if(ok){
-        toast("Jornada " + nextNumber + " publicada ✅");
+        toast("✅ Listo, la Jornada " + nextNumber + " quedó publicada.");
         renderAdminRondas._draft = null;
         renderAdmin(document.getElementById("qz-main"));
       } else {
@@ -2278,7 +2278,7 @@
     const candidateRounds = meta.rounds.filter(r => !r.resultsPublished);
     const closedRounds = meta.rounds.filter(r => r.resultsPublished);
     if(!candidateRounds.length && !closedRounds.length){
-      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas todavía</div><p class="muted">Crea una jornada primero en la pestaña Rondas.</p></div>`;
+      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas todavía</div><p class="muted">Crea una jornada primero en Admin → Jornadas.</p></div>`;
       return;
     }
     let target = renderAdminResultados._target;
@@ -2418,7 +2418,7 @@
         `Jornada ${round.number}`
       );
       const ok = await setMeta(meta);
-      toast(ok ? "Resultados publicados ✅ puntos actualizados" : "No se pudo guardar, intenta de nuevo");
+      toast(ok ? "✅ Listo, los resultados quedaron publicados y los puntos se actualizaron." : "No se pudo guardar, intenta de nuevo");
       allPicksCache = {};
       renderAdminResultados(body);
     });
@@ -2510,7 +2510,7 @@
       meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false, pin:null});
       await setMeta(meta);
       renderAdminParticipantes(body);
-      toast("✅ Participante agregado");
+      toast("✅ Listo, el participante quedó agregado.");
     });
     document.getElementById("qz-bulk-add").addEventListener("click", async () => {
       const raw = document.getElementById("qz-bulk-names").value;
@@ -2529,7 +2529,7 @@
       if(!added.length){ statusEl.textContent = "Todos esos nombres ya existían, no se agregó ninguno."; statusEl.style.color = "var(--red)"; return; }
       const ok = await setMeta(meta);
       if(!ok){ statusEl.textContent = "No se pudo guardar, intenta de nuevo."; statusEl.style.color = "var(--red)"; return; }
-      toast(`${added.length} participante${added.length===1?'':'s'} agregado${added.length===1?'':'s'} ✅`);
+      toast(`✅ Listo, se agregaron ${added.length} participante${added.length===1?'':'s'}.`);
       renderAdminParticipantes(body);
     });
     body.querySelectorAll("tr[data-pid]").forEach(row => {
@@ -2538,7 +2538,7 @@
       row.querySelector("[data-role=rename]").addEventListener("change", async (e) => {
         p.name = e.target.value.trim() || p.name;
         await setMeta(meta);
-        toast("✅ Nombre actualizado");
+        toast("✅ Listo, el nombre quedó actualizado.");
       });
       row.querySelector("[data-role=admin]").addEventListener("change", async (e) => {
         p.isAdmin = e.target.checked;
@@ -2650,7 +2650,7 @@
         a.download = "respaldo-" + slugify(meta.groupName) + "-" + new Date().toISOString().slice(0,10) + ".json";
         a.click();
         URL.revokeObjectURL(url);
-        toast("Respaldo descargado ✅");
+        toast("✅ Listo, el respaldo se descargó.");
       }catch(e){
         console.error(e);
         toast("No se pudo generar el respaldo");
@@ -2668,7 +2668,7 @@
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbCache = null;
       await setMeta(meta);
-      toast("Ajustes guardados ✅");
+      toast("✅ Listo, tus ajustes quedaron guardados.");
       renderApp();
     });
     document.getElementById("qz-close-tournament").addEventListener("click", async () => {
@@ -2751,7 +2751,7 @@
           document.getElementById("qz-migrate-copy").addEventListener("click", async () => {
             try{
               await navigator.clipboard.writeText(window.location.origin + "/q/" + slug);
-              toast("Link copiado ✅");
+              toast("✅ Listo, el link se copió.");
             }catch(e){
               toast("Cópialo manualmente del cuadro de texto");
             }
@@ -2829,7 +2829,7 @@
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), "Pagos");
 
     XLSX.writeFile(wb, "quiniela_" + meta.groupName.replace(/\s+/g,"_") + ".xlsx");
-    toast("Excel descargado ✅");
+    toast("✅ Listo, tu Excel se descargó.");
   }
 
   // ---------- boot ----------
@@ -3109,7 +3109,7 @@
         depositInfo: document.getElementById("qz-p-deposit").value
       };
       const ok = await setPlatformSettings(newSettings);
-      toast(ok ? "Configuración guardada ✅" : "No se pudo guardar, intenta de nuevo");
+      toast(ok ? "✅ Listo, la configuración quedó guardada." : "No se pudo guardar, intenta de nuevo");
       renderPlatformDashboard();
     });
 
@@ -3146,7 +3146,7 @@
           if(entry && newName) entry.name = newName;
           if(entry) entry.customJornadaLimit = thresholdRaw === "" ? null : Number(thresholdRaw);
           await setPlatformIndex(idx);
-          toast("Quiniela actualizada ✅");
+          toast("✅ Listo, la quiniela quedó actualizada.");
           renderPlatformDashboard._editingSlug = null;
           renderPlatformDashboard();
         }catch(e){
