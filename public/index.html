@@ -987,9 +987,8 @@
 
   function shortCountdown(deadline){
     const {d,h,m,s} = timeParts(deadline);
-    if(d > 0) return `${d}d ${h}h`;
-    if(h > 0) return `${h}h ${m}m`;
-    return `${m}m ${s}s`;
+    const clock = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return d > 0 ? `${d}d ${clock}` : clock;
   }
 
   function clockDigitsHtml(deadline){
