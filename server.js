@@ -5,6 +5,7 @@
 
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const { Pool } = require("pg");
 
 const app = express();
@@ -73,6 +74,61 @@ app.delete("/api/kv/:key", async (req, res) => {
 
 // Simple health check (also useful for uptime pingers to avoid free-tier sleep)
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// ---------- Dynamic link previews for /q/:slug ----------
+// WhatsApp/Facebook/etc. read <meta property="og:*"> tags from the raw HTML they fetch —
+// they don't run our JavaScript. So for a specific quiniela's link to show its own name
+// instead of the generic "QRACKS" text, we rewrite those tags on the server before sending
+// the page, only for this one route. Everything else (the actual app) is untouched;
+// the browser gets the exact same index.html and boots the SPA normally either way.
+const INDEX_HTML_PATH = path.join(__dirname, "public", "index.html");
+let indexHtmlCache = null;
+function getIndexHtml() {
+  if (!indexHtmlCache) indexHtmlCache = fs.readFileSync(INDEX_HTML_PATH, "utf8");
+  return indexHtmlCache;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function injectMeta(html, { title, description, url }) {
+  let out = html;
+  if (title != null) {
+    out = out.replace(/(<title id="page-title">)[^<]*(<\/title>)/, `$1${title}$2`);
+    out = out.replace(/(<meta property="og:title" content=")[^"]*("\s+id="og-title">)/, `$1${title}$2`);
+  }
+  if (description != null) {
+    out = out.replace(/(<meta property="og:description" content=")[^"]*("\s+id="og-description">)/, `$1${description}$2`);
+  }
+  if (url != null) {
+    out = out.replace(/(<meta property="og:url" content=")[^"]*("\s+id="og-url">)/, `$1${url}$2`);
+  }
+  return out;
+}
+
+app.get("/q/:slug", async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    const r = await pool.query("SELECT value FROM kv WHERE key = $1", ["quiniela:" + slug + ":meta"]);
+    let html = getIndexHtml();
+    if (r.rows.length && r.rows[0].value && r.rows[0].value.groupName) {
+      const name = escapeHtml(r.rows[0].value.groupName);
+      html = injectMeta(html, {
+        title: `${name} · QRACKS`,
+        description: `Vota tus pronósticos, checa la tabla de posiciones y no te quedes fuera de ${name}.`,
+        url: `https://qracks.net/q/${encodeURIComponent(slug)}`
+      });
+    }
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
+  } catch (err) {
+    console.error("Error building link preview for /q/:slug", err);
+    res.sendFile(INDEX_HTML_PATH);
+  }
+});
 
 // Static frontend
 app.use(express.static(path.join(__dirname, "public")));
