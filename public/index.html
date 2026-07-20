@@ -381,7 +381,7 @@
     }catch(e){ console.error("getPlatformIndex failed", e); return { quinielas: [] }; }
   }
   async function setPlatformIndex(idx){
-    try{ return await kvSet(PLATFORM_INDEX_KEY, idx); }
+    try{ return await kvSet(PLATFORM_INDEX_KEY, idx, { platform: platformPasswordCache }); }
     catch(e){ console.error("setPlatformIndex failed", e); return false; }
   }
   async function getPlatformSettings(){
@@ -392,7 +392,7 @@
     }catch(e){ console.error("getPlatformSettings failed", e); return defaults; }
   }
   async function setPlatformSettings(s){
-    try{ return await kvSet(PLATFORM_SETTINGS_KEY, s); }
+    try{ return await kvSet(PLATFORM_SETTINGS_KEY, s, { platform: platformPasswordCache }); }
     catch(e){ console.error("setPlatformSettings failed", e); return false; }
   }
   const PLATFORM_PAYMENTLOG_KEY = "platform_payment_log";
@@ -403,8 +403,20 @@
     }catch(e){ console.error("getPlatformPaymentLog failed", e); return { payments: [] }; }
   }
   async function setPlatformPaymentLog(log){
-    try{ return await kvSet(PLATFORM_PAYMENTLOG_KEY, log); }
+    try{ return await kvSet(PLATFORM_PAYMENTLOG_KEY, log, { platform: platformPasswordCache }); }
     catch(e){ console.error("setPlatformPaymentLog failed", e); return false; }
+  }
+  // Self-service: anyone can register a brand-new quiniela in the platform index
+  // (that's how /crear and "move to my own link" work) — no platform password needed,
+  // it only ever adds one new entry, it can't touch or remove anyone else's.
+  async function apiRegisterQuiniela(entry){
+    try{
+      const res = await fetch("/api/register-quiniela", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(entry)
+      });
+      return res.ok;
+    }catch(e){ console.error("apiRegisterQuiniela failed", e); return false; }
   }
 
 
@@ -419,16 +431,21 @@
     const data = await res.json();
     return { found: true, value: data.value };
   }
-  async function kvSet(key, value){
+  async function kvSet(key, value, creds){
+    const headers = { "Content-Type": "application/json" };
+    if(creds && creds.owner) headers["X-Qracks-Auth"] = creds.owner;
+    if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
     const res = await fetch("/api/kv/" + encodeURIComponent(key), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ value })
     });
     return res.ok;
   }
-  async function kvDelete(key){
-    const res = await fetch("/api/kv/" + encodeURIComponent(key), { method: "DELETE" });
+  async function kvDelete(key, creds){
+    const headers = {};
+    if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
+    const res = await fetch("/api/kv/" + encodeURIComponent(key), { method: "DELETE", headers });
     return res.ok;
   }
   // getMeta: returns the saved meta, or null if it genuinely doesn't exist yet.
@@ -438,9 +455,18 @@
     const r = await kvGet(currentMetaKey());
     return r.found ? r.value : null;
   }
-  async function setMeta(meta){
+  // Cached in memory only (never persisted) once the admin/platform owner types
+  // their password correctly — attached automatically to writes that need it, so
+  // the server can verify each request instead of trusting the browser alone.
+  let ownerPasswordCache = null;
+  let platformPasswordCache = null;
+  let currentUserPinCache = null;
+  async function setMeta(meta, opts){
     try{
-      return await kvSet(currentMetaKey(), meta);
+      const ownerCred = (opts && opts.owner) || ownerPasswordCache
+        || ((currentUser && currentUser.isAdmin) ? currentUserPinCache : null);
+      const creds = { owner: ownerCred, platform: platformPasswordCache };
+      return await kvSet(currentMetaKey(), meta, creds);
     }catch(e){ console.error("save meta failed", e); return false; }
   }
   async function getPicks(pid){
@@ -451,8 +477,60 @@
   }
   async function setPicks(pid, data){
     try{
-      return await kvSet(currentPicksKey(pid), data);
+      const creds = { owner: currentUserPinCache };
+      return await kvSet(currentPicksKey(pid), data, creds);
     }catch(e){ console.error("save picks failed", e); return false; }
+  }
+  async function verifyOwnerPassword(password){
+    try{
+      const res = await fetch("/api/verify-owner", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metaKey: currentMetaKey(), password })
+      });
+      if(!res.ok) return false;
+      const data = await res.json();
+      return !!data.ok;
+    }catch(e){ console.error("verifyOwnerPassword failed", e); return false; }
+  }
+  async function verifyPlatformPassword(password){
+    try{
+      const res = await fetch("/api/verify-platform", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      if(!res.ok) return false;
+      const data = await res.json();
+      return !!data.ok;
+    }catch(e){ console.error("verifyPlatformPassword failed", e); return false; }
+  }
+  async function verifyParticipantPin(participantId, pin){
+    try{
+      const res = await fetch("/api/verify-pin", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, pin })
+      });
+      if(!res.ok) return { ok: false };
+      return await res.json();
+    }catch(e){ console.error("verifyParticipantPin failed", e); return { ok: false }; }
+  }
+  async function apiSetPin(participantId, currentPin, newPin){
+    try{
+      const res = await fetch("/api/set-pin", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, currentPin, newPin })
+      });
+      return res.ok;
+    }catch(e){ console.error("apiSetPin failed", e); return false; }
+  }
+  async function apiSelfRegister(name, pin){
+    try{
+      const res = await fetch("/api/self-register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metaKey: currentMetaKey(), name, pin })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, ...data };
+    }catch(e){ console.error("apiSelfRegister failed", e); return { ok: false }; }
   }
 
   // ---------- app state ----------
@@ -788,7 +866,7 @@
     const sortedParticipants = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     const names = sortedParticipants.map(p => `
       <button class="name-btn" data-id="${p.id}">
-        ${esc(p.name)} ${p.pin ? "🔒" : ""}
+        ${esc(p.name)} ${p.hasPin ? "🔒" : ""}
         ${p.isAdmin ? `<span class="role">ADMIN</span>` : ``}
       </button>
     `).join("");
@@ -818,12 +896,16 @@
       if(newPin === null) return;
       const cleanPin = newPin.trim();
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
-      const newParticipant = { id: uid("p"), name: cleanName, isAdmin: false, paid: false, pin: cleanPin };
-      meta.participants.push(newParticipant);
-      const ok = await setMeta(meta);
-      if(!ok){ meta.participants.pop(); toast("No se pudo guardar, intenta de nuevo"); return; }
+      const result = await apiSelfRegister(cleanName, cleanPin);
+      if(!result.ok){
+        toast(result.error === "name_taken" ? "Ya existe alguien con ese nombre — búscalo en la lista de arriba." : "No se pudo guardar, intenta de nuevo");
+        return;
+      }
       toast("¡Bienvenido, " + cleanName + "! ✅");
+      const newParticipant = { ...result.participant };
+      meta.participants.push(newParticipant);
       currentUser = newParticipant;
+      currentUserPinCache = cleanPin;
       myPicks = await getPicks(newParticipant.id);
       activeTab = "jornada";
       render();
@@ -831,19 +913,23 @@
     root.querySelectorAll(".name-btn").forEach(btn => {
       btn.addEventListener("click", async () => {
         const p = meta.participants.find(x => x.id === btn.dataset.id);
-        if(!p.pin){
+        if(!p.hasPin){
           const newPin = window.prompt("Este nombre todavía no tiene PIN. Ponle uno de 4 dígitos para que nadie más pueda entrar como tú:");
           if(newPin === null) return;
           const cleanPin = newPin.trim();
           if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
-          p.pin = cleanPin;
-          const ok = await setMeta(meta);
-          if(!ok){ p.pin = null; toast("No se pudo guardar el PIN, intenta de nuevo"); return; }
+          const ok = await apiSetPin(p.id, null, cleanPin);
+          if(!ok){ toast("No se pudo guardar el PIN, intenta de nuevo"); return; }
+          p.hasPin = true;
+          currentUserPinCache = cleanPin;
           toast("PIN configurado ✅ — no lo olvides");
         } else {
           const entered = window.prompt("Escribe el PIN de " + p.name + " para entrar:");
           if(entered === null) return;
-          if(entered.trim() !== p.pin){ toast("❌ PIN incorrecto"); return; }
+          const cleanEntered = entered.trim();
+          const verification = await verifyParticipantPin(p.id, cleanEntered);
+          if(!verification.ok){ toast("❌ PIN incorrecto"); return; }
+          currentUserPinCache = cleanEntered;
         }
         currentUser = p;
         myPicks = await getPicks(p.id);
@@ -920,22 +1006,25 @@
     document.getElementById("qz-switch-user").addEventListener("click", () => {
       currentUser = null;
       ownerUnlocked = false;
+      ownerPasswordCache = null;
+      currentUserPinCache = null;
       render();
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
-      if(currentUser.pin){
+      if(currentUser.hasPin){
         const current = window.prompt("Escribe tu PIN actual:");
         if(current === null) return;
-        if(current.trim() !== currentUser.pin){ toast("PIN actual incorrecto"); return; }
+        const verification = await verifyParticipantPin(currentUser.id, current.trim());
+        if(!verification.ok){ toast("PIN actual incorrecto"); return; }
       }
       const newPin = window.prompt("Escribe tu nuevo PIN (4 dígitos):");
       if(newPin === null) return;
       const cleanPin = newPin.trim();
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
-      const previousPin = currentUser.pin;
-      currentUser.pin = cleanPin;
-      const ok = await setMeta(meta);
-      if(!ok){ currentUser.pin = previousPin; toast("No se pudo cambiar el PIN, intenta de nuevo"); return; }
+      const ok = await apiSetPin(currentUser.id, currentUserPinCache, cleanPin);
+      if(!ok){ toast("No se pudo cambiar el PIN, intenta de nuevo"); return; }
+      currentUser.hasPin = true;
+      currentUserPinCache = cleanPin;
       toast("✅ Listo, tu PIN quedó actualizado.");
     });
     root.querySelectorAll(".qz-tab").forEach(btn => {
@@ -2493,7 +2582,7 @@
                 <td><input type="text" value="${esc(p.name)}" data-role="rename" style="border:none;background:transparent;padding:2px;font-weight:600;"></td>
                 <td style="text-align:center;"><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
                 <td style="text-align:center;"><input type="checkbox" data-role="paid" ${p.paid?'checked':''}></td>
-                <td style="text-align:center;">${p.pin ? `<button class="btn btn-ghost btn-sm" data-role="resetpin">🔒 Resetear</button>` : `<span class="muted">Sin PIN</span>`}</td>
+                <td style="text-align:center;">${p.hasPin ? `<button class="btn btn-ghost btn-sm" data-role="resetpin">🔒 Resetear</button>` : `<span class="muted">Sin PIN</span>`}</td>
                 <td style="text-align:center;"><button class="btn btn-danger btn-sm" data-role="remove">Borrar</button></td>
               </tr>
             `).join("")}
@@ -2550,6 +2639,7 @@
         resetBtn.addEventListener("click", async () => {
           if(!confirm(`¿Resetear el PIN de ${p.name}? La próxima vez que toque su nombre podrá poner uno nuevo.`)) return;
           p.pin = null;
+          p.hasPin = false;
           await setMeta(meta);
           toast("🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
           renderAdminParticipantes(body);
@@ -2578,10 +2668,12 @@
           <button class="btn btn-primary" id="qz-owner-unlock">Entrar</button>
         </div>
       `;
-      document.getElementById("qz-owner-unlock").addEventListener("click", () => {
+      document.getElementById("qz-owner-unlock").addEventListener("click", async () => {
         const val = document.getElementById("qz-owner-pw").value;
-        if(val === meta.settings.ownerPassword){
+        const ok = await verifyOwnerPassword(val);
+        if(ok){
           ownerUnlocked = true;
+          ownerPasswordCache = val;
           renderAdminOwner(body);
         } else {
           toast("❌ Contraseña incorrecta");
@@ -2599,7 +2691,8 @@
         <div class="eyebrow">Puntos por acierto</div>
         <div class="field"><input type="number" id="qz-points-per-pick" value="${meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1}"></div>
         <div class="eyebrow">Contraseña de dueño</div>
-        <div class="field"><input type="text" id="qz-owner-pw-set" value="${esc(meta.settings.ownerPassword)}"></div>
+        <div class="field"><input type="text" id="qz-owner-pw-set" placeholder="Dejar en blanco para no cambiarla" value=""></div>
+        <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos tu contraseña actual aquí — solo escribe algo en este campo si quieres cambiarla.</p>
         <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
         <div class="field">
           <select id="qz-sportsdb-league">
@@ -2663,11 +2756,14 @@
       meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
       const pppRaw = document.getElementById("qz-points-per-pick").value.trim();
       meta.settings.pointsPerCorrectPick = pppRaw === "" ? 1 : Number(pppRaw);
-      meta.settings.ownerPassword = document.getElementById("qz-owner-pw-set").value.trim() || meta.settings.ownerPassword;
+      const newOwnerPw = document.getElementById("qz-owner-pw-set").value.trim();
+      if(newOwnerPw) meta.settings.ownerPassword = newOwnerPw; // left blank = don't touch it, server keeps the old one
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbCache = null;
-      await setMeta(meta);
+      const ok = await setMeta(meta);
+      if(ok && newOwnerPw) ownerPasswordCache = newOwnerPw; // keep future writes authenticated with the new one
+      delete meta.settings.ownerPassword; // never keep it around locally longer than the request needs
       toast("✅ Listo, tus ajustes quedaron guardados.");
       renderApp();
     });
@@ -2729,14 +2825,12 @@
             await kvSet("quiniela:" + slug + ":picks:" + p.id, picks);
           }
 
-          idx.quinielas.push({
-            slug, name: meta.groupName, creatorName: currentUser.name,
-            createdAt: new Date().toISOString(), exempt: true
+          const okIdx = await apiRegisterQuiniela({
+            slug, name: meta.groupName, creatorName: currentUser.name, exempt: true
           });
-          const okIdx = await setPlatformIndex(idx);
           if(!okIdx) throw new Error("no se pudo registrar en la plataforma");
 
-          const okFlag = await kvSet(currentMetaKey(), { migratedTo: slug });
+          const okFlag = await kvSet(currentMetaKey(), { migratedTo: slug }, { owner: ownerPasswordCache });
           if(!okFlag) throw new Error("no se pudo cerrar el link viejo");
 
           statusEl.textContent = "";
@@ -2945,8 +3039,7 @@
         const tenantMeta = freshTenantMeta(groupName, creatorName, password);
         const ok = await kvSet(metaKeyFor(slug), tenantMeta);
         if(!ok){ statusEl.textContent = "No se pudo crear, intenta de nuevo."; statusEl.style.color = "var(--red)"; return; }
-        idx.quinielas.push({ slug, name: groupName, creatorName, contact, createdAt: new Date().toISOString() });
-        await setPlatformIndex(idx);
+        await apiRegisterQuiniela({ slug, name: groupName, creatorName, contact });
         window.location.href = "/q/" + encodeURIComponent(slug);
       }catch(e){
         console.error(e);
@@ -2972,8 +3065,8 @@
       `;
       document.getElementById("qz-p-unlock").addEventListener("click", async () => {
         const val = document.getElementById("qz-p-pass").value;
-        const settings = await getPlatformSettings();
-        if(val === settings.dashboardPassword){ platformUnlocked = true; renderPlatformDashboard(); }
+        const ok = await verifyPlatformPassword(val);
+        if(ok){ platformUnlocked = true; platformPasswordCache = val; renderPlatformDashboard(); }
         else toast("❌ Contraseña incorrecta");
       });
       enterSubmits("qz-p-pass", "qz-p-unlock");
@@ -3140,7 +3233,7 @@
           const tenantMeta = r.value;
           if(newName) tenantMeta.groupName = newName;
           if(newPass) tenantMeta.settings.ownerPassword = newPass;
-          const ok = await kvSet(metaKeyFor(slug), tenantMeta);
+          const ok = await kvSet(metaKeyFor(slug), tenantMeta, { platform: platformPasswordCache });
           if(!ok) throw new Error("no se pudo guardar");
           const entry = idx.quinielas.find(q => q.slug === slug);
           if(entry && newName) entry.name = newName;
@@ -3167,9 +3260,9 @@
           const r = await kvGet(metaKeyFor(slug));
           if(r.found){
             const participants = r.value.participants || [];
-            await Promise.all(participants.map(p => kvDelete("quiniela:" + slug + ":picks:" + p.id)));
+            await Promise.all(participants.map(p => kvDelete("quiniela:" + slug + ":picks:" + p.id, { platform: platformPasswordCache })));
           }
-          await kvDelete(metaKeyFor(slug));
+          await kvDelete(metaKeyFor(slug), { platform: platformPasswordCache });
           idx.quinielas = idx.quinielas.filter(x => x.slug !== slug);
           await setPlatformIndex(idx);
           toast("🗑️ Quiniela eliminada");
