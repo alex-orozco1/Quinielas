@@ -484,6 +484,106 @@
     t._h = setTimeout(()=> t.classList.remove("show"), 2200);
   }
 
+  // ---------- onboarding (UX only — first-time explainer cards, per device, per screen) ----------
+  const ONBOARDING_CONTENT = {
+    jornada: {
+      title: "Haz tus pronósticos",
+      text: "Elige el resultado de cada partido. Puedes cambiar tus pronósticos hasta que comience el encuentro. Cada acierto suma puntos para subir en la tabla."
+    },
+    tabla: {
+      title: "Tabla de posiciones",
+      text: "Aquí puedes ver cómo vas comparado con los demás participantes. Los puntos se actualizan conforme se registran los resultados."
+    },
+    historial: {
+      title: "Historial",
+      text: "Consulta jornadas anteriores y revisa cómo ha evolucionado la competencia."
+    },
+    admin: {
+      title: "Panel del administrador",
+      text: "Desde aquí puedes administrar participantes, jornadas y resultados."
+    }
+  };
+  const SCREEN_INTRO = {
+    jornada: "Elige quién gana cada partido antes de que cierre la jornada.",
+    tabla: "Consulta tu posición y la de los demás participantes.",
+    historial: "Revisa jornadas anteriores y cómo ha cambiado la tabla.",
+    admin: "Administra participantes, jornadas y resultados de la quiniela."
+  };
+  const onboardingForceShow = {};
+
+  function onboardingKey(tabId){ return "qracks_onboarding_seen_" + tabId; }
+  function hasSeenOnboarding(tabId){
+    try{ return window.localStorage.getItem(onboardingKey(tabId)) === "1"; }
+    catch(e){ return true; } // if storage is blocked, don't keep nagging — just don't show it
+  }
+  function markOnboardingSeen(tabId){
+    try{ window.localStorage.setItem(onboardingKey(tabId), "1"); }catch(e){}
+  }
+
+  function onboardingCardHtml(tabId){
+    const content = ONBOARDING_CONTENT[tabId];
+    if(!content) return "";
+    const shouldShow = onboardingForceShow[tabId] || !hasSeenOnboarding(tabId);
+    if(!shouldShow) return "";
+    return `
+      <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;" data-onboarding-card="${tabId}">
+        <div class="eyebrow" style="color:var(--gold-dim);">${esc(content.title)}</div>
+        <p style="margin:4px 0 12px;">${esc(content.text)}</p>
+        <button class="btn btn-gold btn-sm" data-onboarding-dismiss="${tabId}">Entendido</button>
+      </div>
+    `;
+  }
+
+  function wireOnboardingCard(container, tabId){
+    const btn = container.querySelector(`[data-onboarding-dismiss="${tabId}"]`);
+    if(btn){
+      btn.addEventListener("click", () => {
+        markOnboardingSeen(tabId);
+        onboardingForceShow[tabId] = false;
+        const card = container.querySelector(`[data-onboarding-card="${tabId}"]`);
+        if(card) card.remove();
+      });
+    }
+  }
+
+  // Builds the title row (with a "?" help button) + 2-line screen intro + onboarding card,
+  // for the top of a tab. Renderer must call wireScreenHeader(main, tabId) after inserting.
+  function screenHeaderHtml(tabId, title, extraButtonsHtml){
+    const intro = SCREEN_INTRO[tabId] || "";
+    return `
+      <div class="section-title">
+        <span class="display">${esc(title)}</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${extraButtonsHtml || ""}
+          <button class="btn btn-ghost btn-sm" data-help-btn="${tabId}" title="Ayuda" style="border-radius:50%;width:30px;height:30px;padding:0;font-weight:800;">?</button>
+        </div>
+      </div>
+      ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:14px;">${esc(intro)}</p>` : ``}
+      ${onboardingCardHtml(tabId)}
+    `;
+  }
+  function wireScreenHeader(container, tabId){
+    wireOnboardingCard(container, tabId);
+    const helpBtn = container.querySelector(`[data-help-btn="${tabId}"]`);
+    if(helpBtn){
+      helpBtn.addEventListener("click", () => {
+        onboardingForceShow[tabId] = true;
+        rerenderActiveTab();
+      });
+    }
+  }
+  // Each tab renderer is re-invoked with its own (main) container; this small dispatcher
+  // lets the shared "?" button re-render whichever tab is currently active without
+  // needing to duplicate that switch logic here.
+  function rerenderActiveTab(){
+    const main = document.getElementById("qz-main");
+    if(!main) return;
+    if(activeTab === "jornada") renderJornada(main);
+    else if(activeTab === "tabla") renderTabla(main);
+    else if(activeTab === "historial") renderHistorial(main);
+    else if(activeTab === "admin") renderAdmin(main);
+  }
+
   function esc(s){
     return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
@@ -743,7 +843,7 @@
         } else {
           const entered = window.prompt("Escribe el PIN de " + p.name + " para entrar:");
           if(entered === null) return;
-          if(entered.trim() !== p.pin){ toast("PIN incorrecto"); return; }
+          if(entered.trim() !== p.pin){ toast("❌ PIN incorrecto"); return; }
         }
         currentUser = p;
         myPicks = await getPicks(p.id);
@@ -879,13 +979,14 @@
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
     main.innerHTML = `
+      ${screenHeaderHtml("jornada", "Jornada")}
       ${heroRound ? `
         <div class="card-primary" style="text-align:center;">
           <div class="eyebrow" style="justify-content:center;display:flex;">🔥 Jornada ${heroRound.number}</div>
           <div class="mono" id="qz-hero-clock" style="font-size:30px;margin:6px 0 10px;color:var(--pitch-dark);">⏰ ${esc(shortCountdown(heroRound.deadline))}</div>
           ${pending && pending.round.id === heroRound.id
             ? `<p style="margin:0 0 16px;">Te faltan <strong>${pending.missing}</strong> de ${pending.total} partidos.</p>`
-            : `<p style="margin:0 0 16px;color:var(--pitch-light);font-weight:700;">✅ Ya completaste tus picks</p>`}
+            : `<p style="margin:0 0 16px;color:var(--pitch-light);font-weight:700;">✅ Ya registraste todos tus pronósticos.</p>`}
           <button class="btn btn-primary" id="qz-hero-continue" style="width:100%;padding:14px;font-size:16px;">Continuar</button>
         </div>
       ` : ``}
@@ -920,6 +1021,7 @@
       </div>
       <div id="qz-jornada-list"></div>
     `;
+    wireScreenHeader(main, "jornada");
     const heroContinueBtn = document.getElementById("qz-hero-continue");
     if(heroContinueBtn){
       heroContinueBtn.addEventListener("click", () => {
@@ -1201,13 +1303,10 @@
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
     main.innerHTML = `
-      <div class="section-title">
-        <span class="display">Tabla de posiciones</span>
-        <div style="display:flex;gap:6px;">
-          <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Imagen de la tabla</button>
-          <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Excel</button>
-        </div>
-      </div>
+      ${screenHeaderHtml("tabla", "Tabla de posiciones", `
+        <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Imagen de la tabla</button>
+        <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Excel</button>
+      `)}
       <div class="card">
         <div class="row2">
           <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
@@ -1239,6 +1338,7 @@
         <div id="qz-chart-svg" style="overflow-x:auto;"></div>
       </div>
     `;
+    wireScreenHeader(main, "tabla");
     document.getElementById("qz-export").addEventListener("click", exportExcel);
     document.getElementById("qz-share-card").addEventListener("click", () => shareResultsCard(list));
     renderProgressChart(list);
@@ -1480,11 +1580,13 @@
   async function renderHistorial(main){
     const published = meta.rounds.filter(r => r.resultsPublished).slice().reverse();
     if(!published.length){
-      main.innerHTML = `<div class="card empty"><div class="display">Todavía no hay jornadas cerradas</div><p class="muted">Aquí verás el detalle de cada jornada una vez que el admin capture los resultados.</p></div>${pastTournamentsHtml()}`;
+      main.innerHTML = `${screenHeaderHtml("historial", "Historial de jornadas")}<div class="card empty"><div class="display">Todavía no hay jornadas cerradas</div><p class="muted">Aquí verás el detalle de cada jornada una vez que el admin capture los resultados.</p></div>${pastTournamentsHtml()}`;
+      wireScreenHeader(main, "historial");
       return;
     }
-    main.innerHTML = `<div class="section-title"><span class="display">Historial de jornadas</span></div>
+    main.innerHTML = `${screenHeaderHtml("historial", "Historial de jornadas")}
       <div id="qz-hist-list"></div><div id="qz-hist-detail"></div>${pastTournamentsHtml()}`;
+    wireScreenHeader(main, "historial");
     const list = document.getElementById("qz-hist-list");
     list.innerHTML = published.map(r => `
       <div class="history-item">
@@ -1590,13 +1692,14 @@
       {id:"dueno", label:"Ajustes"},
     ];
     main.innerHTML = `
-      <div class="section-title"><span class="display">Panel de administración</span></div>
+      ${screenHeaderHtml("admin", "Panel de administración")}
       <div id="qz-payment-banner"></div>
       <div class="qz-tabs" style="margin-bottom:14px;">
         ${subtabs.map(t=>`<button class="qz-tab" style="color:${t.id===adminSubTab?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${t.id===adminSubTab?'var(--gold)':'transparent'};" data-sub="${t.id}">${t.label}</button>`).join("")}
       </div>
       <div id="qz-admin-body"></div>
     `;
+    wireScreenHeader(main, "admin");
     if(ROUTE === "quiniela" && SLUG) renderPaymentBanner();
     root.querySelectorAll("[data-sub]").forEach(btn => {
       btn.addEventListener("click", () => { adminSubTab = btn.dataset.sub; renderAdmin(main); });
@@ -1791,7 +1894,7 @@
         p.customBetAnswers[betId].correct = checkbox.checked;
         const ok = await setMeta(meta);
         if(ok) toast(checkbox.checked ? `${p.name} ✅` : `Se quitó el punto de ${p.name}`);
-        else { checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
+        else { checkbox.checked = !checkbox.checked; toast("No se pudo guardar, intenta de nuevo"); }
       });
     });
 
@@ -1802,7 +1905,7 @@
       const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
       penalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
       const ok = await setMeta(meta);
-      toast(ok ? "Penalización guardada ✅" : "No se pudo guardar");
+      toast(ok ? "Penalización guardada ✅" : "No se pudo guardar, intenta de nuevo");
     });
   }
 
@@ -2315,7 +2418,7 @@
         `Jornada ${round.number}`
       );
       const ok = await setMeta(meta);
-      toast(ok ? "Resultados publicados ✅ puntos actualizados" : "No se pudo guardar");
+      toast(ok ? "Resultados publicados ✅ puntos actualizados" : "No se pudo guardar, intenta de nuevo");
       allPicksCache = {};
       renderAdminResultados(body);
     });
@@ -2325,7 +2428,7 @@
         round.resultsPublished = false;
         logAudit("Reabrió jornada", `Jornada ${round.number}`);
         await setMeta(meta);
-        toast("Jornada reabierta");
+        toast("🔓 Jornada reabierta — ya pueden volver a votar");
         renderAdminResultados(body);
       });
     }
@@ -2337,7 +2440,7 @@
         if(!round.customBetResults[betId]) round.customBetResults[betId] = {};
         round.customBetResults[betId][pid] = checkbox.checked;
         const ok = await setMeta(meta);
-        if(!ok){ checkbox.checked = !checkbox.checked; toast("No se pudo guardar"); }
+        if(!ok){ checkbox.checked = !checkbox.checked; toast("No se pudo guardar, intenta de nuevo"); }
       });
     });
 
@@ -2407,7 +2510,7 @@
       meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false, pin:null});
       await setMeta(meta);
       renderAdminParticipantes(body);
-      toast("Participante agregado");
+      toast("✅ Participante agregado");
     });
     document.getElementById("qz-bulk-add").addEventListener("click", async () => {
       const raw = document.getElementById("qz-bulk-names").value;
@@ -2435,12 +2538,12 @@
       row.querySelector("[data-role=rename]").addEventListener("change", async (e) => {
         p.name = e.target.value.trim() || p.name;
         await setMeta(meta);
-        toast("Nombre actualizado");
+        toast("✅ Nombre actualizado");
       });
       row.querySelector("[data-role=admin]").addEventListener("change", async (e) => {
         p.isAdmin = e.target.checked;
         await setMeta(meta);
-        toast(p.isAdmin ? (esc(p.name)+" ahora es admin") : (esc(p.name)+" ya no es admin"));
+        toast(p.isAdmin ? ("✅ " + esc(p.name) + " ahora es admin") : ("✅ " + esc(p.name) + " ya no es admin"));
       });
       const resetBtn = row.querySelector("[data-role=resetpin]");
       if(resetBtn){
@@ -2448,7 +2551,7 @@
           if(!confirm(`¿Resetear el PIN de ${p.name}? La próxima vez que toque su nombre podrá poner uno nuevo.`)) return;
           p.pin = null;
           await setMeta(meta);
-          toast("PIN reseteado");
+          toast("🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
           renderAdminParticipantes(body);
         });
       }
@@ -2481,7 +2584,7 @@
           ownerUnlocked = true;
           renderAdminOwner(body);
         } else {
-          toast("Contraseña incorrecta");
+          toast("❌ Contraseña incorrecta");
         }
       });
       enterSubmits("qz-owner-pw", "qz-owner-unlock");
@@ -2871,7 +2974,7 @@
         const val = document.getElementById("qz-p-pass").value;
         const settings = await getPlatformSettings();
         if(val === settings.dashboardPassword){ platformUnlocked = true; renderPlatformDashboard(); }
-        else toast("Contraseña incorrecta");
+        else toast("❌ Contraseña incorrecta");
       });
       enterSubmits("qz-p-pass", "qz-p-unlock");
       return;
@@ -3006,7 +3109,7 @@
         depositInfo: document.getElementById("qz-p-deposit").value
       };
       const ok = await setPlatformSettings(newSettings);
-      toast(ok ? "Configuración guardada ✅" : "No se pudo guardar");
+      toast(ok ? "Configuración guardada ✅" : "No se pudo guardar, intenta de nuevo");
       renderPlatformDashboard();
     });
 
@@ -3069,7 +3172,7 @@
           await kvDelete(metaKeyFor(slug));
           idx.quinielas = idx.quinielas.filter(x => x.slug !== slug);
           await setPlatformIndex(idx);
-          toast("Quiniela eliminada");
+          toast("🗑️ Quiniela eliminada");
           renderPlatformDashboard();
         }catch(e){
           console.error(e);
