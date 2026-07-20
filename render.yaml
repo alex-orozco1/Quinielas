@@ -8,3 +8,5 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: PLATFORM_PASSWORD
+        sync: false
