@@ -50,6 +50,115 @@ function verifyPassword(plain, stored) {
   }
 }
 
+// ---------- signed session tokens (Access Link "remember this device") ----------
+// The token itself lives ONLY in an HttpOnly cookie — the frontend never sees it,
+// only the {name, isAdmin, hasPin} state that comes back from verifying it.
+// Signed with a server secret (generated once, stored in the DB — no new env var
+// needed) so nothing can be forged without the server's cooperation. A PIN reset
+// invalidates every outstanding session for that participant automatically,
+// because the token embeds a fingerprint of the PIN at the time it was issued.
+let sessionSecret = null; // set at boot, see ensureSessionSecret()
+
+function base64url(buf) {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromBase64url(str) {
+  str = String(str).replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  return Buffer.from(str, "base64");
+}
+function pinFingerprint(pin) {
+  if (!pin) return "";
+  return crypto.createHash("sha256").update(String(pin)).digest("hex");
+}
+function signSessionToken(payload) {
+  const payloadB64 = base64url(Buffer.from(JSON.stringify(payload)));
+  const sig = crypto.createHmac("sha256", sessionSecret).update(payloadB64).digest("hex");
+  return payloadB64 + "." + sig;
+}
+function verifySessionToken(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payloadB64, sig] = parts;
+  try {
+    const expectedSig = crypto.createHmac("sha256", sessionSecret).update(payloadB64).digest("hex");
+    const a = Buffer.from(sig, "hex");
+    const b = Buffer.from(expectedSig, "hex");
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    return JSON.parse(fromBase64url(payloadB64).toString());
+  } catch (e) {
+    return null;
+  }
+}
+// Minimal manual cookie reader — no new dependency (Express already has
+// res.cookie()/res.clearCookie() built in for writing, just not a reader).
+function parseCookies(header) {
+  const out = {};
+  if (!header) return out;
+  header.split(";").forEach((pair) => {
+    const idx = pair.indexOf("=");
+    if (idx === -1) return;
+    const k = pair.slice(0, idx).trim();
+    const v = pair.slice(idx + 1).trim();
+    try { out[k] = decodeURIComponent(v); } catch (e) { out[k] = v; }
+  });
+  return out;
+}
+function sessionCookieName(slug) {
+  return "qracks_session_" + (slug || "_root");
+}
+// Secure only outside local dev (a plain-HTTP localhost can't set/send Secure
+// cookies at all) — matches the same DATABASE_URL-based local/prod check
+// already used for the Postgres SSL setting.
+const IS_LOCAL = process.env.DATABASE_URL.includes("localhost");
+const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: !IS_LOCAL,
+  sameSite: "lax",
+  path: "/",
+  maxAge: 365 * 24 * 60 * 60 * 1000
+};
+// clearCookie must NOT carry maxAge — Max-Age outranks Expires per the cookie
+// spec, so reusing SESSION_COOKIE_OPTIONS as-is would set a fresh 1-year
+// cookie instead of actually clearing it.
+const SESSION_COOKIE_CLEAR_OPTIONS = {
+  httpOnly: true,
+  secure: !IS_LOCAL,
+  sameSite: "lax",
+  path: "/"
+};
+const SESSION_TOKEN_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // matches the cookie's own maxAge
+function issueSessionCookie(res, slug, participant) {
+  const token = signSessionToken({
+    participantId: participant.id,
+    slug: slug || "_root",
+    pinFp: pinFingerprint(participant.pin),
+    issuedAt: Date.now()
+  });
+  res.cookie(sessionCookieName(slug), token, SESSION_COOKIE_OPTIONS);
+}
+function readSessionFromCookie(req, slug) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const raw = cookies[sessionCookieName(slug)];
+  if (!raw) return null;
+  const session = verifySessionToken(raw);
+  if (!session || session.slug !== (slug || "_root")) return null;
+  if (!session.issuedAt || Date.now() - session.issuedAt > SESSION_TOKEN_MAX_AGE_MS) return null;
+  return session;
+}
+// The extra check alongside a PIN header, everywhere a participant needs to
+// prove it's them: either their PIN matches, OR they have a valid session
+// cookie for this exact participant whose fingerprint still matches their
+// CURRENT pin (so resetting someone's PIN silently logs out every device
+// that was resting on the old one).
+function isAuthenticatedAsParticipantReq(req, slug, participant) {
+  if (isAuthenticatedAsParticipant(participant, req.get("x-qracks-auth") || "")) return true;
+  const session = readSessionFromCookie(req, slug);
+  if (!session || !participant) return false;
+  return session.participantId === participant.id && session.pinFp === pinFingerprint(participant.pin);
+}
+
 const app = express();
 // Render puts exactly one reverse proxy in front of this app. Trusting only
 // that one hop (instead of blindly trusting any X-Forwarded-For a client
@@ -77,6 +186,33 @@ async function ensureTable() {
     `INSERT INTO kv (key, value, updated_at) VALUES ('platform_index', '{"quinielas":[]}'::jsonb, now())
      ON CONFLICT (key) DO NOTHING`
   );
+  // Session-signing secret — generated once, reused forever after. Stored in
+  // the DB (not an env var) so nothing new has to be configured in Render.
+  await pool.query(
+    `INSERT INTO kv (key, value, updated_at) VALUES ('__session_secret__', $1::jsonb, now())
+     ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify(crypto.randomBytes(32).toString("hex"))]
+  );
+  const secretRow = await pool.query("SELECT value FROM kv WHERE key = '__session_secret__'");
+  sessionSecret = secretRow.rows[0].value;
+
+  // Growth Loop funnel events — a plain table (not the kv blob store) since
+  // this grows by appending rows, and needs to stay simply queryable
+  // (SELECT * FROM analytics_events ORDER BY created_at DESC) without a
+  // dashboard. No PII beyond an anonymous device id and whatever participant
+  // id was already public within that quiniela.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id SERIAL PRIMARY KEY,
+      event_name TEXT NOT NULL,
+      competition_slug TEXT,
+      participant_id TEXT,
+      is_new_user BOOLEAN,
+      device_id TEXT,
+      source TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
 }
 
 async function getRow(key, client) {
@@ -177,15 +313,15 @@ function stripPlatformIndexForPublic(value) {
 }
 
 // ---------- auth tiers ----------
-function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash) {
+function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, slug) {
   if (oldValue && oldValue.settings && verifyPassword(providedOwnerAuth, oldValue.settings.ownerPassword)) {
     return "owner";
   }
   if (providedPlatformAuth && verifyPassword(providedPlatformAuth, platformHash)) {
     return "platform";
   }
-  if (oldValue && providedOwnerAuth && (oldValue.participants || []).some(
-    (p) => p.isAdmin && p.pin && verifyPassword(providedOwnerAuth, p.pin)
+  if (oldValue && (oldValue.participants || []).some(
+    (p) => p.isAdmin && p.pin && req && isAuthenticatedAsParticipantReq(req, slug, p)
   )) {
     return "admin-pin";
   }
@@ -269,13 +405,13 @@ async function filterPicksForRequest(req, info, picksValue) {
   const providedAuth = req.get("x-qracks-auth") || "";
   const participant = (meta.participants || []).find((p) => p.id === info.participantId);
 
-  const isSelf = isAuthenticatedAsParticipant(participant, providedAuth);
+  const isSelf = isAuthenticatedAsParticipantReq(req, info.slug, participant);
   if (isSelf) return picksValue; // only the participant sees their own open-round answers
 
   const isOwner = meta.settings && verifyPassword(providedAuth, meta.settings.ownerPassword);
-  const isAdminOrOwner = isOwner || (providedAuth && (meta.participants || []).some(
-    (p) => p.isAdmin && p.pin && verifyPassword(providedAuth, p.pin)
-  ));
+  const isAdminOrOwner = isOwner || (meta.participants || []).some(
+    (p) => p.isAdmin && p.pin && isAuthenticatedAsParticipantReq(req, info.slug, p)
+  );
 
   const now = Date.now();
   const openRoundIds = new Set(
@@ -416,7 +552,7 @@ app.post("/api/kv/:key", async (req, res) => {
         return res.status(403).json({ error: "use_create_endpoint" });
       }
       const platformHash = await getPlatformHash();
-      const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash);
+      const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, info.slug);
       if (!authTier) return res.status(403).json({ error: "unauthorized" });
       finalValue = mergeProtectedMetaFields(oldValue, value, authTier);
     } else if (info.kind === "picks") {
@@ -424,7 +560,7 @@ app.post("/api/kv/:key", async (req, res) => {
       const metaValue = await getRow(info.metaKey);
       if (metaValue) {
         const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
-        if (!isAuthenticatedAsParticipant(participant, providedOwnerAuth)) {
+        if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
           // No PIN yet? They need to activate one first via /api/set-pin — a
           // public request (with or without a guessed PIN) can't read or write
           // picks just because a PIN hasn't been set.
@@ -493,13 +629,15 @@ app.post("/api/verify-platform", rateLimit("verify-platform"), async (req, res) 
 
 app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
-    const { metaKey, participantId, pin } = req.body || {};
+    const { metaKey, participantId, pin, slug } = req.body || {};
     if (!metaKey || !participantId) return res.status(400).json({ error: "missing_params" });
     const value = await getRow(metaKey);
     const participant = value ? (value.participants || []).find((p) => p.id === participantId) : null;
     // A participant with no PIN yet isn't "verified" — the frontend should
     // route them to /api/set-pin instead of treating this as a pass.
-    res.json({ ok: isAuthenticatedAsParticipant(participant, pin) });
+    const ok = isAuthenticatedAsParticipant(participant, pin);
+    if (ok) issueSessionCookie(res, slug, participant);
+    res.json({ ok });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server_error" });
@@ -513,7 +651,7 @@ app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
 // ever gets set — never implicitly through a public picks request.
 app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
-    const { metaKey, participantId, currentPin, newPin } = req.body || {};
+    const { metaKey, participantId, currentPin, newPin, slug } = req.body || {};
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
@@ -526,6 +664,49 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
     }
     participant.pin = hashPassword(newPin);
     await putRow(metaKey, value);
+    issueSessionCookie(res, slug, participant);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Silent, read-only check used when the Access Link is opened: is there a
+// still-valid session for this device? Only the resulting user state goes
+// back to the frontend — the token itself never leaves this handler.
+app.post("/api/verify-session", async (req, res) => {
+  try {
+    const { slug, metaKey } = req.body || {};
+    if (!metaKey) return res.status(400).json({ error: "missing_params" });
+    const session = readSessionFromCookie(req, slug);
+    if (!session) {
+      res.clearCookie(sessionCookieName(slug), SESSION_COOKIE_CLEAR_OPTIONS);
+      return res.json({ ok: false });
+    }
+    const value = await getRow(metaKey);
+    const participant = value ? (value.participants || []).find((p) => p.id === session.participantId) : null;
+    if (!participant || session.pinFp !== pinFingerprint(participant.pin)) {
+      res.clearCookie(sessionCookieName(slug), SESSION_COOKIE_CLEAR_OPTIONS);
+      return res.json({ ok: false });
+    }
+    res.json({
+      ok: true,
+      participantId: participant.id,
+      name: participant.name,
+      isAdmin: !!participant.isAdmin,
+      hasPin: !!participant.pin
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.post("/api/clear-session", async (req, res) => {
+  try {
+    const { slug } = req.body || {};
+    res.clearCookie(sessionCookieName(slug), SESSION_COOKIE_CLEAR_OPTIONS);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -535,7 +716,7 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
 
 app.post("/api/self-register", async (req, res) => {
   try {
-    const { metaKey, name, pin } = req.body || {};
+    const { metaKey, name, pin, slug } = req.body || {};
     const cleanName = String(name || "").trim();
     if (!metaKey || !cleanName || !/^\d{4}$/.test(String(pin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
@@ -552,6 +733,7 @@ app.post("/api/self-register", async (req, res) => {
     };
     value.participants.push(newParticipant);
     await putRow(metaKey, value);
+    issueSessionCookie(res, slug, newParticipant);
     res.json({ ok: true, participant: { id: newParticipant.id, name: newParticipant.name, isAdmin: false, paid: false, hasPin: true } });
   } catch (err) {
     console.error(err);
@@ -778,6 +960,41 @@ app.post("/api/delete-quiniela", async (req, res) => {
 
 // Simple health check (also useful for uptime pingers to avoid free-tier sleep)
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// ---------- Growth Loop funnel events ----------
+// Deliberately minimal: no dashboard, no aggregation — just a plain, appendable
+// log meant to be queried directly in Postgres when someone wants to look.
+const KNOWN_EVENTS = new Set([
+  "access_link_opened",
+  "join_started",
+  "join_completed",
+  "session_restored",
+  "session_confirmation_accepted",
+  "session_confirmation_rejected"
+]);
+app.post("/api/track-event", rateLimit("track-event"), async (req, res) => {
+  try {
+    const { event, competitionSlug, participantId, isNewUser, deviceId, source } = req.body || {};
+    if (!KNOWN_EVENTS.has(event)) return res.status(400).json({ error: "unknown_event" });
+    await pool.query(
+      `INSERT INTO analytics_events (event_name, competition_slug, participant_id, is_new_user, device_id, source)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        event,
+        competitionSlug ? String(competitionSlug).slice(0, 80) : null,
+        participantId ? String(participantId).slice(0, 80) : null,
+        typeof isNewUser === "boolean" ? isNewUser : null,
+        deviceId ? String(deviceId).slice(0, 80) : null,
+        source ? String(source).slice(0, 40) : null
+      ]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("track-event failed", err);
+    // Analytics failures should never surface to the user or block anything.
+    res.status(500).json({ error: "server_error" });
+  }
+});
 
 // ---------- Dynamic link previews for /q/:slug ----------
 const INDEX_HTML_PATH = path.join(__dirname, "public", "index.html");
