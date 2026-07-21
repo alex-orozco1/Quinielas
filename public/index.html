@@ -1116,15 +1116,6 @@
     document.addEventListener("click", () => {
       if(userMenuOpen){ userMenuOpen = false; const m = document.getElementById("qz-user-menu"); if(m) m.hidden = true; }
     }, { once: true });
-    async function copyAccessLink(){
-      const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
-      try{
-        await navigator.clipboard.writeText(link);
-        toast("✅ Listo, el link se copió.");
-      }catch(e){
-        toast("No se pudo copiar, intenta de nuevo");
-      }
-    }
     const headerCopyBtn = document.getElementById("qz-header-copy-link");
     if(headerCopyBtn) headerCopyBtn.addEventListener("click", copyAccessLink);
     const menuCopyBtn = document.getElementById("qz-menu-copy-link");
@@ -1195,16 +1186,30 @@
     const penalty = meta.paymentPenalty;
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
+    const aloneAsAdmin = currentUser.isAdmin && meta.participants.length <= 1;
+    // Only real match picks count as "has predicted before" — jornada-scope custom
+    // bet answers live under __extra in the same object and don't count.
+    const hasEverPicked = Object.values(myPicks || {}).some(roundPicks =>
+      Object.keys(roundPicks || {}).some(k => k !== "__extra")
+    );
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada")}
+      ${aloneAsAdmin ? `
+        <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
+          <div class="eyebrow" style="color:var(--gold-dim);">👋 Todavía eres el único aquí</div>
+          <p style="margin:4px 0 12px;">Comparte el link para que se unan tus amigos — sin ellos, no hay quiniela.</p>
+          <button class="btn btn-gold btn-sm" id="qz-invite-participants">Invitar participantes</button>
+        </div>
+      ` : ``}
       ${heroRound ? `
         <div class="card-primary" style="text-align:center;">
           <div class="eyebrow" style="justify-content:center;display:flex;">🔥 Jornada ${heroRound.number}</div>
+          ${!hasEverPicked ? `<p class="muted" style="margin:0 0 4px;">Aquí eliges quién gana cada partido.</p>` : ``}
           <div class="mono" id="qz-hero-clock" style="font-size:30px;margin:6px 0 10px;color:var(--pitch-dark);">⏰ ${esc(shortCountdown(heroRound.deadline))}</div>
           ${pending && pending.round.id === heroRound.id
             ? `<p style="margin:0 0 16px;">Te faltan <strong>${pending.missing}</strong> de ${pending.total} partidos.</p>`
             : `<p style="margin:0 0 16px;color:var(--pitch-light);font-weight:700;">✅ Ya registraste todos tus pronósticos.</p>`}
-          <button class="btn btn-primary" id="qz-hero-continue" style="width:100%;padding:14px;font-size:16px;">Continuar</button>
+          <button class="btn btn-primary" id="qz-hero-continue" style="width:100%;padding:14px;font-size:16px;">${!hasEverPicked ? "Hacer mi primera predicción" : "Continuar"}</button>
         </div>
       ` : ``}
       <div id="qz-pending-banner">${pending ? `
@@ -1239,6 +1244,8 @@
       <div id="qz-jornada-list"></div>
     `;
     wireScreenHeader(main, "jornada");
+    const inviteBtn = document.getElementById("qz-invite-participants");
+    if(inviteBtn) inviteBtn.addEventListener("click", copyAccessLink);
     const heroContinueBtn = document.getElementById("qz-hero-continue");
     if(heroContinueBtn){
       heroContinueBtn.addEventListener("click", () => {
@@ -1519,6 +1526,7 @@
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
+    const hasScoredResults = meta.rounds.some(r => r.resultsPublished);
     main.innerHTML = `
       ${screenHeaderHtml("tabla", "Tabla de posiciones", `
         <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Imagen de la tabla</button>
@@ -1530,6 +1538,12 @@
           <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span></div></div>
         </div>
       </div>
+      ${!hasScoredResults ? `
+        <div class="card empty">
+          <div class="display">Aún no hay resultados</div>
+          <p class="muted">La tabla se llena en cuanto el admin capture el resultado de la primera jornada.</p>
+        </div>
+      ` : `
       <div class="card" style="padding:8px 12px;">
         <table>
           <thead><tr><th style="text-align:center;">#</th><th></th><th>Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th><th style="text-align:center;">Pagó</th></tr></thead>
@@ -1548,6 +1562,7 @@
         </table>
       </div>
       <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente · ▲▼ = movimiento desde la jornada pasada</p>
+      `}
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Cómo llegaron aquí</span></div>
         <p class="muted" style="margin-top:-4px;">Puntos acumulados después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
@@ -2128,8 +2143,27 @@
   }
 
   // "Participación": who has/hasn't submitted picks for open rounds — status only, never reveals picks
+  async function copyAccessLink(){
+    const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
+    try{
+      await navigator.clipboard.writeText(link);
+      toast("✅ Listo, el link se copió.");
+    }catch(e){
+      toast("No se pudo copiar, intenta de nuevo");
+    }
+  }
   function accessLinkCardHtml(){
     const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
+    const alone = meta.participants.length <= 1;
+    if(alone){
+      return `
+        <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
+          <div class="eyebrow" style="color:var(--gold-dim);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">🔗 Link de acceso <span class="badge unpaid">Nadie se ha unido</span></div>
+          <p class="muted">Todavía nadie se ha unido. Comparte este link para comenzar la quiniela.</p>
+          <button class="btn btn-gold" id="qz-access-copy" data-link="${link}">Copiar link</button>
+        </div>
+      `;
+    }
     return `
       <div class="card">
         <div class="eyebrow">🔗 Link de acceso</div>
