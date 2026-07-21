@@ -71,11 +71,24 @@ async function ensureTable() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+  // Seeded once so create/migrate can take a real row lock on it (SELECT ... FOR
+  // UPDATE) from the very first request onward, instead of racing on an INSERT.
+  await pool.query(
+    `INSERT INTO kv (key, value, updated_at) VALUES ('platform_index', '{"quinielas":[]}'::jsonb, now())
+     ON CONFLICT (key) DO NOTHING`
+  );
 }
 
 async function getRow(key, client) {
   const q = client || pool;
   const r = await q.query("SELECT value FROM kv WHERE key = $1", [key]);
+  return r.rows.length ? r.rows[0].value : null;
+}
+// Locks the row for the rest of the transaction, so a second concurrent
+// transaction reading the same key has to wait its turn instead of both
+// reading a stale snapshot and one silently overwriting the other's change.
+async function getRowLocked(key, client) {
+  const r = await client.query("SELECT value FROM kv WHERE key = $1 FOR UPDATE", [key]);
   return r.rows.length ? r.rows[0].value : null;
 }
 async function putRow(key, value, client) {
@@ -257,11 +270,12 @@ async function filterPicksForRequest(req, info, picksValue) {
   const participant = (meta.participants || []).find((p) => p.id === info.participantId);
 
   const isSelf = isAuthenticatedAsParticipant(participant, providedAuth);
+  if (isSelf) return picksValue; // only the participant sees their own open-round answers
+
   const isOwner = meta.settings && verifyPassword(providedAuth, meta.settings.ownerPassword);
-  const isAdminPin = !isOwner && providedAuth && (meta.participants || []).some(
+  const isAdminOrOwner = isOwner || (providedAuth && (meta.participants || []).some(
     (p) => p.isAdmin && p.pin && verifyPassword(providedAuth, p.pin)
-  );
-  if (isSelf || isOwner || isAdminPin) return picksValue;
+  ));
 
   const now = Date.now();
   const openRoundIds = new Set(
@@ -271,7 +285,26 @@ async function filterPicksForRequest(req, info, picksValue) {
   );
   const filtered = {};
   for (const roundId in picksValue) {
-    if (!openRoundIds.has(roundId)) filtered[roundId] = picksValue[roundId];
+    if (!openRoundIds.has(roundId)) {
+      // Closed round — already visible to everyone once it locks (existing behavior).
+      filtered[roundId] = picksValue[roundId];
+    } else if (isAdminOrOwner) {
+      // Open round, admin/owner asking — reveal only that an answer exists per
+      // match (and per jornada-scope bet, under __extra), never what it says.
+      const entry = picksValue[roundId] || {};
+      const revealed = {};
+      Object.keys(entry).forEach((k) => {
+        if (k === "__extra" && entry.__extra && typeof entry.__extra === "object") {
+          const extraRevealed = {};
+          Object.keys(entry.__extra).forEach((betId) => { extraRevealed[betId] = true; });
+          revealed.__extra = extraRevealed;
+        } else {
+          revealed[k] = true;
+        }
+      });
+      filtered[roundId] = revealed;
+    }
+    // Open round, requester is neither self nor admin/owner — omitted entirely.
   }
   return filtered;
 }
@@ -291,10 +324,18 @@ async function validatePicksDeadline(info, oldValue, newValue) {
   const allRoundIds = new Set([...Object.keys(old), ...Object.keys(fresh)]);
   for (const roundId of allRoundIds) {
     const round = roundsById[roundId];
-    if (!round) continue; // unknown round id — ignore rather than block on it
-    if (now <= new Date(round.deadline).getTime()) continue; // still open, fine
     const oldRoundPicks = JSON.stringify(old[roundId] || {});
     const newRoundPicks = JSON.stringify(fresh[roundId] || {});
+    if (!round) {
+      // The round no longer exists in the quiniela's config (e.g. an admin
+      // deleted it after it closed). We can no longer check its deadline, so
+      // — rather than silently treat that as "anything goes" — anything that
+      // already had picks stays exactly as it was; nothing new can be added
+      // under a round id that isn't real.
+      if (oldRoundPicks !== newRoundPicks) return { ok: false };
+      continue;
+    }
+    if (now <= new Date(round.deadline).getTime()) continue; // still open, fine
     if (oldRoundPicks !== newRoundPicks) return { ok: false };
   }
   return { ok: true };
@@ -326,9 +367,13 @@ app.get("/api/kv/:key", async (req, res) => {
         const platformHash = await getPlatformHash();
         const isPlatformAuthed = verifyPassword(providedPlatformAuth, platformHash);
         value = isPlatformAuthed ? value : stripPlatformIndexForPublic(value);
+      } else if (req.params.key === "platform_payment_log") {
+        const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+        const platformHash = await getPlatformHash();
+        if (!verifyPassword(providedPlatformAuth, platformHash)) {
+          return res.status(403).json({ error: "unauthorized" });
+        }
       }
-      // platform_payment_log has no public reader in this app; leave as-is (internal use only,
-      // and the write side already requires the platform password).
     } else if (info.kind === "picks") {
       value = await filterPicksForRequest(req, info, value);
     }
@@ -577,7 +622,7 @@ app.post("/api/create-quiniela", async (req, res) => {
     await client.query("BEGIN");
 
     const existingMeta = await getRow(`quiniela:${cleanSlug}:meta`, client);
-    const idx = (await getRow("platform_index", client)) || { quinielas: [] };
+    const idx = (await getRowLocked("platform_index", client)) || { quinielas: [] };
     if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
     const slugTaken = !!existingMeta || idx.quinielas.some((q) => q.slug === cleanSlug);
     if (slugTaken) {
@@ -597,7 +642,21 @@ app.post("/api/create-quiniela", async (req, res) => {
         pointsPerCorrectPick: 1
       }
     };
-    await putRow(`quiniela:${cleanSlug}:meta`, meta, client);
+    // A plain INSERT (not upsert) so the database itself is the final word on
+    // uniqueness: if another request created this exact slug a moment ago, this
+    // throws instead of silently overwriting it.
+    try {
+      await client.query(
+        `INSERT INTO kv (key, value, updated_at) VALUES ($1, $2, now())`,
+        [`quiniela:${cleanSlug}:meta`, JSON.stringify(meta)]
+      );
+    } catch (insertErr) {
+      if (insertErr.code === "23505") {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "slug_taken" });
+      }
+      throw insertErr;
+    }
 
     // Note: exempt is intentionally never settable here — only the platform
     // dashboard (with the platform password) can grant that.
@@ -642,7 +701,7 @@ app.post("/api/migrate-quiniela", async (req, res) => {
 
     const targetKey = `quiniela:${cleanSlug}:meta`;
     const existing = await getRow(targetKey, client);
-    const idx = (await getRow("platform_index", client)) || { quinielas: [] };
+    const idx = (await getRowLocked("platform_index", client)) || { quinielas: [] };
     if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
     if (existing || idx.quinielas.some((q) => q.slug === cleanSlug)) {
       await client.query("ROLLBACK");
@@ -671,6 +730,46 @@ app.post("/api/migrate-quiniela", async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("migrate-quiniela failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// Deleting a quiniela — its meta, every participant's picks, and its
+// platform_index entry — is one transaction: validate the platform password
+// first, then either all of it goes away or (on any failure) none of it does.
+app.post("/api/delete-quiniela", async (req, res) => {
+  const { slug } = req.body || {};
+  const cleanSlug = normalizeSlug(slug);
+  if (!cleanSlug) return res.status(400).json({ error: "invalid_slug" });
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const metaKey = `quiniela:${cleanSlug}:meta`;
+
+    // Prefix delete — catches picks belonging to participants who may have
+    // since been removed from metadata, not just the ones currently listed.
+    await client.query("DELETE FROM kv WHERE key LIKE $1", [`quiniela:${cleanSlug}:picks:%`]);
+    await client.query("DELETE FROM kv WHERE key = $1", [metaKey]);
+
+    const idx = await getRowLocked("platform_index", client);
+    if (idx && Array.isArray(idx.quinielas)) {
+      idx.quinielas = idx.quinielas.filter((q) => q.slug !== cleanSlug);
+      await putRow("platform_index", idx, client);
+    }
+
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("delete-quiniela failed", err);
     res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
