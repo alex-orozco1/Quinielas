@@ -357,26 +357,11 @@
 
   function uid(prefix){ return prefix + "_" + Math.random().toString(36).slice(2,9); }
 
-  // Used when someone creates their own new quiniela via /crear — no prefilled names.
-  function freshTenantMeta(groupName, creatorName, ownerPassword){
-    const creator = { id: uid("p"), name: creatorName, isAdmin: true, paid: false, pin: null };
-    return {
-      groupName,
-      participants: [creator],
-      rounds: [],
-      settings: {
-        ownerPassword: ownerPassword,
-        entryFee: 0,
-        sportsdbSeason: "2025-2026",
-        pointsPerCorrectPick: 1
-      }
-    };
-  }
-
   // ---------- platform-level storage (list of all quinielas, jornada limit/pricing settings) ----------
   async function getPlatformIndex(){
     try{
-      const r = await kvGet(PLATFORM_INDEX_KEY);
+      const creds = platformPasswordCache ? { platform: platformPasswordCache } : undefined;
+      const r = await kvGet(PLATFORM_INDEX_KEY, creds);
       return r.found ? r.value : { quinielas: [] };
     }catch(e){ console.error("getPlatformIndex failed", e); return { quinielas: [] }; }
   }
@@ -409,14 +394,18 @@
   // Self-service: anyone can register a brand-new quiniela in the platform index
   // (that's how /crear and "move to my own link" work) — no platform password needed,
   // it only ever adds one new entry, it can't touch or remove anyone else's.
-  async function apiRegisterQuiniela(entry){
+  // Creating a brand-new quiniela — meta + platform_index entry — happens as a
+  // single atomic operation on the server (see /api/create-quiniela). No
+  // separate registration step, no window where one exists without the other.
+  async function apiCreateQuiniela({ slug, groupName, creatorName, contact, password }){
     try{
-      const res = await fetch("/api/register-quiniela", {
+      const res = await fetch("/api/create-quiniela", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry)
+        body: JSON.stringify({ slug, groupName, creatorName, contact, password })
       });
-      return res.ok;
-    }catch(e){ console.error("apiRegisterQuiniela failed", e); return false; }
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, ...data };
+    }catch(e){ console.error("apiCreateQuiniela failed", e); return { ok: false }; }
   }
   // Moving a quiniela to its own link happens entirely on the server in one
   // transaction — the browser never touches the password hash or anyone's PIN,
@@ -1770,16 +1759,17 @@
   async function getPaymentStatus(){
     if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
     try{
-      const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
-      const entry = idx.quinielas.find(q => q.slug === SLUG);
-      if(!entry || entry.exempt || entry.paid) return null;
-      const jornadaLimit = (entry.customJornadaLimit !== undefined && entry.customJornadaLimit !== null) ? entry.customJornadaLimit : settings.jornadaLimit;
+      const res = await fetch("/api/payment-status/" + encodeURIComponent(SLUG));
+      if(!res.ok) return null;
+      const entry = await res.json();
+      if(!entry.exists || entry.exempt || entry.paid) return null;
+      const jornadaLimit = (entry.customJornadaLimit !== null) ? entry.customJornadaLimit : entry.jornadaLimit;
       const roundCount = meta.rounds.length;
       if(roundCount < jornadaLimit) return null;
       const participantCount = meta.participants.length;
       return {
-        amount: settings.pricePerParticipant * participantCount,
-        depositInfo: settings.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
+        amount: entry.pricePerParticipant * participantCount,
+        depositInfo: entry.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
         jornadaLimit
       };
     }catch(e){ console.error("getPaymentStatus failed", e); return null; }
@@ -3046,17 +3036,13 @@
       statusEl.textContent = "Creando…";
       statusEl.style.color = "var(--ink-soft)";
       try{
-        const idx = await getPlatformIndex();
-        if(idx.quinielas.some(q => q.slug === slug)){
-          statusEl.textContent = "Ese link ya está en uso, prueba otro.";
+        const result = await apiCreateQuiniela({ slug, groupName, creatorName, contact, password });
+        if(!result.ok){
+          statusEl.textContent = result.error === "slug_taken" ? "Ese link ya está en uso, prueba otro." : "No se pudo crear, intenta de nuevo.";
           statusEl.style.color = "var(--red)";
           return;
         }
-        const tenantMeta = freshTenantMeta(groupName, creatorName, password);
-        const ok = await kvSet(metaKeyFor(slug), tenantMeta);
-        if(!ok){ statusEl.textContent = "No se pudo crear, intenta de nuevo."; statusEl.style.color = "var(--red)"; return; }
-        await apiRegisterQuiniela({ slug, name: groupName, creatorName, contact });
-        window.location.href = "/q/" + encodeURIComponent(slug);
+        window.location.href = "/q/" + encodeURIComponent(result.slug || slug);
       }catch(e){
         console.error(e);
         statusEl.textContent = "No se pudo crear, intenta de nuevo.";
