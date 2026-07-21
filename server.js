@@ -1,7 +1,7 @@
 // Quiniela / QRACKS — backend
 // Serves the static frontend and a small key-value API backed by Postgres, plus a
 // handful of narrow endpoints for things that need real server-side rules
-// (authentication, PIN/password hashing, pick deadlines, safe migration).
+// (authentication, PIN/password hashing, pick deadlines, safe creation/migration).
 
 const express = require("express");
 const path = require("path");
@@ -26,10 +26,6 @@ if (missingEnv.length) {
 }
 
 // ---------- password/PIN hashing (scrypt, no extra dependency needed) ----------
-// Stored format: "scrypt$<salt-hex>$<hash-hex>". Anything else is treated as a
-// legacy plaintext value — verified by direct comparison, then transparently
-// re-hashed the next time that record is written. This lets existing quinielas
-// keep working without a manual migration step.
 function hashPassword(plain) {
   const salt = crypto.randomBytes(16).toString("hex");
   const hash = crypto.scryptSync(String(plain), salt, 64).toString("hex");
@@ -55,7 +51,11 @@ function verifyPassword(plain, stored) {
 }
 
 const app = express();
-app.set("trust proxy", true); // Render sits behind a proxy — needed for real client IPs (rate limiting)
+// Render puts exactly one reverse proxy in front of this app. Trusting only
+// that one hop (instead of blindly trusting any X-Forwarded-For a client
+// sends) is what makes req.ip a real client IP instead of something a client
+// could spoof to dodge rate limiting.
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "3mb" }));
 
 const pool = new Pool({
@@ -88,14 +88,8 @@ async function putRow(key, value, client) {
 }
 
 // ---------- rate limiting for the endpoints that check a secret ----------
-// Simple in-memory fixed-window counter, keyed by client IP + endpoint name.
-// No new dependency, good enough for this app's scale. Old buckets get swept
-// periodically so this doesn't grow forever.
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-const RATE_LIMIT_MAX = 40; // attempts per window, per IP+endpoint — generous enough for a
-// household/office WiFi where many participants log in around the same time (e.g. right
-// before a jornada closes), while still making a 4-digit PIN brute force impractical
-// (10,000 combinations at 40 tries per 5 min is many hours, not the few seconds it'd take unlimited).
+const RATE_LIMIT_MAX = 40; // attempts per window, per IP+endpoint
 const rateBuckets = new Map();
 setInterval(() => {
   const now = Date.now();
@@ -122,25 +116,25 @@ function rateLimit(name) {
   };
 }
 
+// ---------- key classification ----------
+// Only these exact keys/patterns are recognized. Anything else is rejected —
+// the generic store/read/delete endpoints are for QRACKS's own data shapes,
+// not an arbitrary key-value bucket anyone can stash unrelated things in.
 const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log"]);
 
-// Figures out what kind of record a key represents, since that determines what
-// credential (if any) a write to it should require.
 function classifyKey(key) {
   if (PLATFORM_KEYS.has(key)) return { kind: "platform" };
   if (key === "quiniela_meta_v1") return { kind: "quiniela-meta", metaKey: "quiniela_meta_v1" };
-  let m = key.match(/^quiniela:(.+):meta$/);
+  let m = key.match(/^quiniela:([a-z0-9-]{1,60}):meta$/);
   if (m) return { kind: "quiniela-meta", metaKey: key, slug: m[1] };
-  m = key.match(/^quiniela_picks_(.+)_v1$/);
+  m = key.match(/^quiniela_picks_([a-z0-9_]{1,60})_v1$/i);
   if (m) return { kind: "picks", metaKey: "quiniela_meta_v1", participantId: m[1] };
-  m = key.match(/^quiniela:(.+):picks:(.+)$/);
+  m = key.match(/^quiniela:([a-z0-9-]{1,60}):picks:([a-z0-9_]{1,60})$/i);
   if (m) return { kind: "picks", metaKey: `quiniela:${m[1]}:meta`, participantId: m[2], slug: m[1] };
   return { kind: "other" };
 }
 
-// Removes credentials from a quiniela-meta value before it's ever sent to a client.
-// Participant PINs become a plain "hasPin" boolean so the UI can still show its
-// lock icon without the app (or anyone calling the API directly) seeing the PIN.
+// ---------- secret stripping for reads ----------
 function stripQuinielaSecrets(value) {
   const clone = JSON.parse(JSON.stringify(value));
   if (clone.settings && "ownerPassword" in clone.settings) {
@@ -161,13 +155,15 @@ function stripPlatformSecrets(value) {
   if ("dashboardPassword" in clone) delete clone.dashboardPassword;
   return clone;
 }
+// Public callers only get enough to render a plain list / check a slug is
+// taken — nothing about contact info, payment/exemption status, or per-
+// quiniela overrides. The authenticated platform dashboard gets everything.
+function stripPlatformIndexForPublic(value) {
+  const quinielas = Array.isArray(value.quinielas) ? value.quinielas : [];
+  return { quinielas: quinielas.map((q) => ({ slug: q.slug, name: q.name })) };
+}
 
-// Who is allowed to write to an existing quiniela's meta, and at what tier.
-// "owner": the real owner password. "admin-pin": any participant flagged isAdmin,
-// verified by their own PIN — that's how the app already treats "logged in as an
-// admin" everywhere except the extra-sensitive Ajustes screen. "platform": the
-// platform owner, for support/recovery. Returns the highest tier that matches,
-// or null if none do.
+// ---------- auth tiers ----------
 function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash) {
   if (oldValue && oldValue.settings && verifyPassword(providedOwnerAuth, oldValue.settings.ownerPassword)) {
     return "owner";
@@ -183,22 +179,14 @@ function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, 
   return null;
 }
 
-// A write only ever includes the fields the client actually changed — because
-// the client's own copy never has the real password/PINs (they're stripped on
-// the way out, above). This restores whatever the client didn't explicitly set,
-// hashes anything it did, and — this is the important part — refuses to let an
-// "admin-pin" tier request touch owner-only fields (the owner password itself,
-// or granting/revoking someone else's admin rights). Only "owner" or "platform"
-// tier requests can change those.
 function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   const merged = JSON.parse(JSON.stringify(newValue));
   const oldSettings = (oldValue && oldValue.settings) || null;
   if (!merged.settings) merged.settings = {};
 
-  const canChangeOwnerFields = authTier === "owner" || authTier === "platform" || !oldValue;
+  const canChangeOwnerFields = authTier === "owner" || authTier === "platform";
   const incomingPw = merged.settings.ownerPassword;
   if (!canChangeOwnerFields) {
-    // admin-pin — never allowed to set a new password, always keep the real one.
     if (oldSettings && oldSettings.ownerPassword) {
       merged.settings.ownerPassword = isHashed(oldSettings.ownerPassword)
         ? oldSettings.ownerPassword
@@ -210,7 +198,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
     if (oldSettings && oldSettings.ownerPassword) {
       merged.settings.ownerPassword = isHashed(oldSettings.ownerPassword)
         ? oldSettings.ownerPassword
-        : hashPassword(oldSettings.ownerPassword); // opportunistically migrate on any write
+        : hashPassword(oldSettings.ownerPassword);
     }
   } else if (!isHashed(incomingPw)) {
     merged.settings.ownerPassword = hashPassword(incomingPw);
@@ -222,18 +210,15 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   if (Array.isArray(merged.participants)) {
     merged.participants.forEach((p) => {
       const old = oldById[p.id];
-      // PIN: preserve if omitted (opportunistically migrating to a hash if it
-      // was still plaintext); hash if present and not already hashed.
       if (!("pin" in p)) {
         if (old && "pin" in old && old.pin) {
           p.pin = isHashed(old.pin) ? old.pin : hashPassword(old.pin);
         } else if (old && "pin" in old) {
-          p.pin = old.pin; // null/empty — nothing to hash
+          p.pin = old.pin;
         }
       } else if (p.pin && !isHashed(p.pin)) {
         p.pin = hashPassword(p.pin);
       }
-      // isAdmin: admin-pin tier can't grant or revoke anyone's admin flag.
       if (!canChangeOwnerFields && old && p.isAdmin !== old.isAdmin) {
         p.isAdmin = old.isAdmin;
       }
@@ -257,18 +242,21 @@ function mergeProtectedPlatformFields(oldValue, newValue) {
   return merged;
 }
 
-// Filters a participant's picks for anyone who ISN'T that participant (own PIN)
-// or an admin/owner of that quiniela: picks for rounds that haven't closed yet
-// are removed, so a public/anonymous request can never see in-progress
-// predictions — only ones for rounds whose deadline already passed (which is
-// also when the app already shows everyone's picks to everyone, on purpose).
+// A participant only counts as "authenticated as themselves" if they have a
+// PIN AND it matches. No PIN does NOT mean open access anymore — it means
+// they haven't activated yet, and activation only happens through
+// /api/set-pin (see below), never implicitly via a public request.
+function isAuthenticatedAsParticipant(participant, providedAuth) {
+  return !!(participant && participant.pin && verifyPassword(providedAuth, participant.pin));
+}
+
 async function filterPicksForRequest(req, info, picksValue) {
   const meta = await getRow(info.metaKey);
   if (!meta) return picksValue;
   const providedAuth = req.get("x-qracks-auth") || "";
   const participant = (meta.participants || []).find((p) => p.id === info.participantId);
 
-  const isSelf = participant && (!participant.pin || verifyPassword(providedAuth, participant.pin));
+  const isSelf = isAuthenticatedAsParticipant(participant, providedAuth);
   const isOwner = meta.settings && verifyPassword(providedAuth, meta.settings.ownerPassword);
   const isAdminPin = !isOwner && providedAuth && (meta.participants || []).some(
     (p) => p.isAdmin && p.pin && verifyPassword(providedAuth, p.pin)
@@ -288,21 +276,25 @@ async function filterPicksForRequest(req, info, picksValue) {
   return filtered;
 }
 
-// Rejects a picks write if it tries to change anything for a round whose
-// deadline has already passed — checked here, not just hidden in the UI.
+// Rejects a picks write if it touches ANY round whose deadline already
+// passed — including a round that's missing from the new value entirely
+// (deleting/omitting a closed round's picks is exactly as forbidden as
+// editing them, so this compares the UNION of old and new round ids).
 async function validatePicksDeadline(info, oldValue, newValue) {
   const meta = await getRow(info.metaKey);
-  if (!meta) return { ok: true }; // no meta yet — can't check deadlines, allow (bootstrap)
+  if (!meta) return { ok: true };
   const roundsById = {};
   (meta.rounds || []).forEach((r) => { roundsById[r.id] = r; });
   const old = oldValue || {};
+  const fresh = newValue || {};
   const now = Date.now();
-  for (const roundId in newValue) {
+  const allRoundIds = new Set([...Object.keys(old), ...Object.keys(fresh)]);
+  for (const roundId of allRoundIds) {
     const round = roundsById[roundId];
     if (!round) continue; // unknown round id — ignore rather than block on it
     if (now <= new Date(round.deadline).getTime()) continue; // still open, fine
     const oldRoundPicks = JSON.stringify(old[roundId] || {});
-    const newRoundPicks = JSON.stringify(newValue[roundId] || {});
+    const newRoundPicks = JSON.stringify(fresh[roundId] || {});
     if (oldRoundPicks !== newRoundPicks) return { ok: false };
   }
   return { ok: true };
@@ -313,19 +305,33 @@ async function getPlatformHash() {
   return platValue && platValue.dashboardPassword ? platValue.dashboardPassword : process.env.PLATFORM_PASSWORD;
 }
 
-// GET a value by key — quiniela/platform records never leave the server with
-// their real password or PINs, regardless of who's asking. Picks additionally
-// get filtered down to closed-round-only unless the requester proves they're
-// the owning participant or an admin/owner of that quiniela.
+// ---------- generic KV endpoints (QRACKS's own key shapes only) ----------
+
 app.get("/api/kv/:key", async (req, res) => {
   try {
+    const info = classifyKey(req.params.key);
+    if (info.kind === "other") return res.status(400).json({ error: "invalid_key" });
+
     const r = await pool.query("SELECT value FROM kv WHERE key = $1", [req.params.key]);
     if (!r.rows.length) return res.status(404).json({ error: "not_found" });
-    const info = classifyKey(req.params.key);
     let value = r.rows[0].value;
-    if (info.kind === "quiniela-meta") value = stripQuinielaSecrets(value);
-    else if (info.kind === "platform") value = stripPlatformSecrets(value);
-    else if (info.kind === "picks") value = await filterPicksForRequest(req, info, value);
+
+    if (info.kind === "quiniela-meta") {
+      value = stripQuinielaSecrets(value);
+    } else if (info.kind === "platform") {
+      if (req.params.key === "platform_settings") {
+        value = stripPlatformSecrets(value);
+      } else if (req.params.key === "platform_index") {
+        const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+        const platformHash = await getPlatformHash();
+        const isPlatformAuthed = verifyPassword(providedPlatformAuth, platformHash);
+        value = isPlatformAuthed ? value : stripPlatformIndexForPublic(value);
+      }
+      // platform_payment_log has no public reader in this app; leave as-is (internal use only,
+      // and the write side already requires the platform password).
+    } else if (info.kind === "picks") {
+      value = await filterPicksForRequest(req, info, value);
+    }
     res.json({ key: req.params.key, value });
   } catch (err) {
     console.error(err);
@@ -333,48 +339,56 @@ app.get("/api/kv/:key", async (req, res) => {
   }
 });
 
-// SET a value by key (upsert) — writes to quiniela/platform records require the
-// matching credential, checked here on the server, not just in the browser.
 app.post("/api/kv/:key", async (req, res) => {
   try {
     const value = req.body ? req.body.value : undefined;
     if (value === undefined) return res.status(400).json({ error: "missing_value" });
     const info = classifyKey(req.params.key);
+    if (info.kind === "other") return res.status(400).json({ error: "invalid_key" });
+
     const providedOwnerAuth = req.get("x-qracks-auth") || "";
     const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
-
     let finalValue = value;
 
     if (info.kind === "platform") {
-      const oldValue = await getRow(req.params.key);
-      const currentHash = oldValue && oldValue.dashboardPassword ? oldValue.dashboardPassword : process.env.PLATFORM_PASSWORD;
-      if (!verifyPassword(providedPlatformAuth, currentHash)) {
+      // All three platform-level keys validate against the SAME current password
+      // (platform_settings' own hash, or the bootstrap env var if that doesn't
+      // exist yet) — never against a per-key field, so changing the password
+      // once in the dashboard immediately applies everywhere, consistently.
+      const platformHash = await getPlatformHash();
+      if (!verifyPassword(providedPlatformAuth, platformHash)) {
         return res.status(403).json({ error: "unauthorized" });
       }
-      finalValue = mergeProtectedPlatformFields(oldValue, value);
+      if (req.params.key === "platform_settings") {
+        const oldValue = await getRow(req.params.key);
+        finalValue = mergeProtectedPlatformFields(oldValue, value);
+      }
     } else if (info.kind === "quiniela-meta") {
       const oldValue = await getRow(info.metaKey);
-      let authTier = null;
-      if (oldValue) {
-        const platformHash = await getPlatformHash();
-        authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash);
-        if (!authTier) return res.status(403).json({ error: "unauthorized" });
+      if (!oldValue) {
+        // Brand-new quinielas are only ever created through POST /api/create-quiniela,
+        // which handles the meta + platform_index registration together, atomically.
+        return res.status(403).json({ error: "use_create_endpoint" });
       }
-      // If oldValue is null, this is a brand-new quiniela being created — nothing to protect yet.
+      const platformHash = await getPlatformHash();
+      const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash);
+      if (!authTier) return res.status(403).json({ error: "unauthorized" });
       finalValue = mergeProtectedMetaFields(oldValue, value, authTier);
     } else if (info.kind === "picks") {
       const oldPicks = await getRow(req.params.key);
       const metaValue = await getRow(info.metaKey);
       if (metaValue) {
         const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
-        if (participant && participant.pin) {
-          if (!verifyPassword(providedOwnerAuth, participant.pin)) {
-            return res.status(403).json({ error: "unauthorized" });
-          }
+        if (!isAuthenticatedAsParticipant(participant, providedOwnerAuth)) {
+          // No PIN yet? They need to activate one first via /api/set-pin — a
+          // public request (with or without a guessed PIN) can't read or write
+          // picks just because a PIN hasn't been set.
+          return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
         }
-        // No PIN set for this participant (or participant not found yet, e.g. brand-new
-        // quiniela still being set up) — picks stay open, matching today's behavior.
       }
+      // metaValue missing entirely is a bootstrap edge case (shouldn't happen in
+      // practice since quinielas are always created before anyone can vote) — no
+      // meta means no rounds to validate deadlines against either, so it's a no-op.
       const deadlineCheck = await validatePicksDeadline(info, oldPicks, value);
       if (!deadlineCheck.ok) return res.status(403).json({ error: "round_locked" });
     }
@@ -387,11 +401,10 @@ app.post("/api/kv/:key", async (req, res) => {
   }
 });
 
-// DELETE a value by key — only ever used by the platform dashboard in this app
-// (deleting a whole quiniela), so it requires the platform password.
 app.delete("/api/kv/:key", async (req, res) => {
   try {
     const info = classifyKey(req.params.key);
+    if (info.kind === "other") return res.status(400).json({ error: "invalid_key" });
     if (info.kind === "quiniela-meta" || info.kind === "picks" || info.kind === "platform") {
       const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
       const platHash = await getPlatformHash();
@@ -408,13 +421,6 @@ app.delete("/api/kv/:key", async (req, res) => {
 });
 
 // ---------- narrow self-service endpoints ----------
-// These exist so participants can register themselves and manage their own PIN
-// without needing the quiniela admin's password — while everything else that
-// touches quiniela-meta (results, rounds, settings, other people's PINs) still
-// goes through the authenticated POST /api/kv/:key above. All three
-// "verify-*" endpoints are rate-limited and answer with the same generic
-// {ok:false} shape whether the record doesn't exist or the credential is
-// simply wrong — never revealing which.
 
 app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
   try {
@@ -446,14 +452,20 @@ app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
     if (!metaKey || !participantId) return res.status(400).json({ error: "missing_params" });
     const value = await getRow(metaKey);
     const participant = value ? (value.participants || []).find((p) => p.id === participantId) : null;
-    const ok = !!participant && (!participant.pin || verifyPassword(pin, participant.pin));
-    res.json({ ok });
+    // A participant with no PIN yet isn't "verified" — the frontend should
+    // route them to /api/set-pin instead of treating this as a pass.
+    res.json({ ok: isAuthenticatedAsParticipant(participant, pin) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server_error" });
   }
 });
 
+// This IS the controlled activation path for participants who don't have a
+// PIN yet (old or new): if they have no PIN on file, no proof is required to
+// set their first one (there's nothing to prove yet); if they already have
+// one, the current PIN must match. Either way, this is the only way a PIN
+// ever gets set — never implicitly through a public picks request.
 app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
     const { metaKey, participantId, currentPin, newPin } = req.body || {};
@@ -467,30 +479,8 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
     if (participant.pin && !verifyPassword(currentPin, participant.pin)) {
       return res.status(403).json({ error: "wrong_current_pin" });
     }
-    participant.pin = hashPassword(newPin); // hashed at rest, never returned by GET
+    participant.pin = hashPassword(newPin);
     await putRow(metaKey, value);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.post("/api/register-quiniela", async (req, res) => {
-  try {
-    const { slug, name, creatorName, contact, exempt } = req.body || {};
-    const cleanSlug = String(slug || "").trim();
-    if (!cleanSlug || !name) return res.status(400).json({ error: "invalid_params" });
-    const idx = (await getRow("platform_index")) || { quinielas: [] };
-    if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
-    if (idx.quinielas.some((q) => q.slug === cleanSlug)) {
-      return res.status(409).json({ error: "slug_taken" });
-    }
-    const entry = { slug: cleanSlug, name, creatorName: creatorName || "", createdAt: new Date().toISOString() };
-    if (contact) entry.contact = contact;
-    if (exempt) entry.exempt = true;
-    idx.quinielas.push(entry);
-    await putRow("platform_index", idx);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -524,16 +514,119 @@ app.post("/api/self-register", async (req, res) => {
   }
 });
 
-// Moving a quiniela from the shared root link to its own /q/:slug is done
-// entirely here, in one transaction: the server reads the real (unstripped)
-// meta and every participant's picks straight from the database and copies
-// them — the browser never sees the password hash or anyone's PIN in transit.
-// If anything fails partway through, the whole thing rolls back and the
-// original quiniela is left exactly as it was.
+// A quiniela's own payment status (used to show/hide the "you owe a payment"
+// banner) needs a few platform_index/platform_settings fields, but the admin
+// asking shouldn't need the platform password just to see their own status.
+// This hands back only the one quiniela's own fields — nothing about anyone
+// else's contact info, exemptions, or overrides.
+app.get("/api/payment-status/:slug", async (req, res) => {
+  try {
+    const idx = await getRow("platform_index");
+    const entry = idx && Array.isArray(idx.quinielas)
+      ? idx.quinielas.find((q) => q.slug === req.params.slug)
+      : null;
+    if (!entry) return res.json({ exists: false });
+    const settings = (await getRow("platform_settings")) || {};
+    res.json({
+      exists: true,
+      exempt: !!entry.exempt,
+      paid: !!entry.paid,
+      customJornadaLimit: entry.customJornadaLimit != null ? entry.customJornadaLimit : null,
+      jornadaLimit: settings.jornadaLimit != null ? settings.jornadaLimit : 5,
+      pricePerParticipant: settings.pricePerParticipant != null ? settings.pricePerParticipant : 10,
+      depositInfo: settings.depositInfo || ""
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Slug rules shared by creation: lowercase letters/numbers/hyphens only, no
+// leading/trailing hyphens, reasonable length. Anything else gets normalized
+// the same way the frontend already does, so what the user typed and what
+// gets stored always match.
+function normalizeSlug(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+}
+
+// Creating a brand-new quiniela is one atomic operation: validate everything,
+// make sure the slug is free in BOTH the meta table and the platform index,
+// write the hashed-password meta with its first (admin) participant, and add
+// the platform_index entry — all inside one transaction. If anything fails,
+// nothing is left behind: no orphaned meta with no index entry, no orphaned
+// index entry with no meta.
+app.post("/api/create-quiniela", async (req, res) => {
+  const { slug, groupName, creatorName, contact, password } = req.body || {};
+  const cleanSlug = normalizeSlug(slug) || "quiniela";
+  const cleanGroupName = String(groupName || "").trim();
+  const cleanCreatorName = String(creatorName || "").trim();
+  const cleanContact = String(contact || "").trim();
+  const cleanPassword = String(password || "").trim();
+  if (!cleanGroupName || !cleanCreatorName || !cleanContact || !cleanPassword) {
+    return res.status(400).json({ error: "invalid_params" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const existingMeta = await getRow(`quiniela:${cleanSlug}:meta`, client);
+    const idx = (await getRow("platform_index", client)) || { quinielas: [] };
+    if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
+    const slugTaken = !!existingMeta || idx.quinielas.some((q) => q.slug === cleanSlug);
+    if (slugTaken) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "slug_taken" });
+    }
+
+    const creatorId = "p_" + crypto.randomBytes(9).toString("hex");
+    const meta = {
+      groupName: cleanGroupName,
+      participants: [{ id: creatorId, name: cleanCreatorName, isAdmin: true, paid: false, pin: null }],
+      rounds: [],
+      settings: {
+        ownerPassword: hashPassword(cleanPassword),
+        entryFee: 0,
+        sportsdbSeason: "2025-2026",
+        pointsPerCorrectPick: 1
+      }
+    };
+    await putRow(`quiniela:${cleanSlug}:meta`, meta, client);
+
+    // Note: exempt is intentionally never settable here — only the platform
+    // dashboard (with the platform password) can grant that.
+    idx.quinielas.push({
+      slug: cleanSlug, name: cleanGroupName, creatorName: cleanCreatorName,
+      contact: cleanContact, createdAt: new Date().toISOString()
+    });
+    await putRow("platform_index", idx, client);
+
+    await client.query("COMMIT");
+    res.json({ ok: true, slug: cleanSlug });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("create-quiniela failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// Moving a quiniela from the shared root link to its own /q/:slug — also one
+// transaction, also never sends the password hash or anyone's PIN to the
+// browser. Exempt:true here is fine (unlike create-quiniela): this is
+// re-registering a quiniela the caller already proved they own, not letting
+// the public grant themselves an exemption.
 app.post("/api/migrate-quiniela", async (req, res) => {
   const { toSlug } = req.body || {};
   const fromKey = "quiniela_meta_v1";
-  const cleanSlug = String(toSlug || "").trim();
+  const cleanSlug = normalizeSlug(toSlug);
   if (!cleanSlug) return res.status(400).json({ error: "invalid_slug" });
   const providedOwnerAuth = req.get("x-qracks-auth") || "";
 
@@ -549,7 +642,12 @@ app.post("/api/migrate-quiniela", async (req, res) => {
 
     const targetKey = `quiniela:${cleanSlug}:meta`;
     const existing = await getRow(targetKey, client);
-    if (existing) { await client.query("ROLLBACK"); return res.status(409).json({ error: "slug_taken" }); }
+    const idx = (await getRow("platform_index", client)) || { quinielas: [] };
+    if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
+    if (existing || idx.quinielas.some((q) => q.slug === cleanSlug)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "slug_taken" });
+    }
 
     await putRow(targetKey, meta, client);
 
@@ -559,16 +657,12 @@ app.post("/api/migrate-quiniela", async (req, res) => {
       if (picks) await putRow(`quiniela:${cleanSlug}:picks:${p.id}`, picks, client);
     }
 
-    const idx = (await getRow("platform_index", client)) || { quinielas: [] };
-    if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
-    if (!idx.quinielas.some((q) => q.slug === cleanSlug)) {
-      const creator = (meta.participants || []).find((p) => p.isAdmin) || meta.participants[0] || {};
-      idx.quinielas.push({
-        slug: cleanSlug, name: meta.groupName, creatorName: creator.name || "",
-        createdAt: new Date().toISOString(), exempt: true
-      });
-      await putRow("platform_index", idx, client);
-    }
+    const creator = (meta.participants || []).find((p) => p.isAdmin) || (meta.participants || [])[0] || {};
+    idx.quinielas.push({
+      slug: cleanSlug, name: meta.groupName, creatorName: creator.name || "",
+      createdAt: new Date().toISOString(), exempt: true
+    });
+    await putRow("platform_index", idx, client);
 
     await putRow(fromKey, { migratedTo: cleanSlug }, client);
 
@@ -587,11 +681,6 @@ app.post("/api/migrate-quiniela", async (req, res) => {
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 // ---------- Dynamic link previews for /q/:slug ----------
-// WhatsApp/Facebook/etc. read <meta property="og:*"> tags from the raw HTML they fetch —
-// they don't run our JavaScript. So for a specific quiniela's link to show its own name
-// instead of the generic "QRACKS" text, we rewrite those tags on the server before sending
-// the page, only for this one route. Everything else (the actual app) is untouched;
-// the browser gets the exact same index.html and boots the SPA normally either way.
 const INDEX_HTML_PATH = path.join(__dirname, "public", "index.html");
 let indexHtmlCache = null;
 function getIndexHtml() {
