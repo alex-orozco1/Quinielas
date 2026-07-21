@@ -2905,7 +2905,7 @@
       ${ROUTE === "root" ? `
       <div class="card">
         <div class="eyebrow">Mover esta quiniela a su propio link</div>
-        <p class="muted">Ahora mismo esta quiniela vive en la página principal. Como las demás quinielas de la plataforma, puede tener su propio link fijo (ej. tusitio.com/q/mi-quiniela). Se copian todos los datos — jornadas, resultados, picks — nada se pierde.</p>
+        <p class="muted">Ahora mismo esta quiniela vive en la página principal. Como las demás quinielas de la plataforma, puede tener su propio link fijo (ej. ${esc(window.location.origin)}/q/mi-quiniela). Se copian todos los datos — jornadas, resultados, picks — nada se pierde.</p>
         <div class="field"><label>Link para esta quiniela</label><input type="text" id="qz-migrate-slug" value="poderosa-quiniela-liga-mx"></div>
         <p class="muted" id="qz-migrate-status" style="min-height:16px;"></p>
         <button class="btn btn-primary" id="qz-migrate-btn">Mover mi quiniela a este link</button>
@@ -2992,7 +2992,7 @@
         const statusEl = document.getElementById("qz-migrate-status");
         const slug = slugify(document.getElementById("qz-migrate-slug").value);
         if(!slug){ statusEl.textContent = "Escribe un link válido."; statusEl.style.color = "var(--red)"; return; }
-        if(!confirm(`¿Mover esta quiniela a tusitio.com/q/${slug}? El link principal dejará de mostrarla — tendrás que compartir el nuevo link con tu grupo.`)) return;
+        if(!confirm(`¿Mover esta quiniela a ${window.location.origin}/q/${slug}? El link principal dejará de mostrarla — tendrás que compartir el nuevo link con tu grupo.`)) return;
 
         migrateBtn.disabled = true;
         statusEl.textContent = "Moviendo datos…";
@@ -3163,7 +3163,7 @@
           <div class="field">
             <label>Link de tu quiniela</label>
             <input type="text" id="qz-c-slug" placeholder="mi-quiniela" value="${esc(draft.slug)}">
-            <p class="muted" style="margin-top:4px;">tusitio.com/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
+            <p class="muted" style="margin-top:4px;">${esc(window.location.origin)}/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
           </div>
           <div class="field"><label>Contraseña de administrador</label><input type="text" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}"></div>
           <p class="muted" id="qz-c-status" style="min-height:16px;"></p>
