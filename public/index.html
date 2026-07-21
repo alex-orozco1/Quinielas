@@ -383,7 +383,8 @@
   const PLATFORM_PAYMENTLOG_KEY = "platform_payment_log";
   async function getPlatformPaymentLog(){
     try{
-      const r = await kvGet(PLATFORM_PAYMENTLOG_KEY);
+      const creds = platformPasswordCache ? { platform: platformPasswordCache } : undefined;
+      const r = await kvGet(PLATFORM_PAYMENTLOG_KEY, creds);
       return r.found ? r.value : { payments: [] };
     }catch(e){ console.error("getPlatformPaymentLog failed", e); return { payments: [] }; }
   }
@@ -431,7 +432,7 @@
     const headers = {};
     if(creds && creds.owner) headers["X-Qracks-Auth"] = creds.owner;
     if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
-    const res = await fetch("/api/kv/" + encodeURIComponent(key), { headers });
+    const res = await fetch("/api/kv/" + encodeURIComponent(key), { headers, credentials: "same-origin" });
     if(res.status === 404) return { found: false };
     if(!res.ok) throw new Error("kv get failed: HTTP " + res.status);
     const data = await res.json();
@@ -444,6 +445,7 @@
     const res = await fetch("/api/kv/" + encodeURIComponent(key), {
       method: "POST",
       headers,
+      credentials: "same-origin",
       body: JSON.stringify({ value })
     });
     return res.ok;
@@ -522,8 +524,8 @@
   async function verifyParticipantPin(participantId, pin){
     try{
       const res = await fetch("/api/verify-pin", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, pin })
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, pin, slug: SLUG || "_root" })
       });
       if(!res.ok) return { ok: false };
       return await res.json();
@@ -532,17 +534,68 @@
   async function apiSetPin(participantId, currentPin, newPin){
     try{
       const res = await fetch("/api/set-pin", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, currentPin, newPin })
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, currentPin, newPin, slug: SLUG || "_root" })
       });
       return res.ok;
     }catch(e){ console.error("apiSetPin failed", e); return false; }
   }
+  // Anonymous, non-sensitive — just enough to tell "same device came back"
+  // apart in the funnel numbers. Not the session cookie, no security role.
+  function getDeviceId(){
+    try{
+      let id = window.localStorage.getItem("qracks_device_id");
+      if(!id){
+        id = "d_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        window.localStorage.setItem("qracks_device_id", id);
+      }
+      return id;
+    }catch(e){ return "d_unknown"; }
+  }
+  // Growth Loop funnel — fire-and-forget, never blocks the UI and never
+  // throws into the caller if it fails.
+  function trackEvent(event, extra){
+    try{
+      fetch("/api/track-event", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({
+          event,
+          competitionSlug: SLUG || null,
+          source: "access_link",
+          deviceId: getDeviceId(),
+          ...extra
+        })
+      }).catch(() => {});
+    }catch(e){ /* analytics should never break the app */ }
+  }
+  // Access Link "remember this device": the actual token lives only in an
+  // HttpOnly cookie the browser manages on its own — this just asks the server
+  // "is there a still-valid one for this quiniela?" and gets back plain user
+  // state, never the token itself.
+  async function checkSession(){
+    try{
+      const res = await fetch("/api/verify-session", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ metaKey: currentMetaKey(), slug: SLUG || "_root" })
+      });
+      if(!res.ok) return null;
+      const data = await res.json();
+      return data.ok ? data : null;
+    }catch(e){ console.error("checkSession failed", e); return null; }
+  }
+  async function clearSessionCookie(){
+    try{
+      await fetch("/api/clear-session", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ slug: SLUG || "_root" })
+      });
+    }catch(e){ console.error("clearSessionCookie failed", e); }
+  }
   async function apiSelfRegister(name, pin){
     try{
       const res = await fetch("/api/self-register", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ metaKey: currentMetaKey(), name, pin })
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ metaKey: currentMetaKey(), name, pin, slug: SLUG || "_root" })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, ...data };
@@ -867,16 +920,53 @@
   }
 
   // ---------- render root ----------
+  let sessionCheckDone = false;
+  let accessLinkOpenedTracked = false;
   async function render(){
     if(!meta){
       root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
       return;
     }
     if(!currentUser){
+      if(ROUTE === "quiniela" && !sessionCheckDone){
+        sessionCheckDone = true;
+        const session = await checkSession();
+        if(session){
+          trackEvent("session_restored", { participantId: session.participantId, isNewUser: false });
+          renderSessionConfirm(session);
+          return;
+        }
+      }
       renderLogin();
       return;
     }
     renderApp();
+  }
+
+  function renderSessionConfirm(session){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="text-align:center;">
+          <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
+          <div class="login-title display">¿Eres ${esc(session.name)}?</div>
+          <p class="login-sub">Este dispositivo ya entró antes con ese nombre.</p>
+          <button class="btn btn-primary" id="qz-session-yes" style="width:100%;padding:12px;margin-top:18px;">Sí, continuar</button>
+          <button class="btn btn-ghost" id="qz-session-no" style="width:100%;padding:12px;margin-top:8px;">No, soy alguien más</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("qz-session-yes").addEventListener("click", async () => {
+      trackEvent("session_confirmation_accepted", { participantId: session.participantId, isNewUser: false });
+      currentUser = { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
+      myPicks = await getPicks(currentUser.id);
+      activeTab = "jornada";
+      render();
+    });
+    document.getElementById("qz-session-no").addEventListener("click", async () => {
+      trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false });
+      await clearSessionCookie();
+      renderLogin();
+    });
   }
 
   function renderLogin(){
@@ -901,6 +991,7 @@
       </div>
     `;
     document.getElementById("qz-self-register").addEventListener("click", async () => {
+      trackEvent("join_started", { isNewUser: true });
       const newName = window.prompt("¿Cuál es tu nombre?");
       if(newName === null) return;
       const cleanName = newName.trim();
@@ -920,6 +1011,7 @@
       }
       toast("¡Bienvenido, " + cleanName + "! ✅");
       const newParticipant = { ...result.participant };
+      trackEvent("join_completed", { participantId: newParticipant.id, isNewUser: true });
       meta.participants.push(newParticipant);
       currentUser = newParticipant;
       currentUserPinCache = cleanPin;
@@ -998,11 +1090,15 @@
             <div class="qz-brand-context">${esc(meta.groupName)}</div>
             ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
           </div>
-          <div class="qz-user-dropdown">
-            <button class="qz-user-toggle" id="qz-user-toggle">${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""} <span>▾</span></button>
-            <div class="qz-user-menu" id="qz-user-menu" ${userMenuOpen ? "" : "hidden"}>
-              <button id="qz-change-pin">🔑 Cambiar mi PIN</button>
-              <button id="qz-switch-user">↺ Cambiar usuario</button>
+          <div style="display:flex;align-items:center;gap:8px;">
+            ${currentUser.isAdmin ? `<button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Copiar link de acceso" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button>` : ``}
+            <div class="qz-user-dropdown">
+              <button class="qz-user-toggle" id="qz-user-toggle">${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""} <span>▾</span></button>
+              <div class="qz-user-menu" id="qz-user-menu" ${userMenuOpen ? "" : "hidden"}>
+                ${currentUser.isAdmin ? `<button id="qz-menu-copy-link">🔗 Copiar link</button>` : ``}
+                <button id="qz-change-pin">🔑 Cambiar mi PIN</button>
+                <button id="qz-switch-user">↺ Cambiar usuario</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1020,11 +1116,26 @@
     document.addEventListener("click", () => {
       if(userMenuOpen){ userMenuOpen = false; const m = document.getElementById("qz-user-menu"); if(m) m.hidden = true; }
     }, { once: true });
-    document.getElementById("qz-switch-user").addEventListener("click", () => {
+    async function copyAccessLink(){
+      const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
+      try{
+        await navigator.clipboard.writeText(link);
+        toast("✅ Listo, el link se copió.");
+      }catch(e){
+        toast("No se pudo copiar, intenta de nuevo");
+      }
+    }
+    const headerCopyBtn = document.getElementById("qz-header-copy-link");
+    if(headerCopyBtn) headerCopyBtn.addEventListener("click", copyAccessLink);
+    const menuCopyBtn = document.getElementById("qz-menu-copy-link");
+    if(menuCopyBtn) menuCopyBtn.addEventListener("click", copyAccessLink);
+    document.getElementById("qz-switch-user").addEventListener("click", async () => {
+      await clearSessionCookie();
       currentUser = null;
       ownerUnlocked = false;
       ownerPasswordCache = null;
       currentUserPinCache = null;
+      sessionCheckDone = false;
       render();
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
@@ -2017,6 +2128,29 @@
   }
 
   // "Participación": who has/hasn't submitted picks for open rounds — status only, never reveals picks
+  function accessLinkCardHtml(){
+    const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
+    return `
+      <div class="card">
+        <div class="eyebrow">🔗 Link de acceso</div>
+        <p class="muted">El link único de esta quiniela — mándaselo a quien quieras invitar. No cambia aunque edites la quiniela.</p>
+        <button class="btn btn-gold" id="qz-access-copy" data-link="${link}">Copiar link</button>
+      </div>
+    `;
+  }
+  function wireAccessLinkCard(body){
+    const btn = body.querySelector("#qz-access-copy");
+    if(!btn) return;
+    btn.addEventListener("click", async (e) => {
+      const val = e.currentTarget.dataset.link;
+      try{
+        await navigator.clipboard.writeText(val);
+        toast("✅ Listo, el link se copió.");
+      }catch(e){
+        toast("No se pudo copiar, intenta de nuevo");
+      }
+    });
+  }
   function spectatorLinkCardHtml(){
     const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}?ver=1`;
     return `
@@ -2044,7 +2178,8 @@
   async function renderAdminParticipacion(body){
     const openRounds = meta.rounds.filter(r => classifyRound(r) === "porjugar").slice().sort((a,b)=>a.number-b.number);
     if(!openRounds.length){
-      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay nadie por contestar en este momento. En cuanto crees una jornada nueva en Admin → Jornadas, aquí verás quién ya votó y quién falta.</p></div>${spectatorLinkCardHtml()}`;
+      body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay nadie por contestar en este momento. En cuanto crees una jornada nueva en Admin → Jornadas, aquí verás quién ya votó y quién falta.</p></div>${accessLinkCardHtml()}${spectatorLinkCardHtml()}`;
+      wireAccessLinkCard(body);
       wireSpectatorLinkCard(body);
       return;
     }
@@ -2081,7 +2216,7 @@
           </table>
         </div>
       `;
-    }).join("") + spectatorLinkCardHtml();
+    }).join("") + accessLinkCardHtml() + spectatorLinkCardHtml();
 
     function reminderText(round, missing){
       const bullets = missing.map(n => `• ${n}`).join("\n");
@@ -2117,6 +2252,7 @@
         window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
       });
     });
+    wireAccessLinkCard(body);
     wireSpectatorLinkCard(body);
   }
 
@@ -3261,14 +3397,12 @@
         if(!confirm(`¿Eliminar "${q ? q.name : slug}" para siempre? Se borran todas sus jornadas, resultados y picks. Esto NO se puede deshacer.`)) return;
         btn.disabled = true;
         try{
-          const r = await kvGet(metaKeyFor(slug));
-          if(r.found){
-            const participants = r.value.participants || [];
-            await Promise.all(participants.map(p => kvDelete("quiniela:" + slug + ":picks:" + p.id, { platform: platformPasswordCache })));
-          }
-          await kvDelete(metaKeyFor(slug), { platform: platformPasswordCache });
-          idx.quinielas = idx.quinielas.filter(x => x.slug !== slug);
-          await setPlatformIndex(idx);
+          const res = await fetch("/api/delete-quiniela", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Qracks-Platform-Auth": platformPasswordCache || "" },
+            body: JSON.stringify({ slug })
+          });
+          if(!res.ok){ toast("No se pudo eliminar, intenta de nuevo"); btn.disabled = false; return; }
           toast("🗑️ Quiniela eliminada");
           renderPlatformDashboard();
         }catch(e){
@@ -3542,6 +3676,10 @@
     if(new URLSearchParams(window.location.search).has("ver")){
       renderSpectatorView();
       return;
+    }
+    if(ROUTE === "quiniela" && !accessLinkOpenedTracked){
+      accessLinkOpenedTracked = true;
+      trackEvent("access_link_opened");
     }
     render();
   }
