@@ -1910,23 +1910,38 @@
   // or {amount, depositInfo, jornadaLimit} if it owes money and new jornadas should be gated.
   // The trigger is how many jornadas have been created; the amount owed is based on the
   // CURRENT participant count, so growth after a previous payment still gets captured.
+  // If two callers ask "what's the payment status?" at nearly the same instant
+  // (which is exactly what happens when the Admin tab renders its banner and,
+  // in the same pass, Jornadas checks whether creation should be blocked),
+  // they share the same in-flight request instead of firing a second one.
+  // Cleared as soon as it resolves, so any later, genuinely separate call
+  // still gets fresh data.
+  let paymentStatusInFlight = null;
   async function getPaymentStatus(){
     if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
+    if(paymentStatusInFlight) return paymentStatusInFlight;
+    paymentStatusInFlight = (async () => {
+      try{
+        const res = await fetch("/api/payment-status/" + encodeURIComponent(SLUG));
+        if(!res.ok) return null;
+        const entry = await res.json();
+        if(!entry.exists || entry.exempt || entry.paid) return null;
+        const jornadaLimit = (entry.customJornadaLimit !== null) ? entry.customJornadaLimit : entry.jornadaLimit;
+        const roundCount = meta.rounds.length;
+        if(roundCount < jornadaLimit) return null;
+        const participantCount = meta.participants.length;
+        return {
+          amount: entry.pricePerParticipant * participantCount,
+          depositInfo: entry.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
+          jornadaLimit
+        };
+      }catch(e){ console.error("getPaymentStatus failed", e); return null; }
+    })();
     try{
-      const res = await fetch("/api/payment-status/" + encodeURIComponent(SLUG));
-      if(!res.ok) return null;
-      const entry = await res.json();
-      if(!entry.exists || entry.exempt || entry.paid) return null;
-      const jornadaLimit = (entry.customJornadaLimit !== null) ? entry.customJornadaLimit : entry.jornadaLimit;
-      const roundCount = meta.rounds.length;
-      if(roundCount < jornadaLimit) return null;
-      const participantCount = meta.participants.length;
-      return {
-        amount: entry.pricePerParticipant * participantCount,
-        depositInfo: entry.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
-        jornadaLimit
-      };
-    }catch(e){ console.error("getPaymentStatus failed", e); return null; }
+      return await paymentStatusInFlight;
+    }finally{
+      paymentStatusInFlight = null;
+    }
   }
 
   async function renderPaymentBanner(){
