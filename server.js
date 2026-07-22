@@ -305,7 +305,7 @@ function classifyKey(key) {
 }
 
 // ---------- secret stripping for reads ----------
-function stripQuinielaSecrets(value, isAdminOrOwner) {
+function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
   const clone = JSON.parse(JSON.stringify(value));
   if (clone.settings && "ownerPassword" in clone.settings) {
     delete clone.settings.ownerPassword;
@@ -315,6 +315,20 @@ function stripQuinielaSecrets(value, isAdminOrOwner) {
       if ("pin" in p) {
         p.hasPin = !!p.pin;
         delete p.pin;
+      }
+      // A temporada-scope custom bet answer is a prediction, same spirit as a
+      // match pick — it shouldn't be readable by the rest of the group before
+      // it's graded, only by the person who wrote it (or an admin/owner, who
+      // needs to see it to grade it). `.correct` always stays, though — every
+      // participant's standings total depends on knowing whether everyone
+      // else's answer was right, not on seeing what they guessed.
+      if (!isAdminOrOwner && p.id !== selfParticipantId && p.customBetAnswers) {
+        const masked = {};
+        Object.keys(p.customBetAnswers).forEach((betId) => {
+          const ans = p.customBetAnswers[betId] || {};
+          masked[betId] = { correct: ans.correct === true ? true : (ans.correct === false ? false : null) };
+        });
+        p.customBetAnswers = masked;
       }
     });
   }
@@ -336,6 +350,14 @@ function isRequestAdminOrOwner(req, slug, value) {
   return (value && value.participants || []).some(
     (p) => p.isAdmin && p.pin && isAuthenticatedAsParticipantReq(req, slug, p)
   );
+}
+// Which participant (if any) is this request authenticated as, by their own
+// PIN or session — needed so stripQuinielaSecrets can still show someone
+// their own custom bet guesses while hiding everyone else's.
+function requestSelfParticipantId(req, slug, value) {
+  if (!value || !Array.isArray(value.participants)) return null;
+  const found = value.participants.find((p) => isAuthenticatedAsParticipantReq(req, slug, p));
+  return found ? found.id : null;
 }
 function stripPlatformSecrets(value) {
   const clone = JSON.parse(JSON.stringify(value));
@@ -408,6 +430,24 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
       }
       if (!canChangeOwnerFields && old && p.isAdmin !== old.isAdmin) {
         p.isAdmin = old.isAdmin;
+      }
+      // customBetAnswers: whoever is saving may only have had a masked view of
+      // OTHER participants' guesses (correct-only, no guess text) — restore
+      // whatever the client couldn't have faithfully echoed back, exactly like
+      // pin/ownerPassword above. Only .guess is ever masked, never .correct,
+      // so only .guess needs restoring here.
+      if (old && old.customBetAnswers) {
+        if (!("customBetAnswers" in p)) {
+          p.customBetAnswers = old.customBetAnswers;
+        } else if (p.customBetAnswers) {
+          Object.keys(p.customBetAnswers).forEach((betId) => {
+            const newAns = p.customBetAnswers[betId];
+            const oldAns = old.customBetAnswers[betId];
+            if (newAns && oldAns && !("guess" in newAns) && "guess" in oldAns) {
+              newAns.guess = oldAns.guess;
+            }
+          });
+        }
       }
     });
   }
@@ -577,7 +617,8 @@ app.get("/api/kv/:key", async (req, res) => {
 
     if (info.kind === "quiniela-meta") {
       const isAdminOrOwner = isRequestAdminOrOwner(req, info.slug, value);
-      value = stripQuinielaSecrets(value, isAdminOrOwner);
+      const selfParticipantId = isAdminOrOwner ? null : requestSelfParticipantId(req, info.slug, value);
+      value = stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId);
     } else if (info.kind === "platform") {
       if (req.params.key === "platform_settings") {
         value = stripPlatformSecrets(value);
