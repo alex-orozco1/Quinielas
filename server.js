@@ -284,7 +284,7 @@ function classifyKey(key) {
 }
 
 // ---------- secret stripping for reads ----------
-function stripQuinielaSecrets(value) {
+function stripQuinielaSecrets(value, isAdminOrOwner) {
   const clone = JSON.parse(JSON.stringify(value));
   if (clone.settings && "ownerPassword" in clone.settings) {
     delete clone.settings.ownerPassword;
@@ -297,7 +297,24 @@ function stripQuinielaSecrets(value) {
       }
     });
   }
+  if (!isAdminOrOwner && Array.isArray(clone.rounds)) {
+    // Draft/pending-correction results are for the admin's eyes only, until
+    // they're actually published — same rule whether it's a brand-new round
+    // being captured for the first time or a correction to one that's already
+    // live (which keeps its old, real `results` untouched and visible the
+    // whole time this is happening).
+    clone.rounds.forEach((r) => { delete r.draftResults; });
+  }
   return clone;
+}
+// Used only for GET — is this request proven to be the quiniela's own admin
+// or owner (PIN or password, header or session cookie — same rules as writes)?
+function isRequestAdminOrOwner(req, slug, value) {
+  const providedAuth = req.get("x-qracks-auth") || "";
+  if (value && value.settings && verifyPassword(providedAuth, value.settings.ownerPassword)) return true;
+  return (value && value.participants || []).some(
+    (p) => p.isAdmin && p.pin && isAuthenticatedAsParticipantReq(req, slug, p)
+  );
 }
 function stripPlatformSecrets(value) {
   const clone = JSON.parse(JSON.stringify(value));
@@ -399,8 +416,8 @@ function isAuthenticatedAsParticipant(participant, providedAuth) {
   return !!(participant && participant.pin && verifyPassword(providedAuth, participant.pin));
 }
 
-async function filterPicksForRequest(req, info, picksValue) {
-  const meta = await getRow(info.metaKey);
+async function filterPicksForRequest(req, info, picksValue, preloadedMeta) {
+  const meta = preloadedMeta || await getRow(info.metaKey);
   if (!meta) return picksValue;
   const providedAuth = req.get("x-qracks-auth") || "";
   const participant = (meta.participants || []).find((p) => p.id === info.participantId);
@@ -477,6 +494,27 @@ async function validatePicksDeadline(info, oldValue, newValue) {
   return { ok: true };
 }
 
+// A round can only be marked resultsPublished if it has a real, valid result
+// (win / draw / loss) for every one of ITS OWN matches — never a hardcoded
+// count, always round.matches.length for that specific round. This runs on
+// every quiniela-meta write, so it also catches a correction that publishes
+// an incomplete draft, not just the first time.
+const VALID_RESULT_VALUES = new Set(["A", "D", "B"]);
+function validateRoundsIntegrity(newValue) {
+  if (!Array.isArray(newValue.rounds)) return { ok: true };
+  for (const round of newValue.rounds) {
+    if (!round.resultsPublished) continue;
+    const results = round.results || {};
+    const matches = Array.isArray(round.matches) ? round.matches : [];
+    for (const m of matches) {
+      if (!VALID_RESULT_VALUES.has(results[m.id])) {
+        return { ok: false, reason: "incomplete_results", roundNumber: round.number };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 async function getPlatformHash() {
   const platValue = await getRow("platform_settings");
   return platValue && platValue.dashboardPassword ? platValue.dashboardPassword : process.env.PLATFORM_PASSWORD;
@@ -494,7 +532,8 @@ app.get("/api/kv/:key", async (req, res) => {
     let value = r.rows[0].value;
 
     if (info.kind === "quiniela-meta") {
-      value = stripQuinielaSecrets(value);
+      const isAdminOrOwner = isRequestAdminOrOwner(req, info.slug, value);
+      value = stripQuinielaSecrets(value, isAdminOrOwner);
     } else if (info.kind === "platform") {
       if (req.params.key === "platform_settings") {
         value = stripPlatformSecrets(value);
@@ -516,6 +555,62 @@ app.get("/api/kv/:key", async (req, res) => {
     res.json({ key: req.params.key, value });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Same rules as GET /api/kv/quiniela:<slug>:picks:<pid>, one participant at a
+// time — just batched. The meta is read exactly once here (instead of once
+// per participant, which is what made the old N+1 pattern expensive on the
+// database too), and every participant's picks still go through the SAME
+// filterPicksForRequest() used by the single-participant endpoint, so a
+// closed round stays visible to everyone, an open round stays hidden from
+// everyone except that participant or an admin/owner — identical to before,
+// just in one round trip instead of N.
+app.post("/api/picks-batch", async (req, res) => {
+  try {
+    const { metaKey, participantIds } = req.body || {};
+    if (!metaKey || !Array.isArray(participantIds)) {
+      return res.status(400).json({ error: "invalid_params" });
+    }
+    let slug = null;
+    if (metaKey !== "quiniela_meta_v1") {
+      const m = metaKey.match(/^quiniela:([a-z0-9-]{1,60}):meta$/);
+      if (!m) return res.status(400).json({ error: "invalid_metaKey" });
+      slug = m[1];
+    }
+    const meta = await getRow(metaKey);
+    if (!meta) return res.status(404).json({ error: "not_found" });
+
+    // Dedup, drop anything that isn't an actual participant of this quiniela
+    // (defends against unknown/forged ids without a DB round trip), then apply
+    // the same hard cap as before — a sane ceiling, not a business rule.
+    const validIds = new Set((meta.participants || []).map((p) => p.id));
+    const requestedIds = [...new Set(participantIds)]
+      .filter((pid) => validIds.has(pid))
+      .slice(0, 2000);
+
+    const picks = {};
+    if (requestedIds.length === 0) return res.json({ ok: true, picks });
+
+    const picksKeys = requestedIds.map((pid) =>
+      slug ? `quiniela:${slug}:picks:${pid}` : `quiniela_picks_${pid}_v1`
+    );
+    // One query for every participant's picks, instead of one query per
+    // participant — this was the last sequential-per-participant DB cost left
+    // after the meta read was already deduplicated to a single call.
+    const r = await pool.query("SELECT key, value FROM kv WHERE key = ANY($1)", [picksKeys]);
+    const rowByKey = {};
+    r.rows.forEach((row) => { rowByKey[row.key] = row.value; });
+
+    for (const pid of requestedIds) {
+      const key = slug ? `quiniela:${slug}:picks:${pid}` : `quiniela_picks_${pid}_v1`;
+      const raw = rowByKey[key];
+      picks[pid] = raw == null ? {} : await filterPicksForRequest(req, classifyKey(key), raw, meta);
+    }
+    res.json({ ok: true, picks });
+  } catch (err) {
+    console.error("picks-batch failed", err);
     res.status(500).json({ error: "server_error" });
   }
 });
@@ -555,6 +650,8 @@ app.post("/api/kv/:key", async (req, res) => {
       const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, info.slug);
       if (!authTier) return res.status(403).json({ error: "unauthorized" });
       finalValue = mergeProtectedMetaFields(oldValue, value, authTier);
+      const roundsCheck = validateRoundsIntegrity(finalValue);
+      if (!roundsCheck.ok) return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
     } else if (info.kind === "picks") {
       const oldPicks = await getRow(req.params.key);
       const metaValue = await getRow(info.metaKey);
