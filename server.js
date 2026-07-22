@@ -466,8 +466,8 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta) {
 // passed — including a round that's missing from the new value entirely
 // (deleting/omitting a closed round's picks is exactly as forbidden as
 // editing them, so this compares the UNION of old and new round ids).
-async function validatePicksDeadline(info, oldValue, newValue) {
-  const meta = await getRow(info.metaKey);
+async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta) {
+  const meta = preloadedMeta !== undefined ? preloadedMeta : await getRow(info.metaKey);
   if (!meta) return { ok: true };
   const roundsById = {};
   (meta.rounds || []).forEach((r) => { roundsById[r.id] = r; });
@@ -667,7 +667,7 @@ app.post("/api/kv/:key", async (req, res) => {
       // metaValue missing entirely is a bootstrap edge case (shouldn't happen in
       // practice since quinielas are always created before anyone can vote) — no
       // meta means no rounds to validate deadlines against either, so it's a no-op.
-      const deadlineCheck = await validatePicksDeadline(info, oldPicks, value);
+      const deadlineCheck = await validatePicksDeadline(info, oldPicks, value, metaValue);
       if (!deadlineCheck.ok) return res.status(403).json({ error: "round_locked" });
     }
 
