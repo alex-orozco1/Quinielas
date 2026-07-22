@@ -166,6 +166,13 @@ const app = express();
 // could spoof to dodge rate limiting.
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "3mb" }));
+// Every /api/* response is dynamic and often filtered per requester (draft
+// results, open-round picks, platform-only fields) — never safe to cache,
+// so this is explicit rather than left to whatever a browser/proxy defaults to.
+app.use("/api", (req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -219,6 +226,13 @@ async function ensureTable() {
       source TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+  `);
+  // No query filters by this yet (today it's just SELECT * for a manual look),
+  // but once one does — e.g. a single quiniela's own funnel — this is what
+  // keeps that from becoming a full table scan as the table grows.
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_competition_slug
+    ON analytics_events (competition_slug);
   `);
 }
 
@@ -1175,6 +1189,7 @@ app.get("/q/:slug", async (req, res) => {
       });
     }
     res.set("Content-Type", "text/html; charset=utf-8");
+    res.set("Cache-Control", "no-cache");
     res.send(html);
   } catch (err) {
     console.error("Error building link preview for /q/:slug", err);
@@ -1183,7 +1198,20 @@ app.get("/q/:slug", async (req, res) => {
 });
 
 // Static frontend
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders: (res, filePath) => {
+    if (path.basename(filePath) === "index.html") {
+      // The app itself changes with every deploy and has no cache-busting
+      // filename — must always revalidate so a deploy is never masked by a
+      // stale cached copy (still gets a fast 304 when nothing changed).
+      res.set("Cache-Control", "no-cache");
+    } else {
+      // logo.svg / favicon.svg / og-image.png rarely change and aren't
+      // security- or correctness-sensitive — safe to cache for a while.
+      res.set("Cache-Control", "public, max-age=3600");
+    }
+  }
+}));
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
