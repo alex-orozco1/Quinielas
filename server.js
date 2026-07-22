@@ -169,7 +169,14 @@ app.use(express.json({ limit: "3mb" }));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false },
+  // Explicit instead of relying on pg's defaults, so this is a deliberate,
+  // documented choice rather than an implicit one. PG_POOL_MAX is optional —
+  // only set it in Render if this default ever needs tuning for a specific
+  // Postgres provider's own connection limit (e.g. Supabase's pooler).
+  max: Number(process.env.PG_POOL_MAX) || 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000
 });
 
 async function ensureTable() {
