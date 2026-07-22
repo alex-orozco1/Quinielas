@@ -520,6 +520,29 @@ async function getPlatformHash() {
   return platValue && platValue.dashboardPassword ? platValue.dashboardPassword : process.env.PLATFORM_PASSWORD;
 }
 
+// Keeps the platform dashboard's participant/round counts fresh WITHOUT it
+// ever having to download each quiniela's full meta — this is the write side
+// of that: whenever a quiniela's own meta is saved, its two counts get synced
+// onto its platform_index entry. Best-effort and never awaited by the caller
+// (a stale dashboard number for a moment is a fine tradeoff for never slowing
+// down someone's own save); skips the write entirely if nothing changed.
+async function updatePlatformIndexCounts(slug, meta) {
+  try {
+    const newCount = Array.isArray(meta.participants) ? meta.participants.length : 0;
+    const newRounds = Array.isArray(meta.rounds) ? meta.rounds.length : 0;
+    const idx = await getRow("platform_index");
+    if (!idx || !Array.isArray(idx.quinielas)) return;
+    const entry = idx.quinielas.find((q) => q.slug === slug);
+    if (!entry) return;
+    if (entry.participantCount === newCount && entry.roundCount === newRounds) return;
+    entry.participantCount = newCount;
+    entry.roundCount = newRounds;
+    await putRow("platform_index", idx);
+  } catch (err) {
+    console.error("updatePlatformIndexCounts failed", err);
+  }
+}
+
 // ---------- generic KV endpoints (QRACKS's own key shapes only) ----------
 
 app.get("/api/kv/:key", async (req, res) => {
@@ -606,7 +629,11 @@ app.post("/api/picks-batch", async (req, res) => {
     for (const pid of requestedIds) {
       const key = slug ? `quiniela:${slug}:picks:${pid}` : `quiniela_picks_${pid}_v1`;
       const raw = rowByKey[key];
-      picks[pid] = raw == null ? {} : await filterPicksForRequest(req, classifyKey(key), raw, meta);
+      if (raw == null) { picks[pid] = {}; continue; }
+      // slug/pid/metaKey are already known here — building info directly skips
+      // re-parsing the key we just built with classifyKey's regex, N times.
+      const info = { kind: "picks", metaKey, participantId: pid, slug: slug || undefined };
+      picks[pid] = await filterPicksForRequest(req, info, raw, meta);
     }
     res.json({ ok: true, picks });
   } catch (err) {
@@ -672,6 +699,9 @@ app.post("/api/kv/:key", async (req, res) => {
     }
 
     await putRow(req.params.key, finalValue);
+    if (info.kind === "quiniela-meta" && info.slug) {
+      updatePlatformIndexCounts(info.slug, finalValue); // not awaited on purpose
+    }
     res.json({ key: req.params.key, ok: true });
   } catch (err) {
     console.error(err);
@@ -941,7 +971,8 @@ app.post("/api/create-quiniela", async (req, res) => {
     // dashboard (with the platform password) can grant that.
     idx.quinielas.push({
       slug: cleanSlug, name: cleanGroupName, creatorName: cleanCreatorName,
-      contact: cleanContact, createdAt: new Date().toISOString()
+      contact: cleanContact, createdAt: new Date().toISOString(),
+      participantCount: 1, roundCount: 0
     });
     await putRow("platform_index", idx, client);
 
@@ -998,7 +1029,8 @@ app.post("/api/migrate-quiniela", async (req, res) => {
     const creator = (meta.participants || []).find((p) => p.isAdmin) || (meta.participants || [])[0] || {};
     idx.quinielas.push({
       slug: cleanSlug, name: meta.groupName, creatorName: creator.name || "",
-      createdAt: new Date().toISOString(), exempt: true
+      createdAt: new Date().toISOString(), exempt: true,
+      participantCount: (meta.participants || []).length, roundCount: (meta.rounds || []).length
     });
     await putRow("platform_index", idx, client);
 
