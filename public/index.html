@@ -459,8 +459,8 @@
   // getMeta: returns the saved meta, or null if it genuinely doesn't exist yet.
   // Throws (does NOT return null) if the request itself failed — callers must
   // handle that separately and must not initialize fresh data in that case.
-  async function getMeta(){
-    const r = await kvGet(currentMetaKey());
+  async function getMeta(creds){
+    const r = await kvGet(currentMetaKey(), creds);
     return r.found ? r.value : null;
   }
   // Cached in memory only (never persisted) once the admin/platform owner types
@@ -922,6 +922,7 @@
   // ---------- render root ----------
   let sessionCheckDone = false;
   let accessLinkOpenedTracked = false;
+  let adminMetaRefreshed = false;
   async function render(){
     if(!meta){
       root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
@@ -939,6 +940,13 @@
       }
       renderLogin();
       return;
+    }
+    if(currentUser.isAdmin && !adminMetaRefreshed){
+      adminMetaRefreshed = true;
+      try{
+        const fresh = await getMeta({ owner: adminOrOwnerCred() });
+        if(fresh) meta = fresh;
+      }catch(e){ console.error("admin meta refresh failed", e); }
     }
     renderApp();
   }
@@ -1127,6 +1135,7 @@
       ownerPasswordCache = null;
       currentUserPinCache = null;
       sessionCheckDone = false;
+      adminMetaRefreshed = false;
       render();
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
@@ -2580,11 +2589,35 @@
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     if(jornadaBets.length) await ensureAllPicksLoaded();
     const form = document.getElementById("qz-results-form");
+
+    const VALID_RESULTS = ["A", "D", "B"];
+    const isPublished = !!round.resultsPublished;
+    let hasDraft = round.draftResults != null;
+    if(!isPublished && !hasDraft){
+      // First-time capture: give it a real draft object now, so clicking a
+      // pick button mutates round.draftResults directly, not a throwaway copy.
+      round.draftResults = {};
+      hasDraft = true;
+    }
+    const correcting = isPublished && hasDraft;
+    // What the pick buttons actually show/edit right now — null means "published,
+    // nothing being corrected", i.e. a read-only view of the live results.
+    const editable = !isPublished ? round.draftResults : (hasDraft ? round.draftResults : null);
+    const source = editable || round.results || {};
+    const isComplete = round.matches.length > 0 && round.matches.every(m => VALID_RESULTS.includes(source[m.id]));
+    const missingCount = round.matches.filter(m => !VALID_RESULTS.includes(source[m.id])).length;
+
     form.innerHTML = `
       <div class="card">
-        <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
+        <p style="margin:0 0 12px;">
+          ${isPublished
+            ? `<span class="badge paid" style="font-size:13px;padding:5px 10px;">🟢 Resultados oficiales publicados</span>`
+            : `<span class="badge unpaid" style="font-size:13px;padding:5px 10px;">🟡 Borrador guardado (sin publicar)</span>`}
+          ${correcting ? `<span class="badge unpaid" style="margin-left:6px;">✏️ Corrigiendo — lo publicado no cambia hasta que confirmes</span>` : ``}
+        </p>
+        <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
           <span>Jornada ${round.number} — resultado de cada partido</span>
-          <button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>
+          ${editable ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>` : ``}
         </div>
         <p class="muted" id="qz-autofill-status" style="margin-top:-4px;"></p>
         ${round.matches.map(m => `
@@ -2594,18 +2627,29 @@
               <span class="match-vs">VS</span>
               <span class="match-team right">${esc(m.teamB)}</span>
             </div>
-            <div class="pick-row" data-result-match="${m.id}">
-              <button class="pick-btn ${round.results[m.id]==='A'?'selected':''}" data-val="A">${esc(m.teamA)}</button>
-              <button class="pick-btn ${round.results[m.id]==='D'?'selected':''}" data-val="D">Empate</button>
-              <button class="pick-btn ${round.results[m.id]==='B'?'selected':''}" data-val="B">${esc(m.teamB)}</button>
+            <div class="pick-row" data-result-match="${m.id}" ${editable ? "" : "style=\"pointer-events:none;\""}>
+              <button class="pick-btn ${source[m.id]==='A'?'selected':''}" data-val="A" ${editable ? "" : "disabled"}>${esc(m.teamA)}</button>
+              <button class="pick-btn ${source[m.id]==='D'?'selected':''}" data-val="D" ${editable ? "" : "disabled"}>Empate</button>
+              <button class="pick-btn ${source[m.id]==='B'?'selected':''}" data-val="B" ${editable ? "" : "disabled"}>${esc(m.teamB)}</button>
             </div>
             <div class="result-tag" id="qz-suggest-${m.id}"></div>
           </div>
         `).join("")}
-        <button class="btn btn-primary" id="qz-save-results" style="width:100%;padding:12px;">
-          ${round.resultsPublished ? "Actualizar resultados" : "Guardar y publicar resultados"}
-        </button>
-        ${round.resultsPublished ? `<button class="btn btn-ghost btn-sm" id="qz-reopen-round" style="width:100%;margin-top:8px;">Reabrir jornada (permitir votos de nuevo)</button>` : ``}
+        ${editable ? `
+          <button class="btn btn-ghost" id="qz-save-draft" style="width:100%;padding:12px;">Guardar borrador</button>
+          <button class="btn btn-primary" id="qz-publish-results" style="width:100%;padding:12px;margin-top:8px;" ${isComplete ? "" : "disabled"}>Publicar resultados</button>
+          ${!isComplete ? `<p class="muted" style="text-align:center;margin-top:6px;">Falta el resultado de ${missingCount} partido${missingCount===1?'':'s'} para poder publicar.</p>` : ``}
+          ${correcting ? `<button class="btn btn-ghost btn-sm" id="qz-cancel-correction" style="width:100%;margin-top:8px;">Cancelar corrección</button>` : ``}
+        ` : `
+          <button class="btn btn-ghost" id="qz-start-correction" style="width:100%;padding:12px;">Corregir resultados</button>
+        `}
+        ${isPublished ? `
+          <details style="margin-top:14px;">
+            <summary class="muted" style="cursor:pointer;">Opciones avanzadas</summary>
+            <p class="muted" style="margin:8px 0;">Reabrir la jornada es distinto a corregir un resultado: deja votar de nuevo a todos y la jornada deja de contar para la tabla hasta que publiques otra vez. Úsalo solo si de verdad hace falta.</p>
+            <button class="btn btn-ghost btn-sm" id="qz-reopen-round" style="width:100%;">Reabrir jornada (permitir votos de nuevo)</button>
+          </details>
+        ` : ``}
       </div>
       ${jornadaBets.length ? `
         <div class="card" style="padding:8px 12px;overflow-x:auto;">
@@ -2641,7 +2685,8 @@
         </div>
       ` : ``}
     `;
-    document.getElementById("qz-autofill").addEventListener("click", async () => {
+    const autofillBtn = document.getElementById("qz-autofill");
+    if(autofillBtn) autofillBtn.addEventListener("click", async () => {
       const statusEl = document.getElementById("qz-autofill-status");
       statusEl.textContent = "Consultando TheSportsDB…";
       try{
@@ -2678,30 +2723,75 @@
       }
     });
     form.querySelectorAll(".pick-row").forEach(row => {
+      if(!editable) return; // read-only view — no click handlers, matches the disabled buttons
       row.querySelectorAll(".pick-btn").forEach(btn => {
         btn.addEventListener("click", () => {
-          round.results[row.dataset.resultMatch] = btn.dataset.val;
+          editable[row.dataset.resultMatch] = btn.dataset.val;
           row.querySelectorAll(".pick-btn").forEach(b => b.classList.toggle("selected", b===btn));
+          // Completeness can change with every click — keep the publish button's
+          // enabled state and the "falta X partidos" note honest without a full re-render.
+          const nowComplete = round.matches.every(m => VALID_RESULTS.includes(editable[m.id]));
+          const publishBtn = document.getElementById("qz-publish-results");
+          if(publishBtn) publishBtn.disabled = !nowComplete;
         });
       });
     });
-    document.getElementById("qz-save-results").addEventListener("click", async () => {
-      const missing = round.matches.some(m => !round.results[m.id]);
-      if(missing){ toast("Falta el resultado de algún partido"); return; }
-      const wasAlreadyPublished = round.resultsPublished;
-      round.resultsPublished = true;
-      logAudit(
-        wasAlreadyPublished ? "Corrigió resultados" : "Publicó resultados",
-        `Jornada ${round.number}`
-      );
-      const ok = await setMeta(meta);
-      toast(ok ? "✅ Listo, los resultados quedaron publicados y los puntos se actualizaron." : "No se pudo guardar, intenta de nuevo");
-      allPicksCache = {};
-      renderAdminResultados(body);
-    });
+    const saveDraftBtn = document.getElementById("qz-save-draft");
+    if(saveDraftBtn){
+      saveDraftBtn.addEventListener("click", async () => {
+        saveDraftBtn.disabled = true;
+        const ok = await setMeta(meta);
+        toast(ok ? "✅ Listo, tu borrador quedó guardado." : "No se pudo guardar, intenta de nuevo");
+        saveDraftBtn.disabled = false;
+        renderAdminResultados(body);
+      });
+    }
+    const publishBtn = document.getElementById("qz-publish-results");
+    if(publishBtn){
+      publishBtn.addEventListener("click", async () => {
+        const stillComplete = round.matches.every(m => VALID_RESULTS.includes(source[m.id]));
+        if(!stillComplete){ toast("Falta el resultado de algún partido"); return; }
+        const confirmMsg = `¿Publicar los resultados de la Jornada ${round.number}?\n\n` +
+          `• Se van a calificar los pronósticos de todos.\n` +
+          `• La tabla de posiciones se va a actualizar.\n` +
+          `• Los participantes van a ver estos resultados como oficiales.`;
+        if(!confirm(confirmMsg)) return;
+        if(publishBtn.disabled) return; // guards a double-click while the request is in flight
+        publishBtn.disabled = true;
+        const wasAlreadyPublished = round.resultsPublished;
+        round.results = { ...editable };
+        round.resultsPublished = true;
+        round.draftResults = null;
+        logAudit(
+          wasAlreadyPublished ? "Corrigió resultados" : "Publicó resultados",
+          `Jornada ${round.number}`
+        );
+        const ok = await setMeta(meta);
+        toast(ok ? "✅ Listo, los resultados quedaron publicados y los puntos se actualizaron." : "No se pudo guardar, intenta de nuevo");
+        allPicksCache = {};
+        publishBtn.disabled = false;
+        renderAdminResultados(body);
+      });
+    }
+    const startCorrectionBtn = document.getElementById("qz-start-correction");
+    if(startCorrectionBtn){
+      startCorrectionBtn.addEventListener("click", () => {
+        round.draftResults = { ...round.results };
+        renderAdminResultados(body);
+      });
+    }
+    const cancelCorrectionBtn = document.getElementById("qz-cancel-correction");
+    if(cancelCorrectionBtn){
+      cancelCorrectionBtn.addEventListener("click", async () => {
+        round.draftResults = null;
+        await setMeta(meta);
+        renderAdminResultados(body);
+      });
+    }
     const reopenBtn = document.getElementById("qz-reopen-round");
     if(reopenBtn){
       reopenBtn.addEventListener("click", async () => {
+        if(!confirm(`¿Reabrir la Jornada ${round.number}? Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo.`)) return;
         round.resultsPublished = false;
         logAudit("Reabrió jornada", `Jornada ${round.number}`);
         await setMeta(meta);
