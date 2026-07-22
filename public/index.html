@@ -832,10 +832,10 @@
     return isRoundLocked(closingRound);
   }
 
-  function customBetPointsFor(participantId){
+  function customBetPointsFor(participantId, participantMap){
     let pts = 0;
     if(!meta.customBets || !meta.customBets.length) return pts;
-    const p = meta.participants.find(x => x.id === participantId);
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     if(!p) return pts;
     meta.customBets.forEach(bet => {
       if(bet.scope === "temporada"){
@@ -851,7 +851,7 @@
     return pts;
   }
 
-  function pointsFor(participantId){
+  function pointsFor(participantId, participantMap){
     const picks = allPicksCache[participantId] || {};
     const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
     let pts = 0, played = 0;
@@ -865,8 +865,8 @@
         if(pick && pick === result) pts += perPick;
       });
     });
-    const p = meta.participants.find(x => x.id === participantId);
-    pts += customBetPointsFor(participantId);
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
+    pts += customBetPointsFor(participantId, participantMap);
     const penalty = meta.paymentPenalty;
     if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
       const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
@@ -876,9 +876,9 @@
     return {pts, played};
   }
 
-  function penaltyFor(participantId){
+  function penaltyFor(participantId, participantMap){
     const penalty = meta.paymentPenalty;
-    const p = meta.participants.find(x => x.id === participantId);
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p || p.paid) return 0;
     const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
@@ -886,9 +886,13 @@
   }
 
   function standingsList(){
+    // Built once per call instead of doing a linear .find() per participant
+    // inside pointsFor/penaltyFor/customBetPointsFor — turns what was an O(n²)
+    // pass into O(n) for the whole standings table.
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
     return meta.participants.map(p => {
-      const {pts} = pointsFor(p.id);
-      return {...p, pts, penalty: penaltyFor(p.id)};
+      const {pts} = pointsFor(p.id, participantMap);
+      return {...p, pts, penalty: penaltyFor(p.id, participantMap)};
     }).sort((a,b) => b.pts - a.pts);
   }
 
@@ -3170,6 +3174,7 @@
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), "Jornada detalle");
 
     // Participant stats
+    const statsParticipantMap = new Map(meta.participants.map(p => [p.id, p]));
     const statsRows = meta.participants.map(p => {
       let correct=0, total=0, best=0, worst=null;
       meta.rounds.filter(r=>r.resultsPublished).forEach(r => {
@@ -3186,7 +3191,7 @@
       });
       return {
         "Participante": p.name,
-        "Puntos totales": pointsFor(p.id).pts,
+        "Puntos totales": pointsFor(p.id, statsParticipantMap).pts,
         "Partidos jugados": total,
         "% Acierto": total ? Math.round((correct/total)*1000)/10 + "%" : "0%",
         "Mejor jornada (aciertos)": best,
@@ -3616,7 +3621,7 @@
               picksCache[p.id] = pr.found ? pr.value : {};
             }catch(e){ picksCache[p.id] = {}; }
           }));
-          function pointsForInspect(pid){
+          function pointsForInspect(pid, participantMap){
             const perPick = (tenantMeta.settings && tenantMeta.settings.pointsPerCorrectPick != null) ? tenantMeta.settings.pointsPerCorrectPick : 1;
             let pts = 0;
             tenantMeta.rounds.forEach(rnd => {
@@ -3628,7 +3633,7 @@
                 if(pick && pick === result) pts += perPick;
               });
             });
-            const p = tenantMeta.participants.find(x => x.id === pid);
+            const p = participantMap.get(pid);
             (tenantMeta.customBets || []).forEach(bet => {
               if(bet.scope === "temporada"){
                 const ans = p && p.customBetAnswers && p.customBetAnswers[bet.id];
@@ -3653,8 +3658,9 @@
             }
             return pts;
           }
+          const inspectParticipantMap = new Map(tenantMeta.participants.map(p => [p.id, p]));
           const standings = tenantMeta.participants
-            .map(p => ({ name: p.name, pts: pointsForInspect(p.id) }))
+            .map(p => ({ name: p.name, pts: pointsForInspect(p.id, inspectParticipantMap) }))
             .sort((a,b) => b.pts - a.pts);
           const roundsSummary = tenantMeta.rounds.slice().sort((a,b)=>a.number-b.number).map(r => {
             const status = r.resultsPublished ? "resultados publicados" : (new Date(r.deadline).getTime() < Date.now() ? "cerrada, sin resultados" : "abierta");
