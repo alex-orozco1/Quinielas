@@ -773,12 +773,27 @@
     return {d,h,m,s};
   }
 
+  // One request for everyone's picks instead of one request PER participant.
+  // Same credential logic as before (own PIN for yourself, admin/owner cred
+  // when acting as admin) — the server applies the identical per-participant
+  // visibility rules either way, so callers see no difference at all.
   async function ensureAllPicksLoaded(){
     if(loadingAllPicks) return;
     loadingAllPicks = true;
-    const isAdmin = !!(currentUser && currentUser.isAdmin);
-    const entries = await Promise.all(meta.participants.map(async p => [p.id, await getPicks(p.id, { asAdmin: isAdmin })]));
-    allPicksCache = Object.fromEntries(entries);
+    try{
+      const isAdmin = !!(currentUser && currentUser.isAdmin);
+      const cred = isAdmin ? adminOrOwnerCred() : currentUserPinCache;
+      const headers = { "Content-Type": "application/json" };
+      if(cred) headers["X-Qracks-Auth"] = cred;
+      const res = await fetch("/api/picks-batch", {
+        method: "POST", headers, credentials: "same-origin",
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
+      });
+      allPicksCache = res.ok ? (await res.json()).picks || {} : {};
+    }catch(e){
+      console.error("ensureAllPicksLoaded (batch) failed", e);
+      allPicksCache = {};
+    }
     loadingAllPicks = false;
   }
 
@@ -3336,17 +3351,16 @@
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
     const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
-    const rows = await Promise.all(idx.quinielas.map(async q => {
+    const rows = idx.quinielas.map(q => {
       const effectiveJornadaLimit = (q.customJornadaLimit !== undefined && q.customJornadaLimit !== null) ? q.customJornadaLimit : settings.jornadaLimit;
-      try{
-        const r = await kvGet(metaKeyFor(q.slug));
-        const count = r.found ? r.value.participants.length : 0;
-        const roundCount = r.found ? r.value.rounds.length : 0;
-        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, roundCount, effectiveJornadaLimit, overThreshold: roundCount >= effectiveJornadaLimit };
-      }catch(e){
-        return { ...q, exempt: !!q.exempt, paid: !!q.paid, count: null, roundCount: null, effectiveJornadaLimit, overThreshold: false };
-      }
-    }));
+      // Counts now live on the index entry itself (kept fresh whenever that
+      // quiniela's own meta is saved) — no need to fetch each quiniela's full
+      // meta just to read two numbers. Quinielas saved before this existed
+      // simply show "—" until the next time they're saved.
+      const count = q.participantCount != null ? q.participantCount : null;
+      const roundCount = q.roundCount != null ? q.roundCount : null;
+      return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, roundCount, effectiveJornadaLimit, overThreshold: (roundCount || 0) >= effectiveJornadaLimit };
+    });
     rows.sort((a,b) => (b.count||0) - (a.count||0));
 
     const paymentLog = await getPlatformPaymentLog();
