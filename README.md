@@ -1,27 +1,26 @@
 <div align="center">
-  <img src="public/logo.svg" alt="QRACKS logo" width="220" />
 
-  <p><strong>Sports prediction pools, made simple.</strong></p>
+<img src="./public/logo.svg" alt="QRACKS logo" width="220" />
 
-  <p>
-    Create a pool, invite your friends, collect predictions, publish results,
-    and keep the standings updated automatically.
-  </p>
+# QRACKS
 
-  <p>
-    <a href="https://qracks.net"><strong>Open QRACKS</strong></a>
-  </p>
+**Sports prediction pools, made simple.**
+
+Create a pool, invite your friends, collect predictions, publish results, and keep the leaderboard updated automatically.
+
+🌐 **https://qracks.net**
+
 </div>
 
 ---
 
-## About QRACKS
+## About
 
-QRACKS is a lightweight web platform for running sports prediction pools with friends, coworkers, or private communities.
+QRACKS is a lightweight platform for running private sports prediction pools with friends, coworkers, or communities.
 
-An organizer creates a pool and shares its private link. Participants join, set a personal PIN, submit their predictions before each deadline, and follow the leaderboard as results are published.
+An organizer creates a pool, shares a private link, and participants submit their predictions before each matchday deadline. Once results are published, QRACKS automatically calculates scores and updates the leaderboard.
 
-The product started as a Liga MX pool for one group of friends and evolved into a multi-pool platform designed around simplicity, privacy, and trust.
+Originally built for Liga MX, QRACKS is evolving into a flexible platform that supports multiple competitions while staying simple, fast, and trustworthy.
 
 > Running a sports pool should feel as easy as creating a WhatsApp group.
 
@@ -29,80 +28,83 @@ The product started as a Liga MX pool for one group of friends and evolved into 
 
 ## How it works
 
-1. An organizer creates a pool.
-2. QRACKS generates a permanent pool link.
-3. The organizer shares the link with participants.
-4. Participants join, create a PIN, and submit their picks.
-5. Predictions lock automatically at the configured deadline.
-6. The organizer publishes the match results.
-7. QRACKS calculates points and updates the standings.
+1. Create a pool.
+2. Share the private invitation link.
+3. Participants join and create their PIN.
+4. Everyone submits predictions.
+5. Predictions lock automatically at the deadline.
+6. The organizer publishes results.
+7. QRACKS updates the standings automatically.
 
 ---
 
-## Core features
+## Features
 
 ### Participants
 
-- Join a pool from its shared link
-- Create and use a personal four-digit PIN
-- Submit predictions before the matchday deadline
-- Save picks automatically
-- Follow the countdown until picks lock
-- Review open, live, and completed matchdays
-- See standings, scoring history, and previous tournaments
-- Change participant on shared devices
+- Join from a shared invitation link
+- Secure personal PIN
+- Automatic draft saving
+- Matchday countdown
+- Live standings
+- Match history
+- Previous tournaments
+- Switch participants on shared devices
 
 ### Pool administrators
 
 - Create and edit matchdays
-- Select teams based on the configured competition
-- Set deadlines for every round
-- Track who has submitted picks without revealing predictions
-- Prepare WhatsApp reminders for pending participants
-- Capture results manually or retrieve suggestions from TheSportsDB
-- Publish results and update the leaderboard
-- Manage participants and reset PINs
-- Configure the pool, league, season, and entry fee
-- Close a tournament while preserving its final standings and champion
+- League-specific team selection
+- Deadline management
+- Submission tracking
+- WhatsApp reminder generation
+- Manual or TheSportsDB result capture
+- Publish results
+- Automatic leaderboard updates
+- Participant management
+- PIN reset
+- Tournament closing with historical standings
 
-### Platform operations
+### Platform
 
-- Review all pools from a private platform dashboard
-- Inspect pool status and activity
-- Manage pool information
-- Track payment and exemption status
-- Configure global operating settings
+- Platform administration dashboard
+- Pool management
+- Payment tracking
+- Exemption management
+- Global platform configuration
 
 ---
 
 ## Product principles
 
-- **Simplicity over complexity** — common tasks should be easy to understand and complete.
-- **Trust above everything** — deadlines, privacy, scoring, and results must behave predictably.
-- **Mobile-first** — every core flow should work comfortably on a phone.
-- **Fast enough to disappear** — the product should stay out of the competition itself.
-- **Useful before impressive** — practical improvements take priority over unnecessary features.
+QRACKS is built around five principles:
+
+- Simplicity over complexity
+- Trust above everything
+- Mobile-first
+- Fast enough to disappear
+- Useful before impressive
 
 ---
 
-## Privacy and competition integrity
+## Privacy & Integrity
 
-QRACKS includes safeguards designed for private social pools:
+QRACKS includes safeguards designed for private prediction pools.
 
-- Participant PINs and administrator passwords are stored as hashes
-- Open predictions are hidden from other participants
-- Administrators can see who submitted without seeing their picks
-- Deadlines are validated by the server
-- Draft results are not exposed to participants
+- PINs and administrator passwords are securely hashed
+- Predictions remain hidden until results are published
+- Administrators can verify submissions without viewing predictions
+- Deadlines are enforced on the server
+- Draft results remain private
 - Incomplete results cannot be published
-- Resetting a participant PIN invalidates previous sessions
-- QRACKS does not hold or distribute prize money
+- PIN resets invalidate previous sessions
+- QRACKS never holds prize money
 
 ---
 
 ## Supported competitions
 
-Automatic result suggestions and league-specific team selection currently support:
+Automatic team selection and result suggestions currently support:
 
 - Liga MX
 - Premier League
@@ -112,30 +114,19 @@ Automatic result suggestions and league-specific team selection currently suppor
 - Ligue 1
 - UEFA Champions League
 
-Organizers can enter teams and results manually when needed.
+Teams and results can also be entered manually.
 
 ---
 
-## Tech stack
+## Tech Stack
 
 | Layer | Technology |
-| --- | --- |
+|-------|------------|
 | Frontend | HTML, CSS, Vanilla JavaScript |
 | Backend | Node.js + Express |
 | Database | PostgreSQL |
-| External data | TheSportsDB |
+| External API | TheSportsDB |
 | Deployment | Render |
-
----
-
-## Main routes
-
-| Route | Purpose |
-| --- | --- |
-| `/` | Public landing page |
-| `/crear` | Create a new pool |
-| `/q/:slug` | Open a specific pool |
-| `/panel-plataforma` | Private platform dashboard |
 
 ---
 
@@ -144,9 +135,9 @@ Organizers can enter teams and results manually when needed.
 ```text
 .
 ├── public/
+│   ├── favicon.svg
 │   ├── index.html
 │   ├── logo.svg
-│   ├── favicon.svg
 │   └── og-image.png
 ├── server.js
 ├── package.json
@@ -172,9 +163,9 @@ cd Quinielas
 npm install
 ```
 
-Create the required environment variables:
+Configure the required environment variables:
 
-```bash
+```text
 DATABASE_URL=postgresql://user:password@localhost:5432/qracks
 PLATFORM_PASSWORD=your-password
 ```
@@ -187,7 +178,7 @@ npm start
 
 Open:
 
-```
+```text
 http://localhost:3000
 ```
 
@@ -195,12 +186,12 @@ http://localhost:3000
 
 ## Deployment
 
-The project includes a `render.yaml` file ready for deployment on Render.
+The repository includes a `render.yaml` configuration for deployment on Render.
 
 Required environment variables:
 
 | Variable | Description |
-| --- | --- |
+|----------|-------------|
 | DATABASE_URL | PostgreSQL connection string |
 | PLATFORM_PASSWORD | Platform administrator password |
 
@@ -208,16 +199,18 @@ Required environment variables:
 
 ## Current focus
 
-- Reliability and competition integrity
+- Competition integrity
 - Administrator experience
 - Mobile usability
-- Performance
+- Performance improvements
 - Growth toward the first 100 active pools
 
 ---
 
 ## Status
 
-🚧 QRACKS is actively under development.
+🚧 Active development
 
 🌐 https://qracks.net
+
+Made with ❤️ for football fans.
