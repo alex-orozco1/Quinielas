@@ -978,12 +978,17 @@ function normalizeSlug(raw) {
 // nothing is left behind: no orphaned meta with no index entry, no orphaned
 // index entry with no meta.
 app.post("/api/create-quiniela", async (req, res) => {
-  const { slug, groupName, creatorName, contact, password } = req.body || {};
+  const { slug, groupName, creatorName, contact, password, sportsdbLeagueId } = req.body || {};
   const cleanSlug = normalizeSlug(slug) || "quiniela";
   const cleanGroupName = String(groupName || "").trim();
   const cleanCreatorName = String(creatorName || "").trim();
   const cleanContact = String(contact || "").trim();
   const cleanPassword = String(password || "").trim();
+  // Optional — a bare numeric id matching TheSportsDB's own id shape. Anything
+  // else is ignored rather than rejected, since this only ever drives a
+  // convenience autocomplete list, never anything security- or data-critical.
+  const cleanLeagueId = /^[0-9]{3,8}$/.test(String(sportsdbLeagueId || "").trim())
+    ? String(sportsdbLeagueId).trim() : null;
   if (!cleanGroupName || !cleanCreatorName || !cleanContact || !cleanPassword) {
     return res.status(400).json({ error: "invalid_params" });
   }
@@ -1010,7 +1015,8 @@ app.post("/api/create-quiniela", async (req, res) => {
         ownerPassword: hashPassword(cleanPassword),
         entryFee: 0,
         sportsdbSeason: "2025-2026",
-        pointsPerCorrectPick: 1
+        pointsPerCorrectPick: 1,
+        ...(cleanLeagueId ? { sportsdbLeagueId: cleanLeagueId } : {})
       }
     };
     // A plain INSERT (not upsert) so the database itself is the final word on
