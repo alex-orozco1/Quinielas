@@ -8,7 +8,7 @@
 
 Create a pool, invite your friends, collect predictions, publish results, and keep the leaderboard updated automatically.
 
-🌐 **https://qracks.net**
+🌐 **Live Demo:** https://qracks.net
 
 </div>
 
@@ -214,3 +214,4 @@ Required environment variables:
 🌐 https://qracks.net
 
 Made with ❤️ for football fans.
+Built independently in Mexico 🇲🇽 for football fans everywhere.
