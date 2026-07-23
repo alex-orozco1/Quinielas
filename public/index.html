@@ -297,6 +297,40 @@
   }
   #quiniela-root .toast.show{ opacity:1; transform:translateX(-50%) translateY(-4px); }
 
+  /* UX-018: reusable confirmation modal — deliberately NOT scoped under
+     #quiniela-root, since it's appended to document.body so a re-render
+     elsewhere in the app (root.innerHTML gets replaced wholesale on most
+     screen changes) can never silently close it out from under someone. */
+  .qz-modal-overlay{
+    position:fixed; inset:0; background:rgba(15,46,34,0.55); z-index:200;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+    animation: qzModalFadeIn .15s ease;
+  }
+  @keyframes qzModalFadeIn{ from{ opacity:0; } to{ opacity:1; } }
+  .qz-modal-card{
+    font-family:'Manrope', sans-serif; background:#FFFFFF; border-radius:16px;
+    max-width:420px; width:100%; padding:22px; box-shadow:0 6px 20px rgba(15,46,34,0.12);
+  }
+  .qz-modal-title{ font-weight:800; font-size:18px; color:#10231C; margin-bottom:8px; }
+  .qz-modal-message p{ font-family:'Manrope', sans-serif; color:#10231C; font-size:14px; line-height:1.5; margin:0 0 8px; }
+  .qz-modal-message p:last-child{ margin-bottom:0; }
+  .qz-modal-actions{ display:flex; gap:8px; margin-top:18px; }
+  .qz-modal-actions button{
+    font-family:'Manrope', sans-serif; flex:1; padding:11px; border-radius:10px; border:none;
+    font-weight:700; font-size:14px; cursor:pointer;
+  }
+  .qz-modal-cancel{ background:#F0EEE4; color:#10231C; }
+  .qz-modal-cancel:hover{ background:#E5E2D4; }
+  .qz-modal-confirm{ background:#C1443A; color:#fff; }
+  .qz-modal-confirm.qz-modal-not-destructive{ background:#0F2E22; }
+  .qz-modal-confirm:hover{ opacity:0.9; }
+  .qz-modal-input{
+    width:100%; padding:9px 11px; border-radius:8px; border:1.5px solid #E7E3D6;
+    font-family:'Manrope', sans-serif; font-size:16px; background:#FFFFFF; color:#10231C;
+    box-sizing:border-box; margin-top:4px;
+  }
+  .qz-modal-input:focus{ outline:2px solid #D6A73C; outline-offset:1px; }
+
   #quiniela-root .history-item{
     display:flex; justify-content:space-between; align-items:center;
     padding:12px 14px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; background:var(--paper);
@@ -738,6 +772,104 @@
     t._h = setTimeout(()=> t.classList.remove("show"), 2200);
   }
 
+  // UX-018: reusable confirmation modal — a drop-in replacement for the
+  // native confirm(), used everywhere the app needs someone to confirm a
+  // destructive or otherwise significant action. Returns a Promise<boolean>,
+  // so a call site only has to change `if(!confirm(msg))` to
+  // `if(!(await qzConfirm(msg)))`. Message formatting matches what the old
+  // confirm() strings already used: "\n\n" separates paragraphs, a single
+  // "\n" is a line break within one.
+  function qzConfirm(message, opts){
+    opts = opts || {};
+    const destructive = opts.destructive !== false; // most of what this guards is destructive by default
+    const confirmLabel = opts.confirmLabel || (destructive ? "Eliminar" : "Confirmar");
+    const cancelLabel = opts.cancelLabel || "Cancelar";
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "qz-modal-overlay";
+      const messageHtml = String(message).split("\n\n").map(para =>
+        `<p>${para.split("\n").map(esc).join("<br>")}</p>`
+      ).join("");
+      overlay.innerHTML = `
+        <div class="qz-modal-card" role="alertdialog" aria-modal="true" aria-label="${esc(opts.title || confirmLabel)}">
+          ${opts.title ? `<div class="qz-modal-title">${esc(opts.title)}</div>` : ``}
+          <div class="qz-modal-message">${messageHtml}</div>
+          <div class="qz-modal-actions">
+            <button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>
+            <button class="qz-modal-confirm ${destructive ? '' : 'qz-modal-not-destructive'}" id="qz-modal-confirm-btn">${esc(confirmLabel)}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      const cleanup = (result) => {
+        document.removeEventListener("keydown", onKey);
+        overlay.remove();
+        resolve(result);
+      };
+      const onKey = (e) => { if(e.key === "Escape") cleanup(false); };
+      document.addEventListener("keydown", onKey);
+      overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(false); });
+      overlay.querySelector("#qz-modal-cancel-btn").addEventListener("click", () => cleanup(false));
+      overlay.querySelector("#qz-modal-confirm-btn").addEventListener("click", () => cleanup(true));
+      // Destructive actions default focus to Cancel — the safer accidental-Enter outcome.
+      (destructive ? overlay.querySelector("#qz-modal-cancel-btn") : overlay.querySelector("#qz-modal-confirm-btn")).focus();
+    });
+  }
+
+  // UX-018: reusable text/PIN capture modal — a drop-in replacement for
+  // window.prompt(), with the exact same return contract callers already
+  // rely on: resolves to `null` if canceled (Escape, backdrop, Cancelar), or
+  // the raw typed string if confirmed (Enter or the button) — including an
+  // empty string if they submit blank, same as the native prompt(). Every
+  // validation rule stays exactly where it already lived, in the caller.
+  function qzPrompt(message, opts){
+    opts = opts || {};
+    const isPin = !!opts.pin; // masks the value on screen, restricts to 4 digits
+    const confirmLabel = opts.confirmLabel || "Aceptar";
+    const cancelLabel = opts.cancelLabel || "Cancelar";
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "qz-modal-overlay";
+      overlay.innerHTML = `
+        <div class="qz-modal-card" role="dialog" aria-modal="true" aria-label="${esc(opts.title || message)}">
+          ${opts.title ? `<div class="qz-modal-title">${esc(opts.title)}</div>` : ``}
+          <div class="qz-modal-message"><p>${esc(message)}</p></div>
+          <input
+            class="qz-modal-input" id="qz-prompt-input"
+            type="${isPin ? "password" : "text"}"
+            inputmode="${isPin ? "numeric" : "text"}"
+            autocomplete="off"
+            ${isPin ? 'maxlength="4" pattern="[0-9]*"' : ""}
+          >
+          <div class="qz-modal-actions">
+            <button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>
+            <button class="qz-modal-confirm qz-modal-not-destructive" id="qz-modal-confirm-btn">${esc(confirmLabel)}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      const input = overlay.querySelector("#qz-prompt-input");
+      const cleanup = (result) => {
+        document.removeEventListener("keydown", onKey);
+        overlay.remove();
+        resolve(result);
+      };
+      const submit = () => cleanup(input.value);
+      const onKey = (e) => {
+        if(e.key === "Escape") cleanup(null);
+        else if(e.key === "Enter") submit();
+      };
+      document.addEventListener("keydown", onKey);
+      overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(null); });
+      overlay.querySelector("#qz-modal-cancel-btn").addEventListener("click", () => cleanup(null));
+      overlay.querySelector("#qz-modal-confirm-btn").addEventListener("click", submit);
+      if(isPin){
+        input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 4); });
+      }
+      input.focus();
+    });
+  }
+
   // ---------- onboarding (UX only — first-time explainer cards, per device, per screen) ----------
   const ONBOARDING_CONTENT = {
     jornada: {
@@ -1126,7 +1258,7 @@
     `;
     document.getElementById("qz-self-register").addEventListener("click", async () => {
       trackEvent("join_started", { isNewUser: true });
-      const newName = window.prompt("¿Cuál es tu nombre?");
+      const newName = await qzPrompt("¿Cuál es tu nombre?", { title: "Únete a la quiniela", confirmLabel: "Continuar" });
       if(newName === null) return;
       const cleanName = newName.trim();
       if(!cleanName){ toast("Escribe un nombre válido"); return; }
@@ -1134,7 +1266,7 @@
         toast("Ya existe alguien con ese nombre — búscalo en la lista de arriba en vez de crear otro.");
         return;
       }
-      const newPin = window.prompt("Ponle un PIN de 4 dígitos para proteger tu nombre:");
+      const newPin = await qzPrompt("Ponle un PIN de 4 dígitos para proteger tu nombre:", { title: "Crea tu PIN", confirmLabel: "Continuar", pin: true });
       if(newPin === null) return;
       const cleanPin = newPin.trim();
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
@@ -1157,7 +1289,7 @@
       btn.addEventListener("click", async () => {
         const p = meta.participants.find(x => x.id === btn.dataset.id);
         if(!p.hasPin){
-          const newPin = window.prompt("Este nombre todavía no tiene PIN. Ponle uno de 4 dígitos para que nadie más pueda entrar como tú:");
+          const newPin = await qzPrompt("Este nombre todavía no tiene PIN. Ponle uno de 4 dígitos para que nadie más pueda entrar como tú:", { title: "Activa tu PIN", confirmLabel: "Continuar", pin: true });
           if(newPin === null) return;
           const cleanPin = newPin.trim();
           if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
@@ -1167,7 +1299,7 @@
           currentUserPinCache = cleanPin;
           toast("PIN configurado ✅ — no lo olvides");
         } else {
-          const entered = window.prompt("Escribe el PIN de " + p.name + " para entrar:");
+          const entered = await qzPrompt("Escribe el PIN de " + p.name + " para entrar:", { title: "Entrar", confirmLabel: "Entrar", pin: true });
           if(entered === null) return;
           const cleanEntered = entered.trim();
           const verification = await verifyParticipantPin(p.id, cleanEntered);
@@ -1266,12 +1398,12 @@
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
       if(currentUser.hasPin){
-        const current = window.prompt("Escribe tu PIN actual:");
+        const current = await qzPrompt("Escribe tu PIN actual:", { title: "Cambiar tu PIN", confirmLabel: "Continuar", pin: true });
         if(current === null) return;
         const verification = await verifyParticipantPin(currentUser.id, current.trim());
         if(!verification.ok){ toast("PIN actual incorrecto"); return; }
       }
-      const newPin = window.prompt("Escribe tu nuevo PIN (4 dígitos):");
+      const newPin = await qzPrompt("Escribe tu nuevo PIN (4 dígitos):", { title: "Cambiar tu PIN", confirmLabel: "Guardar", pin: true });
       if(newPin === null) return;
       const cleanPin = newPin.trim();
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
@@ -2257,7 +2389,7 @@
     });
     body.querySelectorAll("[data-del-bet]").forEach(btn => {
       btn.addEventListener("click", async () => {
-        if(!confirm("¿Eliminar esta apuesta? Se pierden las respuestas de todos.")) return;
+        if(!(await qzConfirm("Se pierden las respuestas de todos los participantes a esta apuesta.", { title: "¿Eliminar esta apuesta?", confirmLabel: "Eliminar" }))) return;
         meta.customBets = meta.customBets.filter(b => b.id !== btn.dataset.delBet);
         meta.participants.forEach(p => { if(p.customBetAnswers) delete p.customBetAnswers[btn.dataset.delBet]; });
         meta.rounds.forEach(r => { if(r.customBetResults) delete r.customBetResults[btn.dataset.delBet]; });
@@ -2531,7 +2663,7 @@
       });
       body.querySelectorAll("[data-del-round]").forEach(btn => {
         btn.addEventListener("click", async () => {
-          if(!confirm("¿Eliminar esta jornada y sus resultados? Esta acción no se puede deshacer.")) return;
+          if(!(await qzConfirm("Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.", { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
           meta.rounds = meta.rounds.filter(r => r.id !== btn.dataset.delRound);
           await setMeta(meta);
           renderAdmin(document.getElementById("qz-main"));
@@ -2620,7 +2752,7 @@
 
     body.querySelectorAll("[data-del-round]").forEach(btn => {
       btn.addEventListener("click", async () => {
-        if(!confirm("¿Eliminar esta jornada y sus resultados? Esta acción no se puede deshacer.")) return;
+        if(!(await qzConfirm("Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.", { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
         meta.rounds = meta.rounds.filter(r => r.id !== btn.dataset.delRound);
         await setMeta(meta);
         renderAdmin(document.getElementById("qz-main"));
@@ -2969,16 +3101,15 @@
       publishBtn.addEventListener("click", async () => {
         const stillComplete = round.matches.every(m => VALID_RESULTS.includes(source[m.id]));
         if(!stillComplete){ toast("Falta el resultado de algún partido"); return; }
+        const confirmTitle = correcting ? `¿Publicar la corrección de la Jornada ${round.number}?` : `¿Publicar los resultados de la Jornada ${round.number}?`;
         const confirmMsg = correcting
-          ? `¿Publicar la corrección de la Jornada ${round.number}?\n\n` +
-            `• Los resultados oficiales van a cambiar a los que acabas de capturar.\n` +
+          ? `• Los resultados oficiales van a cambiar a los que acabas de capturar.\n` +
             `• Los puntos de todos se van a recalcular.\n` +
             `• Los participantes van a ver el resultado corregido.`
-          : `¿Publicar los resultados de la Jornada ${round.number}?\n\n` +
-            `• Se van a calificar los pronósticos de todos.\n` +
+          : `• Se van a calificar los pronósticos de todos.\n` +
             `• La tabla de posiciones se va a actualizar.\n` +
             `• Los participantes van a ver estos resultados como oficiales.`;
-        if(!confirm(confirmMsg)) return;
+        if(!(await qzConfirm(confirmMsg, { title: confirmTitle, destructive: false, confirmLabel: correcting ? "Publicar corrección" : "Publicar resultados" }))) return;
         if(publishBtn.disabled) return; // guards a double-click while the request is in flight
         publishBtn.disabled = true;
         const wasAlreadyPublished = round.resultsPublished;
@@ -3025,7 +3156,7 @@
     const reopenBtn = document.getElementById("qz-reopen-round");
     if(reopenBtn){
       reopenBtn.addEventListener("click", async () => {
-        if(!confirm(`¿Reabrir la Jornada ${round.number}? Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo.`)) return;
+        if(!(await qzConfirm(`Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo.`, { title: `¿Reabrir la Jornada ${round.number}?`, confirmLabel: "Reabrir" }))) return;
         round.resultsPublished = false;
         logAudit("Reabrió jornada", `Jornada ${round.number}`);
         await setMeta(meta);
@@ -3149,7 +3280,7 @@
       const resetBtn = row.querySelector("[data-role=resetpin]");
       if(resetBtn){
         resetBtn.addEventListener("click", async () => {
-          if(!confirm(`¿Resetear el PIN de ${p.name}? La próxima vez que toque su nombre podrá poner uno nuevo.`)) return;
+          if(!(await qzConfirm(`La próxima vez que toque su nombre podrá poner uno nuevo.`, { title: `¿Resetear el PIN de ${p.name}?`, confirmLabel: "Resetear" }))) return;
           p.pin = null;
           p.hasPin = false;
           await setMeta(meta);
@@ -3162,7 +3293,7 @@
         await setMeta(meta);
       });
       row.querySelector("[data-role=remove]").addEventListener("click", async () => {
-        if(!confirm("¿Borrar a " + p.name + "? Sus picks guardados dejarán de contarse.")) return;
+        if(!(await qzConfirm("Sus picks guardados dejarán de contarse.", { title: `¿Borrar a ${p.name}?`, confirmLabel: "Borrar" }))) return;
         meta.participants = meta.participants.filter(x=>x.id!==pid);
         await setMeta(meta);
         renderAdminParticipantes(body);
@@ -3196,15 +3327,13 @@
     }
     body.innerHTML = `
       <div class="card">
+        <div class="section-title"><span class="display" style="font-size:18px;">Configuración general</span></div>
         <div class="eyebrow">Nombre del grupo</div>
         <div class="field"><input type="text" id="qz-group-name" value="${esc(meta.groupName)}"></div>
         <div class="eyebrow">Cuota por participante (MXN)</div>
         <div class="field"><input type="number" id="qz-fee" value="${meta.settings.entryFee}"></div>
         <div class="eyebrow">Puntos por acierto</div>
         <div class="field"><input type="number" id="qz-points-per-pick" value="${meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1}"></div>
-        <div class="eyebrow">Contraseña de dueño</div>
-        <div class="field"><input type="text" id="qz-owner-pw-set" placeholder="Dejar en blanco para no cambiarla" value=""></div>
-        <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos tu contraseña actual aquí — solo escribe algo en este campo si quieres cambiarla.</p>
         <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
         <div class="field">
           <select id="qz-sportsdb-league">
@@ -3214,27 +3343,35 @@
         <div class="eyebrow">Temporada para resultados automáticos (TheSportsDB)</div>
         <div class="field"><input type="text" id="qz-sportsdb-season" value="${esc(meta.settings.sportsdbSeason || '2025-2026')}" placeholder="2025-2026"></div>
         <p class="muted" style="margin-top:-8px;">Formato AAAA-AAAA. Si "Buscar resultados automáticos" no encuentra nada en Admin → Resultados, prueba ajustando la liga o la temporada.</p>
-        <button class="btn btn-primary" id="qz-save-settings">Guardar ajustes</button>
       </div>
       <div class="card">
-        <div class="eyebrow">Respaldo de esta quiniela</div>
-        <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
-        <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
-      </div>
-      <div class="card">
-        <div class="eyebrow">Cerrar torneo</div>
-        <p class="muted">Cuando termine el torneo (o cuando el grupo decida dejarlo hasta ahí), esto anuncia al campeón, guarda la tabla final y las jornadas en el historial, y deja todo listo para empezar un torneo nuevo — sin perder nada de lo anterior.</p>
-        <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
-      </div>
-      ${ROUTE === "root" ? `
-      <div class="card">
+        <div class="section-title"><span class="display" style="font-size:18px;">Acceso</span></div>
+        <div class="eyebrow">Contraseña de dueño</div>
+        <div class="field"><input type="text" id="qz-owner-pw-set" placeholder="Dejar en blanco para no cambiarla" value=""></div>
+        <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos tu contraseña actual aquí — solo escribe algo en este campo si quieres cambiarla.</p>
+        ${ROUTE === "root" ? `
+        <div class="divider"></div>
         <div class="eyebrow">Mover esta quiniela a su propio link</div>
         <p class="muted">Ahora mismo esta quiniela vive en la página principal. Como las demás quinielas de la plataforma, puede tener su propio link fijo (ej. ${esc(window.location.origin)}/q/mi-quiniela). Se copian todos los datos — jornadas, resultados, picks — nada se pierde.</p>
         <div class="field"><label>Link para esta quiniela</label><input type="text" id="qz-migrate-slug" value="poderosa-quiniela-liga-mx"></div>
         <p class="muted" id="qz-migrate-status" style="min-height:16px;"></p>
         <button class="btn btn-primary" id="qz-migrate-btn">Mover mi quiniela a este link</button>
+        ` : ``}
       </div>
-      ` : ``}
+      <div class="card" style="text-align:center;">
+        <p class="muted" style="margin-top:0;margin-bottom:12px;">Este botón guarda los cambios de <strong>Configuración general</strong> y <strong>Acceso</strong>, de las dos tarjetas de arriba.</p>
+        <button class="btn btn-primary" id="qz-save-settings" style="width:100%;padding:12px;">Guardar ajustes</button>
+      </div>
+      <div class="card">
+        <div class="section-title"><span class="display" style="font-size:18px;">Acciones del torneo</span></div>
+        <div class="eyebrow">Respaldo de esta quiniela</div>
+        <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
+        <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
+        <div class="divider"></div>
+        <div class="eyebrow">Cerrar torneo</div>
+        <p class="muted">Cuando termine el torneo (o cuando el grupo decida dejarlo hasta ahí), esto anuncia al campeón, guarda la tabla final y las jornadas en el historial, y deja todo listo para empezar un torneo nuevo — sin perder nada de lo anterior.</p>
+        <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
+      </div>
     `;
     document.getElementById("qz-export-backup").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -3302,15 +3439,15 @@
     document.getElementById("qz-close-tournament").addEventListener("click", async () => {
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
       if(!playedRounds.length){
-        if(!confirm("Todavía no hay jornadas con resultados. ¿De todos modos quieres cerrar y limpiar el torneo?")) return;
+        if(!(await qzConfirm("Todavía no hay jornadas con resultados.", { title: "¿De todos modos quieres cerrar y limpiar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
       }
       await ensureAllPicksLoaded();
       const finalStandings = standingsList().map(p => ({ name: p.name, pts: p.pts }));
       const champion = finalStandings.length ? finalStandings[0] : null;
       const confirmMsg = champion
-        ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nEsto se va a guardar en el historial y se van a borrar las jornadas activas para empezar un torneo nuevo. ¿Confirmas?`
-        : "Se va a cerrar el torneo (sin jornadas jugadas) y se van a borrar las jornadas activas. ¿Confirmas?";
-      if(!confirm(confirmMsg)) return;
+        ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nEsto se va a guardar en el historial y se van a borrar las jornadas activas para empezar un torneo nuevo.`
+        : "Se va a cerrar el torneo (sin jornadas jugadas) y se van a borrar las jornadas activas.";
+      if(!(await qzConfirm(confirmMsg, { title: "¿Cerrar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
 
       if(!meta.pastTournaments) meta.pastTournaments = [];
       meta.pastTournaments.push({
@@ -3336,7 +3473,7 @@
         const statusEl = document.getElementById("qz-migrate-status");
         const slug = slugify(document.getElementById("qz-migrate-slug").value);
         if(!slug){ statusEl.textContent = "Escribe un link válido."; statusEl.style.color = "var(--red)"; return; }
-        if(!confirm(`¿Mover esta quiniela a ${window.location.origin}/q/${slug}? El link principal dejará de mostrarla — tendrás que compartir el nuevo link con tu grupo.`)) return;
+        if(!(await qzConfirm(`El link principal dejará de mostrarla — tendrás que compartir el nuevo link con tu grupo.`, { title: `¿Mover esta quiniela a ${window.location.origin}/q/${slug}?`, destructive: false, confirmLabel: "Mover" }))) return;
 
         migrateBtn.disabled = true;
         statusEl.textContent = "Moviendo datos…";
@@ -3808,7 +3945,7 @@
       btn.addEventListener("click", async () => {
         const slug = btn.dataset.deleteSlug;
         const q = rows.find(r => r.slug === slug);
-        if(!confirm(`¿Eliminar "${q ? q.name : slug}" para siempre? Se borran todas sus jornadas, resultados y picks. Esto NO se puede deshacer.`)) return;
+        if(!(await qzConfirm("Se borran todas sus jornadas, resultados y picks. Esto NO se puede deshacer.", { title: `¿Eliminar "${q ? q.name : slug}" para siempre?`, confirmLabel: "Eliminar" }))) return;
         btn.disabled = true;
         try{
           const res = await fetch("/api/delete-quiniela", {
