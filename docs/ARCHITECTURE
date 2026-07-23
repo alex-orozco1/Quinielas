@@ -1,0 +1,364 @@
+# QRACKS Architecture
+
+Version: 1.0
+
+Last updated: July 2026
+
+---
+
+# 1. Overview
+
+QRACKS is a lightweight web application built around a simple architecture:
+
+```
+Browser
+      │
+      ▼
+Node.js + Express
+      │
+      ▼
+ PostgreSQL
+      │
+      ▼
+ TheSportsDB
+```
+
+The project prioritizes simplicity, maintainability, and fast iteration over unnecessary architectural complexity.
+
+There are no microservices.
+
+There is no frontend framework.
+
+The application is intentionally small enough to be understood by a single developer.
+
+---
+
+# 2. Architecture Principles
+
+Every technical decision follows these principles:
+
+- Keep the codebase simple.
+- Prefer readability over cleverness.
+- Avoid unnecessary abstractions.
+- Optimize only after measuring.
+- Ship small improvements continuously.
+- Server-side validation always wins.
+
+---
+
+# 3. Application Layers
+
+## Frontend
+
+Location:
+
+```
+public/
+```
+
+Responsibilities:
+
+- Render every screen
+- Handle navigation
+- Collect user input
+- Call backend APIs
+- Display application state
+
+Current implementation:
+
+- HTML
+- CSS
+- Vanilla JavaScript
+
+The application behaves as a Single Page Application (SPA), where views are selected based on the current URL.
+
+---
+
+## Backend
+
+Location:
+
+```
+server.js
+```
+
+Responsibilities:
+
+- Authentication
+- Authorization
+- Business rules
+- Deadline validation
+- Score calculation
+- Data persistence
+- API endpoints
+
+The backend is the source of truth.
+
+Clients should never decide business rules.
+
+---
+
+## Database
+
+Engine:
+
+PostgreSQL
+
+Responsibilities:
+
+- Pools
+- Participants
+- Matchdays
+- Matches
+- Predictions
+- Results
+- Historical tournaments
+- Sessions
+
+The database is normalized around prediction pools and matchdays.
+
+---
+
+# 4. Authentication
+
+QRACKS supports multiple authentication contexts.
+
+## Participant
+
+Authenticated using:
+
+- Participant name
+- Personal PIN
+
+PINs are hashed before storage.
+
+---
+
+## Pool Administrator
+
+Authenticated with:
+
+- Administrator password
+
+Passwords are hashed.
+
+---
+
+## Platform Administrator
+
+Authenticated independently from pool administrators.
+
+Platform credentials are configured through environment variables.
+
+---
+
+# 5. Authorization
+
+Permissions are role-based.
+
+## Participant
+
+Can:
+
+- Submit predictions
+- View standings
+- View history
+
+Cannot:
+
+- Modify results
+- Modify deadlines
+- Manage users
+
+---
+
+## Pool Administrator
+
+Can:
+
+- Manage one pool
+- Manage participants
+- Publish results
+- Configure tournaments
+
+Cannot:
+
+- Access platform administration
+
+---
+
+## Platform Administrator
+
+Has global visibility across all pools.
+
+---
+
+# 6. Routing
+
+Primary routes include:
+
+```
+/
+```
+
+Public landing page.
+
+```
+/crear
+```
+
+Create a new pool.
+
+```
+/q/:slug
+```
+
+Pool application.
+
+```
+/panel-plataforma
+```
+
+Private platform dashboard.
+
+---
+
+# 7. Data Flow
+
+Typical prediction flow:
+
+```
+Participant
+
+↓
+
+Frontend validation
+
+↓
+
+Backend validation
+
+↓
+
+Deadline verification
+
+↓
+
+Database
+
+↓
+
+Success response
+
+↓
+
+UI update
+```
+
+The backend always performs the final validation.
+
+---
+
+# 8. External Services
+
+## TheSportsDB
+
+Used for:
+
+- League teams
+- Fixture assistance
+- Result suggestions
+
+QRACKS remains functional even if TheSportsDB is temporarily unavailable.
+
+Manual administration is always possible.
+
+---
+
+# 9. Environment Variables
+
+Required:
+
+```
+DATABASE_URL
+PLATFORM_PASSWORD
+```
+
+Optional:
+
+```
+PORT
+PG_POOL_MAX
+```
+
+No secrets are stored inside the repository.
+
+---
+
+# 10. Performance Strategy
+
+Current optimization priorities:
+
+- PostgreSQL connection pooling
+- Cached league teams
+- Lightweight payloads
+- Efficient database queries
+- Minimize client-side rendering work
+
+Performance improvements must preserve readability.
+
+---
+
+# 11. Error Handling
+
+The backend validates:
+
+- Authentication
+- Permissions
+- Deadlines
+- Published state
+- Required fields
+
+The frontend displays friendly messages while the backend logs technical details.
+
+---
+
+# 12. Security
+
+Security priorities:
+
+- Hashed passwords
+- Hashed participant PINs
+- Server-side deadline validation
+- Role-based permissions
+- Session invalidation after PIN reset
+- Hidden predictions before publication
+
+QRACKS is designed for private prediction pools, not financial transactions.
+
+---
+
+# 13. Deployment
+
+Current hosting:
+
+- Render
+- PostgreSQL
+
+Deployment is fully environment-variable driven.
+
+No code changes should be required between local and production environments.
+
+---
+
+# 14. Technical Philosophy
+
+QRACKS intentionally favors a straightforward architecture.
+
+The objective is not to build the most complex system possible.
+
+The objective is to build software that is easy to understand, maintain, and improve over time.
+
+Every new component should justify its existence.
+
+Complexity must always be earned.
