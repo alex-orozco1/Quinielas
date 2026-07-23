@@ -398,11 +398,11 @@
   // Creating a brand-new quiniela — meta + platform_index entry — happens as a
   // single atomic operation on the server (see /api/create-quiniela). No
   // separate registration step, no window where one exists without the other.
-  async function apiCreateQuiniela({ slug, groupName, creatorName, contact, password }){
+  async function apiCreateQuiniela({ slug, groupName, creatorName, contact, password, sportsdbLeagueId }){
     try{
       const res = await fetch("/api/create-quiniela", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, groupName, creatorName, contact, password })
+        body: JSON.stringify({ slug, groupName, creatorName, contact, password, sportsdbLeagueId })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, ...data };
@@ -2356,7 +2356,14 @@
         : { matches: [blankMatch(), blankMatch()], deadline: "" };
       renderAdminRondas._draft = draft;
     }
-    const teamOptions = TEAMS.map(t=>`<option value="${esc(t)}">`).join("");
+    const leagueId = meta.settings.sportsdbLeagueId || "4350";
+    const leagueTeams = await fetchSportsdbTeams(leagueId);
+    // Only fall back to the static Liga MX list for Liga MX itself (today's
+    // historical default) — for any other league, an empty result means "we
+    // don't know this league's roster," not "show Liga MX teams instead."
+    // Typing a name by hand always works either way.
+    const teamOptions = (leagueTeams.length ? leagueTeams : (leagueId === "4350" ? TEAMS : []))
+      .map(t=>`<option value="${esc(t)}">`).join("");
 
     function matchRowHtml(m, idx){
       return `
@@ -2542,6 +2549,24 @@
     "Xolos": "Tijuana"
   };
   let sportsdbCache = null; // {leagueId, season, events}
+
+  let sportsdbTeamsCache = null; // {leagueId, teams}
+  async function fetchSportsdbTeams(leagueId){
+    if(!leagueId) return [];
+    if(sportsdbTeamsCache && sportsdbTeamsCache.leagueId === leagueId) return sportsdbTeamsCache.teams;
+    try{
+      const url = `https://www.thesportsdb.com/api/v1/json/123/lookup_all_teams.php?id=${encodeURIComponent(leagueId)}`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const teams = (data.teams || []).map(t => t.strTeam).filter(Boolean).sort((a,b) => a.localeCompare(b, "es"));
+      sportsdbTeamsCache = { leagueId, teams };
+      return teams;
+    }catch(e){
+      console.error("fetchSportsdbTeams failed", e);
+      return []; // writing a team name by hand always still works regardless
+    }
+  }
 
   async function fetchSportsdbSeason(leagueId, season){
     if(sportsdbCache && sportsdbCache.leagueId === leagueId && sportsdbCache.season === season) return sportsdbCache.events;
@@ -3064,6 +3089,10 @@
       btn.textContent = originalText;
     });
     document.getElementById("qz-save-settings").addEventListener("click", async () => {
+      const saveBtn = document.getElementById("qz-save-settings");
+      const originalLabel = saveBtn.textContent;
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Guardando…";
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
       const pppRaw = document.getElementById("qz-points-per-pick").value.trim();
@@ -3073,11 +3102,27 @@
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbCache = null;
-      const ok = await setMeta(meta);
-      if(ok && newOwnerPw) ownerPasswordCache = newOwnerPw; // keep future writes authenticated with the new one
-      delete meta.settings.ownerPassword; // never keep it around locally longer than the request needs
-      toast("✅ Listo, tus ajustes quedaron guardados.");
-      renderApp();
+      sportsdbTeamsCache = null; // league may have changed — next visit to Jornadas re-fetches its real roster
+      try{
+        const ok = await setMeta(meta);
+        delete meta.settings.ownerPassword; // never keep it around locally longer than the request needs
+        if(!ok){
+          saveBtn.disabled = false;
+          saveBtn.textContent = originalLabel;
+          toast("No se pudo guardar, intenta de nuevo");
+          return;
+        }
+        if(newOwnerPw) ownerPasswordCache = newOwnerPw; // keep future writes authenticated with the new one
+        saveBtn.textContent = "Guardado ✓";
+        toast("✅ Listo, tus ajustes quedaron guardados.");
+        setTimeout(() => { renderApp(); }, 600);
+      }catch(e){
+        console.error(e);
+        delete meta.settings.ownerPassword;
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalLabel;
+        toast("No se pudo guardar, intenta de nuevo");
+      }
     });
     document.getElementById("qz-close-tournament").addEventListener("click", async () => {
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
@@ -3273,7 +3318,7 @@
 
   // ---------- /crear : create a brand new, independent quiniela ----------
   async function renderCrear(){
-    const draft = renderCrear._draft || { groupName: "", creatorName: "", contact: "", slug: "", password: "", slugTouched: false };
+    const draft = renderCrear._draft || { groupName: "", creatorName: "", contact: "", slug: "", password: "", leagueId: "", slugTouched: false };
     renderCrear._draft = draft;
     const settings = await getPlatformSettings();
     root.innerHTML = `
@@ -3284,7 +3329,15 @@
           <div class="login-sub">Gratis las primeras ${settings.jornadaLimit} jornadas. Después, $${settings.pricePerParticipant} MXN por participante para toda la quiniela.</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
-          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando toque cobrar" value="${esc(draft.contact)}"></div>
+          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando sea momento de realizar el pago" value="${esc(draft.contact)}"></div>
+          <div class="field">
+            <label>Liga o competencia (opcional)</label>
+            <select id="qz-c-league">
+              <option value="">Sin definir por ahora</option>
+              ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${draft.leagueId === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
+            </select>
+            <p class="muted" style="margin-top:4px;">Sirve para sugerir nombres de equipos al crear jornadas — lo puedes cambiar después en Ajustes.</p>
+          </div>
           <div class="field">
             <label>Link de tu quiniela</label>
             <input type="text" id="qz-c-slug" placeholder="mi-quiniela" value="${esc(draft.slug)}">
@@ -3314,6 +3367,7 @@
     });
     document.getElementById("qz-c-creator").addEventListener("input", (e) => { draft.creatorName = e.target.value; });
     document.getElementById("qz-c-contact").addEventListener("input", (e) => { draft.contact = e.target.value; });
+    document.getElementById("qz-c-league").addEventListener("change", (e) => { draft.leagueId = e.target.value; });
     document.getElementById("qz-c-pass").addEventListener("input", (e) => { draft.password = e.target.value; });
 
     document.getElementById("qz-c-submit").addEventListener("click", async () => {
@@ -3331,7 +3385,7 @@
       statusEl.textContent = "Creando…";
       statusEl.style.color = "var(--ink-soft)";
       try{
-        const result = await apiCreateQuiniela({ slug, groupName, creatorName, contact, password });
+        const result = await apiCreateQuiniela({ slug, groupName, creatorName, contact, password, sportsdbLeagueId: draft.leagueId || undefined });
         if(!result.ok){
           statusEl.textContent = result.error === "slug_taken" ? "Ese link ya está en uso, prueba otro." : "No se pudo crear, intenta de nuevo.";
           statusEl.style.color = "var(--red)";
