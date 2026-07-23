@@ -2,7 +2,7 @@
 
 <img src="./public/logo.svg" alt="QRACKS logo" width="220" />
 
-# QRACKS
+# QRACKS ⚽
 
 **Sports prediction pools, made simple.**
 
