@@ -601,6 +601,17 @@
       return { ok: res.ok, ...data };
     }catch(e){ console.error("apiSelfRegister failed", e); return { ok: false }; }
   }
+  async function apiSubmitBetAnswer(participantId, betId, guess){
+    try{
+      const headers = { "Content-Type": "application/json" };
+      if(currentUserPinCache) headers["X-Qracks-Auth"] = currentUserPinCache;
+      const res = await fetch("/api/submit-bet-answer", {
+        method: "POST", headers, credentials: "same-origin",
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, betId, guess })
+      });
+      return res.ok;
+    }catch(e){ console.error("apiSubmitBetAnswer failed", e); return false; }
+  }
 
   // ---------- app state ----------
   let meta = null;
@@ -915,7 +926,7 @@
 
   function previousRanks(){
     const published = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>a.number-b.number);
-    if(published.length < 1) return null;
+    if(published.length < 2) return null;
     const lastId = published[published.length-1].id;
     const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
     const prev = meta.participants.map(p => {
@@ -1285,11 +1296,15 @@
         const betId = btn.dataset.cbSave;
         const val = document.getElementById("qz-cb-input-" + betId).value.trim();
         if(!val){ toast("Escribe una respuesta"); return; }
-        if(!currentUser.customBetAnswers) currentUser.customBetAnswers = {};
-        const prev = currentUser.customBetAnswers[betId];
-        currentUser.customBetAnswers[betId] = { guess: val, correct: prev ? prev.correct : null };
-        const ok = await setMeta(meta);
+        btn.disabled = true;
+        const ok = await apiSubmitBetAnswer(currentUser.id, betId, val);
+        if(ok){
+          if(!currentUser.customBetAnswers) currentUser.customBetAnswers = {};
+          const prev = currentUser.customBetAnswers[betId];
+          currentUser.customBetAnswers[betId] = { guess: val, correct: prev ? prev.correct : null };
+        }
         toast(ok ? "✅ Listo, tu respuesta quedó guardada." : "No se pudo guardar, intenta de nuevo");
+        btn.disabled = false;
       });
     });
     root.querySelectorAll("[data-jf]").forEach(btn => {
@@ -1557,7 +1572,7 @@
     const hasScoredResults = meta.rounds.some(r => r.resultsPublished);
     main.innerHTML = `
       ${screenHeaderHtml("tabla", "Tabla de posiciones", `
-        <button class="btn btn-gold btn-sm" id="qz-share-card">📸 Imagen de la tabla</button>
+        ${hasScoredResults ? `<button class="btn btn-gold btn-sm" id="qz-share-card">📸 Compartir posiciones</button>` : ``}
         <button class="btn btn-ghost btn-sm" id="qz-export">⬇ Excel</button>
       `)}
       <div class="card">
@@ -1600,7 +1615,8 @@
     `;
     wireScreenHeader(main, "tabla");
     document.getElementById("qz-export").addEventListener("click", exportExcel);
-    document.getElementById("qz-share-card").addEventListener("click", () => shareResultsCard(list));
+    const shareBtn = document.getElementById("qz-share-card");
+    if(shareBtn) shareBtn.addEventListener("click", () => shareResultsCard(list));
     renderProgressChart(list);
   }
 
@@ -2550,21 +2566,64 @@
   };
   let sportsdbCache = null; // {leagueId, season, events}
 
+  // TheSportsDB's supported way to list a league's teams is by league NAME,
+  // not its numeric id (lookup_all_teams.php?id= isn't the right endpoint for
+  // this and shouldn't be relied on) — these are the exact name strings their
+  // API expects for each league we support.
+  const SPORTSDB_LEAGUE_NAMES = {
+    "4350": "Liga MX",
+    "4328": "English Premier League",
+    "4335": "Spanish La Liga",
+    "4331": "German Bundesliga",
+    "4332": "Italian Serie A",
+    "4334": "French Ligue 1",
+    "4480": "UEFA Champions League"
+  };
+  // Local roster used whenever the API is unreachable or returns something we
+  // can't trust — one per supported league, not just Liga MX, so every league
+  // degrades gracefully instead of only the default one.
+  const SPORTSDB_FALLBACK_TEAMS = {
+    "4350": ["América","Atlante","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"],
+    "4328": ["Arsenal","Aston Villa","Bournemouth","Brentford","Brighton and Hove Albion","Chelsea","Crystal Palace","Everton","Fulham","Liverpool","Manchester City","Manchester United","Newcastle United","Nottingham Forest","Tottenham Hotspur","West Ham United","Wolverhampton Wanderers"],
+    "4335": ["Real Madrid","Barcelona","Atlético Madrid","Sevilla","Real Sociedad","Real Betis","Villarreal","Athletic Bilbao","Valencia","Celta Vigo","Girona","Osasuna"],
+    "4331": ["Bayern Munich","Borussia Dortmund","RB Leipzig","Bayer Leverkusen","Eintracht Frankfurt","Borussia Monchengladbach","Wolfsburg","Freiburg","Union Berlin","Stuttgart"],
+    "4332": ["Juventus","Inter Milan","AC Milan","Napoli","Roma","Lazio","Atalanta","Fiorentina","Torino","Bologna"],
+    "4334": ["Paris Saint-Germain","Marseille","Lyon","Monaco","Lille","Nice","Rennes","Lens","Toulouse"],
+    "4480": ["Real Madrid","Bayern Munich","Manchester City","Paris Saint-Germain","Barcelona","Liverpool","Juventus","Inter Milan","Borussia Dortmund","Manchester United"]
+  };
+
   let sportsdbTeamsCache = null; // {leagueId, teams}
   async function fetchSportsdbTeams(leagueId){
     if(!leagueId) return [];
     if(sportsdbTeamsCache && sportsdbTeamsCache.leagueId === leagueId) return sportsdbTeamsCache.teams;
+    const fallback = SPORTSDB_FALLBACK_TEAMS[leagueId] || [];
+    const leagueName = SPORTSDB_LEAGUE_NAMES[leagueId];
+    if(!leagueName){
+      // A league id we don't have a name mapping for — nothing to query by
+      // name, so go straight to whatever local fallback exists (if any).
+      sportsdbTeamsCache = { leagueId, teams: fallback };
+      return fallback;
+    }
     try{
-      const url = `https://www.thesportsdb.com/api/v1/json/123/lookup_all_teams.php?id=${encodeURIComponent(leagueId)}`;
+      const url = `https://www.thesportsdb.com/api/v1/json/123/search_all_teams.php?l=${encodeURIComponent(leagueName)}`;
       const res = await fetch(url);
       if(!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
-      const teams = (data.teams || []).map(t => t.strTeam).filter(Boolean).sort((a,b) => a.localeCompare(b, "es"));
+      if(!data || !Array.isArray(data.teams)) throw new Error("respuesta sin lista de equipos");
+      // Belt-and-suspenders: only keep teams the API itself tags as belonging
+      // to the league we asked about — a name search can occasionally surface
+      // near-matches from a differently-numbered league.
+      const teams = data.teams
+        .filter(t => t && t.strTeam && String(t.idLeague) === String(leagueId))
+        .map(t => t.strTeam)
+        .sort((a,b) => a.localeCompare(b, "es"));
+      if(!teams.length) throw new Error("ningún equipo válido para esta liga");
       sportsdbTeamsCache = { leagueId, teams };
       return teams;
     }catch(e){
-      console.error("fetchSportsdbTeams failed", e);
-      return []; // writing a team name by hand always still works regardless
+      console.error("fetchSportsdbTeams failed, usando respaldo local", e);
+      sportsdbTeamsCache = { leagueId, teams: fallback };
+      return fallback;
     }
   }
 
@@ -3429,13 +3488,39 @@
       const effectiveJornadaLimit = (q.customJornadaLimit !== undefined && q.customJornadaLimit !== null) ? q.customJornadaLimit : settings.jornadaLimit;
       // Counts now live on the index entry itself (kept fresh whenever that
       // quiniela's own meta is saved) — no need to fetch each quiniela's full
-      // meta just to read two numbers. Quinielas saved before this existed
-      // simply show "—" until the next time they're saved.
+      // meta just to read two numbers.
       const count = q.participantCount != null ? q.participantCount : null;
       const roundCount = q.roundCount != null ? q.roundCount : null;
       return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, roundCount, effectiveJornadaLimit, overThreshold: (roundCount || 0) >= effectiveJornadaLimit };
     });
-    rows.sort((a,b) => (b.count||0) - (a.count||0));
+
+    // Self-heal: a quiniela saved before this feature existed shows "?" the
+    // first time — but the real numbers ARE one fetch away, so fetch them
+    // right here instead of leaving it stuck at "?" until someone happens to
+    // save that specific quiniela later. Only the entries that actually need
+    // it, not every quiniela on every dashboard load — this is what keeps it
+    // from reintroducing the N+1 pattern this feature was built to remove.
+    const needsBackfill = rows.filter(r => r.count === null || r.roundCount === null);
+    if(needsBackfill.length){
+      let indexChanged = false;
+      await Promise.all(needsBackfill.map(async (r) => {
+        try{
+          const fresh = await kvGet(metaKeyFor(r.slug), { platform: platformPasswordCache });
+          if(!fresh.found) return;
+          const realCount = Array.isArray(fresh.value.participants) ? fresh.value.participants.length : 0;
+          const realRounds = Array.isArray(fresh.value.rounds) ? fresh.value.rounds.length : 0;
+          r.count = realCount;
+          r.roundCount = realRounds;
+          r.overThreshold = realRounds >= r.effectiveJornadaLimit;
+          const entry = idx.quinielas.find(q => q.slug === r.slug);
+          if(entry){ entry.participantCount = realCount; entry.roundCount = realRounds; indexChanged = true; }
+        }catch(e){ console.error("backfill de conteo falló para", r.slug, e); }
+      }));
+      if(indexChanged) setPlatformIndex(idx); // fire-and-forget — never persisted again after this
+      rows.sort((a,b) => (b.count||0) - (a.count||0));
+    } else {
+      rows.sort((a,b) => (b.count||0) - (a.count||0));
+    }
 
     const paymentLog = await getPlatformPaymentLog();
     const totalCollected = paymentLog.payments.reduce((sum, p) => sum + (p.amount || 0), 0);
@@ -3450,9 +3535,10 @@
 
     function statusBadge(q){
       if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
-      if(!q.overThreshold) return `<span class="badge paid">🟢 Jornada ${q.roundCount ?? 0}/${q.effectiveJornadaLimit}</span>`;
+      if(q.roundCount === null) return `<span class="badge">— Sin datos todavía</span>`;
+      if(!q.overThreshold) return `<span class="badge paid">🟢 Jornada ${q.roundCount}/${q.effectiveJornadaLimit}</span>`;
       if(q.paid) return `<span class="badge paid">✅ Pagado</span>`;
-      return `<span class="badge unpaid">🟡 Cobrar $${settings.pricePerParticipant * q.count} MXN</span>`;
+      return `<span class="badge unpaid">🟡 Cobrar $${settings.pricePerParticipant * (q.count || 0)} MXN</span>`;
     }
 
     const editingSlug = renderPlatformDashboard._editingSlug || null;
