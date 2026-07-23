@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./public/logo.svg" alt="QRACKS logo" width="220" />
+  <img src="public/logo.svg" alt="QRACKS logo" width="220" />
 
   <p><strong>Sports prediction pools, made simple.</strong></p>
 
