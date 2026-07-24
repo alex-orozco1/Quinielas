@@ -477,19 +477,45 @@ function isAuthenticatedAsParticipant(participant, providedAuth) {
   return !!(participant && participant.pin && verifyPassword(providedAuth, participant.pin));
 }
 
-async function filterPicksForRequest(req, info, picksValue, preloadedMeta) {
+// Who is asking — computed ONCE per request. Figuring this out involves
+// comparing a PIN against scrypt hashes, which is deliberately slow (that's
+// what makes brute-forcing a PIN impractical) — fine to pay once per request,
+// very much not fine to pay once per participant being filtered in a batch
+// (that's what made picks-batch scale linearly with participant count instead
+// of being flat).
+function computeRequesterIdentity(req, slug, meta) {
+  // Cheapest path: a valid session cookie already names the exact participant
+  // — no password comparison needed at all.
+  const session = readSessionFromCookie(req, slug);
+  if (session) {
+    const p = (meta.participants || []).find((x) => x.id === session.participantId);
+    if (p && session.pinFp === pinFingerprint(p.pin)) {
+      return { isAdminOrOwner: !!p.isAdmin, selfParticipantIds: new Set([p.id]) };
+    }
+  }
+  const providedAuth = req.get("x-qracks-auth") || "";
+  let isAdminOrOwner = !!(meta.settings && verifyPassword(providedAuth, meta.settings.ownerPassword));
+  // One pass over every participant, not one pass per participant being
+  // filtered. Two different participants could coincidentally share the same
+  // 4-digit PIN, so every match is recorded — not just the first one found —
+  // to match the exact semantics the old per-participant checks had.
+  const selfParticipantIds = new Set();
+  (meta.participants || []).forEach((p) => {
+    if (p.pin && verifyPassword(providedAuth, p.pin)) {
+      selfParticipantIds.add(p.id);
+      if (p.isAdmin) isAdminOrOwner = true;
+    }
+  });
+  return { isAdminOrOwner, selfParticipantIds };
+}
+
+async function filterPicksForRequest(req, info, picksValue, preloadedMeta, requesterIdentity) {
   const meta = preloadedMeta || await getRow(info.metaKey);
   if (!meta) return picksValue;
-  const providedAuth = req.get("x-qracks-auth") || "";
-  const participant = (meta.participants || []).find((p) => p.id === info.participantId);
+  const identity = requesterIdentity || computeRequesterIdentity(req, info.slug, meta);
+  const { isAdminOrOwner, selfParticipantIds } = identity;
 
-  const isSelf = isAuthenticatedAsParticipantReq(req, info.slug, participant);
-  if (isSelf) return picksValue; // only the participant sees their own open-round answers
-
-  const isOwner = meta.settings && verifyPassword(providedAuth, meta.settings.ownerPassword);
-  const isAdminOrOwner = isOwner || (meta.participants || []).some(
-    (p) => p.isAdmin && p.pin && isAuthenticatedAsParticipantReq(req, info.slug, p)
-  );
+  if (selfParticipantIds.has(info.participantId)) return picksValue; // only the participant sees their own open-round answers
 
   const now = Date.now();
   const openRoundIds = new Set(
@@ -527,14 +553,14 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta) {
 // passed — including a round that's missing from the new value entirely
 // (deleting/omitting a closed round's picks is exactly as forbidden as
 // editing them, so this compares the UNION of old and new round ids).
-async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta) {
+async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta, nowMs) {
   const meta = preloadedMeta !== undefined ? preloadedMeta : await getRow(info.metaKey);
   if (!meta) return { ok: true };
   const roundsById = {};
   (meta.rounds || []).forEach((r) => { roundsById[r.id] = r; });
   const old = oldValue || {};
   const fresh = newValue || {};
-  const now = Date.now();
+  const now = nowMs != null ? nowMs : Date.now();
   const allRoundIds = new Set([...Object.keys(old), ...Object.keys(fresh)]);
   for (const roundId of allRoundIds) {
     const round = roundsById[roundId];
@@ -688,6 +714,12 @@ app.post("/api/picks-batch", async (req, res) => {
     const rowByKey = {};
     r.rows.forEach((row) => { rowByKey[row.key] = row.value; });
 
+    // The whole reason this used to be slow: this used to be recomputed
+    // (with several scrypt comparisons) inside the loop below, once per
+    // participant. Same requester for the whole request, so it only needs
+    // to be figured out once.
+    const requesterIdentity = computeRequesterIdentity(req, slug, meta);
+
     for (const pid of requestedIds) {
       const key = slug ? `quiniela:${slug}:picks:${pid}` : `quiniela_picks_${pid}_v1`;
       const raw = rowByKey[key];
@@ -695,11 +727,59 @@ app.post("/api/picks-batch", async (req, res) => {
       // slug/pid/metaKey are already known here — building info directly skips
       // re-parsing the key we just built with classifyKey's regex, N times.
       const info = { kind: "picks", metaKey, participantId: pid, slug: slug || undefined };
-      picks[pid] = await filterPicksForRequest(req, info, raw, meta);
+      picks[pid] = await filterPicksForRequest(req, info, raw, meta, requesterIdentity);
     }
     res.json({ ok: true, picks });
   } catch (err) {
     console.error("picks-batch failed", err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// A season-long custom bet answer ("¿quién será el goleador?") is the
+// participant's own guess, same spirit as a match pick — but it lives inside
+// meta.participants[].customBetAnswers, and the generic meta write endpoint
+// only ever accepted admin/owner credentials. That silently meant a regular
+// participant could never actually save their own answer. This is the narrow,
+// participant-authenticated write path picks already had, extended to cover
+// this one field too — nothing else in meta is touched or even readable here.
+app.post("/api/submit-bet-answer", async (req, res) => {
+  try {
+    const { metaKey, participantId, betId, guess } = req.body || {};
+    if (!metaKey || !participantId || !betId || typeof guess !== "string" || !guess.trim()) {
+      return res.status(400).json({ error: "invalid_params" });
+    }
+    const cleanGuess = guess.trim().slice(0, 200);
+    let slug = null;
+    if (metaKey !== "quiniela_meta_v1") {
+      const m = metaKey.match(/^quiniela:([a-z0-9-]{1,60}):meta$/);
+      if (!m) return res.status(400).json({ error: "invalid_metaKey" });
+      slug = m[1];
+    }
+    const value = await getRow(metaKey);
+    if (!value) return res.status(404).json({ error: "not_found" });
+    const participant = (value.participants || []).find((p) => p.id === participantId);
+    if (!participant) return res.status(404).json({ error: "participant_not_found" });
+    if (!isAuthenticatedAsParticipantReq(req, slug, participant)) {
+      return res.status(403).json({ error: "unauthorized" });
+    }
+    const bet = (value.customBets || []).find((b) => b.id === betId && b.scope === "temporada");
+    if (!bet) return res.status(404).json({ error: "bet_not_found" });
+    // Same lock rule the UI already shows (bet closes when its linked round's
+    // deadline passes) — enforced here too, not just hidden in the frontend.
+    if (bet.closesAtRound) {
+      const closingRound = (value.rounds || []).find((r) => r.number === bet.closesAtRound);
+      if (closingRound && Date.now() > new Date(closingRound.deadline).getTime()) {
+        return res.status(403).json({ error: "bet_locked" });
+      }
+    }
+    if (!participant.customBetAnswers) participant.customBetAnswers = {};
+    const prevCorrect = participant.customBetAnswers[betId] ? participant.customBetAnswers[betId].correct : null;
+    participant.customBetAnswers[betId] = { guess: cleanGuess, correct: prevCorrect };
+    await putRow(metaKey, value);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("submit-bet-answer failed", err);
     res.status(500).json({ error: "server_error" });
   }
 });
@@ -742,22 +822,44 @@ app.post("/api/kv/:key", async (req, res) => {
       const roundsCheck = validateRoundsIntegrity(finalValue);
       if (!roundsCheck.ok) return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
     } else if (info.kind === "picks") {
-      const oldPicks = await getRow(req.params.key);
-      const metaValue = await getRow(info.metaKey);
-      if (metaValue) {
-        const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
-        if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
-          // No PIN yet? They need to activate one first via /api/set-pin — a
-          // public request (with or without a guessed PIN) can't read or write
-          // picks just because a PIN hasn't been set.
-          return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
+      // SEC-001 — Atomic Round Lock: previously, reading the meta (to check the
+      // deadline) and writing the picks were two separate, unlocked operations,
+      // with a real gap between them. In that gap, a concurrent request — a
+      // second pick attempt, or an admin closing/editing the round — could
+      // change what "the deadline" means, and this write would never notice.
+      // Locking the meta row for the whole check-then-write, inside one
+      // transaction, closes that gap: any other request touching the same
+      // quiniela's meta has to wait its turn. Postgres's own clock is the time
+      // source (not the Node process's), read from inside the same
+      // transaction, so it can't be fooled by drift or a slow event loop.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const metaValue = await getRowLocked(info.metaKey, client);
+        if (metaValue) {
+          const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
+          if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
+          }
         }
+        const oldPicks = await getRowLocked(req.params.key, client);
+        const nowRow = await client.query("SELECT NOW() as now");
+        const dbNowMs = nowRow.rows[0].now.getTime();
+        const deadlineCheck = await validatePicksDeadline(info, oldPicks, value, metaValue, dbNowMs);
+        if (!deadlineCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "round_locked" });
+        }
+        await putRow(req.params.key, value, client);
+        await client.query("COMMIT");
+        return res.json({ key: req.params.key, ok: true });
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
       }
-      // metaValue missing entirely is a bootstrap edge case (shouldn't happen in
-      // practice since quinielas are always created before anyone can vote) — no
-      // meta means no rounds to validate deadlines against either, so it's a no-op.
-      const deadlineCheck = await validatePicksDeadline(info, oldPicks, value, metaValue);
-      if (!deadlineCheck.ok) return res.status(403).json({ error: "round_locked" });
     }
 
     await putRow(req.params.key, finalValue);
