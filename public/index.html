@@ -132,6 +132,21 @@
     background:var(--red); margin-left:5px; vertical-align:middle;
   }
   #quiniela-root .qz-tab + .qz-tab{ margin-left:14px; }
+  /* UX-001: with the scrollbar hidden above, this is the only cue that a tab
+     bar has more tabs off-screen — a soft fade at whichever edge still has
+     content, toggled by wireTabScrollFade() below. */
+  #quiniela-root .qz-tabs.qz-has-more-right{
+    mask-image: linear-gradient(to right, black calc(100% - 22px), transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 22px), transparent 100%);
+  }
+  #quiniela-root .qz-tabs.qz-has-more-left{
+    mask-image: linear-gradient(to left, black calc(100% - 22px), transparent 100%);
+    -webkit-mask-image: linear-gradient(to left, black calc(100% - 22px), transparent 100%);
+  }
+  #quiniela-root .qz-tabs.qz-has-more-left.qz-has-more-right{
+    mask-image: linear-gradient(to right, transparent 0%, black 22px, black calc(100% - 22px), transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, black 22px, black calc(100% - 22px), transparent 100%);
+  }
 
   #quiniela-root .qz-main{ max-width:760px; margin:0 auto; padding:20px 16px 80px; }
 
@@ -764,6 +779,9 @@
       t = document.createElement("div");
       t.id = "qz-toast";
       t.className = "toast";
+      t.setAttribute("role", "status");
+      t.setAttribute("aria-live", "polite");
+      t.setAttribute("aria-atomic", "true");
       root.appendChild(t);
     }
     t.textContent = msg;
@@ -779,6 +797,21 @@
   // `if(!(await qzConfirm(msg)))`. Message formatting matches what the old
   // confirm() strings already used: "\n\n" separates paragraphs, a single
   // "\n" is a line break within one.
+  // UX-001: makes an overflowing tab bar's remaining content discoverable
+  // (the scrollbar itself is deliberately hidden above) and keeps it in sync
+  // as someone scrolls it manually.
+  function wireTabScrollFade(el){
+    if(!el) return;
+    const update = () => {
+      const hasMoreRight = el.scrollWidth - el.scrollLeft - el.clientWidth > 4;
+      const hasMoreLeft = el.scrollLeft > 4;
+      el.classList.toggle("qz-has-more-right", hasMoreRight);
+      el.classList.toggle("qz-has-more-left", hasMoreLeft);
+    };
+    update();
+    el.addEventListener("scroll", update);
+  }
+
   function qzConfirm(message, opts){
     opts = opts || {};
     const destructive = opts.destructive !== false; // most of what this guards is destructive by default
@@ -941,7 +974,7 @@
         <span class="display">${esc(title)}</span>
         <div style="display:flex;gap:6px;align-items:center;">
           ${extraButtonsHtml || ""}
-          <button class="btn btn-ghost btn-sm" data-help-btn="${tabId}" title="Ver consejos" style="border-radius:50%;width:30px;height:30px;padding:0;font-size:15px;">💡</button>
+          <button class="btn btn-ghost btn-sm" data-help-btn="${tabId}" title="Ver consejos" aria-label="Ver consejos de esta pantalla" style="border-radius:50%;width:30px;height:30px;padding:0;font-size:15px;"><span aria-hidden="true">💡</span></button>
         </div>
       </div>
       ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:14px;">${esc(intro)}</p>` : ``}
@@ -1414,11 +1447,14 @@
       toast("✅ Listo, tu PIN quedó actualizado.");
     });
     root.querySelectorAll(".qz-tab").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         activeTab = btn.dataset.tab;
-        render();
+        await render();
+        const newActive = root.querySelector(`.qz-tab[data-tab="${activeTab}"]`);
+        if(newActive) newActive.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
       });
     });
+    wireTabScrollFade(root.querySelector(".qz-tabs"));
     const main = document.getElementById("qz-main");
     if(activeTab === "jornada") renderJornada(main);
     else if(activeTab === "tabla") renderTabla(main);
@@ -1505,7 +1541,7 @@
         </div>
       `;
       }).join("")}
-      <div class="qz-tabs" style="margin-bottom:14px;">
+      <div class="qz-tabs" id="qz-jornada-filters" style="margin-bottom:14px;">
         ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
       </div>
       <div id="qz-jornada-list"></div>
@@ -1536,8 +1572,14 @@
       });
     });
     root.querySelectorAll("[data-jf]").forEach(btn => {
-      btn.addEventListener("click", () => { jornadaFilter = btn.dataset.jf; renderJornada(main); });
+      btn.addEventListener("click", () => {
+        jornadaFilter = btn.dataset.jf;
+        renderJornada(main);
+        const newActive = document.querySelector(`[data-jf="${jornadaFilter}"]`);
+        if(newActive) newActive.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      });
     });
+    wireTabScrollFade(document.getElementById("qz-jornada-filters"));
 
     const list = document.getElementById("qz-jornada-list");
     const rounds = meta.rounds.filter(r => classifyRound(r) === jornadaFilter).slice().sort((a,b)=>a.number-b.number);
@@ -2206,7 +2248,7 @@
     main.innerHTML = `
       ${screenHeaderHtml("admin", "Panel de administración")}
       <div id="qz-payment-banner"></div>
-      <div class="qz-tabs" style="margin-bottom:14px;">
+      <div class="qz-tabs" id="qz-admin-subtabs" style="margin-bottom:14px;">
         ${subtabs.map(t=>`<button class="qz-tab" style="color:${t.id===adminSubTab?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${t.id===adminSubTab?'var(--gold)':'transparent'};" data-sub="${t.id}">${t.label}</button>`).join("")}
       </div>
       <div id="qz-admin-body"></div>
@@ -2214,8 +2256,14 @@
     wireScreenHeader(main, "admin");
     if(ROUTE === "quiniela" && SLUG) renderPaymentBanner();
     root.querySelectorAll("[data-sub]").forEach(btn => {
-      btn.addEventListener("click", () => { adminSubTab = btn.dataset.sub; renderAdmin(main); });
+      btn.addEventListener("click", () => {
+        adminSubTab = btn.dataset.sub;
+        renderAdmin(main);
+        const newActive = document.querySelector(`[data-sub="${adminSubTab}"]`);
+        if(newActive) newActive.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      });
     });
+    wireTabScrollFade(document.getElementById("qz-admin-subtabs"));
     const body = document.getElementById("qz-admin-body");
     if(adminSubTab==="rondas") renderAdminRondas(body);
     else if(adminSubTab==="resultados") renderAdminResultados(body);
