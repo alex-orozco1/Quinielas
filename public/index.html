@@ -131,7 +131,9 @@
     display:inline-block; width:8px; height:8px; border-radius:50%;
     background:var(--red); margin-left:5px; vertical-align:middle;
   }
+  #quiniela-root .qz-help-btn{ width:30px; height:30px; flex-shrink:0; }
   #quiniela-root .qz-tab + .qz-tab{ margin-left:14px; }
+
   /* UX-001: with the scrollbar hidden above, this is the only cue that a tab
      bar has more tabs off-screen — a soft fade at whichever edge still has
      content, toggled by wireTabScrollFade() below. */
@@ -360,6 +362,9 @@
     #quiniela-root .name-grid{ grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); }
     #quiniela-root .clock-seg{ min-width:46px; padding:6px 8px; }
     #quiniela-root .clock-seg .num{ font-size:20px; }
+    #quiniela-root .qz-tab{ min-height:44px; display:inline-flex; align-items:center; }
+    #quiniela-root .qz-help-btn{ width:44px; height:44px; font-size:18px; }
+    #quiniela-root .section-title{ flex-wrap:wrap; row-gap:8px; }
   }
 </style>
 
@@ -547,12 +552,6 @@
     });
     return res.ok;
   }
-  async function kvDelete(key, creds){
-    const headers = {};
-    if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
-    const res = await fetch("/api/kv/" + encodeURIComponent(key), { method: "DELETE", headers });
-    return res.ok;
-  }
   // getMeta: returns the saved meta, or null if it genuinely doesn't exist yet.
   // Throws (does NOT return null) if the request itself failed — callers must
   // handle that separately and must not initialize fresh data in that case.
@@ -596,12 +595,6 @@
       const r = await kvGet(currentPicksKey(pid), creds);
       return r.found ? r.value : {};
     }catch(e){ console.error("getPicks failed", e); return {}; }
-  }
-  async function setPicks(pid, data){
-    try{
-      const creds = { owner: currentUserPinCache };
-      return await kvSet(currentPicksKey(pid), data, creds);
-    }catch(e){ console.error("save picks failed", e); return false; }
   }
   async function setPicksWithError(pid, data){
     try{
@@ -766,7 +759,7 @@
   let activeTab = "jornada";
   let adminSubTab = "rondas";
   let ownerUnlocked = false;
-  let loadingAllPicks = false;
+  let allPicksLoadInFlight = null;
   let jornadaFilter = "porjugar"; // porjugar | envivo | jugados
   let chartSelectedIds = null; // set on first chart render (top 5)
   const CHART_COLORS = ["#E3B23C","#2D6A4F","#C1443A","#3A6EA5","#8E44AD","#D2691E","#16A085","#B8860B","#7f8c8d","#E75480"];
@@ -974,7 +967,7 @@
         <span class="display">${esc(title)}</span>
         <div style="display:flex;gap:6px;align-items:center;">
           ${extraButtonsHtml || ""}
-          <button class="btn btn-ghost btn-sm" data-help-btn="${tabId}" title="Ver consejos" aria-label="Ver consejos de esta pantalla" style="border-radius:50%;width:30px;height:30px;padding:0;font-size:15px;"><span aria-hidden="true">💡</span></button>
+          <button class="btn btn-ghost btn-sm qz-help-btn" data-help-btn="${tabId}" title="Ver consejos" aria-label="Ver consejos de esta pantalla" style="border-radius:50%;padding:0;font-size:15px;"><span aria-hidden="true">💡</span></button>
         </div>
       </div>
       ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:14px;">${esc(intro)}</p>` : ``}
@@ -1050,23 +1043,28 @@
   // when acting as admin) — the server applies the identical per-participant
   // visibility rules either way, so callers see no difference at all.
   async function ensureAllPicksLoaded(){
-    if(loadingAllPicks) return;
-    loadingAllPicks = true;
+    if(allPicksLoadInFlight) return allPicksLoadInFlight;
+    allPicksLoadInFlight = (async () => {
+      try{
+        const isAdmin = !!(currentUser && currentUser.isAdmin);
+        const cred = isAdmin ? adminOrOwnerCred() : currentUserPinCache;
+        const headers = { "Content-Type": "application/json" };
+        if(cred) headers["X-Qracks-Auth"] = cred;
+        const res = await fetch("/api/picks-batch", {
+          method: "POST", headers, credentials: "same-origin",
+          body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
+        });
+        allPicksCache = res.ok ? (await res.json()).picks || {} : {};
+      }catch(e){
+        console.error("ensureAllPicksLoaded (batch) failed", e);
+        allPicksCache = {};
+      }
+    })();
     try{
-      const isAdmin = !!(currentUser && currentUser.isAdmin);
-      const cred = isAdmin ? adminOrOwnerCred() : currentUserPinCache;
-      const headers = { "Content-Type": "application/json" };
-      if(cred) headers["X-Qracks-Auth"] = cred;
-      const res = await fetch("/api/picks-batch", {
-        method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
-      });
-      allPicksCache = res.ok ? (await res.json()).picks || {} : {};
-    }catch(e){
-      console.error("ensureAllPicksLoaded (batch) failed", e);
-      allPicksCache = {};
+      return await allPicksLoadInFlight;
+    }finally{
+      allPicksLoadInFlight = null;
     }
-    loadingAllPicks = false;
   }
 
   // ---------- casuísticas / apuestas personalizadas (motor genérico) ----------
@@ -1448,6 +1446,7 @@
     });
     root.querySelectorAll(".qz-tab").forEach(btn => {
       btn.addEventListener("click", async () => {
+        if(clockInterval){ clearInterval(clockInterval); clockInterval = null; }
         activeTab = btn.dataset.tab;
         await render();
         const newActive = root.querySelector(`.qz-tab[data-tab="${activeTab}"]`);
@@ -1850,6 +1849,7 @@
         </div>
       ` : `
       <div class="card" style="padding:8px 12px;">
+        <div style="overflow-x:auto;">
         <table>
           <thead><tr><th style="text-align:center;">#</th><th></th><th>Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th><th style="text-align:center;">Pagó</th></tr></thead>
           <tbody>
@@ -1865,6 +1865,7 @@
             `).join("")}
           </tbody>
         </table>
+        </div>
       </div>
       <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente · ▲▼ = movimiento desde la jornada pasada</p>
       `}
@@ -3265,6 +3266,7 @@
         <button class="btn btn-gold" id="qz-bulk-add" style="margin-top:4px;">+ Agregar a todos</button>
       </div>
       <div class="card" style="padding:8px 12px;">
+        <div style="overflow-x:auto;">
         <table>
           <thead><tr><th>Nombre</th><th style="text-align:center;">Admin</th><th style="text-align:center;">Pagó</th><th style="text-align:center;">PIN</th><th style="text-align:center;"></th></tr></thead>
           <tbody>
@@ -3279,6 +3281,7 @@
             `).join("")}
           </tbody>
         </table>
+        </div>
       </div>
       <p class="muted">Solo el dueño puede quitarle el permiso de admin a alguien más — desde <strong>Admin → Ajustes</strong> si esta casilla no responde.</p>
       <p class="muted">Si alguien olvida su PIN, dale "Resetear" — la próxima vez que toque su nombre podrá poner uno nuevo.</p>
