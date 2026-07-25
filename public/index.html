@@ -368,92 +368,381 @@
     #quiniela-root .section-title{ flex-wrap:wrap; row-gap:8px; }
   }
 
-  /* ---------- Marketing Hero (renderHome) ----------
-     Everything here is prefixed qz-hero- on purpose, so nothing collides
-     with the app's own generic classes (.hero, .btn, .brand, .stage, img
-     are all already used elsewhere for other things). Reuses the app's
-     existing .btn / .btn-gold / .display utilities directly instead of
-     redefining them. */
+
+  /* ---------- Marketing Hero (renderHome) ---------- */
   #quiniela-root .qz-hero-section{
     position:relative;
+    min-height:100vh;
+    min-height:100svh;
+    overflow:hidden;
     background:
-      radial-gradient(ellipse 780px 620px at 76% 42%, rgba(45,106,79,0.5) 0%, transparent 60%),
-      linear-gradient(180deg, var(--pitch-dark) 0%, var(--pitch) 58%, var(--pitch) 74%, var(--chalk) 100%);
-    padding:28px 6vw 0; overflow:hidden;
+      radial-gradient(ellipse 680px 520px at 76% 48%, rgba(45,106,79,.42), transparent 62%),
+      linear-gradient(180deg, var(--pitch-dark), var(--pitch));
   }
-  #quiniela-root .qz-hero-nav{
-    display:flex; align-items:center; justify-content:space-between;
-    max-width:1180px; margin:0 auto; padding-bottom:34px; position:relative; z-index:2;
-  }
-  #quiniela-root .qz-hero-brand{ display:flex; align-items:center; gap:10px; }
-  #quiniela-root .qz-hero-brand-icon{ height:30px; width:auto; display:block; }
-  #quiniela-root .qz-hero-brand-word{ font-weight:800; font-size:17px; letter-spacing:0.08em; color:var(--gold); }
-  #quiniela-root .qz-hero-nav-link{
-    border:1.5px solid rgba(247,245,236,0.3); color:var(--chalk);
-    background:transparent; border-radius:10px; padding:9px 18px;
-    font-weight:600; font-size:13.5px; text-decoration:none;
-  }
-  #quiniela-root .qz-hero-grid{
-    max-width:1180px; margin:0 auto; position:relative; z-index:2;
-    display:grid; grid-template-columns:1fr 1fr; gap:40px; align-items:center;
-  }
-  #quiniela-root .qz-hero-copy{ padding-bottom:56px; }
-  #quiniela-root .qz-hero-headline{ color:var(--chalk); font-size:44px; line-height:1.12; margin:0 0 18px; }
-  #quiniela-root .qz-hero-sub{
-    color:rgba(247,245,236,0.78); font-size:17px; line-height:1.55;
-    max-width:440px; margin:0 0 30px; font-weight:500;
-  }
-  #quiniela-root .qz-hero-ctas{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
-  #quiniela-root .qz-hero-ctas .btn{ padding:14px 26px; font-size:15px; text-decoration:none; }
-  #quiniela-root .qz-hero-btn-ghost-dark{
-    background:transparent; color:var(--chalk); border:1.5px solid rgba(247,245,236,0.3);
-    padding:12.5px 24px; border-radius:10px; font-weight:700; font-family:inherit; cursor:pointer;
-  }
-  #quiniela-root .qz-hero-trust{ margin-top:32px; display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
-  #quiniela-root .qz-hero-trust-item{ display:flex; align-items:center; gap:7px; color:rgba(247,245,236,0.65); font-size:12.5px; font-weight:600; }
-  #quiniela-root .qz-hero-trust-ico{ font-size:14px; }
-  #quiniela-root .qz-hero-invite-note{ margin-top:14px; color:rgba(247,245,236,0.55); font-size:12.5px; }
 
-  #quiniela-root .qz-hero-stage{ position:relative; padding:26px 0 0; display:flex; justify-content:center; z-index:2; }
-  #quiniela-root .qz-hero-float{
-    position:absolute; border-radius:var(--radius);
-    box-shadow:0 10px 22px rgba(15,46,34,0.16); z-index:1; overflow:hidden; line-height:0;
+  #quiniela-root .qz-hero-shell{
+    width:min(1180px, calc(100% - 48px));
+    min-height:100vh;
+    min-height:100svh;
+    margin:0 auto;
+    display:grid;
+    grid-template-rows:64px minmax(0,1fr);
   }
-  #quiniela-root .qz-hero-float-jornada{ top:8px; left:-8px; width:190px; }
-  #quiniela-root .qz-hero-float-jornada img{ width:100%; height:auto; display:block; }
-  #quiniela-root .qz-hero-float-participantes{ bottom:40px; right:-20px; width:180px; border:1px solid var(--line); }
-  #quiniela-root .qz-hero-float-participantes img{ width:100%; height:auto; display:block; }
+
+  #quiniela-root .qz-hero-nav{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    position:relative;
+    z-index:4;
+  }
+
+  #quiniela-root .qz-hero-brand{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+
+  #quiniela-root .qz-hero-brand-icon{
+    width:auto;
+    height:30px;
+    display:block;
+  }
+
+  #quiniela-root .qz-hero-brand-word{
+    color:var(--gold);
+    font-size:17px;
+    font-weight:800;
+    letter-spacing:.08em;
+  }
+
+  #quiniela-root .qz-hero-nav-link{
+    padding:9px 18px;
+    border:1.5px solid rgba(247,245,236,.30);
+    border-radius:10px;
+    color:var(--chalk);
+    font-size:13.5px;
+    font-weight:600;
+    text-decoration:none;
+  }
+
+  #quiniela-root .qz-hero-grid{
+    min-height:0;
+    display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(340px,.9fr);
+    column-gap:clamp(44px,7vw,108px);
+    align-items:center;
+  }
+
+  #quiniela-root .qz-hero-copy{
+    max-width:520px;
+    align-self:center;
+    padding-bottom:8px;
+    position:relative;
+    z-index:3;
+  }
+
+  #quiniela-root .qz-hero-headline{
+    margin:0 0 14px;
+    color:var(--chalk);
+    font-size:clamp(40px,3.35vw,48px);
+    line-height:1.08;
+  }
+
+  #quiniela-root .qz-hero-sub{
+    max-width:455px;
+    margin:0 0 20px;
+    color:rgba(247,245,236,.78);
+    font-size:17px;
+    font-weight:500;
+    line-height:1.52;
+  }
+
+  #quiniela-root .qz-hero-ctas{
+    display:flex;
+    align-items:center;
+    gap:16px;
+    flex-wrap:wrap;
+  }
+
+  #quiniela-root .qz-hero-ctas .btn{
+    padding:14px 26px;
+    font-size:15px;
+    text-decoration:none;
+  }
+
+  #quiniela-root .qz-hero-btn-ghost-dark{
+    padding:12.5px 24px;
+    border:1.5px solid rgba(247,245,236,.30);
+    border-radius:10px;
+    color:var(--chalk);
+    font-weight:700;
+    text-decoration:none;
+  }
+
+  #quiniela-root .qz-hero-stage{
+    min-height:0;
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    position:relative;
+    z-index:2;
+  }
+
+  #quiniela-root .qz-hero-visual{
+    width:min(430px,100%);
+    height:min(470px,calc(100svh - 84px));
+    min-height:410px;
+    position:relative;
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+  }
 
   #quiniela-root .qz-hero-phone{
-    width:270px; height:516px; background:var(--pitch-dark); border-radius:38px;
-    padding:12px; box-shadow:0 30px 60px rgba(15,46,34,0.4); position:relative; z-index:2;
+    height:100%;
+    max-height:470px;
+    aspect-ratio:270/516;
+    padding:12px;
+    position:relative;
+    z-index:2;
+    border-radius:38px;
+    background:var(--pitch-dark);
+    box-shadow:0 26px 54px rgba(15,46,34,.42);
   }
+
   #quiniela-root .qz-hero-phone-notch{
-    position:absolute; top:12px; left:50%; transform:translateX(-50%);
-    width:110px; height:20px; background:var(--pitch-dark); border-radius:0 0 14px 14px; z-index:3;
+    position:absolute;
+    top:12px;
+    left:50%;
+    width:42%;
+    height:20px;
+    z-index:3;
+    border-radius:0 0 14px 14px;
+    background:var(--pitch-dark);
+    transform:translateX(-50%);
   }
+
   #quiniela-root .qz-hero-phone-screen{
-    width:100%; height:100%; background:var(--chalk); border-radius:28px; overflow:hidden;
-    display:flex; align-items:center; justify-content:center;
+    width:100%;
+    height:100%;
+    overflow:hidden;
+    border-radius:28px;
+    background:var(--chalk);
   }
-  #quiniela-root .qz-hero-phone-screen img{ width:100%; height:100%; object-fit:contain; object-position:center top; display:block; }
+
+  #quiniela-root .qz-hero-phone-screen img{
+    width:100%;
+    height:100%;
+    display:block;
+    object-fit:contain;
+    object-position:center top;
+  }
+
+  #quiniela-root .qz-hero-float{
+    position:absolute;
+    z-index:1;
+    overflow:hidden;
+    line-height:0;
+    border-radius:var(--radius);
+    box-shadow:0 12px 28px rgba(15,46,34,.22);
+  }
+
+  #quiniela-root .qz-hero-float img{
+    width:100%;
+    height:auto;
+    display:block;
+  }
+
+  #quiniela-root .qz-hero-float-jornada{
+    top:34px;
+    left:0;
+    width:178px;
+  }
+
+  #quiniela-root .qz-hero-float-participantes{
+    right:0;
+    bottom:30px;
+    width:168px;
+    border:1px solid var(--line);
+  }
+
+  #quiniela-root .qz-home-trust{
+    background:var(--pitch);
+    border-top:1px solid rgba(247,245,236,.09);
+    padding:17px 24px 19px;
+  }
+
+  #quiniela-root .qz-home-trust-inner{
+    width:min(1180px,100%);
+    margin:0 auto;
+  }
+
+  #quiniela-root .qz-hero-trust{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:24px;
+    flex-wrap:wrap;
+  }
+
+  #quiniela-root .qz-hero-trust-item{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    color:rgba(247,245,236,.68);
+    font-size:12.5px;
+    font-weight:600;
+  }
+
+  #quiniela-root .qz-hero-trust-ico{ font-size:14px; }
+
+  #quiniela-root .qz-hero-invite-note{
+    margin:9px 0 0;
+    color:rgba(247,245,236,.52);
+    font-size:12.5px;
+    text-align:center;
+  }
+
+  @media (max-height:620px) and (min-width:901px){
+    #quiniela-root .qz-hero-shell{
+      grid-template-rows:56px minmax(0,1fr);
+    }
+
+    #quiniela-root .qz-hero-headline{
+      font-size:40px;
+      margin-bottom:10px;
+    }
+
+    #quiniela-root .qz-hero-sub{
+      margin-bottom:15px;
+      font-size:16px;
+    }
+
+    #quiniela-root .qz-hero-visual{
+      height:calc(100svh - 72px);
+      min-height:0;
+      max-height:458px;
+    }
+
+    #quiniela-root .qz-hero-float-jornada{ width:164px; }
+    #quiniela-root .qz-hero-float-participantes{ width:154px; }
+  }
 
   @media (max-width:900px){
-    #quiniela-root .qz-hero-grid{ grid-template-columns:1fr; gap:48px; }
-    #quiniela-root .qz-hero-headline{ font-size:32px; }
-    #quiniela-root .qz-hero-copy{ padding-bottom:0; }
-    #quiniela-root .qz-hero-stage{ padding:12px 0 40px; }
-    #quiniela-root .qz-hero-float-jornada{ width:150px; top:-6px; left:-4px; }
-    #quiniela-root .qz-hero-float-participantes{ width:140px; bottom:24px; right:-6px; }
-    #quiniela-root .qz-hero-phone{ width:225px; height:426px; }
+    #quiniela-root .qz-hero-section{
+      min-height:auto;
+      overflow:visible;
+    }
+
+    #quiniela-root .qz-hero-shell{
+      width:min(680px,calc(100% - 40px));
+      min-height:auto;
+      grid-template-rows:64px auto;
+    }
+
+    #quiniela-root .qz-hero-grid{
+      grid-template-columns:1fr;
+      row-gap:34px;
+      padding:26px 0 38px;
+    }
+
+    #quiniela-root .qz-hero-copy{
+      max-width:560px;
+      padding:0;
+    }
+
+    #quiniela-root .qz-hero-headline{
+      font-size:34px;
+    }
+
+    #quiniela-root .qz-hero-stage{
+      height:auto;
+    }
+
+    #quiniela-root .qz-hero-visual{
+      width:min(410px,100%);
+      height:410px;
+      min-height:0;
+    }
+
+    #quiniela-root .qz-hero-float-jornada{
+      width:150px;
+      top:28px;
+      left:8px;
+    }
+
+    #quiniela-root .qz-hero-float-participantes{
+      width:142px;
+      right:8px;
+      bottom:24px;
+    }
   }
+
   @media (max-width:520px){
-    #quiniela-root .qz-hero-nav{ padding-bottom:26px; }
-    #quiniela-root .qz-hero-headline{ font-size:27px; }
-    #quiniela-root .qz-hero-sub{ font-size:15px; }
-    #quiniela-root .qz-hero-trust{ flex-direction:column; align-items:flex-start; gap:9px; }
-    #quiniela-root .qz-hero-float-jornada, #quiniela-root .qz-hero-float-participantes{ display:none; }
-    #quiniela-root .qz-hero-phone{ width:207px; height:390px; }
+    #quiniela-root .qz-hero-shell{
+      width:calc(100% - 32px);
+      grid-template-rows:58px auto;
+    }
+
+    #quiniela-root .qz-hero-nav-link{
+      display:none;
+    }
+
+    #quiniela-root .qz-hero-grid{
+      row-gap:26px;
+      padding:20px 0 30px;
+    }
+
+    #quiniela-root .qz-hero-headline{
+      font-size:29px;
+      margin-bottom:14px;
+    }
+
+    #quiniela-root .qz-hero-sub{
+      margin-bottom:20px;
+      font-size:15px;
+    }
+
+    #quiniela-root .qz-hero-ctas{
+      flex-direction:column;
+      align-items:stretch;
+      gap:12px;
+    }
+
+    #quiniela-root .qz-hero-ctas a{
+      width:100%;
+      text-align:center;
+    }
+
+    #quiniela-root .qz-hero-visual{
+      width:100%;
+      height:350px;
+    }
+
+    #quiniela-root .qz-hero-phone{
+      max-height:350px;
+      border-radius:34px;
+    }
+
+    #quiniela-root .qz-hero-float{
+      display:none;
+    }
+
+    #quiniela-root .qz-home-trust{
+      padding:17px 20px 20px;
+    }
+
+    #quiniela-root .qz-hero-trust{
+      align-items:flex-start;
+      flex-direction:column;
+      gap:9px;
+    }
+
+    #quiniela-root .qz-hero-invite-note{
+      text-align:left;
+    }
   }
 </style>
 
@@ -4248,44 +4537,55 @@
   function renderHome(){
     root.innerHTML = `
       <section class="qz-hero-section">
-        <div class="qz-hero-nav">
-          <div class="qz-hero-brand">
-            <img src="/favicon.svg" alt="" class="qz-hero-brand-icon">
-            <span class="qz-hero-brand-word">QRACKS</span>
-          </div>
-          <a href="#qz-hero-invite-note" class="qz-hero-nav-link">Ya tengo una invitación</a>
-        </div>
+        <div class="qz-hero-shell">
+          <nav class="qz-hero-nav" aria-label="Navegación principal">
+            <div class="qz-hero-brand">
+              <img src="/favicon.svg" alt="" class="qz-hero-brand-icon">
+              <span class="qz-hero-brand-word">QRACKS</span>
+            </div>
+            <a href="#qz-hero-invite-note" class="qz-hero-nav-link">Ya tengo una invitación</a>
+          </nav>
 
-        <div class="qz-hero-grid">
-          <div class="qz-hero-copy">
-            <h1 class="qz-hero-headline display">Organiza quinielas<br>sin complicaciones.</h1>
-            <p class="qz-hero-sub">Crea o únete a una quiniela, invita a tus amigos y deja que QRACKS se encargue del resto.</p>
-            <div class="qz-hero-ctas">
-              <a href="/crear" class="btn btn-gold">Crear mi quiniela</a>
-              <a href="#qz-hero-invite-note" class="qz-hero-btn-ghost-dark">Ya tengo una invitación</a>
-            </div>
-            <div class="qz-hero-trust">
-              <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">📱</span>Sin instalar aplicaciones</div>
-              <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">🌐</span>Funciona desde cualquier dispositivo</div>
-              <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">🔗</span>Comparte un enlace y todos pueden participar</div>
-            </div>
-            <p class="qz-hero-invite-note" id="qz-hero-invite-note">¿Ya te invitaron? Abre el enlace que recibiste.</p>
-          </div>
-
-          <div class="qz-hero-stage">
-            <div class="qz-hero-float qz-hero-float-jornada">
-              <img src="/hero_assets_jornada.png" alt="Cuenta regresiva de la jornada en QRACKS">
-            </div>
-            <div class="qz-hero-phone">
-              <div class="qz-hero-phone-notch"></div>
-              <div class="qz-hero-phone-screen">
-                <img src="/hero_assets_tabla.png" alt="Tabla de posiciones real de QRACKS">
+          <div class="qz-hero-grid">
+            <div class="qz-hero-copy">
+              <h1 class="qz-hero-headline display">Organiza quinielas<br>sin complicaciones.</h1>
+              <p class="qz-hero-sub">Crea o únete a una quiniela, invita a tus amigos y deja que QRACKS se encargue del resto.</p>
+              <div class="qz-hero-ctas">
+                <a href="/crear" class="btn btn-gold">Crear mi quiniela</a>
+                <a href="#qz-hero-invite-note" class="qz-hero-btn-ghost-dark">Ya tengo una invitación</a>
               </div>
             </div>
-            <div class="qz-hero-float qz-hero-float-participantes">
-              <img src="/hero_assets_participantes.png" alt="Lista de participantes real de QRACKS">
+
+            <div class="qz-hero-stage">
+              <div class="qz-hero-visual">
+                <div class="qz-hero-float qz-hero-float-jornada">
+                  <img src="/hero_assets_jornada.png" alt="Cuenta regresiva de una jornada en QRACKS">
+                </div>
+
+                <div class="qz-hero-phone">
+                  <div class="qz-hero-phone-notch"></div>
+                  <div class="qz-hero-phone-screen">
+                    <img src="/hero_assets_tabla.png" alt="Tabla de posiciones real de QRACKS">
+                  </div>
+                </div>
+
+                <div class="qz-hero-float qz-hero-float-participantes">
+                  <img src="/hero_assets_participantes.png" alt="Lista de participantes real de QRACKS">
+                </div>
+              </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section class="qz-home-trust" aria-label="Beneficios de QRACKS">
+        <div class="qz-home-trust-inner">
+          <div class="qz-hero-trust">
+            <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">📱</span>Sin instalar aplicaciones</div>
+            <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">🌐</span>Funciona desde cualquier dispositivo</div>
+            <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">🔗</span>Comparte un enlace y todos pueden participar</div>
+          </div>
+          <p class="qz-hero-invite-note" id="qz-hero-invite-note">¿Ya te invitaron? Abre el enlace que recibiste.</p>
         </div>
       </section>
     `;
