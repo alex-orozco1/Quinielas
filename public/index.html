@@ -376,7 +376,7 @@
     min-height:100svh;
     overflow:hidden;
     background:
-      radial-gradient(ellipse 680px 520px at 76% 48%, rgba(45,106,79,.42), transparent 62%),
+      radial-gradient(ellipse 650px 500px at 76% 50%, rgba(45,106,79,.40), transparent 64%),
       linear-gradient(180deg, var(--pitch-dark), var(--pitch));
   }
 
@@ -386,7 +386,7 @@
     min-height:100svh;
     margin:0 auto;
     display:grid;
-    grid-template-rows:64px minmax(0,1fr);
+    grid-template-rows:68px minmax(0,1fr);
   }
 
   #quiniela-root .qz-hero-nav{
@@ -429,29 +429,31 @@
   #quiniela-root .qz-hero-grid{
     min-height:0;
     display:grid;
-    grid-template-columns:minmax(0,1fr) minmax(340px,.9fr);
-    column-gap:clamp(44px,7vw,108px);
+    grid-template-columns:minmax(0,1fr) minmax(410px,.95fr);
+    column-gap:clamp(48px,6vw,92px);
     align-items:center;
+    padding:10px 0 24px;
   }
 
   #quiniela-root .qz-hero-copy{
-    max-width:520px;
+    max-width:530px;
     align-self:center;
-    padding-bottom:8px;
+    padding:0 0 16px;
     position:relative;
     z-index:3;
   }
 
   #quiniela-root .qz-hero-headline{
-    margin:0 0 14px;
+    margin:0 0 16px;
     color:var(--chalk);
-    font-size:clamp(40px,3.35vw,48px);
-    line-height:1.08;
+    font-size:clamp(42px,3.55vw,52px);
+    line-height:1.06;
+    letter-spacing:-.025em;
   }
 
   #quiniela-root .qz-hero-sub{
-    max-width:455px;
-    margin:0 0 20px;
+    max-width:470px;
+    margin:0 0 24px;
     color:rgba(247,245,236,.78);
     font-size:17px;
     font-weight:500;
@@ -461,18 +463,18 @@
   #quiniela-root .qz-hero-ctas{
     display:flex;
     align-items:center;
-    gap:16px;
+    gap:14px;
     flex-wrap:wrap;
   }
 
   #quiniela-root .qz-hero-ctas .btn{
-    padding:14px 26px;
+    padding:14px 25px;
     font-size:15px;
     text-decoration:none;
   }
 
   #quiniela-root .qz-hero-btn-ghost-dark{
-    padding:12.5px 24px;
+    padding:12.5px 23px;
     border:1.5px solid rgba(247,245,236,.30);
     border-radius:10px;
     color:var(--chalk);
@@ -491,25 +493,26 @@
   }
 
   #quiniela-root .qz-hero-visual{
-    width:min(430px,100%);
-    height:min(470px,calc(100svh - 84px));
-    min-height:410px;
+    width:min(470px,100%);
+    height:min(516px,calc(100svh - 104px));
+    min-height:430px;
     position:relative;
     display:flex;
-    align-items:flex-end;
+    align-items:center;
     justify-content:center;
+    transform:translateY(-4px);
   }
 
   #quiniela-root .qz-hero-phone{
     height:100%;
-    max-height:470px;
+    max-height:516px;
     aspect-ratio:270/516;
     padding:12px;
     position:relative;
     z-index:2;
     border-radius:38px;
     background:var(--pitch-dark);
-    box-shadow:0 26px 54px rgba(15,46,34,.42);
+    box-shadow:0 24px 54px rgba(8,30,22,.40);
   }
 
   #quiniela-root .qz-hero-phone-notch{
@@ -542,11 +545,11 @@
 
   #quiniela-root .qz-hero-float{
     position:absolute;
-    z-index:1;
+    z-index:3;
     overflow:hidden;
     line-height:0;
     border-radius:var(--radius);
-    box-shadow:0 12px 28px rgba(15,46,34,.22);
+    box-shadow:0 14px 30px rgba(8,30,22,.28);
   }
 
   #quiniela-root .qz-hero-float img{
@@ -556,15 +559,15 @@
   }
 
   #quiniela-root .qz-hero-float-jornada{
-    top:34px;
-    left:0;
-    width:178px;
+    top:62px;
+    left:2px;
+    width:174px;
   }
 
   #quiniela-root .qz-hero-float-participantes{
     right:0;
-    bottom:30px;
-    width:168px;
+    bottom:54px;
+    width:166px;
     border:1px solid var(--line);
   }
 
@@ -605,29 +608,48 @@
     text-align:center;
   }
 
-  @media (max-height:620px) and (min-width:901px){
+  @media (max-height:700px) and (min-width:901px){
     #quiniela-root .qz-hero-shell{
-      grid-template-rows:56px minmax(0,1fr);
+      grid-template-rows:58px minmax(0,1fr);
+    }
+
+    #quiniela-root .qz-hero-grid{
+      padding:4px 0 14px;
+    }
+
+    #quiniela-root .qz-hero-copy{
+      padding-bottom:8px;
     }
 
     #quiniela-root .qz-hero-headline{
       font-size:40px;
-      margin-bottom:10px;
+      margin-bottom:11px;
     }
 
     #quiniela-root .qz-hero-sub{
-      margin-bottom:15px;
+      margin-bottom:17px;
       font-size:16px;
+      line-height:1.45;
     }
 
     #quiniela-root .qz-hero-visual{
-      height:calc(100svh - 72px);
+      height:calc(100svh - 82px);
       min-height:0;
-      max-height:458px;
+      max-height:462px;
+      transform:translateY(-2px);
     }
 
-    #quiniela-root .qz-hero-float-jornada{ width:164px; }
-    #quiniela-root .qz-hero-float-participantes{ width:154px; }
+    #quiniela-root .qz-hero-float-jornada{
+      top:48px;
+      left:8px;
+      width:158px;
+    }
+
+    #quiniela-root .qz-hero-float-participantes{
+      right:8px;
+      bottom:42px;
+      width:150px;
+    }
   }
 
   @media (max-width:900px){
@@ -644,17 +666,17 @@
 
     #quiniela-root .qz-hero-grid{
       grid-template-columns:1fr;
-      row-gap:34px;
-      padding:26px 0 38px;
+      row-gap:30px;
+      padding:28px 0 40px;
     }
 
     #quiniela-root .qz-hero-copy{
-      max-width:560px;
+      max-width:580px;
       padding:0;
     }
 
     #quiniela-root .qz-hero-headline{
-      font-size:34px;
+      font-size:36px;
     }
 
     #quiniela-root .qz-hero-stage{
@@ -662,21 +684,22 @@
     }
 
     #quiniela-root .qz-hero-visual{
-      width:min(410px,100%);
-      height:410px;
+      width:min(430px,100%);
+      height:440px;
       min-height:0;
+      transform:none;
     }
 
     #quiniela-root .qz-hero-float-jornada{
-      width:150px;
-      top:28px;
-      left:8px;
+      width:154px;
+      top:42px;
+      left:4px;
     }
 
     #quiniela-root .qz-hero-float-participantes{
-      width:142px;
-      right:8px;
-      bottom:24px;
+      width:146px;
+      right:4px;
+      bottom:38px;
     }
   }
 
@@ -691,24 +714,24 @@
     }
 
     #quiniela-root .qz-hero-grid{
-      row-gap:26px;
-      padding:20px 0 30px;
+      row-gap:24px;
+      padding:18px 0 28px;
     }
 
     #quiniela-root .qz-hero-headline{
-      font-size:29px;
-      margin-bottom:14px;
+      font-size:30px;
+      margin-bottom:13px;
     }
 
     #quiniela-root .qz-hero-sub{
-      margin-bottom:20px;
+      margin-bottom:18px;
       font-size:15px;
     }
 
     #quiniela-root .qz-hero-ctas{
       flex-direction:column;
       align-items:stretch;
-      gap:12px;
+      gap:11px;
     }
 
     #quiniela-root .qz-hero-ctas a{
@@ -718,11 +741,11 @@
 
     #quiniela-root .qz-hero-visual{
       width:100%;
-      height:350px;
+      height:365px;
     }
 
     #quiniela-root .qz-hero-phone{
-      max-height:350px;
+      max-height:365px;
       border-radius:34px;
     }
 
