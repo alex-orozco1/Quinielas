@@ -603,24 +603,29 @@
     display:flex;
     align-items:center;
     justify-content:center;
-    gap:24px;
+    gap:32px;
     flex-wrap:wrap;
   }
 
   #quiniela-root .qz-hero-trust-item{
     display:flex;
     align-items:center;
-    gap:7px;
+    gap:9px;
     color:rgba(247,245,236,.68);
     font-size:12.5px;
     font-weight:600;
   }
 
-  #quiniela-root .qz-hero-trust-ico{ font-size:14px; }
+  #quiniela-root .qz-hero-trust-ico{
+    width:16px;
+    height:16px;
+    flex-shrink:0;
+    color:inherit;
+  }
 
   #quiniela-root .qz-hero-invite-note{
     margin:9px 0 0;
-    color:rgba(247,245,236,.52);
+    color:rgba(247,245,236,.44);
     font-size:12.5px;
     text-align:center;
   }
@@ -4623,9 +4628,9 @@
       <section class="qz-home-trust" aria-label="Beneficios de QRACKS">
         <div class="qz-home-trust-inner">
           <div class="qz-hero-trust">
-            <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">📱</span>Sin instalar aplicaciones</div>
-            <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">🌐</span>Funciona desde cualquier dispositivo</div>
-            <div class="qz-hero-trust-item"><span class="qz-hero-trust-ico">🔗</span>Comparte un enlace y todos pueden participar</div>
+            <div class="qz-hero-trust-item"><svg class="qz-hero-trust-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg>Sin instalar aplicaciones</div>
+            <div class="qz-hero-trust-item"><svg class="qz-hero-trust-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>Funciona desde cualquier dispositivo</div>
+            <div class="qz-hero-trust-item"><svg class="qz-hero-trust-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/></svg>Comparte un enlace y todos pueden participar</div>
           </div>
           <p class="qz-hero-invite-note" id="qz-hero-invite-note">¿Ya te invitaron? Abre el enlace que recibiste.</p>
         </div>
