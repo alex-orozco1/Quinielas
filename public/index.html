@@ -35,6 +35,7 @@
   }
   *{box-sizing:border-box;}
   html{ scroll-behavior:smooth; }
+  body{ margin:0; }
   #quiniela-root{
     font-family:'Manrope', sans-serif;
     background:var(--chalk);
@@ -370,10 +371,24 @@
 
 
   /* ---------- Marketing Hero (renderHome) ---------- */
-  #quiniela-root .qz-hero-section{
-    position:relative;
+  /* #quiniela-root is the real DOM parent of .qz-hero-section and .qz-home-trust
+     (see renderHome()) — scoped via :has() to the home route only, so every other
+     view keeps behaving exactly as before. Column flex lets the hero and the trust
+     bar split one viewport-height naturally: the trust bar is measured by the
+     browser (flex-shrink:0, its real rendered height, whatever that is at any
+     width/font-size/wrap), and the hero (flex:1) simply gets whatever is left.
+     No hardcoded reserved height anywhere. */
+  #quiniela-root:has(> .qz-hero-section){
+    display:flex;
+    flex-direction:column;
     min-height:100vh;
     min-height:100svh;
+  }
+
+  #quiniela-root .qz-hero-section{
+    position:relative;
+    flex:1 1 auto;
+    min-height:0;
     overflow:hidden;
     background:
       radial-gradient(ellipse 650px 500px at 76% 50%, rgba(45,106,79,.40), transparent 64%),
@@ -382,8 +397,8 @@
 
   #quiniela-root .qz-hero-shell{
     width:min(1180px, calc(100% - 48px));
-    min-height:100vh;
-    min-height:100svh;
+    height:100%;
+    min-height:0;
     margin:0 auto;
     display:grid;
     grid-template-rows:68px minmax(0,1fr);
@@ -573,6 +588,7 @@
   }
 
   #quiniela-root .qz-home-trust{
+    flex-shrink:0;
     background:var(--pitch);
     border-top:1px solid rgba(247,245,236,.09);
     padding:17px 24px 19px;
@@ -655,12 +671,14 @@
 
   @media (max-width:900px){
     #quiniela-root .qz-hero-section{
+      flex:none;
       min-height:auto;
       overflow:visible;
     }
 
     #quiniela-root .qz-hero-shell{
       width:min(680px,calc(100% - 40px));
+      height:auto;
       min-height:auto;
       grid-template-rows:64px auto;
     }
