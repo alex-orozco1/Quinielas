@@ -704,13 +704,15 @@
     border:1px solid var(--line);
   }
 
-  /* 2. The organizer's participants-panel screenshot is much wider than the
-     shared 6/5 box, so a taller ratio over-crops it (source ~2.55:1 vs 6/5).
-     A wider ratio here shows Nombre/Admin/Pagó/PIN/acciones without cutting
-     any column, while the participant's picks screenshot keeps the shared
-     6/5 ratio above untouched. */
+  /* 2. The organizer's participants-panel screenshot was recomposed (source
+     PNG re-cropped) to show only Nombre/Admin/Pagó — the columns that carry
+     the "QRACKS hace el resto" message — dropping PIN/acciones. This closes
+     most of the visual-weight gap with the participant's picks screenshot
+     (was 51% of its area at the old 2.35/1 crop, now ~78%) while keeping
+     every shown column fully legible, with zero further cropping: the ratio
+     below matches the new source image's own dimensions exactly (850/550). */
   #quiniela-root .qz-home-col-hero-wide img{
-    aspect-ratio:2.35/1;
+    aspect-ratio:17/11;
   }
 
   #quiniela-root .qz-home-col-benefits{
