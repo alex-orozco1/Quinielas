@@ -1614,7 +1614,12 @@
   function onboardingCardHtml(tabId){
     const content = ONBOARDING_CONTENT[tabId];
     if(!content) return "";
-    const shouldShow = onboardingForceShow[tabId] || !hasSeenOnboarding(tabId);
+    // "jornada" already has an always-visible SCREEN_INTRO line saying the same
+    // thing, so its onboarding card only appears on demand (💡 help button),
+    // never automatically — avoids repeating the same idea twice on the very
+    // first screen a new user sees.
+    const autoShowEligible = tabId === "jornada" ? false : !hasSeenOnboarding(tabId);
+    const shouldShow = onboardingForceShow[tabId] || autoShowEligible;
     if(!shouldShow) return "";
     return `
       <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;" data-onboarding-card="${tabId}">
@@ -2169,6 +2174,7 @@
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
     const aloneAsAdmin = currentUser.isAdmin && meta.participants.length <= 1;
+    const adminNoRoundsYet = currentUser.isAdmin && meta.rounds.length === 0;
     // Only real match picks count as "has predicted before" — jornada-scope custom
     // bet answers live under __extra in the same object and don't count.
     const hasEverPicked = Object.values(myPicks || {}).some(roundPicks =>
@@ -2176,13 +2182,19 @@
     );
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada")}
-      ${aloneAsAdmin ? `
+      ${adminNoRoundsYet ? `
+        <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
+          <div class="eyebrow" style="color:var(--gold-dim);">🚀 Crea tu primera jornada</div>
+          <p style="margin:4px 0 12px;">Agrega los partidos para abrir la primera jornada.</p>
+          <button class="btn btn-gold btn-sm" id="qz-create-first-jornada">Crear mi primera jornada</button>
+        </div>
+      ` : (aloneAsAdmin ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">👋 Todavía eres el único aquí</div>
-          <p style="margin:4px 0 12px;">Comparte el link para que se unan tus amigos — sin ellos, no hay quiniela.</p>
+          <p style="margin:4px 0 12px;">Comparte tu enlace para que se unan tus amigos.</p>
           <button class="btn btn-gold btn-sm" id="qz-invite-participants">Invitar participantes</button>
         </div>
-      ` : ``}
+      ` : ``)}
       ${heroRound ? `
         <div class="card-primary" style="text-align:center;">
           <div class="eyebrow" style="justify-content:center;display:flex;">🔥 Jornada ${heroRound.number}</div>
@@ -2239,6 +2251,15 @@
     wireScreenHeader(main, "jornada");
     const inviteBtn = document.getElementById("qz-invite-participants");
     if(inviteBtn) inviteBtn.addEventListener("click", copyAccessLink);
+    const createFirstRoundBtn = document.getElementById("qz-create-first-jornada");
+    if(createFirstRoundBtn){
+      createFirstRoundBtn.addEventListener("click", async () => {
+        activeTab = "admin";
+        adminSubTab = "rondas";
+        await render();
+        document.getElementById("qz-admin-body")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
     const heroContinueBtn = document.getElementById("qz-hero-continue");
     if(heroContinueBtn){
       heroContinueBtn.addEventListener("click", () => {
@@ -2276,10 +2297,16 @@
     const rounds = meta.rounds.filter(r => classifyRound(r) === jornadaFilter).slice().sort((a,b)=>a.number-b.number);
 
     if(!rounds.length){
+      const isAdminViewer = currentUser.isAdmin;
+      const adminHasNoRoundsAtAll = meta.rounds.length === 0;
       const emptyMsg = {
-        porjugar: "No hay jornadas abiertas para votar ahora. Vuelve cuando el admin publique una nueva.",
+        porjugar: isAdminViewer
+          ? "Todavía no hay una jornada disponible."
+          : "No hay jornadas abiertas para votar ahora. Vuelve cuando el admin publique una nueva.",
         envivo: "No hay jornadas cerradas esperando resultado. En cuanto cierre una, aparecerá aquí.",
-        jugados: "Todavía no hay jornadas con resultados publicados. Aparecerán aquí en cuanto el admin los capture."
+        jugados: isAdminViewer
+          ? (adminHasNoRoundsAtAll ? "Todavía no has creado ninguna jornada." : "Todavía no has publicado resultados de ninguna jornada.")
+          : "Todavía no hay jornadas con resultados publicados. Aparecerán aquí en cuanto el admin los capture."
       }[jornadaFilter];
       list.innerHTML = `<div class="card empty"><div class="display">Nada por aquí</div><p class="muted">${emptyMsg}</p></div>`;
       return;
@@ -4398,7 +4425,11 @@
             <input type="text" id="qz-c-slug" placeholder="mi-quiniela" value="${esc(draft.slug)}">
             <p class="muted" style="margin-top:4px;">${esc(window.location.origin)}/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
           </div>
-          <div class="field"><label>Contraseña de administrador</label><input type="text" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}"></div>
+          <div class="field">
+            <label>Contraseña de administrador</label>
+            <input type="password" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}">
+            <p class="muted" style="margin-top:4px;">Guárdala. La necesitarás para administrar tu quiniela.</p>
+          </div>
           <p class="muted" id="qz-c-status" style="min-height:16px;"></p>
           <button class="btn btn-primary" id="qz-c-submit" style="width:100%;padding:12px;">Crear mi quiniela</button>
         </div>
