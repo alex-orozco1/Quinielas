@@ -647,7 +647,7 @@
   #quiniela-root .qz-home-steps-head{
     text-align:center;
     max-width:560px;
-    margin:0 auto 64px;
+    margin:0 auto 32px;
   }
 
   #quiniela-root .qz-home-steps-title{
@@ -664,63 +664,222 @@
     margin:0;
   }
 
-  #quiniela-root .qz-home-step{
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    gap:28px;
-    margin-bottom:64px;
+  #quiniela-root .qz-home-steps-cols{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:48px;
   }
-  #quiniela-root .qz-home-step:last-child{ margin-bottom:0; }
 
-  #quiniela-root .qz-home-step-media{ width:100%; }
-  #quiniela-root .qz-home-step-media img{
+  #quiniela-root .qz-home-steps-col-head{
+    margin-bottom:18px;
+  }
+
+  #quiniela-root .qz-home-col-eyebrow{
+    display:block;
+    font-size:13px;
+    font-weight:700;
+    color:var(--gold-dim);
+    margin:0 0 6px;
+  }
+
+  #quiniela-root .qz-home-col-headline{
+    font-size:23px;
+    line-height:1.2;
+    color:var(--ink);
+    margin:0;
+  }
+
+  #quiniela-root .qz-home-col-hero{
+    margin-bottom:18px;
+  }
+
+  #quiniela-root .qz-home-col-hero img{
     display:block;
     width:100%;
-    height:auto;
+    aspect-ratio:6/5;
+    object-fit:cover;
+    object-position:top;
     border-radius:var(--radius);
     box-shadow:var(--shadow);
     border:1px solid var(--line);
   }
 
-  #quiniela-root .qz-home-step-copy{
-    width:100%;
-    text-align:center;
+  /* 2. The organizer's participants-panel screenshot is much wider than the
+     shared 6/5 box, so a taller ratio over-crops it (source ~2.55:1 vs 6/5).
+     A wider ratio here shows Nombre/Admin/Pagó/PIN/acciones without cutting
+     any column, while the participant's picks screenshot keeps the shared
+     6/5 ratio above untouched. */
+  #quiniela-root .qz-home-col-hero-wide img{
+    aspect-ratio:2.35/1;
   }
 
-  #quiniela-root .qz-home-step-label{
-    display:block;
-    font-size:11px;
-    font-weight:700;
-    text-transform:uppercase;
-    letter-spacing:0.08em;
-    color:var(--gold-dim);
-    margin:0 0 8px;
-  }
-
-  #quiniela-root .qz-home-step-copy .qz-home-step-title{
-    font-size:21px;
-    color:var(--ink);
-    margin:0 0 8px;
-  }
-
-  #quiniela-root .qz-home-step-text{
-    font-size:15px;
-    line-height:1.55;
-    color:var(--ink-soft);
+  #quiniela-root .qz-home-col-benefits{
+    list-style:none;
     margin:0;
+    padding:0;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+
+  #quiniela-root .qz-home-col-benefits li{
+    font-size:14px;
+    line-height:1.5;
+    color:var(--ink-soft);
   }
 
   @media (min-width:901px){
-    #quiniela-root .qz-home-step{
-      flex-direction:row;
-      align-items:center;
+    #quiniela-root .qz-home-steps-cols{
+      grid-template-columns:1fr 1fr;
       gap:64px;
-      margin-bottom:80px;
     }
-    #quiniela-root .qz-home-step-reverse{ flex-direction:row-reverse; }
-    #quiniela-root .qz-home-step-media{ flex:1 1 50%; min-width:0; }
-    #quiniela-root .qz-home-step-copy{ flex:1 1 50%; min-width:0; text-align:left; }
+  }
+
+  /* ---------- HOME-004: ¿Por qué QRACKS? ---------- */
+  #quiniela-root .qz-home-why{
+    background:var(--paper);
+    padding:88px 24px;
+  }
+
+  #quiniela-root .qz-home-why-inner{
+    width:min(1040px,100%);
+    margin:0 auto;
+  }
+
+  #quiniela-root .qz-home-why-cols{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:20px;
+    margin-top:8px;
+  }
+
+  #quiniela-root .qz-home-why-col{
+    background:var(--chalk);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:28px 24px;
+  }
+
+  #quiniela-root .qz-home-why-col-highlight{
+    background:var(--paper);
+    border:1.5px solid var(--gold);
+    box-shadow:var(--shadow);
+  }
+
+  #quiniela-root .qz-home-why-col-head{
+    font-size:17px;
+    color:var(--ink);
+    margin:0 0 16px;
+  }
+
+  #quiniela-root .qz-home-why-list{
+    list-style:none;
+    margin:0;
+    padding:0;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+  }
+
+  #quiniela-root .qz-home-why-list li{
+    font-size:14.5px;
+    line-height:1.5;
+    color:var(--ink-soft);
+    padding-left:26px;
+    position:relative;
+  }
+
+  #quiniela-root .qz-home-why-list li::before{
+    content:"❌";
+    position:absolute;
+    left:0;
+    top:0;
+    font-size:12px;
+  }
+
+  #quiniela-root .qz-home-why-col-highlight .qz-home-why-list li{
+    color:var(--ink);
+    font-weight:600;
+  }
+
+  #quiniela-root .qz-home-why-col-highlight .qz-home-why-list li::before{
+    content:"✅";
+  }
+
+  @media (min-width:901px){
+    #quiniela-root .qz-home-why-cols{
+      grid-template-columns:1fr 1fr;
+      gap:28px;
+    }
+  }
+
+  /* ---------- HOME-005: Ligas disponibles ---------- */
+  #quiniela-root .qz-home-leagues{
+    background:var(--chalk);
+    padding:72px 24px;
+  }
+
+  #quiniela-root .qz-home-leagues-inner{
+    width:min(1040px,100%);
+    margin:0 auto;
+    display:grid;
+    grid-template-columns:1fr;
+    gap:24px;
+    align-items:center;
+    text-align:center;
+  }
+
+  #quiniela-root .qz-home-leagues-msg .qz-home-steps-title{
+    font-size:26px;
+  }
+
+  #quiniela-root .qz-home-leagues-grid{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+    justify-content:center;
+  }
+
+  @media (min-width:901px){
+    #quiniela-root .qz-home-leagues-inner{
+      grid-template-columns:auto 1fr;
+      gap:56px;
+      text-align:left;
+    }
+    #quiniela-root .qz-home-leagues-msg{ max-width:320px; }
+    #quiniela-root .qz-home-leagues-grid{ justify-content:flex-start; }
+  }
+
+  /* ---------- HOME-006: CTA final ---------- */
+  #quiniela-root .qz-home-final-cta{
+    background:linear-gradient(180deg, var(--pitch-dark), var(--pitch));
+    padding:88px 24px;
+    text-align:center;
+  }
+
+  #quiniela-root .qz-home-final-cta-inner{
+    width:min(640px,100%);
+    margin:0 auto;
+  }
+
+  #quiniela-root .qz-home-final-cta-title{
+    font-size:32px;
+    color:var(--chalk);
+    margin:0 0 12px;
+  }
+
+  #quiniela-root .qz-home-final-cta-sub{
+    font-size:16px;
+    line-height:1.5;
+    color:rgba(247,245,236,.78);
+    margin:0 0 28px;
+  }
+
+  #quiniela-root .qz-home-final-cta-btn{
+    display:inline-block;
+    padding:14px 32px;
+    font-size:16px;
+    text-decoration:none;
   }
 
   @media (max-height:700px) and (min-width:901px){
@@ -4748,41 +4907,90 @@
         <div class="qz-home-steps-inner">
           <div class="qz-home-steps-head">
             <h2 class="qz-home-steps-title display">Empieza en menos de un minuto</h2>
-            <p class="qz-home-steps-sub">Organizar una quiniela con tus amigos es tan simple como seguir estos tres pasos.</p>
+            <p class="qz-home-steps-sub">Dos formas de empezar: organiza tu liga o entra a la que ya te compartieron.</p>
           </div>
 
-          <div class="qz-home-step">
-            <div class="qz-home-step-media">
-              <img src="./home_assets_crear.png" alt="Pantalla real de creación de una quiniela en QRACKS" loading="lazy">
+          <div class="qz-home-steps-cols">
+            <div class="qz-home-steps-col">
+              <div class="qz-home-steps-col-head">
+                <span class="qz-home-col-eyebrow">🎯 Quiero crear una liga</span>
+                <h3 class="qz-home-col-headline display">Comparte un enlace. QRACKS hace el resto.</h3>
+              </div>
+              <div class="qz-home-col-hero qz-home-col-hero-wide">
+                <img src="./home_assets_participantes_v2.png" alt="Pantalla real de participantes en QRACKS: cada quien se registró solo, con su PIN y su estado de pago ya visibles" loading="lazy">
+              </div>
+              <ul class="qz-home-col-benefits">
+                <li>Cada quien se registra solo, con su nombre y un PIN.</li>
+                <li>Tú decides quién es admin y llevas el control de pagos.</li>
+              </ul>
             </div>
-            <div class="qz-home-step-copy">
-              <span class="qz-home-step-label">Paso 1</span>
-              <h3 class="qz-home-step-title display">📝 Crea tu quiniela</h3>
-              <p class="qz-home-step-text">Configura tu quiniela en unos cuantos pasos y elige la liga que quieres jugar.</p>
+
+            <div class="qz-home-steps-col">
+              <div class="qz-home-steps-col-head">
+                <span class="qz-home-col-eyebrow">🙋 ¿Ya te invitaron?</span>
+                <h3 class="qz-home-col-headline display">Solo necesitas un enlace para competir.</h3>
+              </div>
+              <div class="qz-home-col-hero">
+                <img src="./home_assets_participante_picks.png" alt="Pantalla real de pronósticos en QRACKS, con partidos ya elegidos" loading="lazy">
+              </div>
+              <ul class="qz-home-col-benefits">
+                <li>No necesitas descargar nada ni crear una cuenta.</li>
+                <li>Tu PIN protege tus pronósticos — nada más.</li>
+              </ul>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="qz-home-why" aria-label="Por qué QRACKS">
+        <div class="qz-home-why-inner">
+          <div class="qz-home-steps-head">
+            <h2 class="qz-home-steps-title display">Menos tiempo organizando. Más tiempo disfrutando.</h2>
+            <p class="qz-home-steps-sub">La forma más sencilla de organizar y jugar pronósticos deportivos con tus amigos.</p>
           </div>
 
-          <div class="qz-home-step qz-home-step-reverse">
-            <div class="qz-home-step-media">
-              <img src="./hero_assets_participantes.png" alt="Pantalla real de participantes e invitaciones en QRACKS" loading="lazy">
+          <div class="qz-home-why-cols">
+            <div class="qz-home-why-col">
+              <h3 class="qz-home-why-col-head display">Como siempre</h3>
+              <ul class="qz-home-why-list">
+                <li>Buscar pronósticos entre cientos de mensajes.</li>
+                <li>Llevar un Excel con los puntos.</li>
+                <li>Hacer sumas manuales.</li>
+                <li>Preguntar quién va ganando.</li>
+                <li>Compartir capturas de pantalla.</li>
+              </ul>
             </div>
-            <div class="qz-home-step-copy">
-              <span class="qz-home-step-label">Paso 2</span>
-              <h3 class="qz-home-step-title display">👥 Invita a tus amigos</h3>
-              <p class="qz-home-step-text">Comparte un enlace y todos podrán unirse desde cualquier dispositivo.</p>
+            <div class="qz-home-why-col qz-home-why-col-highlight">
+              <h3 class="qz-home-why-col-head display">Con QRACKS</h3>
+              <ul class="qz-home-why-list">
+                <li>Cada participante registra sus propios pronósticos.</li>
+                <li>Los puntos se calculan automáticamente.</li>
+                <li>La tabla siempre está actualizada.</li>
+                <li>Todos pueden consultar las posiciones cuando quieran.</li>
+                <li>Comparte las posiciones con un solo clic.</li>
+              </ul>
             </div>
           </div>
+        </div>
+      </section>
 
-          <div class="qz-home-step">
-            <div class="qz-home-step-media">
-              <img src="./hero_assets_tabla.png" alt="Pantalla real de la tabla de posiciones en QRACKS" loading="lazy">
-            </div>
-            <div class="qz-home-step-copy">
-              <span class="qz-home-step-label">Paso 3</span>
-              <h3 class="qz-home-step-title display">🏆 Compite jornada a jornada</h3>
-              <p class="qz-home-step-text">Realiza tus pronósticos, sigue la tabla de posiciones y descubre quién termina como campeón.</p>
-            </div>
+      <section class="qz-home-leagues" aria-label="Ligas disponibles">
+        <div class="qz-home-leagues-inner">
+          <div class="qz-home-leagues-msg">
+            <h2 class="qz-home-steps-title display">Ligas disponibles</h2>
+            <p class="qz-home-steps-sub">Estamos agregando nuevas ligas constantemente.</p>
           </div>
+          <div class="qz-home-leagues-grid">
+            ${SPORTSDB_LEAGUES.map(l => `<span class="badge admin">⚽ ${esc(l.label)}</span>`).join("")}
+          </div>
+        </div>
+      </section>
+
+      <section class="qz-home-final-cta" aria-label="Comienza tu quiniela">
+        <div class="qz-home-final-cta-inner">
+          <h2 class="qz-home-final-cta-title display">¿Listo para armar tu quiniela?</h2>
+          <p class="qz-home-final-cta-sub">Crea tu liga, invita a tus amigos y empiecen a competir en menos de un minuto.</p>
+          <a href="/crear" class="btn btn-gold qz-home-final-cta-btn">Crear mi quiniela</a>
         </div>
       </section>
     `;
