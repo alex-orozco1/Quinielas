@@ -1772,7 +1772,8 @@
     `;
     document.getElementById("qz-session-yes").addEventListener("click", async () => {
       trackEvent("session_confirmation_accepted", { participantId: session.participantId, isNewUser: false });
-      currentUser = { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
+      const fullParticipant = meta.participants.find(p => p.id === session.participantId);
+      currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
       myPicks = await getPicks(currentUser.id);
       activeTab = "jornada";
       render();
@@ -2047,10 +2048,21 @@
       ${temporadaBets.map(bet => {
         const locked = customBetsLocked(bet);
         const myGuess = (currentUser.customBetAnswers && currentUser.customBetAnswers[bet.id]) ? currentUser.customBetAnswers[bet.id].guess : "";
+        const hasSavedAnswer = !!myGuess;
+        let statusText;
+        if(locked){
+          statusText = "Ya cerró — no se puede cambiar.";
+        }else if(hasSavedAnswer){
+          statusText = bet.closesAtRound
+            ? `Puedes modificar tu respuesta hasta antes de que inicie la Jornada ${bet.closesAtRound}.`
+            : "Puedes modificar tu respuesta cuando quieras.";
+        }else{
+          statusText = bet.closesAtRound ? `Se elige a más tardar antes de que inicie la Jornada ${bet.closesAtRound}.` : "Escribe tu apuesta.";
+        }
         return `
         <div class="card" style="margin-bottom:14px;">
           <div class="eyebrow">🎯 ${esc(bet.label)} (+${bet.points} pts si le atinas)</div>
-          <p class="muted" style="margin-top:-4px;">${locked ? "Ya cerró — no se puede cambiar." : (bet.closesAtRound ? `Se elige a más tardar antes de que inicie la Jornada ${bet.closesAtRound}.` : "Escribe tu apuesta.")}</p>
+          <p class="muted" style="margin-top:-4px;">${statusText}</p>
           <div class="row2">
             <input type="text" id="qz-cb-input-${bet.id}" placeholder="Escribe tu respuesta" value="${esc(myGuess)}" ${locked ? "disabled" : ""}>
             ${locked ? "" : `<button class="btn btn-gold" data-cb-save="${bet.id}">Guardar</button>`}
@@ -2086,6 +2098,7 @@
         }
         toast(ok ? "✅ Listo, tu respuesta quedó guardada." : "No se pudo guardar, intenta de nuevo");
         btn.disabled = false;
+        if(ok) renderJornada(main);
       });
     });
     root.querySelectorAll("[data-jf]").forEach(btn => {
