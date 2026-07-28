@@ -367,6 +367,8 @@
     #quiniela-root .qz-tab{ min-height:44px; display:inline-flex; align-items:center; }
     #quiniela-root .qz-help-btn{ width:44px; height:44px; font-size:18px; }
     #quiniela-root .section-title{ flex-wrap:wrap; row-gap:8px; }
+    #quiniela-root .card-primary{ padding:16px; }
+    #quiniela-root .clock-card{ padding:14px 16px; }
   }
 
 
@@ -1284,16 +1286,45 @@
   // UX-011: one shared implementation of Guardando/Guardado/Error+Reintentar,
   // used by every place that saves picks — local selections are never touched
   // here, only re-sent, so a failed save never reverts what someone picked.
+  //
+  // Save Confidence (Sprint 12A): saves for the same status slot are not
+  // sequenced by the network, so responses can arrive out of order. A
+  // sequence number per status-element id guarantees the acceptance
+  // criterion: a stale response can never overwrite the visual state
+  // produced by a more recent request, whether that more recent request
+  // succeeded or failed. The live element is re-resolved by id at write
+  // time (not the closure reference) so a response that resolves after the
+  // user navigated away and back still lands on what's actually on screen.
+  //
+  // That id-based re-resolution alone isn't enough: if the participant
+  // switches (or logs out, or a different participant opens the same
+  // jornada) while a save is still in flight, a node with the same id can
+  // exist again but now belong to someone else's screen. The full operation
+  // context (who started the save, in which quiniela, for which status
+  // slot) is captured up front and re-checked before touching the DOM or
+  // firing onSuccess — a response only ever applies to the exact session
+  // that started it.
+  const saveSequence = {};
   async function attemptSavePicks(statusEl, round, onSuccess){
+    const seqKey = statusEl.id;
+    const mySeq = (saveSequence[seqKey] = (saveSequence[seqKey] || 0) + 1);
+    const context = { participantId: currentUser.id, slug: SLUG, roundId: round.id, seqKey };
     statusEl.innerHTML = `<span class="muted">Guardando…</span>`;
-    const result = await setPicksWithError(currentUser.id, myPicks);
+    const result = await setPicksWithError(context.participantId, myPicks);
+    const contextStillValid = saveSequence[seqKey] === mySeq
+      && !!currentUser && currentUser.id === context.participantId
+      && SLUG === context.slug;
+    if(!contextStillValid) return result.ok; // stale response, or the session/participant changed since — never touch the screen
+    const liveEl = document.getElementById(seqKey) || statusEl;
     if(result.ok){
-      statusEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Guardado</span>`;
+      liveEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Guardado</span>`;
       if(onSuccess) onSuccess();
+    }else if(result.error === "round_locked"){
+      liveEl.innerHTML = `<span style="color:var(--red);">La jornada ya cerró. Ya no es posible modificar estos pronósticos.</span>`;
     }else{
-      statusEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${round.id}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
+      liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${round.id}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
       const retryBtn = document.getElementById("qz-retry-picks-" + round.id);
-      if(retryBtn) retryBtn.addEventListener("click", () => attemptSavePicks(statusEl, round, onSuccess));
+      if(retryBtn) retryBtn.addEventListener("click", () => attemptSavePicks(liveEl, round, onSuccess));
     }
     return result.ok;
   }
@@ -2173,6 +2204,7 @@
     const penalty = meta.paymentPenalty;
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
+    const heroCoversPending = !!(heroRound && pending && pending.round.id === heroRound.id);
     const aloneAsAdmin = currentUser.isAdmin && meta.participants.length <= 1;
     const adminNoRoundsYet = currentUser.isAdmin && meta.rounds.length === 0;
     // Only real match picks count as "has predicted before" — jornada-scope custom
@@ -2197,16 +2229,14 @@
       ` : ``)}
       ${heroRound ? `
         <div class="card-primary" style="text-align:center;">
-          <div class="eyebrow" style="justify-content:center;display:flex;">🔥 Jornada ${heroRound.number}</div>
-          ${!hasEverPicked ? `<p class="muted" style="margin:0 0 4px;">Aquí eliges quién gana cada partido.</p>` : ``}
-          <div class="mono" id="qz-hero-clock" style="font-size:30px;margin:6px 0 10px;color:var(--pitch-dark);">⏰ ${esc(shortCountdown(heroRound.deadline))}</div>
+          <div class="eyebrow" style="justify-content:center;display:flex;">Jornada ${heroRound.number}</div>
           ${pending && pending.round.id === heroRound.id
             ? `<p style="margin:0 0 16px;">Te faltan <strong>${pending.missing}</strong> de ${pending.total} partidos.</p>`
             : `<p style="margin:0 0 16px;color:var(--pitch-light);font-weight:700;">✅ Ya registraste todos tus pronósticos.</p>`}
           <button class="btn btn-primary" id="qz-hero-continue" style="width:100%;padding:14px;font-size:16px;">${!hasEverPicked ? "Hacer mi primera predicción" : "Continuar"}</button>
         </div>
       ` : ``}
-      <div id="qz-pending-banner">${pending ? `
+      <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
           <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
@@ -2263,7 +2293,9 @@
     const heroContinueBtn = document.getElementById("qz-hero-continue");
     if(heroContinueBtn){
       heroContinueBtn.addEventListener("click", () => {
-        document.getElementById("qz-jornada-list").scrollIntoView({ behavior: "smooth", block: "start" });
+        const firstMatch = document.querySelector("#qz-jornada-list .match-card");
+        const target = firstMatch || document.getElementById("qz-jornada-list");
+        if(target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     }
     root.querySelectorAll("[data-cb-save]").forEach(btn => {
@@ -2322,7 +2354,7 @@
 
     rounds.forEach(round => {
       const box = document.getElementById("qz-round-" + round.id);
-      if(jornadaFilter === "porjugar") renderRoundVoting(box, round);
+      if(jornadaFilter === "porjugar") renderRoundVoting(box, round, round.id === (heroRound && heroRound.id));
       else if(jornadaFilter === "envivo") renderRoundLocked(box, round);
       else renderRoundPlayed(box, round);
     });
@@ -2334,10 +2366,6 @@
           const el = document.getElementById("qz-clockbody-" + round.id);
           if(el) el.innerHTML = clockDigitsHtml(round.deadline);
         });
-        if(heroRound && !isRoundLocked(heroRound)){
-          const heroEl = document.getElementById("qz-hero-clock");
-          if(heroEl) heroEl.textContent = "⏰ " + shortCountdown(heroRound.deadline);
-        }
       }, 1000);
     }
   }
@@ -2371,12 +2399,12 @@
   }
 
   // "Por jugar": open for voting, live countdown
-  function renderRoundVoting(box, round){
+  function renderRoundVoting(box, round, isHeroRound){
     const roundPicks = myPicks[round.id] || {};
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     box.innerHTML = `
       <div class="clock-card" style="margin-bottom:14px;">
-        <div class="clock-label">Jornada ${round.number} · cierre de quiniela</div>
+        <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `Jornada ${round.number} · cierre de quiniela`}</div>
         <div id="qz-clockbody-${round.id}">${clockDigitsHtml(round.deadline)}</div>
       </div>
       <div id="qz-matches-${round.id}"></div>
