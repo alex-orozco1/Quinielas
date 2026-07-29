@@ -177,7 +177,7 @@
   /* clock */
   #quiniela-root .clock-card{
     background: linear-gradient(180deg, var(--pitch-dark), var(--pitch));
-    color:var(--chalk); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;
+    color:var(--chalk); border-radius:var(--radius); padding:7px 14px; margin-bottom:10px;
     box-shadow:var(--shadow); position:relative; overflow:hidden;
   }
   #quiniela-root .clock-card::after{
@@ -185,16 +185,16 @@
     background: radial-gradient(circle at 90% -10%, rgba(227,178,60,0.25), transparent 55%);
     pointer-events:none;
   }
-  #quiniela-root .clock-label{ font-size:12px; text-transform:uppercase; letter-spacing:0.1em; opacity:0.75; margin-bottom:8px; }
+  #quiniela-root .clock-label{ font-size:12px; text-transform:uppercase; letter-spacing:0.1em; opacity:0.75; margin-bottom:5px; }
   #quiniela-root .clock-digits{
     display:flex; gap:8px; flex-wrap:wrap;
   }
   #quiniela-root .clock-seg{
     background:rgba(0,0,0,0.28); border:1px solid rgba(227,178,60,0.35);
-    border-radius:8px; padding:8px 12px; min-width:58px; text-align:center;
+    border-radius:8px; padding:5px 8px; min-width:54px; text-align:center;
   }
-  #quiniela-root .clock-seg .num{ font-size:26px; font-weight:700; color:var(--gold); display:block; }
-  #quiniela-root .clock-seg .unit{ font-size:9.5px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.7; }
+  #quiniela-root .clock-seg .num{ font-size:18px; font-weight:700; color:var(--gold); display:block; }
+  #quiniela-root .clock-seg .unit{ font-size:9px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.7; }
   #quiniela-root .clock-closed{ font-size:15px; font-weight:600; color:var(--gold); }
 
   /* match card */
@@ -362,13 +362,12 @@
   @media (max-width:480px){
     #quiniela-root .qz-brand .display{ font-size:24px; }
     #quiniela-root .name-grid{ grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); }
-    #quiniela-root .clock-seg{ min-width:46px; padding:6px 8px; }
-    #quiniela-root .clock-seg .num{ font-size:20px; }
+    #quiniela-root .clock-seg{ min-width:42px; padding:5px 6px; }
+    #quiniela-root .clock-seg .num{ font-size:16px; }
     #quiniela-root .qz-tab{ min-height:44px; display:inline-flex; align-items:center; }
     #quiniela-root .qz-help-btn{ width:44px; height:44px; font-size:18px; }
     #quiniela-root .section-title{ flex-wrap:wrap; row-gap:8px; }
-    #quiniela-root .card-primary{ padding:16px; }
-    #quiniela-root .clock-card{ padding:14px 16px; }
+    #quiniela-root .clock-card{ padding:7px 12px; }
   }
 
 
@@ -1642,6 +1641,19 @@
     try{ window.localStorage.setItem(onboardingKey(tabId), "1"); }catch(e){}
   }
 
+  // Sprint 13.1 — tracks, per quiniela, whether the organizer has ever shared
+  // the invite link. Same disposable localStorage pattern as onboarding above
+  // — purely a UI nudge, not persisted server-side, not a business rule.
+  function sharedInviteKey(slug){ return "qracks_shared_invite_" + (slug || "root"); }
+  function hasSharedInvite(slug){
+    try{ return window.localStorage.getItem(sharedInviteKey(slug)) === "1"; }
+    catch(e){ return true; }
+  }
+  function markSharedInvite(slug){
+    try{ window.localStorage.setItem(sharedInviteKey(slug), "1"); }catch(e){}
+  }
+
+
   function onboardingCardHtml(tabId){
     const content = ONBOARDING_CONTENT[tabId];
     if(!content) return "";
@@ -1685,7 +1697,7 @@
           <button class="btn btn-ghost btn-sm qz-help-btn" data-help-btn="${tabId}" title="Ver consejos" aria-label="Ver consejos de esta pantalla" style="border-radius:50%;padding:0;font-size:15px;"><span aria-hidden="true">💡</span></button>
         </div>
       </div>
-      ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:14px;">${esc(intro)}</p>` : ``}
+      ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:${tabId === "jornada" ? "8px" : "14px"};">${esc(intro)}</p>` : ``}
       ${onboardingCardHtml(tabId)}
     `;
   }
@@ -2205,37 +2217,24 @@
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
     const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
     const heroCoversPending = !!(heroRound && pending && pending.round.id === heroRound.id);
-    const aloneAsAdmin = currentUser.isAdmin && meta.participants.length <= 1;
     const adminNoRoundsYet = currentUser.isAdmin && meta.rounds.length === 0;
-    // Only real match picks count as "has predicted before" — jornada-scope custom
-    // bet answers live under __extra in the same object and don't count.
-    const hasEverPicked = Object.values(myPicks || {}).some(roundPicks =>
-      Object.keys(roundPicks || {}).some(k => k !== "__extra")
-    );
+    const adminSetupInProgress = currentUser.isAdmin && !(meta.rounds.length > 0 && hasSharedInvite(SLUG));
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada")}
-      ${adminNoRoundsYet ? `
-        <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
-          <div class="eyebrow" style="color:var(--gold-dim);">🚀 Crea tu primera jornada</div>
-          <p style="margin:4px 0 12px;">Agrega los partidos para abrir la primera jornada.</p>
+      ${adminSetupInProgress ? (adminNoRoundsYet ? `
+        <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:8px;">
+          <p style="margin:0 0 4px;font-weight:700;">✅ Quiniela creada</p>
+          <p class="muted" style="margin:8px 0 4px;font-size:12.5px;text-transform:uppercase;letter-spacing:0.06em;">Siguiente paso recomendado</p>
+          <p style="margin:0 0 4px;font-weight:700;">☐ Crear la primera jornada</p>
+          <p class="muted" style="margin:0 0 12px;">Después podrás invitar a tus participantes.</p>
           <button class="btn btn-gold btn-sm" id="qz-create-first-jornada">Crear mi primera jornada</button>
         </div>
-      ` : (aloneAsAdmin ? `
-        <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
-          <div class="eyebrow" style="color:var(--gold-dim);">👋 Todavía eres el único aquí</div>
-          <p style="margin:4px 0 12px;">Comparte tu enlace para que se unan tus amigos.</p>
-          <button class="btn btn-gold btn-sm" id="qz-invite-participants">Invitar participantes</button>
+      ` : `
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:4px 0;margin-bottom:8px;">
+          <p class="muted" style="margin:0;font-size:12.5px;">✅ Jornada lista para jugar</p>
+          <button class="btn btn-gold btn-sm" id="qz-invite-participants" style="padding:4px 12px;font-size:13px;">Invitar participantes</button>
         </div>
-      ` : ``)}
-      ${heroRound ? `
-        <div class="card-primary" style="text-align:center;">
-          <div class="eyebrow" style="justify-content:center;display:flex;">Jornada ${heroRound.number}</div>
-          ${pending && pending.round.id === heroRound.id
-            ? `<p style="margin:0 0 16px;">Te faltan <strong>${pending.missing}</strong> de ${pending.total} partidos.</p>`
-            : `<p style="margin:0 0 16px;color:var(--pitch-light);font-weight:700;">✅ Ya registraste todos tus pronósticos.</p>`}
-          <button class="btn btn-primary" id="qz-hero-continue" style="width:100%;padding:14px;font-size:16px;">${!hasEverPicked ? "Hacer mi primera predicción" : "Continuar"}</button>
-        </div>
-      ` : ``}
+      `) : ``}
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
@@ -2273,7 +2272,7 @@
         </div>
       `;
       }).join("")}
-      <div class="qz-tabs" id="qz-jornada-filters" style="margin-bottom:14px;">
+      <div class="qz-tabs" id="qz-jornada-filters" style="margin-bottom:8px;">
         ${filters.map(f => `<button class="qz-tab" data-jf="${f.id}" style="color:${f.id===jornadaFilter?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${f.id===jornadaFilter?'var(--gold)':'transparent'};">${f.label} ${counts[f.id]?`· ${counts[f.id]}`:''}</button>`).join("")}
       </div>
       <div id="qz-jornada-list"></div>
@@ -2288,14 +2287,6 @@
         adminSubTab = "rondas";
         await render();
         document.getElementById("qz-admin-body")?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-    }
-    const heroContinueBtn = document.getElementById("qz-hero-continue");
-    if(heroContinueBtn){
-      heroContinueBtn.addEventListener("click", () => {
-        const firstMatch = document.querySelector("#qz-jornada-list .match-card");
-        const target = firstMatch || document.getElementById("qz-jornada-list");
-        if(target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     }
     root.querySelectorAll("[data-cb-save]").forEach(btn => {
@@ -3219,10 +3210,28 @@
 
   // "Participación": who has/hasn't submitted picks for open rounds — status only, never reveals picks
   async function copyAccessLink(){
+    if(currentUser && currentUser.isAdmin && meta.rounds.length === 0){
+      const wantsToCreateJornada = await qzConfirm(
+        "Aún no has creado ninguna jornada.\n\nPuedes compartir el enlace ahora, pero tus participantes no podrán realizar pronósticos hasta que agregues una jornada.",
+        { confirmLabel: "Crear jornada", cancelLabel: "Compartir de todas formas", destructive: false }
+      );
+      if(wantsToCreateJornada){
+        activeTab = "admin";
+        adminSubTab = "rondas";
+        await render();
+        document.getElementById("qz-admin-body")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      // "Compartir de todas formas" — falls through to the normal share below, unchanged.
+    }
     const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
     try{
       await navigator.clipboard.writeText(link);
       toast("✅ Listo, el link se copió.");
+      if(currentUser && currentUser.isAdmin){
+        markSharedInvite(SLUG);
+        await render();
+      }
     }catch(e){
       toast("No se pudo copiar, intenta de nuevo");
     }
