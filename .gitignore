@@ -1,0 +1,8 @@
+# Database backups
+backups/
+backups-*/
+dumps/
+exports/
+
+# SQL dumps
+*.sql
