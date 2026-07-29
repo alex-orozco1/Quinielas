@@ -1608,20 +1608,20 @@
   // ---------- onboarding (UX only — first-time explainer cards, per device, per screen) ----------
   const ONBOARDING_CONTENT = {
     jornada: {
-      title: "Haz tus pronósticos",
-      text: "Elige el resultado de cada partido. Puedes cambiarlo hasta que empiece, y cada acierto suma puntos."
+      title: "Jornada",
+      text: "Aquí realizas tus pronósticos antes de que cierre la jornada. Tus picks se guardan automáticamente cuando los seleccionas."
     },
     tabla: {
-      title: "Tabla de posiciones",
-      text: "Aquí ves tu posición frente a los demás. Se actualiza con cada resultado."
+      title: "Tabla",
+      text: "Aquí puedes consultar la clasificación actual de la quiniela. Las posiciones se actualizan conforme avanzan los resultados."
     },
     historial: {
       title: "Historial",
-      text: "Revisa jornadas anteriores y cómo va la competencia."
+      text: "Consulta jornadas anteriores y revisa cómo han quedado los resultados."
     },
     admin: {
-      title: "Panel del administrador",
-      text: "Administra participantes, jornadas y resultados."
+      title: "Admin",
+      text: "Aquí administras tu quiniela. Puedes crear jornadas, gestionar participantes y modificar la configuración."
     }
   };
   const SCREEN_INTRO = {
@@ -1654,20 +1654,15 @@
   }
 
 
-  function onboardingCardHtml(tabId){
+  function onboardingCardHtml(tabId, suppressAutoShow){
     const content = ONBOARDING_CONTENT[tabId];
     if(!content) return "";
-    // "jornada" already has an always-visible SCREEN_INTRO line saying the same
-    // thing, so its onboarding card only appears on demand (💡 help button),
-    // never automatically — avoids repeating the same idea twice on the very
-    // first screen a new user sees.
-    const autoShowEligible = tabId === "jornada" ? false : !hasSeenOnboarding(tabId);
-    const shouldShow = onboardingForceShow[tabId] || autoShowEligible;
+    const shouldShow = onboardingForceShow[tabId] || (!suppressAutoShow && !hasSeenOnboarding(tabId));
     if(!shouldShow) return "";
     return `
-      <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;" data-onboarding-card="${tabId}">
-        <div class="eyebrow" style="color:var(--gold-dim);">${esc(content.title)}</div>
-        <p style="margin:4px 0 12px;">${esc(content.text)}</p>
+      <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:5px;padding:7px 12px;" data-onboarding-card="${tabId}">
+        <div class="eyebrow" style="color:var(--gold-dim);margin-bottom:2px;">Consejo</div>
+        <p style="margin:0 0 5px;font-size:14.5px;line-height:1.35;">${esc(content.text)}</p>
         <button class="btn btn-gold btn-sm" data-onboarding-dismiss="${tabId}">Entendido</button>
       </div>
     `;
@@ -1687,7 +1682,7 @@
 
   // Builds the title row (with a "?" help button) + 2-line screen intro + onboarding card,
   // for the top of a tab. Renderer must call wireScreenHeader(main, tabId) after inserting.
-  function screenHeaderHtml(tabId, title, extraButtonsHtml){
+  function screenHeaderHtml(tabId, title, extraButtonsHtml, suppressOnboardingAutoShow){
     const intro = SCREEN_INTRO[tabId] || "";
     return `
       <div class="section-title">
@@ -1698,7 +1693,7 @@
         </div>
       </div>
       ${intro ? `<p class="muted" style="margin-top:-6px;margin-bottom:${tabId === "jornada" ? "8px" : "14px"};">${esc(intro)}</p>` : ``}
-      ${onboardingCardHtml(tabId)}
+      ${onboardingCardHtml(tabId, suppressOnboardingAutoShow)}
     `;
   }
   function wireScreenHeader(container, tabId){
@@ -2220,7 +2215,7 @@
     const adminNoRoundsYet = currentUser.isAdmin && meta.rounds.length === 0;
     const adminSetupInProgress = currentUser.isAdmin && !(meta.rounds.length > 0 && hasSharedInvite(SLUG));
     main.innerHTML = `
-      ${screenHeaderHtml("jornada", "Jornada")}
+      ${screenHeaderHtml("jornada", "Jornada", null, adminSetupInProgress)}
       ${adminSetupInProgress ? (adminNoRoundsYet ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:8px;">
           <p style="margin:0 0 4px;font-weight:700;">✅ Quiniela creada</p>
@@ -2566,9 +2561,14 @@
       return `<span style="color:var(--red);font-weight:700;">▼${rank - prev}</span>`;
     }
     const fee = meta.settings.entryFee;
+    const feeIsValid = typeof fee === "number" && !isNaN(fee);
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
     const hasScoredResults = meta.rounds.some(r => r.resultsPublished);
+    const feeDisplay = feeIsValid ? `$${fee}` : "Sin definir";
+    const recaudadoDisplay = feeIsValid
+      ? `$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span>`
+      : `<span style="font-size:16px;">Pendiente</span>`;
     main.innerHTML = `
       ${screenHeaderHtml("tabla", "Tabla de posiciones", `
         ${hasScoredResults ? `<button class="btn btn-gold btn-sm" id="qz-share-card">📸 Compartir posiciones</button>` : ``}
@@ -2576,8 +2576,8 @@
       `)}
       <div class="card">
         <div class="row2">
-          <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
-          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span></div></div>
+          <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">${feeDisplay}</div></div>
+          <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">${recaudadoDisplay}</div></div>
         </div>
       </div>
       ${!hasScoredResults ? `
