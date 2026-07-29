@@ -2545,6 +2545,18 @@
   }
 
   // ---------- TABLA (standings) ----------
+  // Shared by renderTabla and renderSpectatorView — a single source of truth
+  // for how "cuota por persona"/"recaudado" render, so the undefined/NaN fix
+  // only has to exist in one place.
+  function feeSummaryHtml(fee, paidCount, totalP){
+    const feeIsValid = typeof fee === "number" && !isNaN(fee);
+    const feeDisplay = feeIsValid ? `$${fee}` : "Sin definir";
+    const recaudadoDisplay = feeIsValid
+      ? `$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span>`
+      : `<span style="font-size:16px;">Pendiente</span>`;
+    return { feeDisplay, recaudadoDisplay };
+  }
+
   async function renderTabla(main){
     main.innerHTML = `<div class="card"><p class="muted">Calculando posiciones…</p></div>`;
     await ensureAllPicksLoaded();
@@ -2561,14 +2573,10 @@
       return `<span style="color:var(--red);font-weight:700;">▼${rank - prev}</span>`;
     }
     const fee = meta.settings.entryFee;
-    const feeIsValid = typeof fee === "number" && !isNaN(fee);
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
     const hasScoredResults = meta.rounds.some(r => r.resultsPublished);
-    const feeDisplay = feeIsValid ? `$${fee}` : "Sin definir";
-    const recaudadoDisplay = feeIsValid
-      ? `$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span>`
-      : `<span style="font-size:16px;">Pendiente</span>`;
+    const { feeDisplay, recaudadoDisplay } = feeSummaryHtml(fee, paidCount, totalP);
     main.innerHTML = `
       ${screenHeaderHtml("tabla", "Tabla de posiciones", `
         ${hasScoredResults ? `<button class="btn btn-gold btn-sm" id="qz-share-card">📸 Compartir posiciones</button>` : ``}
@@ -5089,6 +5097,7 @@
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const totalP = meta.participants.length;
+    const { feeDisplay, recaudadoDisplay } = feeSummaryHtml(fee, paidCount, totalP);
     const published = meta.rounds.filter(r=>r.resultsPublished).slice().reverse();
     root.innerHTML = `
       <div class="qz-header">
@@ -5101,8 +5110,8 @@
         <div class="section-title"><span class="display">Tabla de posiciones</span></div>
         <div class="card">
           <div class="row2">
-            <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">$${fee}</div></div>
-            <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">$${paidCount*fee} <span class="muted" style="font-family:'Manrope';font-size:13px;">de $${totalP*fee}</span></div></div>
+            <div><div class="eyebrow">Cuota por persona</div><div class="display" style="font-size:26px;">${feeDisplay}</div></div>
+            <div><div class="eyebrow">Recaudado</div><div class="display" style="font-size:26px;">${recaudadoDisplay}</div></div>
           </div>
         </div>
         <div class="card" style="padding:8px 12px;">
