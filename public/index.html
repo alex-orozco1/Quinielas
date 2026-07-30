@@ -1824,17 +1824,27 @@
     return isRoundLocked(closingRound);
   }
 
-  function customBetPointsFor(participantId, participantMap){
+  function customBetPointsFor(participantId, participantMap, cutoffRoundNumber){
     let pts = 0;
     if(!meta.customBets || !meta.customBets.length) return pts;
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     if(!p) return pts;
+    // "temporada" bets have no round of their own, so they can't be placed on
+    // any specific past jornada. They must never leak backwards into earlier
+    // chart points (that would let a bet graded today rewrite what J1's real
+    // position was) — only "now" (cutoffRoundNumber omitted, the official
+    // table's case) or the most recent played round (progressData()'s final
+    // chart point, which represents "as of today") should see them.
+    const latestPlayedRoundNumber = Math.max(0, ...meta.rounds.filter(r => r.resultsPublished).map(r => r.number));
+    const includeTemporadaBets = cutoffRoundNumber == null || cutoffRoundNumber >= latestPlayedRoundNumber;
     meta.customBets.forEach(bet => {
       if(bet.scope === "temporada"){
+        if(!includeTemporadaBets) return;
         const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
         if(ans && ans.correct === true) pts += bet.points;
       } else if(bet.scope === "jornada"){
         meta.rounds.forEach(r => {
+          if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
           const res = r.customBetResults && r.customBetResults[bet.id];
           if(res && res[participantId] === true) pts += bet.points;
         });
@@ -1843,12 +1853,13 @@
     return pts;
   }
 
-  function pointsFor(participantId, participantMap){
+  function pointsFor(participantId, participantMap, cutoffRoundNumber){
     const picks = allPicksCache[participantId] || {};
     const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
     let pts = 0, played = 0;
     meta.rounds.forEach(r => {
       if(!r.resultsPublished) return;
+      if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
       r.matches.forEach(m => {
         const result = r.results ? r.results[m.id] : null;
         if(!result) return;
@@ -1858,10 +1869,10 @@
       });
     });
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    pts += customBetPointsFor(participantId, participantMap);
+    pts += customBetPointsFor(participantId, participantMap, cutoffRoundNumber);
     const penalty = meta.paymentPenalty;
     if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
-      const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
+      const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound && (cutoffRoundNumber == null || r.number <= cutoffRoundNumber)).length;
       const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
       pts -= passedRounds * perRound;
     }
@@ -2616,8 +2627,8 @@
       <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente · ▲▼ = movimiento desde la jornada pasada</p>
       `}
       <div class="card">
-        <div class="section-title"><span class="display" style="font-size:20px;">Cómo llegaron aquí</span></div>
-        <p class="muted" style="margin-top:-4px;">Puntos acumulados después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
+        <div class="section-title"><span class="display" style="font-size:20px;">Evolución de posiciones</span></div>
+        <p class="muted" style="margin-top:-4px;">Sigue cómo cambió la posición de cada participante después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
         <div id="qz-chart-legend" style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0;"></div>
         <div id="qz-chart-svg" style="overflow-x:auto;"></div>
       </div>
@@ -2748,20 +2759,23 @@
     }, "image/png");
   }
 
+  // Sprint 13.6.1 — series[id] now holds the participant's OFFICIAL rank
+  // (same dense-rank tie-break as the standings table, via computeDenseRanks)
+  // as of each played round, instead of raw cumulative points. Uses the same
+  // pointsFor() formula (with its new optional cutoff) so this can never
+  // drift from the official table — it's the exact same points, just
+  // evaluated "as of round N" instead of "right now".
   function progressData(){
     const played = meta.rounds.filter(r => r.resultsPublished).slice().sort((a,b)=>a.number-b.number);
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
     const series = {};
-    meta.participants.forEach(p => {
-      let cum = 0;
-      series[p.id] = played.map(r => {
-        r.matches.forEach(m => {
-          const result = r.results[m.id];
-          if(!result) return;
-          const pick = (allPicksCache[p.id]||{})[r.id] ? (allPicksCache[p.id][r.id]||{})[m.id] : null;
-          if(pick && pick === result) cum++;
-        });
-        return cum;
-      });
+    meta.participants.forEach(p => { series[p.id] = []; });
+    played.forEach(r => {
+      const standingsAsOfRound = meta.participants
+        .map(p => ({ id: p.id, pts: pointsFor(p.id, participantMap, r.number).pts }))
+        .sort((a,b) => b.pts - a.pts);
+      const ranks = computeDenseRanks(standingsAsOfRound);
+      standingsAsOfRound.forEach((p, i) => { series[p.id].push(ranks[i]); });
     });
     return { rounds: played.map(r=>r.number), series };
   }
@@ -2798,17 +2812,18 @@
     });
 
     const W = Math.max(420, rounds.length * 60), H = 240, padL = 34, padR = 14, padT = 14, padB = 28;
-    const maxY = Math.max(1, ...Array.from(chartSelectedIds).flatMap(id => series[id] || [0]));
+    const maxRank = Math.max(1, meta.participants.length);
     const x = (i) => padL + (i * (W - padL - padR) / Math.max(1, rounds.length-1));
-    const y = (v) => H - padB - (v * (H - padT - padB) / maxY);
+    // Position 1 belongs at the top of the chart; the last place at the bottom
+    // — the opposite direction from a points chart, where higher is better and
+    // also higher on screen. Here higher RANK NUMBER (worse) sits lower.
+    const y = (rank) => maxRank <= 1 ? (padT + (H-padT-padB)/2) : padT + ((rank-1) * (H - padT - padB) / (maxRank-1));
 
     const gridLines = [];
-    const steps = 4;
-    for(let i=0;i<=steps;i++){
-      const val = Math.round((maxY/steps)*i);
-      const yy = y(val);
+    for(let rank=1; rank<=maxRank; rank++){
+      const yy = y(rank);
       gridLines.push(`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`);
-      gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Manrope, sans-serif">${val}</text>`);
+      gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Manrope, sans-serif">${rank}°</text>`);
     }
     const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Manrope, sans-serif">J${rn}</text>`).join("");
 
