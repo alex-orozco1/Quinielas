@@ -2812,19 +2812,35 @@
     });
 
     const W = Math.max(420, rounds.length * 60), H = 240, padL = 34, padR = 14, padT = 14, padB = 28;
-    const maxRank = Math.max(1, meta.participants.length);
+    // La escala se basa en la posición máxima REAL observada en el historial
+    // completo (todos los participantes, todas las jornadas) — no en cuántos
+    // participantes existen ni en cuáles chips están activos ahora mismo.
+    const maxRank = Math.max(1, ...Object.values(series).flat());
     const x = (i) => padL + (i * (W - padL - padR) / Math.max(1, rounds.length-1));
     // Position 1 belongs at the top of the chart; the last place at the bottom
     // — the opposite direction from a points chart, where higher is better and
     // also higher on screen. Here higher RANK NUMBER (worse) sits lower.
     const y = (rank) => maxRank <= 1 ? (padT + (H-padT-padB)/2) : padT + ((rank-1) * (H - padT - padB) / (maxRank-1));
 
+    const ranksToLabel = [];
+    if(maxRank <= 20){
+      for(let rank=1; rank<=maxRank; rank++) ranksToLabel.push(rank);
+    } else {
+      // Reduce automáticamente la cantidad de marcas (ej. 25 participantes -> 1,5,10,15,20,25)
+      // sin tocar la escala/posición real de ninguna línea — solo qué se etiqueta.
+      const rawStep = Math.ceil(maxRank / 5);
+      const step = Math.max(5, Math.ceil(rawStep / 5) * 5);
+      const seen = new Set([1]);
+      for(let rank = step; rank < maxRank; rank += step) seen.add(rank);
+      seen.add(maxRank);
+      ranksToLabel.push(...Array.from(seen).sort((a,b)=>a-b));
+    }
     const gridLines = [];
-    for(let rank=1; rank<=maxRank; rank++){
+    ranksToLabel.forEach(rank => {
       const yy = y(rank);
       gridLines.push(`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`);
       gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Manrope, sans-serif">${rank}°</text>`);
-    }
+    });
     const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Manrope, sans-serif">J${rn}</text>`).join("");
 
     const lines = Array.from(chartSelectedIds).map(id => {
