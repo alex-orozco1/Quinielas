@@ -76,6 +76,13 @@
   #quiniela-root .btn-danger{ background:var(--red); color:#fff; }
   #quiniela-root .btn-danger:hover{ opacity:0.88; }
   #quiniela-root .btn:disabled{ opacity:0.4; cursor:not-allowed; }
+  /* Sprint 13.6.3: el botón "Guardar mis picks" permanece disabled durante
+     los ~2s de confirmación exitosa (para impedir una segunda petición),
+     pero necesita verse con contraste completo, no apagado — esta clase
+     acotada (mismos colores que .btn-primary habilitado) es la única
+     excepción a la regla global de arriba, y solo aplica mientras está
+     presente en el propio botón de guardado manual. */
+  #quiniela-root .btn.qz-save-success:disabled{ opacity:1; cursor:default; background:var(--pitch-dark); color:var(--chalk); }
   #quiniela-root .btn-sm{ padding:6px 12px; font-size:12.5px; border-radius:8px; }
 
   /* header / scoreboard */
@@ -1304,11 +1311,16 @@
   // firing onSuccess — a response only ever applies to the exact session
   // that started it.
   const saveSequence = {};
-  async function attemptSavePicks(statusEl, round, onSuccess){
+  // Sprint 13.6.3 — guarda de secuencia independiente para el estado visual
+  // del botón "Guardar mis picks" (Guardando.../✓ Pronósticos guardados/error).
+  // No sustituye ni toca saveSequence de arriba; solo evita que un revert
+  // tardío de un clic viejo pise el estado de un reintento más reciente.
+  const saveButtonSeq = {};
+  async function attemptSavePicks(statusEl, round, onSuccess, suppressLoadingAndSuccess, onManualRetry){
     const seqKey = statusEl.id;
     const mySeq = (saveSequence[seqKey] = (saveSequence[seqKey] || 0) + 1);
     const context = { participantId: currentUser.id, slug: SLUG, roundId: round.id, seqKey };
-    statusEl.innerHTML = `<span class="muted">Guardando…</span>`;
+    if(!suppressLoadingAndSuccess) statusEl.innerHTML = `<span class="muted">Guardando…</span>`;
     const result = await setPicksWithError(context.participantId, myPicks);
     const contextStillValid = saveSequence[seqKey] === mySeq
       && !!currentUser && currentUser.id === context.participantId
@@ -1316,14 +1328,21 @@
     if(!contextStillValid) return result.ok; // stale response, or the session/participant changed since — never touch the screen
     const liveEl = document.getElementById(seqKey) || statusEl;
     if(result.ok){
-      liveEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Guardado</span>`;
+      if(!suppressLoadingAndSuccess) liveEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Guardado</span>`;
       if(onSuccess) onSuccess();
     }else if(result.error === "round_locked"){
       liveEl.innerHTML = `<span style="color:var(--red);">La jornada ya cerró. Ya no es posible modificar estos pronósticos.</span>`;
     }else{
       liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${round.id}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
       const retryBtn = document.getElementById("qz-retry-picks-" + round.id);
-      if(retryBtn) retryBtn.addEventListener("click", () => attemptSavePicks(liveEl, round, onSuccess));
+      if(retryBtn){
+        // Un error del guardado manual delega su reintento al mismo flujo
+        // visual del botón principal (Guardando…/✓/2s/deshabilitado) — nunca
+        // reintenta en silencio. Sin onManualRetry, el comportamiento es
+        // exactamente el de siempre (autosave, apuestas personalizadas).
+        if(onManualRetry) retryBtn.addEventListener("click", onManualRetry);
+        else retryBtn.addEventListener("click", () => attemptSavePicks(liveEl, round, onSuccess, suppressLoadingAndSuccess));
+      }
     }
     return result.ok;
   }
@@ -2477,9 +2496,49 @@
         });
       });
     });
-    box.querySelector("[data-save]").addEventListener("click", async () => {
+    async function runManualSave(){
       if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
-      await attemptSavePicks(statusEl, round);
+      const saveBtn = box.querySelector("[data-save]");
+      saveBtn.classList.remove("qz-save-success");
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Guardando…";
+      // Este guardado manual toma control total de statusEl: se limpia de
+      // inmediato (borra cualquier resto de un autosave previo, ya sea
+      // "Guardando…" o "✅ Guardado" que siguiera visible) y, al llamar a
+      // attemptSavePicks justo debajo, su propio incremento de saveSequence
+      // (mismo seqKey = statusEl.id que usa el autosave) invalida en el acto
+      // cualquier autosave todavía en vuelo — su respuesta tardía fallará
+      // contextStillValid y nunca volverá a escribir aquí.
+      statusEl.innerHTML = "";
+      saveButtonSeq[round.id] = (saveButtonSeq[round.id] || 0) + 1;
+      const mySeq = saveButtonSeq[round.id];
+      // El 5º argumento (runManualSave) hace que, si esta petición falla, el
+      // botón "Reintentar" que aparece en statusEl vuelva a entrar por este
+      // mismo flujo (Guardando…/✓/2s) en vez de reintentar en silencio.
+      const ok = await attemptSavePicks(statusEl, round, null, true, runManualSave);
+      if(saveButtonSeq[round.id] !== mySeq) return; // un clic más reciente ya tomó el control visual del botón
+      if(ok){
+        saveBtn.textContent = "✓ Pronósticos guardados";
+        saveBtn.classList.add("qz-save-success");
+        saveBtn.disabled = true; // sigue deshabilitado a propósito — qz-save-success cubre el contraste
+        setTimeout(() => {
+          if(saveButtonSeq[round.id] === mySeq){
+            saveBtn.classList.remove("qz-save-success");
+            saveBtn.textContent = "Guardar mis picks";
+            saveBtn.disabled = false;
+          }
+        }, 2000);
+      } else {
+        // El detalle específico del error (incluido round_locked) ya quedó
+        // escrito una sola vez en statusEl por attemptSavePicks — el botón
+        // solo vuelve a su estado normal, listo para reintentar.
+        saveBtn.classList.remove("qz-save-success");
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Guardar mis picks";
+      }
+    }
+    box.querySelector("[data-save]").addEventListener("click", async () => {
+      await runManualSave();
     });
   }
 
