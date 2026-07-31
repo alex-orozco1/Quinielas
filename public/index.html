@@ -305,6 +305,23 @@
   #quiniela-root .icon-x{ background:var(--red); color:#fff; border:none; border-radius:8px; width:36px; height:36px; }
 
   #quiniela-root .badge{ display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:700; padding:3px 9px; border-radius:999px; }
+
+  #quiniela-root .qz-tooltip-wrap{ position:relative; display:inline-flex; }
+  #quiniela-root .qz-tooltip-bubble{
+    position:fixed;
+    background:var(--pitch-dark); color:var(--chalk);
+    font-size:12px; font-weight:600; white-space:normal; text-align:center;
+    max-width:112px; line-height:1.3;
+    padding:6px 10px; border-radius:8px; box-shadow:var(--shadow);
+    opacity:0; pointer-events:none; transform:translateY(-4px);
+    transition:opacity .15s ease, transform .15s ease;
+    z-index:50;
+  }
+  #quiniela-root .qz-tooltip-wrap:hover .qz-tooltip-bubble,
+  #quiniela-root .qz-tooltip-wrap:focus-within .qz-tooltip-bubble,
+  #quiniela-root .qz-tooltip-wrap.qz-tooltip-active .qz-tooltip-bubble{
+    opacity:1; transform:translateY(0);
+  }
   #quiniela-root .badge.paid{ background:#DCEFE1; color:#1B4332; }
   #quiniela-root .badge.unpaid{ background:#F6E1DE; color:#7d251d; }
   #quiniela-root .badge.admin{ background:rgba(227,178,60,0.25); color:var(--gold-dim); }
@@ -1650,6 +1667,81 @@
     admin: "Administra participantes, jornadas y resultados de la quiniela."
   };
   const onboardingForceShow = {};
+  // Sprint 13.6.4 — el ícono 🔗 del header dispara un re-render (vía
+  // copyAccessLink -> render()) que reemplaza su propio nodo. Este flag se
+  // relee cada vez que el header se genera, así el tooltip sigue visible en
+  // el nodo nuevo sin depender de una clase puesta sobre el nodo viejo.
+  let headerShareTooltipVisible = false;
+  let headerShareTooltipTimer = null;
+  let headerTooltipRepositionHandler = null;
+  let headerTooltipOutsideHandler = null;
+  let headerTooltipEscHandler = null;
+
+  function positionShareTooltip(){
+    const bubble = document.querySelector("#qz-header-copy-wrap .qz-tooltip-bubble");
+    const tabsEl = document.querySelector(".qz-tabs");
+    const iconBtn = document.getElementById("qz-header-copy-link");
+    if(!bubble || !tabsEl || !iconBtn) return;
+    const tabsRect = tabsEl.getBoundingClientRect();
+    const iconRect = iconBtn.getBoundingClientRect();
+    bubble.style.top = (tabsRect.bottom + 6) + "px";
+    bubble.style.right = (window.innerWidth - iconRect.right) + "px";
+  }
+
+  function openHeaderShareTooltip(){
+    headerShareTooltipVisible = true;
+    const wrap = document.getElementById("qz-header-copy-wrap");
+    const btn = document.getElementById("qz-header-copy-link");
+    if(wrap) wrap.classList.add("qz-tooltip-active");
+    if(btn) btn.setAttribute("aria-expanded", "true");
+    positionShareTooltip();
+
+    clearTimeout(headerShareTooltipTimer);
+    headerShareTooltipTimer = setTimeout(closeHeaderShareTooltip, 2500);
+
+    headerTooltipRepositionHandler = () => positionShareTooltip();
+    window.addEventListener("resize", headerTooltipRepositionHandler);
+    window.addEventListener("scroll", headerTooltipRepositionHandler, true);
+
+    headerTooltipEscHandler = (e) => { if(e.key === "Escape") closeHeaderShareTooltip(); };
+    document.addEventListener("keydown", headerTooltipEscHandler);
+
+    // El toque/clic que ABRE el tooltip ya terminó de propagarse para cuando
+    // este setTimeout(0) corre — el listener de "tocar fuera" solo empieza a
+    // escuchar eventos futuros, nunca el mismo que lo abrió.
+    setTimeout(() => {
+      headerTooltipOutsideHandler = (e) => {
+        const wrapEl = document.getElementById("qz-header-copy-wrap");
+        if(wrapEl && !wrapEl.contains(e.target)) closeHeaderShareTooltip();
+      };
+      document.addEventListener("click", headerTooltipOutsideHandler, true);
+      document.addEventListener("touchstart", headerTooltipOutsideHandler, true);
+    }, 0);
+  }
+
+  function closeHeaderShareTooltip(){
+    headerShareTooltipVisible = false;
+    clearTimeout(headerShareTooltipTimer);
+    headerShareTooltipTimer = null;
+    const wrap = document.getElementById("qz-header-copy-wrap");
+    const btn = document.getElementById("qz-header-copy-link");
+    if(wrap) wrap.classList.remove("qz-tooltip-active");
+    if(btn) btn.setAttribute("aria-expanded", "false");
+    if(headerTooltipRepositionHandler){
+      window.removeEventListener("resize", headerTooltipRepositionHandler);
+      window.removeEventListener("scroll", headerTooltipRepositionHandler, true);
+      headerTooltipRepositionHandler = null;
+    }
+    if(headerTooltipEscHandler){
+      document.removeEventListener("keydown", headerTooltipEscHandler);
+      headerTooltipEscHandler = null;
+    }
+    if(headerTooltipOutsideHandler){
+      document.removeEventListener("click", headerTooltipOutsideHandler, true);
+      document.removeEventListener("touchstart", headerTooltipOutsideHandler, true);
+      headerTooltipOutsideHandler = null;
+    }
+  }
 
   function onboardingKey(tabId){ return "qracks_onboarding_seen_" + tabId; }
   function hasSeenOnboarding(tabId){
@@ -2141,7 +2233,7 @@
             ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
-            ${currentUser.isAdmin ? `<button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Compartir esta quiniela" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button>` : ``}
+            ${currentUser.isAdmin ? `<span class="qz-tooltip-wrap${headerShareTooltipVisible ? ' qz-tooltip-active' : ''}" id="qz-header-copy-wrap"><button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Compartir esta quiniela" aria-label="Compartir esta quiniela" aria-describedby="qz-header-copy-tooltip" aria-expanded="${headerShareTooltipVisible ? 'true' : 'false'}" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button><span class="qz-tooltip-bubble" id="qz-header-copy-tooltip" role="tooltip">Compartir esta quiniela</span></span>` : ``}
             <div class="qz-user-dropdown">
               <button class="qz-user-toggle" id="qz-user-toggle">${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""} <span>▾</span></button>
               <div class="qz-user-menu" id="qz-user-menu" ${userMenuOpen ? "" : "hidden"}>
@@ -2167,7 +2259,34 @@
       if(userMenuOpen){ userMenuOpen = false; const m = document.getElementById("qz-user-menu"); if(m) m.hidden = true; }
     }, { once: true });
     const headerCopyBtn = document.getElementById("qz-header-copy-link");
-    if(headerCopyBtn) headerCopyBtn.addEventListener("click", copyAccessLink);
+    if(headerCopyBtn){
+      positionShareTooltip();
+      headerCopyBtn.addEventListener("mouseenter", positionShareTooltip);
+      headerCopyBtn.addEventListener("focus", positionShareTooltip);
+      // :hover no es confiable para distinguir touch de mouse (algunos
+      // navegadores lo activan también durante un toque) — se usa
+      // PointerEvent.pointerType, capturado en pointerdown, como fuente de
+      // verdad real de qué tipo de entrada disparó el clic.
+      let headerCopyPointerType = "mouse";
+      headerCopyBtn.addEventListener("pointerdown", (e) => { headerCopyPointerType = e.pointerType || "mouse"; });
+      headerCopyBtn.addEventListener("click", async () => {
+        const isTouch = headerCopyPointerType === "touch";
+        const alreadyRevealed = headerShareTooltipVisible || (!isTouch && (headerCopyBtn.matches(":hover") || headerCopyBtn.matches(":focus-visible")));
+        if(!alreadyRevealed){
+          // Primer toque (mobile, sin hover previo): solo revela el tooltip,
+          // todavía no copia — evita ejecutar la acción "a ciegas".
+          openHeaderShareTooltip();
+          return;
+        }
+        // Segundo toque (o clic normal en desktop, donde el hover ya reveló
+        // el tooltip antes de llegar aquí): cerrar por completo PRIMERO —
+        // limpia timer, aria-expanded, clase y listeners — y solo después
+        // ejecutar la acción de compartir una sola vez. Así el re-render que
+        // copyAccessLink() dispara nunca puede volver a mostrar el tooltip.
+        closeHeaderShareTooltip();
+        await copyAccessLink();
+      });
+    }
     const menuCopyBtn = document.getElementById("qz-menu-copy-link");
     if(menuCopyBtn) menuCopyBtn.addEventListener("click", copyAccessLink);
     document.getElementById("qz-switch-user").addEventListener("click", async () => {
@@ -2754,8 +2873,9 @@
     ctx.fillStyle = "rgba(247,245,236,0.55)";
     ctx.font = `700 13px ${F}`;
     ctx.fillText("PARTICIPANTE", 105, 178);
-    ctx.fillText("PUNTOS", puntosColStart, 178);
-    if(hasPendingPayments) ctx.fillText("PAGO", pagoColStart, 178);
+    ctx.textAlign = "center";
+    ctx.fillText("PUNTOS", puntosX, 178);
+    if(hasPendingPayments) ctx.fillText("PAGO", pagoX, 178);
 
     const ranks = computeDenseRanks(shown);
     const medalColor = (rank) => rank===1 ? "#D6A73C" : rank===2 ? "#C9CDD3" : rank===3 ? "#B9784A" : null;
@@ -3345,11 +3465,11 @@
     const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
     try{
       await navigator.clipboard.writeText(link);
-      toast("✅ Listo, el link se copió.");
       if(currentUser && currentUser.isAdmin){
         markSharedInvite(SLUG);
         await render();
       }
+      toast("Enlace copiado ✓");
     }catch(e){
       toast("No se pudo copiar, intenta de nuevo");
     }
