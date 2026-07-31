@@ -2141,7 +2141,7 @@
             ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
-            ${currentUser.isAdmin ? `<button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Copiar link de acceso" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button>` : ``}
+            ${currentUser.isAdmin ? `<button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Compartir esta quiniela" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button>` : ``}
             <div class="qz-user-dropdown">
               <button class="qz-user-toggle" id="qz-user-toggle">${esc(currentUser.name)} ${currentUser.isAdmin ? "★" : ""} <span>▾</span></button>
               <div class="qz-user-menu" id="qz-user-menu" ${userMenuOpen ? "" : "hidden"}>
@@ -2741,6 +2741,22 @@
     ctx.lineTo(width - 60, 150);
     ctx.stroke();
 
+    const hasPendingPayments = shown.some(p => !p.paid);
+    const rightMargin = width - 60; // 740 — mismo margen derecho ya usado por la línea divisoria de arriba
+    const puntosColStart = hasPendingPayments ? 480 : 600; // igual que el encabezado, sin tocarlo
+    const pagoColStart = 650; // igual que el encabezado, sin tocarlo
+    const puntosColEnd = hasPendingPayments ? pagoColStart : rightMargin;
+    // Centro real de cada columna: columnStart + columnWidth / 2 — ya no valores fijos aproximados.
+    const puntosX = puntosColStart + (puntosColEnd - puntosColStart) / 2;
+    const pagoX = pagoColStart + (rightMargin - pagoColStart) / 2;
+
+    ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(247,245,236,0.55)";
+    ctx.font = `700 13px ${F}`;
+    ctx.fillText("PARTICIPANTE", 105, 178);
+    ctx.fillText("PUNTOS", puntosColStart, 178);
+    if(hasPendingPayments) ctx.fillText("PAGO", pagoColStart, 178);
+
     const ranks = computeDenseRanks(shown);
     const medalColor = (rank) => rank===1 ? "#D6A73C" : rank===2 ? "#C9CDD3" : rank===3 ? "#B9784A" : null;
 
@@ -2771,11 +2787,15 @@
       ctx.textAlign = "left";
       ctx.fillStyle = mColor ? mColor : "#F7F5EC";
       ctx.font = `800 24px ${F}`;
-      ctx.fillText(p.name, 105, textY, width - 260);
-      ctx.textAlign = "right";
+      ctx.fillText(p.name, 105, textY, hasPendingPayments ? 340 : (width - 260));
+      ctx.textAlign = "center";
       ctx.fillStyle = "#F7F5EC";
       ctx.font = `800 26px ${F}`;
-      ctx.fillText(String(p.pts), width - 60, textY);
+      ctx.fillText(String(p.pts), puntosX, textY);
+      if(hasPendingPayments){
+        ctx.font = `800 22px ${F}`;
+        ctx.fillText(p.paid ? "✅" : "❌", pagoX, textY);
+      }
     });
 
     ctx.textAlign = "center";
@@ -3435,8 +3455,9 @@
     }).join("") + accessLinkCardHtml() + spectatorLinkCardHtml();
 
     function reminderText(round, missing){
+      const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
       const bullets = missing.map(n => `• ${n}`).join("\n");
-      return `⏰ Faltan por contestar la Jornada ${round.number}:\n${bullets}\n\n¡No se les olvide antes del cierre!`;
+      return `${link}\n\n⏰ Faltan por contestar la Jornada ${round.number}:\n\n${bullets}\n\n¡No se les olvide antes del cierre!`;
     }
 
     function missingFor(round){
