@@ -296,6 +296,22 @@
     font-family:inherit; font-size:14px; background:var(--paper); color:var(--ink);
   }
   #quiniela-root label{ font-size:12px; font-weight:700; color:var(--ink-soft); display:block; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em; }
+  #quiniela-root .qz-combo-wrap{ position:relative; }
+  #quiniela-root .qz-combo-list{
+    position:absolute; top:calc(100% + 4px); left:0; right:0;
+    background:var(--paper); border:1px solid var(--line); border-radius:10px;
+    box-shadow:var(--shadow); max-height:220px; overflow-y:auto;
+    z-index:40; padding:4px;
+  }
+  #quiniela-root .qz-combo-option{
+    padding:9px 12px; border-radius:7px; cursor:pointer; font-size:14px;
+  }
+  #quiniela-root .qz-combo-option:hover,
+  #quiniela-root .qz-combo-option.qz-combo-active{
+    background:rgba(15,46,34,0.07);
+  }
+  #quiniela-root .qz-combo-empty{ padding:9px 12px; color:var(--ink-soft); font-size:13px; }
+
   #quiniela-root .field{ margin-bottom:12px; }
   #quiniela-root .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:start; }
   #quiniela-root .row2 .field label{ min-height:2.6em; line-height:1.3; }
@@ -1741,6 +1757,111 @@
       document.removeEventListener("touchstart", headerTooltipOutsideHandler, true);
       headerTooltipOutsideHandler = null;
     }
+  }
+
+  // Un solo combobox de equipo puede estar abierto a la vez.
+  let openTeamComboCloser = null;
+
+  function wireTeamCombobox(input, teams){
+    const wrap = input.closest(".qz-combo-wrap");
+    if(!wrap) return;
+    let listEl = null;
+    let activeIndex = -1;
+    let filtered = [];
+
+    function stripDiacritics(s){
+      return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    }
+
+    function selectOption(team){
+      input.value = team;
+      // Dispara el evento nativo 'input' para que el listener ya existente en
+      // wireRows() (que escribe en draft.matches) lo capture, sin duplicar
+      // esa lógica aquí.
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      closeList();
+    }
+
+    function renderList(){
+      const q = stripDiacritics(input.value.trim().toLowerCase());
+      filtered = q ? teams.filter(t => stripDiacritics(t.toLowerCase()).includes(q)) : teams.slice();
+      activeIndex = -1;
+      if(!listEl){
+        listEl = document.createElement("div");
+        listEl.className = "qz-combo-list";
+        listEl.setAttribute("role", "listbox");
+        wrap.appendChild(listEl);
+      }
+      if(!filtered.length){
+        listEl.innerHTML = `<div class="qz-combo-empty">Sin coincidencias — puedes escribir el nombre a mano.</div>`;
+        return;
+      }
+      listEl.innerHTML = filtered.map((t,i) => `<div class="qz-combo-option" role="option" data-idx="${i}">${esc(t)}</div>`).join("");
+      listEl.querySelectorAll(".qz-combo-option").forEach(opt => {
+        // mousedown (no click): dispara ANTES de que el blur/outside-handler
+        // del input cierre la lista, así el toque/clic en la opción sí llega.
+        opt.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          selectOption(filtered[Number(opt.dataset.idx)]);
+        });
+      });
+    }
+
+    function updateActive(){
+      const opts = listEl ? listEl.querySelectorAll(".qz-combo-option") : [];
+      opts.forEach((o,i) => o.classList.toggle("qz-combo-active", i === activeIndex));
+      if(opts[activeIndex]) opts[activeIndex].scrollIntoView({ block: "nearest" });
+    }
+
+    function outsideHandler(e){
+      if(wrap.contains(e.target)) return;
+      closeList();
+    }
+    function escHandler(e){ if(e.key === "Escape") closeList(); }
+
+    function openList(){
+      if(openTeamComboCloser && openTeamComboCloser !== closeList) openTeamComboCloser();
+      renderList();
+      input.setAttribute("aria-expanded", "true");
+      document.addEventListener("mousedown", outsideHandler, true);
+      document.addEventListener("touchstart", outsideHandler, true);
+      document.addEventListener("keydown", escHandler);
+      openTeamComboCloser = closeList;
+    }
+    function closeList(){
+      if(listEl){ listEl.remove(); listEl = null; }
+      input.setAttribute("aria-expanded", "false");
+      document.removeEventListener("mousedown", outsideHandler, true);
+      document.removeEventListener("touchstart", outsideHandler, true);
+      document.removeEventListener("keydown", escHandler);
+      if(openTeamComboCloser === closeList) openTeamComboCloser = null;
+    }
+
+    input.addEventListener("focus", openList);
+    input.addEventListener("click", openList);
+    input.addEventListener("input", () => { if(listEl) renderList(); else openList(); });
+    input.addEventListener("keydown", (e) => {
+      if(!listEl){
+        if(e.key === "ArrowDown" || e.key === "ArrowUp") openList();
+        return;
+      }
+      if(e.key === "ArrowDown"){
+        e.preventDefault();
+        activeIndex = Math.min(activeIndex + 1, filtered.length - 1);
+        updateActive();
+      } else if(e.key === "ArrowUp"){
+        e.preventDefault();
+        activeIndex = Math.max(activeIndex - 1, 0);
+        updateActive();
+      } else if(e.key === "Enter"){
+        if(activeIndex >= 0 && filtered[activeIndex]){
+          e.preventDefault();
+          selectOption(filtered[activeIndex]);
+        }
+      } else if(e.key === "Escape"){
+        closeList();
+      }
+    });
   }
 
   function onboardingKey(tabId){ return "qracks_onboarding_seen_" + tabId; }
@@ -3312,6 +3433,7 @@
       ${(() => {
         const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
         if(!temporadaBets.length) return "";
+        const sortedParticipantsForBets = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
         return `
           <div class="card" style="padding:8px 12px;overflow-x:auto;">
             <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas personalizadas</div>
@@ -3328,7 +3450,7 @@
                 </tr>
               </thead>
               <tbody>
-                ${meta.participants.map(p => `
+                ${sortedParticipantsForBets.map(p => `
                   <tr>
                     <td class="qz-sticky-col">${esc(p.name)}</td>
                     ${temporadaBets.map(bet => {
@@ -3552,7 +3674,7 @@
         else if(count < total) status = {label:`Incompleto (${count}/${total})`, cls:"unpaid", icon:"⚠️"};
         else status = {label:"Completo", cls:"paid", icon:"✅"};
         return { name: p.name, ...status, count };
-      }).sort((a,b) => a.count - b.count || a.name.localeCompare(b.name));
+      }).sort((a,b) => a.count - b.count || a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
       const missingNames = rows.filter(r => r.count < total).map(r => r.name);
       return `
         <div class="card">
@@ -3642,14 +3764,15 @@
     // historical default) — for any other league, an empty result means "we
     // don't know this league's roster," not "show Liga MX teams instead."
     // Typing a name by hand always works either way.
-    const teamOptions = (leagueTeams.length ? leagueTeams : (leagueId === "4350" ? TEAMS : []))
-      .map(t=>`<option value="${esc(t)}">`).join("");
+    const comboTeams = (leagueTeams.length ? leagueTeams : (leagueId === "4350" ? TEAMS : []))
+      .slice()
+      .sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
 
     function matchRowHtml(m, idx){
       return `
         <div class="match-edit-row" data-mid="${m.id}">
-          <div class="field" style="margin-bottom:0;"><label>Local</label><input list="qz-teams" type="text" value="${esc(m.teamA)}" data-role="teamA"></div>
-          <div class="field" style="margin-bottom:0;"><label>Visitante</label><input list="qz-teams" type="text" value="${esc(m.teamB)}" data-role="teamB"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
           <button class="icon-x" data-remove="${m.id}" title="Quitar partido">✕</button>
         </div>
       `;
@@ -3680,7 +3803,6 @@
     `;
 
     body.innerHTML = `
-      <datalist id="qz-teams">${teamOptions}</datalist>
       ${createCardHtml}
       <div class="card">
         <div class="eyebrow">Jornadas existentes</div>
@@ -3719,11 +3841,12 @@
     function wireRows(){
       document.querySelectorAll("#qz-match-rows [data-mid]").forEach(row => {
         const mid = row.dataset.mid;
-        row.querySelectorAll("input").forEach(inp => {
+        row.querySelectorAll("input[data-role]").forEach(inp => {
           inp.addEventListener("input", () => {
             const m = draft.matches.find(x=>x.id===mid);
             m[inp.dataset.role] = inp.value;
           });
+          wireTeamCombobox(inp, comboTeams);
         });
         row.querySelector("[data-remove]").addEventListener("click", () => {
           draft.matches = draft.matches.filter(x=>x.id!==mid);
@@ -3970,6 +4093,7 @@
     renderAdminResultados._target = round.id;
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     if(jornadaBets.length) await ensureAllPicksLoaded();
+    const sortedParticipantsForJornadaBets = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     const form = document.getElementById("qz-results-form");
 
     const VALID_RESULTS = ["A", "D", "B"];
@@ -4060,7 +4184,7 @@
               </tr>
             </thead>
             <tbody>
-              ${meta.participants.map(p => `
+              ${sortedParticipantsForJornadaBets.map(p => `
                 <tr>
                   <td class="qz-sticky-col">${esc(p.name)}</td>
                   ${jornadaBets.map(bet => {
@@ -4245,6 +4369,13 @@
   }
 
   function renderAdminParticipantes(body){
+    // Orden únicamente visual: .slice() copia el arreglo, .sort() ordena esa
+    // copia. meta.participants nunca se reasigna ni se muta — los objetos
+    // participante siguen siendo las mismas referencias (mismo id, pagos,
+    // admin, PIN), solo cambia el orden en que se listan aquí.
+    const sortedParticipants = meta.participants
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
     body.innerHTML = `
       <div class="card">
         <div class="eyebrow">Agregar participante</div>
@@ -4265,7 +4396,7 @@
         <table>
           <thead><tr><th>Nombre</th><th style="text-align:center;">Admin</th><th style="text-align:center;">Pagó</th><th style="text-align:center;">PIN</th><th style="text-align:center;"></th></tr></thead>
           <tbody>
-            ${meta.participants.map(p => `
+            ${sortedParticipants.map(p => `
               <tr data-pid="${p.id}">
                 <td><input type="text" value="${esc(p.name)}" data-role="rename" style="border:none;background:transparent;padding:2px;font-weight:600;"></td>
                 <td style="text-align:center;"><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
@@ -4317,6 +4448,7 @@
         p.name = e.target.value.trim() || p.name;
         await setMeta(meta);
         toast("✅ Listo, el nombre quedó actualizado.");
+        renderAdminParticipantes(body);
       });
       row.querySelector("[data-role=admin]").addEventListener("change", async (e) => {
         p.isAdmin = e.target.checked;
