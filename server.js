@@ -234,6 +234,14 @@ async function ensureTable() {
     CREATE INDEX IF NOT EXISTS idx_analytics_events_competition_slug
     ON analytics_events (competition_slug);
   `);
+  // Sprint 14.4 — el nuevo endpoint de lectura (/api/platform-analytics)
+  // agrupa por event_name y filtra por created_at en 3 ventanas (7d/30d/total)
+  // en una sola consulta. Sin este índice compuesto, eso escanea la tabla
+  // completa cada vez que alguien abre /panel-plataforma.
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_event_name_created
+    ON analytics_events (event_name, created_at);
+  `);
 }
 
 async function getRow(key, client) {
@@ -1269,7 +1277,15 @@ const KNOWN_EVENTS = new Set([
   "join_completed",
   "session_restored",
   "session_confirmation_accepted",
-  "session_confirmation_rejected"
+  "session_confirmation_rejected",
+  // Sprint 14.4 — funnel de activación completo.
+  "landing_viewed",
+  "create_started",
+  "quiniela_created",
+  "first_pick_saved",
+  "picks_completed",
+  "invite_shared",
+  "standings_shared"
 ]);
 app.post("/api/track-event", rateLimit("track-event"), async (req, res) => {
   try {
@@ -1291,6 +1307,68 @@ app.post("/api/track-event", rateLimit("track-event"), async (req, res) => {
   } catch (err) {
     console.error("track-event failed", err);
     // Analytics failures should never surface to the user or block anything.
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Sprint 14.4 — lectura agregada para /panel-plataforma. Nunca pública: mismo
+// patrón de auth (header x-qracks-platform-auth) que /api/delete-quiniela.
+// Toda la agregación (conteos, ventanas de 7/30 días, distinct participants)
+// ocurre en PostgreSQL en una sola consulta — el frontend nunca recibe filas
+// individuales de analytics_events, solo estos totales ya calculados. La
+// respuesta no incluye ningún campo que pueda ser PII (no hay nombres,
+// emails, picks ni resultados en la tabla en primer lugar).
+const FUNNEL_EVENT_NAMES = [
+  "landing_viewed",
+  "create_started",
+  "quiniela_created",
+  "access_link_opened",
+  "invite_shared",
+  "join_completed",
+  "first_pick_saved",
+  "picks_completed",
+  "standings_shared"
+];
+app.get("/api/platform-analytics", async (req, res) => {
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  try {
+    const result = await pool.query(
+      `SELECT
+         event_name,
+         COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')  AS last7_total,
+         COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days') AS last30_total,
+         COUNT(*)                                                        AS all_total,
+         COUNT(DISTINCT participant_id) FILTER (WHERE created_at >= now() - interval '7 days')  AS last7_participants,
+         COUNT(DISTINCT participant_id) FILTER (WHERE created_at >= now() - interval '30 days') AS last30_participants,
+         COUNT(DISTINCT participant_id)                                                         AS all_participants,
+         COUNT(DISTINCT device_id)                                                              AS all_devices
+       FROM analytics_events
+       WHERE event_name = ANY($1::text[])
+       GROUP BY event_name`,
+      [FUNNEL_EVENT_NAMES]
+    );
+    const events = {};
+    for (const name of FUNNEL_EVENT_NAMES) {
+      events[name] = {
+        last7: { total: 0, participants: 0 },
+        last30: { total: 0, participants: 0 },
+        allTime: { total: 0, participants: 0, devices: 0 }
+      };
+    }
+    for (const row of result.rows) {
+      events[row.event_name] = {
+        last7: { total: Number(row.last7_total), participants: Number(row.last7_participants) },
+        last30: { total: Number(row.last30_total), participants: Number(row.last30_participants) },
+        allTime: { total: Number(row.all_total), participants: Number(row.all_participants), devices: Number(row.all_devices) }
+      };
+    }
+    res.json({ ok: true, events });
+  } catch (err) {
+    console.error("platform-analytics failed", err);
     res.status(500).json({ error: "server_error" });
   }
 });
