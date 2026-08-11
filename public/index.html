@@ -1166,6 +1166,21 @@
     try{ return await kvSet(PLATFORM_PAYMENTLOG_KEY, log, { platform: platformPasswordCache }); }
     catch(e){ console.error("setPlatformPaymentLog failed", e); return false; }
   }
+  // Sprint 14.4 — resumen agregado del funnel de activación para el panel de
+  // plataforma. Cualquier falla (analytics caído, red, etc.) devuelve una
+  // estructura vacía en vez de propagar el error, para que el resto del
+  // panel (que no depende de esto) siga renderizando con normalidad.
+  async function getPlatformAnalytics(){
+    const empty = { events: {} };
+    try{
+      const res = await fetch("/api/platform-analytics", {
+        headers: { "X-Qracks-Platform-Auth": platformPasswordCache || "" }
+      });
+      const data = await res.json().catch(() => ({}));
+      if(!res.ok || !data.ok) return empty;
+      return data;
+    }catch(e){ console.error("getPlatformAnalytics failed", e); return empty; }
+  }
   // Self-service: anyone can register a brand-new quiniela in the platform index
   // (that's how /crear and "move to my own link" work) — no platform password needed,
   // it only ever adds one new entry, it can't touch or remove anyone else's.
@@ -1179,6 +1194,7 @@
         body: JSON.stringify({ slug, groupName, creatorName, contact, password, sportsdbLeagueId })
       });
       const data = await res.json().catch(() => ({}));
+      if(res.ok && data.ok && data.slug) trackEvent("quiniela_created", { competitionSlug: data.slug, source: "create_flow" });
       return { ok: res.ok, ...data };
     }catch(e){ console.error("apiCreateQuiniela failed", e); return { ok: false }; }
   }
@@ -1363,6 +1379,24 @@
     if(result.ok){
       if(!suppressLoadingAndSuccess) liveEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Guardado</span>`;
       if(onSuccess) onSuccess();
+      trackOnceConfirmed(
+        "first_pick_" + context.participantId,
+        () => hasTrackedFirstPick(context.participantId),
+        () => markFirstPickTracked(context.participantId),
+        "first_pick_saved",
+        { participantId: context.participantId, source: "picks" }
+      );
+      const roundPicksNow = myPicks[round.id] || {};
+      const allMatchesFilled = round.matches.length > 0 && round.matches.every(m => !!roundPicksNow[m.id]);
+      if(allMatchesFilled){
+        trackOnceConfirmed(
+          "picks_completed_" + context.participantId + "_" + round.id,
+          () => hasTrackedPicksCompleted(context.participantId, round.id),
+          () => markPicksCompletedTracked(context.participantId, round.id),
+          "picks_completed",
+          { participantId: context.participantId, source: "picks" }
+        );
+      }
     }else if(result.error === "round_locked"){
       liveEl.innerHTML = `<span style="color:var(--red);">La jornada ya cerró. Ya no es posible modificar estos pronósticos.</span>`;
     }else{
@@ -1437,8 +1471,14 @@
   // Growth Loop funnel — fire-and-forget, never blocks the UI and never
   // throws into the caller if it fails.
   function trackEvent(event, extra){
+    // Devuelve una promesa que resuelve a `true` solo si el servidor aceptó
+    // el evento (2xx real), `false` en cualquier otro caso — nunca se
+    // rechaza. La inmensa mayoría de los llamadores ignoran este valor de
+    // retorno (igual que antes, sigue siendo fire-and-forget); solo los
+    // guards que necesitan confirmar éxito real antes de marcarse (ver
+    // first_pick_saved/picks_completed) lo usan.
     try{
-      fetch("/api/track-event", {
+      return fetch("/api/track-event", {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
         body: JSON.stringify({
           event,
@@ -1447,8 +1487,8 @@
           deviceId: getDeviceId(),
           ...extra
         })
-      }).catch(() => {});
-    }catch(e){ /* analytics should never break the app */ }
+      }).then(res => res.ok).catch(() => false);
+    }catch(e){ /* analytics should never break the app */ return Promise.resolve(false); }
   }
   // Access Link "remember this device": the actual token lives only in an
   // HttpOnly cookie the browser manages on its own — this just asks the server
@@ -1883,6 +1923,44 @@
   }
   function markSharedInvite(slug){
     try{ window.localStorage.setItem(sharedInviteKey(slug), "1"); }catch(e){}
+  }
+
+  // Sprint 14.4 — first_pick_saved se dispara una sola vez por participante;
+  // picks_completed una sola vez por participante+jornada. Sin este guard,
+  // cada autosave posterior (que ya está guardado, pero se re-envía al
+  // cambiar cualquier otro pick) volvería a contar el mismo hito.
+  function firstPickTrackedKey(participantId){ return "qracks_first_pick_tracked_" + participantId; }
+  function hasTrackedFirstPick(participantId){
+    try{ return window.localStorage.getItem(firstPickTrackedKey(participantId)) === "1"; }
+    catch(e){ return true; }
+  }
+  function markFirstPickTracked(participantId){
+    try{ window.localStorage.setItem(firstPickTrackedKey(participantId), "1"); }catch(e){}
+  }
+  function picksCompletedTrackedKey(participantId, roundId){ return "qracks_picks_completed_tracked_" + participantId + "_" + roundId; }
+  function hasTrackedPicksCompleted(participantId, roundId){
+    try{ return window.localStorage.getItem(picksCompletedTrackedKey(participantId, roundId)) === "1"; }
+    catch(e){ return true; }
+  }
+  function markPicksCompletedTracked(participantId, roundId){
+    try{ window.localStorage.setItem(picksCompletedTrackedKey(participantId, roundId), "1"); }catch(e){}
+  }
+  // El guard solo se marca cuando trackEvent() confirma una respuesta 2xx
+  // real (no simplemente "se intentó enviar"). analyticsGuardInFlight evita
+  // que dos autosaves casi simultáneos, mientras la primera confirmación
+  // todavía no llega, disparen dos intentos y terminen creando 2 filas para
+  // el mismo hito — mientras una clave está en vuelo, un intento nuevo con
+  // esa misma clave no hace nada hasta que el anterior resuelva.
+  const analyticsGuardInFlight = new Set();
+  function trackOnceConfirmed(inFlightKey, hasTrackedFn, markTrackedFn, eventName, extra){
+    if(hasTrackedFn() || analyticsGuardInFlight.has(inFlightKey)) return;
+    analyticsGuardInFlight.add(inFlightKey);
+    trackEvent(eventName, extra).then(ok => {
+      analyticsGuardInFlight.delete(inFlightKey);
+      if(ok) markTrackedFn();
+      // Si ok es false, el guard queda sin marcar a propósito — un guardado
+      // posterior (autosave o manual) volverá a intentarlo desde cero.
+    });
   }
 
 
@@ -3066,6 +3144,7 @@
       if(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })){
         try{
           await navigator.share({ files: [file] });
+          trackEvent("standings_shared", { source: "native_share" });
           return;
         }catch(e){ /* user cancelled or share failed — fall back to download */ }
       }
@@ -3075,6 +3154,7 @@
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
+      trackEvent("standings_shared", { source: "download" });
       toast("✅ Listo, la imagen se descargó.");
     }, "image/png");
   }
@@ -3591,6 +3671,7 @@
         markSharedInvite(SLUG);
         await render();
       }
+      trackEvent("invite_shared", { source: "copy_link" });
       toast("Enlace copiado ✓");
     }catch(e){
       toast("No se pudo copiar, intenta de nuevo");
@@ -4808,6 +4889,7 @@
 
   // ---------- /crear : create a brand new, independent quiniela ----------
   async function renderCrear(){
+    trackEvent("create_started", { source: "create_flow" });
     const draft = renderCrear._draft || { groupName: "", creatorName: "", contact: "", slug: "", password: "", leagueId: "", slugTouched: false };
     renderCrear._draft = draft;
     const settings = await getPlatformSettings();
@@ -4918,7 +5000,7 @@
       return;
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
-    const [idx, settings] = await Promise.all([getPlatformIndex(), getPlatformSettings()]);
+    const [idx, settings, analytics] = await Promise.all([getPlatformIndex(), getPlatformSettings(), getPlatformAnalytics()]);
     const rows = idx.quinielas.map(q => {
       const effectiveJornadaLimit = (q.customJornadaLimit !== undefined && q.customJornadaLimit !== null) ? q.customJornadaLimit : settings.jornadaLimit;
       // Counts now live on the index entry itself (kept fresh whenever that
@@ -4967,6 +5049,35 @@
     });
     const monthEntries = Object.entries(byMonth); // insertion order ≈ creation order since quinielas.push() appends
     const totalParticipants = rows.reduce((sum, r) => sum + (r.count || 0), 0);
+
+    // Sprint 14.4.1 — "Activación" (ya no se llama funnel: las etapas no
+    // comparten una unidad de conteo consistente entre sí como para mostrar
+    // un % de conversión defendible sin un cohort join que confirme que el
+    // MISMO usuario/dispositivo avanzó de una etapa a la siguiente — eso es
+    // complejidad que esta versión explícitamente no construye. Se muestran
+    // solo los conteos correctos por ventana de tiempo, sin ningún % que
+    // pueda malinterpretarse como una tasa de conversión real.
+    const ev = analytics.events || {};
+    function evTotal(key, windowKey){ return (ev[key] && ev[key][windowKey]) ? ev[key][windowKey].total : 0; }
+    function evParticipants(key, windowKey){ return (ev[key] && ev[key][windowKey]) ? ev[key][windowKey].participants : 0; }
+    const FUNNEL_STEPS = [
+      { key: "landing_viewed", label: "Landing" },
+      { key: "create_started", label: "Inicio de creación" },
+      { key: "quiniela_created", label: "Quiniela creada" },
+      { key: "access_link_opened", label: "Invitación abierta" },
+      { key: "join_completed", label: "Participante registrado" },
+      { key: "first_pick_saved", label: "Primer pick" },
+      { key: "picks_completed", label: "Picks completos" }
+    ];
+    const funnelRows = FUNNEL_STEPS.map(step => ({
+      ...step,
+      t7: evTotal(step.key, "last7"),
+      t30: evTotal(step.key, "last30"),
+      tAll: evTotal(step.key, "allTime")
+    }));
+    const activeParticipants = evParticipants("first_pick_saved", "allTime");
+    const invitesSharedTotal = evTotal("invite_shared", "allTime");
+    const standingsSharedTotal = evTotal("standings_shared", "allTime");
 
     function statusBadge(q){
       if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
@@ -5037,6 +5148,33 @@
               ${monthEntries.length ? `<p class="muted" style="margin:4px 0 0;">${monthEntries.map(([m,c]) => `${esc(m)}: <strong>${c}</strong>`).join(" · ")}</p>` : `<p class="muted" style="margin:4px 0 0;">Sin datos todavía</p>`}
             </div>
           </div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Activación</div>
+          <div class="row2" style="margin-bottom:10px;">
+            <div><div class="eyebrow">Participantes activos</div><div class="display" style="font-size:28px;">${activeParticipants}</div><p class="muted" style="margin:2px 0 0;font-size:12px;">Guardaron al menos un pick</p></div>
+            <div><div class="eyebrow">Invitaciones compartidas</div><div class="display" style="font-size:28px;">${invitesSharedTotal}</div></div>
+          </div>
+          <div class="row2" style="margin-bottom:14px;">
+            <div><div class="eyebrow">Posiciones compartidas</div><div class="display" style="font-size:20px;">${standingsSharedTotal}</div></div>
+            <div></div>
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="min-width:420px;">
+              <thead><tr><th>Etapa</th><th style="text-align:center;">7 días</th><th style="text-align:center;">30 días</th><th style="text-align:center;">Total</th></tr></thead>
+              <tbody>
+                ${funnelRows.map(r => `
+                  <tr>
+                    <td>${esc(r.label)}</td>
+                    <td style="text-align:center;">${r.t7}</td>
+                    <td style="text-align:center;">${r.t30}</td>
+                    <td style="text-align:center;"><strong>${r.tAll}</strong></td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+          <p class="muted" style="margin-top:10px;font-size:12px;">Cada etapa muestra el total de eventos en esa ventana de tiempo. Estos conteos no representan un embudo de conversión — las etapas no comparten una unidad consistente entre sí, así que no se muestra ningún porcentaje entre ellas.</p>
         </div>
         <div class="card" style="overflow-x:auto;padding:16px 12px;">
           <table class="qz-platform-table" style="min-width:800px;">
@@ -5288,6 +5426,7 @@
   }
 
   function renderHome(){
+    trackEvent("landing_viewed", { source: "landing" });
     root.innerHTML = `
       <div class="qz-home-fold">
       <section class="qz-hero-section">
