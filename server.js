@@ -401,7 +401,8 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   const oldSettings = (oldValue && oldValue.settings) || null;
   if (!merged.settings) merged.settings = {};
 
-  const canChangeOwnerFields = authTier === "owner" || authTier === "platform";
+  const canChangeOwnerFields = authTier === "owner" || authTier === "platform" ||
+    (authTier === "admin-pin" && !(oldSettings && oldSettings.ownerPassword));
   const incomingPw = merged.settings.ownerPassword;
   if (!canChangeOwnerFields) {
     if (oldSettings && oldSettings.ownerPassword) {
@@ -908,7 +909,25 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
     if (!metaKey) return res.status(400).json({ error: "missing_metaKey" });
     const value = await getRow(metaKey);
     const stored = value && value.settings ? value.settings.ownerPassword : null;
-    res.json({ ok: verifyPassword(password, stored) });
+    if (verifyPassword(password, stored)) return res.json({ ok: true });
+    // Recovery fallback — reachable ONLY when there is currently no owner
+    // password set at all (never as a bypass while a real one exists, since
+    // this whole branch is gated behind `!stored`). In that specific state,
+    // the extra owner-password layer is already absent for this quiniela —
+    // so falling back to the same admin-or-owner credential already
+    // accepted for every other meta write (owner password OR an admin
+    // participant's own PIN, see isRequestAdminOrOwner) isn't a new, weaker
+    // permission — it's the same rule the rest of the backend already uses,
+    // applied here too, so an admin isn't locked out of Ajustes after a
+    // PIN-based credential rotation.
+    if (!stored) {
+      const providedAuth = req.get("x-qracks-auth") || "";
+      const adminViaPin = (value.participants || []).some(
+        (p) => p.isAdmin && p.pin && verifyPassword(providedAuth, p.pin)
+      );
+      if (adminViaPin) return res.json({ ok: true });
+    }
+    res.json({ ok: false });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server_error" });
