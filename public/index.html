@@ -4568,6 +4568,9 @@
           <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de dueño.</p>
           <div class="field"><input type="password" id="qz-owner-pw" placeholder="Contraseña de dueño"></div>
           <button class="btn btn-primary" id="qz-owner-unlock">Entrar</button>
+          ${currentUser.isAdmin ? `
+            <button class="btn btn-ghost btn-sm" id="qz-owner-pin-recover" style="margin-top:10px;width:100%;">¿Eres admin y no tienes la contraseña? Reautentícate con tu PIN</button>
+          ` : ``}
         </div>
       `;
       document.getElementById("qz-owner-unlock").addEventListener("click", async () => {
@@ -4582,6 +4585,32 @@
         }
       });
       enterSubmits("qz-owner-pw", "qz-owner-unlock");
+      // Recuperación puntual: solo para quien ya es admin de esta quiniela.
+      // Vuelve a pedir el PIN (nunca lo guarda en cookies/localStorage) y lo
+      // deja únicamente en memoria (currentUserPinCache, el mismo mecanismo
+      // ya usado por el login normal). Si la quiniela SÍ tiene contraseña,
+      // el backend rechaza esta vía igual que cualquier otra — no es un
+      // atajo nuevo, es el mismo respaldo por PIN que ya existe para
+      // cualquier otra escritura de admin.
+      const pinRecoverBtn = document.getElementById("qz-owner-pin-recover");
+      if(pinRecoverBtn){
+        pinRecoverBtn.addEventListener("click", async () => {
+          const pin = await qzPrompt("Vuelve a escribir tu PIN para confirmar que eres tú:", { title: "Reautenticación de administrador", confirmLabel: "Continuar", pin: true });
+          if(pin === null) return;
+          const cleanPin = pin.trim();
+          const verification = await verifyParticipantPin(currentUser.id, cleanPin);
+          if(!verification.ok){ toast("❌ PIN incorrecto"); return; }
+          currentUserPinCache = cleanPin;
+          const ok = await verifyOwnerPassword("");
+          if(ok){
+            ownerUnlocked = true;
+            renderAdminOwner(body);
+            toast("✅ Acceso recuperado con tu PIN.");
+          } else {
+            toast("Esta quiniela ya tiene una contraseña de dueño configurada — pídesela a quien la tenga.");
+          }
+        });
+      }
       return;
     }
     body.innerHTML = `
