@@ -1418,7 +1418,7 @@
   async function verifyOwnerPassword(password){
     try{
       const res = await fetch("/api/verify-owner", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "X-Qracks-Auth": adminOrOwnerCred() || "" },
         body: JSON.stringify({ metaKey: currentMetaKey(), password })
       });
       if(!res.ok) return false;
