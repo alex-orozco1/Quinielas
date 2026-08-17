@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title id="page-title">QRACKS</title>
+<meta name="description" content="Crea quinielas privadas, compite con tu grupo y deja que QRACKS controle el tiempo, los resultados y la tabla.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="QRACKS">
 <meta property="og:title" content="QRACKS" id="og-title">
@@ -15,7 +16,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <style>
   :root{
@@ -318,7 +318,7 @@
   #quiniela-root .match-edit-row{
     display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:end; margin-bottom:10px;
   }
-  #quiniela-root .icon-x{ background:var(--red); color:#fff; border:none; border-radius:8px; width:36px; height:36px; }
+  #quiniela-root .icon-x{ background:var(--red); color:#fff; border:none; border-radius:8px; width:44px; height:44px; }
 
   #quiniela-root .badge{ display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:700; padding:3px 9px; border-radius:999px; }
 
@@ -1606,6 +1606,37 @@
     el.addEventListener("scroll", update);
   }
 
+  // Sprint 14.8 — A11Y-001: focus trap compartido por qzConfirm y qzPrompt.
+  // Tab/Shift+Tab quedan atrapados dentro del overlay mientras está abierto;
+  // al cerrar (cualquier vía: Escape, backdrop, botón, Enter) el foco vuelve
+  // exactamente al elemento que abrió el modal. Un solo helper, sin duplicar
+  // esta lógica en cada modal.
+  function attachModalFocusTrap(overlay){
+    const triggerEl = document.activeElement;
+    const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const onTab = (e) => {
+      if(e.key !== "Tab") return;
+      const focusable = Array.from(overlay.querySelectorAll(focusableSelector)).filter(el => el.offsetParent !== null);
+      if(!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if(e.shiftKey && document.activeElement === first){
+        e.preventDefault();
+        last.focus();
+      } else if(!e.shiftKey && document.activeElement === last){
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onTab);
+    return {
+      release(){
+        document.removeEventListener("keydown", onTab);
+        if(triggerEl && typeof triggerEl.focus === "function") triggerEl.focus();
+      }
+    };
+  }
+
   function qzConfirm(message, opts){
     opts = opts || {};
     const destructive = opts.destructive !== false; // most of what this guards is destructive by default
@@ -1628,8 +1659,10 @@
         </div>
       `;
       document.body.appendChild(overlay);
+      const focusTrap = attachModalFocusTrap(overlay);
       const cleanup = (result) => {
         document.removeEventListener("keydown", onKey);
+        focusTrap.release();
         overlay.remove();
         resolve(result);
       };
@@ -1676,8 +1709,10 @@
       `;
       document.body.appendChild(overlay);
       const input = overlay.querySelector("#qz-prompt-input");
+      const focusTrap = attachModalFocusTrap(overlay);
       const cleanup = (result) => {
         document.removeEventListener("keydown", onKey);
+        focusTrap.release();
         overlay.remove();
         resolve(result);
       };
@@ -1735,12 +1770,10 @@
 
   function positionShareTooltip(){
     const bubble = document.querySelector("#qz-header-copy-wrap .qz-tooltip-bubble");
-    const tabsEl = document.querySelector(".qz-tabs");
     const iconBtn = document.getElementById("qz-header-copy-link");
-    if(!bubble || !tabsEl || !iconBtn) return;
-    const tabsRect = tabsEl.getBoundingClientRect();
+    if(!bubble || !iconBtn) return;
     const iconRect = iconBtn.getBoundingClientRect();
-    bubble.style.top = (tabsRect.bottom + 6) + "px";
+    bubble.style.top = (iconRect.bottom + 8) + "px";
     bubble.style.right = (window.innerWidth - iconRect.right) + "px";
   }
 
@@ -3854,7 +3887,7 @@
         <div class="match-edit-row" data-mid="${m.id}">
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
-          <button class="icon-x" data-remove="${m.id}" title="Quitar partido">✕</button>
+          <button class="icon-x" data-remove="${m.id}" title="Quitar partido" aria-label="Quitar partido">✕</button>
         </div>
       `;
     }
@@ -4806,8 +4839,32 @@
   }
 
   // ---------- EXCEL EXPORT ----------
+  // Sprint 14.8 — PERF-001: XLSX ya no se carga globalmente (era la única
+  // función que lo usaba). Se carga bajo demanda, una sola vez — llamadas
+  // posteriores reutilizan la misma promesa cacheada, sin volver a
+  // descargar la librería.
+  let xlsxLoadPromise = null;
+  function ensureXLSXLoaded(){
+    if(window.XLSX) return Promise.resolve();
+    if(xlsxLoadPromise) return xlsxLoadPromise;
+    xlsxLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+      script.onload = () => resolve();
+      script.onerror = () => { xlsxLoadPromise = null; reject(new Error("xlsx_load_failed")); };
+      document.head.appendChild(script);
+    });
+    return xlsxLoadPromise;
+  }
+
   async function exportExcel(){
     toast("Generando Excel…");
+    try{
+      await ensureXLSXLoaded();
+    }catch(e){
+      toast("No se pudo cargar el generador de Excel, intenta de nuevo");
+      return;
+    }
     await ensureAllPicksLoaded();
     const wb = XLSX.utils.book_new();
 
