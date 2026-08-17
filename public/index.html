@@ -1958,6 +1958,18 @@
     try{ window.localStorage.setItem(sharedInviteKey(slug), "1"); }catch(e){}
   }
 
+  // Sprint 15.1 — first_round_published se dispara una sola vez por quiniela.
+  // Mismo patrón que sharedInvite: guard en localStorage, "true" en caso de
+  // error para nunca bloquear ni reintentar de más si el storage falla.
+  function firstRoundTrackedKey(slug){ return "qracks_first_round_tracked_" + (slug || "root"); }
+  function hasTrackedFirstRound(slug){
+    try{ return window.localStorage.getItem(firstRoundTrackedKey(slug)) === "1"; }
+    catch(e){ return true; }
+  }
+  function markFirstRoundTracked(slug){
+    try{ window.localStorage.setItem(firstRoundTrackedKey(slug), "1"); }catch(e){}
+  }
+
   // Sprint 14.4 — first_pick_saved se dispara una sola vez por participante;
   // picks_completed una sola vez por participante+jornada. Sin este guard,
   // cada autosave posterior (que ya está guardado, pero se re-envía al
@@ -2298,7 +2310,7 @@
         sessionCheckDone = true;
         const session = await checkSession();
         if(session){
-          trackEvent("session_restored", { participantId: session.participantId, isNewUser: false });
+          trackEvent("session_restored", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
           renderSessionConfirm(session);
           return;
         }
@@ -2329,7 +2341,7 @@
       </div>
     `;
     document.getElementById("qz-session-yes").addEventListener("click", async () => {
-      trackEvent("session_confirmation_accepted", { participantId: session.participantId, isNewUser: false });
+      trackEvent("session_confirmation_accepted", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
       const fullParticipant = meta.participants.find(p => p.id === session.participantId);
       currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
       myPicks = await getPicks(currentUser.id);
@@ -2337,7 +2349,7 @@
       render();
     });
     document.getElementById("qz-session-no").addEventListener("click", async () => {
-      trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false });
+      trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
       await clearSessionCookie();
       renderLogin();
     });
@@ -4012,6 +4024,7 @@
         return;
       }
 
+      const isFirstRoundEver = meta.rounds.length === 0;
       const round = {
         id: uid("r"),
         number: nextNumber,
@@ -4024,6 +4037,15 @@
       const ok = await setMeta(meta);
       if(ok){
         toast("✅ Listo, la Jornada " + nextNumber + " quedó publicada.");
+        if(isFirstRoundEver){
+          trackOnceConfirmed(
+            "first_round_" + SLUG,
+            () => hasTrackedFirstRound(SLUG),
+            () => markFirstRoundTracked(SLUG),
+            "first_round_published",
+            { source: "admin_rondas" }
+          );
+        }
         renderAdminRondas._draft = null;
         renderAdmin(document.getElementById("qz-main"));
       } else {
