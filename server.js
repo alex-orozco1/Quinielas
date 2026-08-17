@@ -1304,7 +1304,10 @@ const KNOWN_EVENTS = new Set([
   "first_pick_saved",
   "picks_completed",
   "invite_shared",
-  "standings_shared"
+  "standings_shared",
+  // Sprint 15.1 — funnel gap: cuándo (si) una quiniela llega a tener su
+  // primera jornada jugable publicada.
+  "first_round_published"
 ]);
 app.post("/api/track-event", rateLimit("track-event"), async (req, res) => {
   try {
