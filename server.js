@@ -10,6 +10,8 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const sportsDataProvider = require("./sportsDataProvider");
 const { ProviderError } = require("./providers/theSportsDbAdapter");
+const { planCompetitionSync } = require("./competitionSync");
+const { currentDefaultSeason } = require("./seasonDefaults");
 
 // ---------- required configuration ----------
 // No default secrets, ever. If these aren't set, the server refuses to boot
@@ -1145,7 +1147,7 @@ app.post("/api/create-quiniela", async (req, res) => {
       settings: {
         ownerPassword: hashPassword(cleanPassword),
         entryFee: 0,
-        sportsdbSeason: "2025-2026",
+        sportsdbSeason: currentDefaultSeason(),
         pointsPerCorrectPick: 1,
         ...(cleanLeagueId ? { sportsdbLeagueId: cleanLeagueId } : {})
       }
@@ -1313,7 +1315,7 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
   if (!round) return res.status(404).json({ error: "round_not_found" });
 
   const externalLeagueId = meta.settings && meta.settings.sportsdbLeagueId;
-  const season = (meta.settings && meta.settings.sportsdbSeason) || "2025-2026";
+  const season = (meta.settings && meta.settings.sportsdbSeason) || currentDefaultSeason();
   if (!externalLeagueId) {
     // No league configured for this quiniela — not a provider failure, just
     // nothing to look up. Manual capture is unaffected either way.
@@ -1361,6 +1363,95 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
       message: err.message,
     });
     res.json({ ok: false, reliabilityState, suggestions: [] });
+  }
+});
+
+// ---------- AUTO-001: Competition Sync ----------
+// Deliberately a SEPARATE endpoint from /api/create-quiniela, called by the
+// frontend only after quiniela creation already succeeded — never embedded
+// inside create-quiniela's own transaction (see AUTO-001 diagnostic §10):
+// a provider call inside that transaction would let a TheSportsDB hiccup
+// fail the quiniela creation itself, which must never happen.
+//
+// Fail-safe (§20): any provider failure rolls back and writes NOTHING —
+// never partial rounds, never touches existing data. Idempotent (§9): a
+// round already imported from this provider (matched by externalRoundId)
+// is never recreated, never modified — re-running this is always safe and
+// purely additive. Rounds come out with published:false — see §14/§15 for
+// where publishing and participant visibility are handled.
+app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"), async (req, res) => {
+  const { slug } = req.params;
+  const metaKey = `quiniela:${slug}:meta`;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const meta = await getRowLocked(metaKey, client);
+    if (!meta) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+    if (!isAdminOrOwner) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const externalLeagueId = meta.settings && meta.settings.sportsdbLeagueId;
+    const season = (meta.settings && meta.settings.sportsdbSeason) || currentDefaultSeason();
+    if (!externalLeagueId) {
+      // No competition configured for this quiniela — not a provider
+      // failure, just nothing to import. Manual creation is unaffected.
+      await client.query("ROLLBACK");
+      return res.json({ ok: true, reliabilityState: "competition_not_supported", createdRounds: 0, createdMatches: 0, skippedEvents: 0 });
+    }
+
+    let events;
+    try {
+      events = await sportsDataProvider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId, season });
+    } catch (err) {
+      await client.query("ROLLBACK"); // fail-safe: no partial writes on provider failure
+      const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
+      console.error("sync-competition provider failure", {
+        slug, externalLeagueId, season, reliabilityState, message: err.message,
+      });
+      return res.json({ ok: false, reliabilityState, createdRounds: 0, createdMatches: 0, skippedEvents: 0 });
+    }
+
+    // All grouping/idempotency/deadline-seeding decisions live in
+    // competitionSync.js (pure, unit-tested) — this endpoint only assigns
+    // ids (storage concern) and persists.
+    const { newRounds: plannedRounds, skippedEvents } = planCompetitionSync({
+      existingRounds: meta.rounds || [],
+      events,
+      provider: "thesportsdb",
+    });
+    const newRounds = plannedRounds.map((r) => ({
+      id: "r_" + crypto.randomBytes(5).toString("hex"),
+      ...r,
+      matches: r.matches.map((m) => ({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...m })),
+    }));
+
+    if (newRounds.length) {
+      meta.rounds = [...(meta.rounds || []), ...newRounds].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
+      await putRow(metaKey, meta, client);
+    }
+
+    await client.query("COMMIT");
+    res.json({
+      ok: true,
+      reliabilityState: null,
+      createdRounds: newRounds.length,
+      createdMatches: newRounds.reduce((n, r) => n + r.matches.length, 0),
+      skippedEvents,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("sync-competition failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
   }
 });
 
