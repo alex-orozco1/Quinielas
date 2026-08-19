@@ -2469,25 +2469,6 @@
     return tabs;
   }
 
-  function pendingPicksInfo(){
-    const openRounds = meta.rounds.filter(r => classifyRound(r) === "porjugar");
-    for(const r of openRounds){
-      const picks = myPicks[r.id] || {};
-      const missing = r.matches.filter(m => !picks[m.id]).length;
-      if(missing > 0) return { round: r, missing, total: r.matches.length };
-    }
-    return null;
-  }
-
-  function currentRoundContext(){
-    const open = meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number);
-    if(open.length) return open[0];
-    const enVivo = meta.rounds.filter(r => classifyRound(r) === "envivo").sort((a,b)=>b.number-a.number);
-    if(enVivo.length) return enVivo[0];
-    const played = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>b.number-a.number);
-    return played.length ? played[0] : null;
-  }
-
   let userMenuOpen = false;
   function renderApp(){
     const tabs = tabList();
@@ -2611,11 +2592,42 @@
     return "porjugar";
   }
 
+  // AUTO-001: rounds imported by Competition Sync start out with
+  // `published: false` — prepared internally, but not visible/playable for
+  // participants until the admin explicitly publishes them (see Admin →
+  // Jornadas). Admin/owner always sees everything, including unpublished
+  // ones, so they can review/edit before publishing. `published === undefined`
+  // (every round created before this ticket) is treated as published, same
+  // as always — this is what keeps existing quinielas behaving identically.
+  function visibleRounds(){
+    if(currentUser && currentUser.isAdmin) return meta.rounds;
+    return meta.rounds.filter(r => r.published !== false);
+  }
+
+  function pendingPicksInfo(){
+    const openRounds = visibleRounds().filter(r => classifyRound(r) === "porjugar");
+    for(const r of openRounds){
+      const picks = myPicks[r.id] || {};
+      const missing = r.matches.filter(m => !picks[m.id]).length;
+      if(missing > 0) return { round: r, missing, total: r.matches.length };
+    }
+    return null;
+  }
+
+  function currentRoundContext(){
+    const open = visibleRounds().filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number);
+    if(open.length) return open[0];
+    const enVivo = visibleRounds().filter(r => classifyRound(r) === "envivo").sort((a,b)=>b.number-a.number);
+    if(enVivo.length) return enVivo[0];
+    const played = visibleRounds().filter(r => r.resultsPublished).sort((a,b)=>b.number-a.number);
+    return played.length ? played[0] : null;
+  }
+
   async function renderJornada(main){
     if(clockInterval){ clearInterval(clockInterval); clockInterval = null; }
 
     const counts = {porjugar:0, envivo:0, jugados:0};
-    meta.rounds.forEach(r => counts[classifyRound(r)]++);
+    visibleRounds().forEach(r => counts[classifyRound(r)]++);
     const filters = [
       {id:"porjugar", label:"Por jugar"},
       {id:"envivo", label:"En vivo"},
@@ -2628,7 +2640,7 @@
     const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
     const penalty = meta.paymentPenalty;
     const showPaymentNote = penalty && penalty.enabled && penalty.startsAtRound && !currentUser.paid;
-    const heroRound = jornadaFilter === "porjugar" ? meta.rounds.filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
+    const heroRound = jornadaFilter === "porjugar" ? visibleRounds().filter(r => classifyRound(r) === "porjugar").sort((a,b)=>a.number-b.number)[0] : null;
     const heroCoversPending = !!(heroRound && pending && pending.round.id === heroRound.id);
     const adminNoRoundsYet = currentUser.isAdmin && meta.rounds.length === 0;
     const adminSetupInProgress = currentUser.isAdmin && !(meta.rounds.length > 0 && hasSharedInvite(SLUG));
@@ -2730,7 +2742,7 @@
     wireTabScrollFade(document.getElementById("qz-jornada-filters"));
 
     const list = document.getElementById("qz-jornada-list");
-    const rounds = meta.rounds.filter(r => classifyRound(r) === jornadaFilter).slice().sort((a,b)=>a.number-b.number);
+    const rounds = visibleRounds().filter(r => classifyRound(r) === jornadaFilter).slice().sort((a,b)=>a.number-b.number);
 
     if(!rounds.length){
       const isAdminViewer = currentUser.isAdmin;
@@ -3374,7 +3386,11 @@
   }
 
   async function renderHistorial(main){
-    const published = meta.rounds.filter(r => r.resultsPublished).slice().reverse();
+    // AUTO-001: resultsPublished and published are independent (see
+    // classifyRound/visibleRounds above) — an admin could technically
+    // capture/publish results on a still-unpublished imported round before
+    // making it visible, so this also excludes those for participants.
+    const published = meta.rounds.filter(r => r.resultsPublished && (currentUser.isAdmin || r.published !== false)).slice().reverse();
     if(!published.length){
       main.innerHTML = `${screenHeaderHtml("historial", "Historial de jornadas")}<div class="card empty"><div class="display">Todavía no hay jornadas cerradas</div><p class="muted">Aquí verás el detalle de cada jornada una vez que el admin capture los resultados.</p></div>${pastTournamentsHtml()}`;
       wireScreenHeader(main, "historial");
@@ -3974,19 +3990,81 @@
 
     body.innerHTML = `
       ${createCardHtml}
+      ${meta.settings.sportsdbLeagueId ? `
+      <div class="card">
+        <div class="eyebrow">📅 Calendario de la competencia</div>
+        <p class="muted" style="margin-top:-4px;">Importa jornadas y partidos automáticamente. Las jornadas importadas quedan preparadas — tú decides cuándo publicarlas.</p>
+        <button class="btn btn-ghost btn-sm" id="qz-sync-competition">🔄 Reintentar importar calendario</button>
+        <p class="muted" id="qz-sync-status" style="margin-top:8px;"></p>
+      </div>
+      ` : ``}
       <div class="card">
         <div class="eyebrow">Jornadas existentes</div>
-        ${meta.rounds.length ? meta.rounds.slice().reverse().map(r => `
+        ${meta.rounds.length ? meta.rounds.slice().reverse().map(r => {
+          const isImportedUnpublished = r.published === false;
+          const statusLabel = isImportedUnpublished
+            ? "preparada, sin publicar"
+            : (r.resultsPublished ? "resultados capturados" : (isRoundLocked(r) ? "cerrada, sin resultados" : "abierta"));
+          return `
           <div class="history-item">
-            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${r.resultsPublished ? 'resultados capturados' : (isRoundLocked(r) ? 'cerrada, sin resultados' : 'abierta')}</span></div>
+            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}</span></div>
             <div style="display:flex;gap:6px;">
+              ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${r.id}">Publicar jornada</button>` : ``}
               <button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>
               <button class="btn btn-danger btn-sm" data-del-round="${r.id}">Eliminar</button>
             </div>
           </div>
-        `).join("") : `<p class="muted">Aún no has creado ninguna jornada.</p>`}
+        `;
+        }).join("") : `<p class="muted">Aún no has creado ninguna jornada.</p>`}
       </div>
     `;
+
+    const syncBtn = document.getElementById("qz-sync-competition");
+    if(syncBtn){
+      syncBtn.addEventListener("click", async () => {
+        const syncStatus = document.getElementById("qz-sync-status");
+        syncBtn.disabled = true;
+        syncStatus.textContent = "Importando calendario…";
+        syncStatus.style.color = "var(--ink-soft)";
+        try{
+          const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sync-competition`, {
+            method: "POST", headers: { "X-Qracks-Auth": adminOrOwnerCred() || "" }, credentials: "same-origin"
+          });
+          const data = await res.json().catch(() => ({}));
+          if(res.ok && data.ok && !data.reliabilityState){
+            syncStatus.textContent = data.createdRounds > 0
+              ? `✅ Se importaron ${data.createdRounds} jornada${data.createdRounds===1?"":"s"} nueva${data.createdRounds===1?"":"s"}.`
+              : "Ya está todo importado — no hay jornadas nuevas en el calendario.";
+            syncStatus.style.color = "var(--pitch-light)";
+            if(data.createdRounds > 0) renderAdmin(document.getElementById("qz-main"));
+          } else {
+            syncStatus.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo o crear las jornadas manualmente.";
+            syncStatus.style.color = "var(--gold-dim)";
+          }
+        }catch(e){
+          syncStatus.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo o crear las jornadas manualmente.";
+          syncStatus.style.color = "var(--gold-dim)";
+        }
+        syncBtn.disabled = false;
+      });
+    }
+    body.querySelectorAll("[data-publish-round]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const round = meta.rounds.find(r => r.id === btn.dataset.publishRound);
+        if(!round) return;
+        btn.disabled = true;
+        round.published = true;
+        const ok = await setMeta(meta);
+        if(ok){
+          toast(`✅ Listo, la Jornada ${round.number} ya es visible para los participantes.`);
+          renderAdmin(document.getElementById("qz-main"));
+        }else{
+          round.published = false; // roll back the in-memory flip on failure
+          toast("No se pudo publicar, intenta de nuevo");
+          btn.disabled = false;
+        }
+      });
+    });
 
     if(blockingStatus){
       // Only the "edit existing round" and "delete round" actions apply while blocked.
@@ -4075,7 +4153,8 @@
         matches: clean,
         deadline: new Date(draft.deadline).toISOString(),
         results: {},
-        resultsPublished: false
+        resultsPublished: false,
+        published: true // manual rounds are visible to participants immediately, same as always — see AUTO-001
       };
       meta.rounds.push(round);
       const ok = await setMeta(meta);
@@ -4426,6 +4505,16 @@
     const publishBtn = document.getElementById("qz-publish-results");
     if(publishBtn){
       publishBtn.addEventListener("click", async () => {
+        // AUTO-001 QA fix: real protection at the actual mutation point, not
+        // just a hidden/disabled button — a round participants can't see/play
+        // yet must never get its results published, no matter how this
+        // handler was reached. round.published can't regress from true back
+        // to false (no "unpublish" feature exists), so this is naturally a
+        // no-op for corrections of already-published rounds — see FIX 2 §4.
+        if(round.published === false){
+          toast("Esta jornada todavía no está publicada para los participantes. Publícala primero en Admin → Jornadas.");
+          return;
+        }
         const stillComplete = round.matches.every(m => VALID_RESULTS.includes(source[m.id]));
         if(!stillComplete){ toast("Falta el resultado de algún partido"); return; }
         const confirmTitle = correcting ? `¿Publicar la corrección de la Jornada ${round.number}?` : `¿Publicar los resultados de la Jornada ${round.number}?`;
@@ -5107,6 +5196,35 @@
           statusEl.textContent = result.error === "slug_taken" ? "Ese link ya está en uso, prueba otro." : "No se pudo crear, intenta de nuevo.";
           statusEl.style.color = "var(--red)";
           return;
+        }
+        // AUTO-001: creation itself never depends on the provider (see
+        // §10) — this is a separate call, made only after creation already
+        // succeeded, so a TheSportsDB hiccup here can never undo or block
+        // the quiniela that already exists. Errors surface here, briefly,
+        // then the organizer continues into the quiniela either way — the
+        // manual "Reintentar importar calendario" button in Admin →
+        // Jornadas covers a later retry.
+        if((draft.leagueId || "").trim()){
+          statusEl.textContent = "Importando calendario…";
+          statusEl.style.color = "var(--ink-soft)";
+          try{
+            const syncRes = await fetch(`/api/quinielas/${encodeURIComponent(result.slug || slug)}/sync-competition`, {
+              method: "POST", headers: { "X-Qracks-Auth": password }
+            });
+            const syncData = await syncRes.json().catch(() => ({}));
+            if(syncRes.ok && syncData.ok && !syncData.reliabilityState && syncData.createdRounds > 0){
+              statusEl.textContent = `✅ Calendario importado — ${syncData.createdRounds} jornada${syncData.createdRounds===1?"":"s"} lista${syncData.createdRounds===1?"":"s"} para publicar.`;
+              statusEl.style.color = "var(--pitch-light)";
+            }else if(!(syncRes.ok && syncData.ok)){
+              statusEl.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo desde Jornadas o crear las jornadas manualmente.";
+              statusEl.style.color = "var(--gold-dim)";
+            }
+            // ok:true with createdRounds:0 (nothing new, or competition_not_supported) needs no message — not an error.
+          }catch(e){
+            statusEl.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo desde Jornadas o crear las jornadas manualmente.";
+            statusEl.style.color = "var(--gold-dim)";
+          }
+          await new Promise(r => setTimeout(r, 1400)); // give the status message a moment to actually be read before navigating away
         }
         window.location.href = "/q/" + encodeURIComponent(result.slug || slug);
       }catch(e){

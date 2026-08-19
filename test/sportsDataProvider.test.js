@@ -57,6 +57,30 @@ test("normalizeEvent: postponed flag overrides status", () => {
   assert.equal(norm.status, "postponed");
 });
 
+// ---- AUTO-001: round field on the normalized event ----
+
+test("normalizeEvent: round is a string, never coerced to Number", () => {
+  process.env.THESPORTSDB_API_KEY = "test-key";
+  const provider = freshProvider();
+  const norm = provider.normalizeEvent({ idEvent: "1", intRound: "17" }, "thesportsdb");
+  assert.equal(norm.round, "17");
+  assert.equal(typeof norm.round, "string");
+});
+
+test("normalizeEvent: non-numeric round label is preserved as-is (e.g. cup stages)", () => {
+  process.env.THESPORTSDB_API_KEY = "test-key";
+  const provider = freshProvider();
+  const norm = provider.normalizeEvent({ idEvent: "1", intRound: "Final" }, "thesportsdb");
+  assert.equal(norm.round, "Final");
+});
+
+test("normalizeEvent: missing round is null, never guessed", () => {
+  process.env.THESPORTSDB_API_KEY = "test-key";
+  const provider = freshProvider();
+  assert.equal(provider.normalizeEvent({ idEvent: "1" }, "thesportsdb").round, null);
+  assert.equal(provider.normalizeEvent({ idEvent: "1", intRound: "" }, "thesportsdb").round, null);
+});
+
 // ---- timestamp normalization (QA fix: don't blindly append "Z") ----
 
 test("normalizeTimestamp: no timezone marker -> treated as UTC, gets Z appended", () => {

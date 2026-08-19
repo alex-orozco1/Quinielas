@@ -10,6 +10,10 @@
 //     provider: "thesportsdb",
 //     externalLeagueId: "4350",
 //     externalEventId: "2487452",       // stable id from the provider
+//     round: "17" | null,               // provider's own round label, ALWAYS a string
+//                                        // (never coerced to Number — some
+//                                        // competitions/stages use non-numeric
+//                                        // labels) — see AUTO-001
 //     status: "finished" | "scheduled" | "postponed" | "unknown",
 //     dateTime: "2026-07-17T01:00:00Z" | null,
 //     participants: [
@@ -88,6 +92,13 @@ function normalizeEvent(raw, provider) {
     provider,
     externalLeagueId: raw.idLeague != null ? String(raw.idLeague) : null,
     externalEventId: raw.idEvent != null ? String(raw.idEvent) : null,
+    // AUTO-001: the provider's own round label, kept as a string (never
+    // Number()) — some competitions/stages use non-numeric round labels
+    // (e.g. "Final"), and forcing an integer here would silently break
+    // grouping for those. null when the provider gives no round at all;
+    // callers (Competition Sync) must treat that as "cannot group this
+    // event automatically," never invent a round number for it.
+    round: raw.intRound != null && raw.intRound !== "" ? String(raw.intRound) : null,
     status: raw.strPostponed === "yes" ? "postponed" : normalizeStatus(raw.strStatus, hasScore),
     dateTime: normalizeTimestamp(raw.strTimestamp) || raw.dateEvent || null,
     participants: [
