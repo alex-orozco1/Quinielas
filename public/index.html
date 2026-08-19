@@ -4087,8 +4087,6 @@
     "Santos": "Santos Laguna",
     "Xolos": "Tijuana"
   };
-  let sportsdbCache = null; // {leagueId, season, events}
-
   // TheSportsDB's supported way to list a league's teams is by league NAME,
   // not its numeric id (lookup_all_teams.php?id= isn't the right endpoint for
   // this and shouldn't be relied on) — these are the exact name strings their
@@ -4150,55 +4148,29 @@
     }
   }
 
-  async function fetchSportsdbSeason(leagueId, season){
-    if(sportsdbCache && sportsdbCache.leagueId === leagueId && sportsdbCache.season === season) return sportsdbCache.events;
-    const url = `https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=${leagueId}&s=${encodeURIComponent(season)}`;
-    const res = await fetch(url);
-    if(!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    const events = data.events || [];
-    sportsdbCache = { leagueId, season, events };
-    return events;
-  }
-
-  function normalizeTeamName(s){
-    return (s || "")
-      .toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/\b(fc|cf|cd|afc|sc|ac|club|de)\b/g, "")
-      .replace(/[^a-z0-9]+/g, "");
-  }
-
-  function teamsMatch(ourName, sportsdbName){
-    const resolved = SPORTSDB_TEAM_ALIASES[ourName] || ourName;
-    const a = normalizeTeamName(resolved);
-    const b = normalizeTeamName(sportsdbName);
-    if(!a || !b) return false;
-    return a === b || a.includes(b) || b.includes(a);
-  }
-
-  function findAutoResult(events, m, roundDeadline){
-    const targetTime = new Date(roundDeadline).getTime();
-    let best = null, bestDiff = Infinity;
-    events.forEach(ev => {
-      const home = ev.strHomeTeam, away = ev.strAwayTeam;
-      const straight = teamsMatch(m.teamA, home) && teamsMatch(m.teamB, away);
-      const swapped = teamsMatch(m.teamB, home) && teamsMatch(m.teamA, away);
-      if(!straight && !swapped) return;
-      if(ev.intHomeScore === null || ev.intHomeScore === undefined || ev.intHomeScore === "") return; // not played yet
-      const evTime = new Date(ev.dateEvent).getTime();
-      const diff = Math.abs(evTime - targetTime);
-      if(diff < bestDiff && diff < 1000*60*60*24*20){ // within ~20 days of our deadline
-        bestDiff = diff;
-        const hs = Number(ev.intHomeScore), as = Number(ev.intAwayScore);
-        let result;
-        if(straight) result = hs > as ? 'A' : hs < as ? 'B' : 'D';
-        else result = hs > as ? 'B' : hs < as ? 'A' : 'D';
-        best = { result, date: ev.dateEvent, score: hs + "-" + as };
-      }
+  // DATA-001: this used to call TheSportsDB V1 directly from the browser
+  // with the public free key "123" (eventsseason.php), which truncates to
+  // 15 events regardless of season size — any jornada past round 1-2 was
+  // silently unreachable. Now goes through QRACKS's own backend, which
+  // talks to TheSportsDB V2 server-side (key never leaves the server) and
+  // does the round-matching itself — see sportsDataProvider.js.
+  //
+  // Returns pre-computed suggestions ({ matchId, score, result, date }),
+  // not raw provider events, and a reliabilityState instead of throwing on
+  // provider hiccups — a failed lookup here must never block manual capture.
+  async function fetchSportsResults(roundId){
+    const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/rounds/${encodeURIComponent(roundId)}/sports-results`, {
+      headers: { "X-Qracks-Auth": adminOrOwnerCred() || "" },
+      credentials: "same-origin"
     });
-    return best;
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json(); // { ok, reliabilityState, suggestions }
   }
+
+  // NOTE: team-name fuzzy matching (formerly normalizeTeamName/teamsMatch)
+  // and the season-wide result search (formerly findAutoResult) moved to
+  // the backend as part of DATA-001 — see sportsDataProvider.js. This file
+  // only ever consumes pre-matched suggestions from /sports-results now.
 
 
   async function renderAdminResultados(body){
@@ -4341,18 +4313,25 @@
     const autofillBtn = document.getElementById("qz-autofill");
     if(autofillBtn) autofillBtn.addEventListener("click", async () => {
       const statusEl = document.getElementById("qz-autofill-status");
-      statusEl.textContent = "Consultando TheSportsDB…";
+      statusEl.textContent = "Buscando resultados…";
       try{
-        const season = meta.settings.sportsdbSeason || "2025-2026";
-        const leagueId = meta.settings.sportsdbLeagueId || "4350";
-        const events = await fetchSportsdbSeason(leagueId, season);
+        const data = await fetchSportsResults(round.id); // { ok, reliabilityState, suggestions }
+        // DATA-001 §11: never surface the reliability state / provider detail
+        // to the organizer — a failed lookup is always safe to retry and
+        // never blocks the manual capture flow below.
+        if(!data.ok || data.reliabilityState){
+          statusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+          return;
+        }
+        const suggestionsByMatch = {};
+        (data.suggestions || []).forEach(s => { suggestionsByMatch[s.matchId] = s; });
         let found = 0;
         round.matches.forEach(m => {
-          const hit = findAutoResult(events, m, round.deadline);
+          const hit = suggestionsByMatch[m.id];
           const tag = document.getElementById("qz-suggest-" + m.id);
           if(hit){
             found++;
-            const niceDate = new Date(hit.date + "T00:00:00").toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
+            const niceDate = new Date(hit.date).toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
             tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${m.id}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
             tag.style.color = "var(--pitch-light)";
           } else {
@@ -4360,7 +4339,7 @@
             tag.style.color = "var(--ink-soft)";
           }
         });
-        statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta temporada/fecha — puede que la temporada no coincida o los partidos no estén jugados. Puedes ajustarla en Admin → Ajustes.";
+        statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.";
         form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
           btn.addEventListener("click", () => {
             const matchId = btn.dataset.acceptSuggestion;
@@ -4372,7 +4351,7 @@
         });
       }catch(e){
         console.error(e);
-        statusEl.textContent = "No se pudo conectar con TheSportsDB. Ingresa los resultados manualmente.";
+        statusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
       }
     });
     form.querySelectorAll(".pick-row").forEach(row => {
@@ -4756,7 +4735,6 @@
       if(newOwnerPw) meta.settings.ownerPassword = newOwnerPw; // left blank = don't touch it, server keeps the old one
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
-      sportsdbCache = null;
       sportsdbTeamsCache = null; // league may have changed — next visit to Jornadas re-fetches its real roster
       try{
         const ok = await setMeta(meta);

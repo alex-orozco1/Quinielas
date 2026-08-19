@@ -8,6 +8,8 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { Pool } = require("pg");
+const sportsDataProvider = require("./sportsDataProvider");
+const { ProviderError } = require("./providers/theSportsDbAdapter");
 
 // ---------- required configuration ----------
 // No default secrets, ever. If these aren't set, the server refuses to boot
@@ -1286,6 +1288,81 @@ app.post("/api/delete-quiniela", async (req, res) => {
 
 // Simple health check (also useful for uptime pingers to avoid free-tier sleep)
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// ---------- Sports data (DATA-001) ----------
+// Replaces the old flow where the browser called TheSportsDB directly with
+// the public free key "123" (public/index.html's fetchSportsdbSeason, now
+// removed — see DATA-001). That endpoint truncated to 15 events regardless
+// of season size, so any jornada past the first 1-2 rounds silently
+// couldn't be auto-detected. This endpoint calls TheSportsDB V2 server-side
+// (key never reaches the browser — see providers/theSportsDbAdapter.js) via
+// SportsDataProvider, which does not truncate.
+//
+// Never returns raw provider JSON to the client — only normalized
+// suggestions (or a reliability state) per DATA-001 §5/§11.
+app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports-results"), async (req, res) => {
+  const { slug, roundId } = req.params;
+  const metaKey = `quiniela:${slug}:meta`;
+  const meta = await getRow(metaKey);
+  if (!meta) return res.status(404).json({ error: "not_found" });
+
+  const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+  if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+
+  const round = (meta.rounds || []).find((r) => r.id === roundId);
+  if (!round) return res.status(404).json({ error: "round_not_found" });
+
+  const externalLeagueId = meta.settings && meta.settings.sportsdbLeagueId;
+  const season = (meta.settings && meta.settings.sportsdbSeason) || "2025-2026";
+  if (!externalLeagueId) {
+    // No league configured for this quiniela — not a provider failure, just
+    // nothing to look up. Manual capture is unaffected either way.
+    return res.json({ ok: true, reliabilityState: "competition_not_supported", suggestions: [] });
+  }
+
+  try {
+    const events = await sportsDataProvider.getSeasonEvents({
+      provider: "thesportsdb",
+      externalLeagueId,
+      season,
+    });
+
+    const suggestions = [];
+    for (const match of round.matches || []) {
+      const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline);
+      if (!hit || !hit.score) continue;
+      const [home, away] = hit.participants;
+      const straight = sportsDataProvider._teamsMatch(match.teamA, home.name);
+      const result = straight
+        ? (hit.score.home > hit.score.away ? "A" : hit.score.home < hit.score.away ? "B" : "D")
+        : (hit.score.home > hit.score.away ? "B" : hit.score.home < hit.score.away ? "A" : "D");
+      suggestions.push({
+        matchId: match.id,
+        externalEventId: hit.externalEventId,
+        score: `${hit.score.home}-${hit.score.away}`,
+        result,
+        date: hit.dateTime,
+      });
+    }
+    res.json({ ok: true, reliabilityState: null, suggestions });
+  } catch (err) {
+    const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
+    // Diagnostic context only — never the API key, never raw response bodies
+    // that might contain it, never anything the organizer typed. This is the
+    // observability DATA-001 was missing: a future truncation or outage
+    // shows up here with enough context to diagnose it without an organizer
+    // having to report "no aparecen resultados" first.
+    console.error("sports-results provider failure", {
+      slug,
+      roundId,
+      externalLeagueId,
+      season,
+      reliabilityState,
+      message: err.message,
+    });
+    res.json({ ok: false, reliabilityState, suggestions: [] });
+  }
+});
 
 // ---------- Growth Loop funnel events ----------
 // Deliberately minimal: no dashboard, no aggregation — just a plain, appendable
