@@ -12,6 +12,7 @@
 <meta property="og:image" content="https://qracks.net/og-image.png">
 <meta property="og:url" content="https://qracks.net" id="og-url">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://qracks.net/">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -366,6 +367,21 @@
     animation: qzModalFadeIn .15s ease;
   }
   @keyframes qzModalFadeIn{ from{ opacity:0; } to{ opacity:1; } }
+
+  /* A11Y-003: respects the OS-level "reduce motion" preference. Collapses
+     every animation/transition duration to effectively zero instead of
+     removing them individually — end states (final opacity, colors,
+     positions) are unchanged, so layout and visual appearance stay
+     identical; only the motion itself goes away. Covers qzModalFadeIn plus
+     the handful of short hover/focus transitions already in this file. */
+  @media (prefers-reduced-motion: reduce){
+    *{
+      animation-duration:0.01ms !important;
+      animation-iteration-count:1 !important;
+      transition-duration:0.01ms !important;
+      scroll-behavior:auto !important;
+    }
+  }
   .qz-modal-card{
     font-family:'Manrope', sans-serif; background:#FFFFFF; border-radius:16px;
     max-width:420px; width:100%; padding:22px; box-shadow:0 6px 20px rgba(15,46,34,0.12);
