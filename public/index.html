@@ -1986,6 +1986,15 @@
     try{ window.localStorage.setItem(firstRoundTrackedKey(slug), "1"); }catch(e){}
   }
 
+  // Sprint 15.1 — S15-4: standings_viewed, máximo una vez por quiniela por
+  // sesión de página (no localStorage a propósito — a diferencia de
+  // first_round_published, esto NO debe sobrevivir un reload: cada carga
+  // nueva de la página es una "sesión" nueva y puede volver a contar una
+  // visualización real). Un Set en memoria de módulo alcanza: se resetea
+  // solo al recargar, y evita el spam de Tabla→Jornada→Tabla→Jornada→Tabla
+  // dentro de la misma sesión sin tocar sessionStorage ni nueva infra.
+  const standingsViewedTrackedSlugs = new Set();
+
   // Sprint 14.4 — first_pick_saved se dispara una sola vez por participante;
   // picks_completed una sola vez por participante+jornada. Sin este guard,
   // cada autosave posterior (que ya está guardado, pero se re-envía al
@@ -3008,6 +3017,16 @@
 
   async function renderTabla(main){
     main.innerHTML = `<div class="card"><p class="muted">Calculando posiciones…</p></div>`;
+    // Sprint 15.1 — S15-4: fires once per quiniela per page session, on a
+    // real entry into this tab — not on every re-render while already here
+    // (guarded by standingsViewedTrackedSlugs, see declaration above).
+    // Fire-and-forget: never awaited, trackEvent() already never throws, so
+    // an analytics failure can't delay or block the standings render below.
+    const standingsSlugKey = SLUG || "_root";
+    if(!standingsViewedTrackedSlugs.has(standingsSlugKey)){
+      standingsViewedTrackedSlugs.add(standingsSlugKey);
+      trackEvent("standings_viewed", { source: currentUser && currentUser.isAdmin ? "organizer" : "participant" });
+    }
     await ensureAllPicksLoaded();
     const list = standingsList();
     const ranks = computeDenseRanks(list);
@@ -3710,6 +3729,15 @@
   }
 
   // "Participación": who has/hasn't submitted picks for open rounds — status only, never reveals picks
+  // Sprint 15.1 — S15-1: this is the tracked ("invite_shared") main invite
+  // action, wired to the header's "🔗 Copiar link" button. Copies a short
+  // contextual message (quiniela name + CTA + link) instead of the bare URL,
+  // so the organizer doesn't have to type context by hand when pasting into
+  // WhatsApp/Telegram/Messages — reuses the same idea already used for the
+  // "picks faltantes" reminder text, just applied here too.
+  function inviteMessage(link){
+    return `Únete a mi quiniela "${meta.groupName}" en QRACKS ⚽\n${link}`;
+  }
   async function copyAccessLink(){
     if(currentUser && currentUser.isAdmin && meta.rounds.length === 0){
       const wantsToCreateJornada = await qzConfirm(
@@ -3727,7 +3755,7 @@
     }
     const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
     try{
-      await navigator.clipboard.writeText(link);
+      await navigator.clipboard.writeText(inviteMessage(link));
       if(currentUser && currentUser.isAdmin){
         markSharedInvite(SLUG);
         await render();
@@ -4425,6 +4453,17 @@
           round._hadSavedDraftChecked = false;
           toast(correcting ? "✅ Listo, la corrección quedó publicada y los puntos se actualizaron." : "✅ Listo, los resultados quedaron publicados y los puntos se actualizaron.");
           allPicksCache = {};
+          // Sprint 15.1 — S15-3: fires exactly once per quiniela+jornada, the
+          // moment resultsPublished flips false->true for real (server write
+          // confirmed ok). `wasAlreadyPublished` — captured before the write,
+          // above — IS the dedup guard: correcting an already-published round
+          // never re-enters this branch, and a failed write never gets here
+          // either. No localStorage/session guard needed, unlike
+          // first_round_published — this one is guarded by persisted product
+          // state itself, so it can't duplicate even from a different device.
+          if(!wasAlreadyPublished){
+            trackEvent("result_published", { source: "admin_resultados" });
+          }
         }else{
           // Don't leave the in-memory state claiming this published when it didn't.
           round.resultsPublished = wasAlreadyPublished;
