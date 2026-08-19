@@ -55,6 +55,7 @@ const RELIABILITY_STATES = Object.freeze([
   "provider_unavailable",
   "provider_timeout",
   "provider_invalid_response",
+  "provider_incomplete_response",
 ]);
 
 async function fetchWithTimeout(url, options) {
@@ -112,6 +113,48 @@ function isNoDataFound(body) {
   return !!(body && typeof body.Message === "string" && /no data found/i.test(body.Message));
 }
 
+// DATA-001.1 §6 gate + QA fix: detects a season schedule that LOOKS like the
+// exact truncation this adapter exists to eliminate — TheSportsDB Free's
+// eventsseason.php always capped a season at round 1-2 regardless of true
+// size (empirically confirmed in DATA-001). If a "full season" response
+// ever comes back capped the same way — even from Premium V2, e.g. a key
+// that silently degraded, a proxy/cache serving stale free-tier data, or a
+// provider regression — QRACKS must not treat it as a complete, cacheable
+// result and must not silently generate suggestions from it.
+//
+// Deliberately league/sport-agnostic: it never assumes a specific expected
+// event count for any competition (that would require hardcoding Liga MX or
+// any other league). It only reasons from structure PRESENT IN THIS SAME
+// RESPONSE:
+//   - how many distinct rounds were returned, and how high they go
+//   - how many distinct participants appear in the earliest round
+// A response capped at round <=2 is only flagged when that earliest round
+// alone already implies a multi-team round-robin competition (>=6 distinct
+// participants, i.e. >=3 simultaneous matches) — because a competition with
+// that many participants structurally cannot finish in 2 rounds. A
+// genuinely tiny competition (e.g. a 4-team mini-cup: semis + final = 2
+// rounds, 4 participants) never trips this, since 4 < 6 — see test suite
+// for the false-positive guard this encodes.
+function detectIncompleteSchedule(rawEvents) {
+  if (!Array.isArray(rawEvents) || rawEvents.length === 0) return false;
+
+  const rounds = rawEvents.map((e) => Number(e.intRound)).filter((n) => Number.isFinite(n));
+  if (rounds.length === 0) return false; // no round data to reason about — don't guess
+
+  const maxRound = Math.max(...rounds);
+  const minRound = Math.min(...rounds);
+  const narrowRoundSpan = maxRound <= 2; // the exact ceiling the V1 free-tier bug always hit
+
+  if (!narrowRoundSpan) return false;
+
+  const earliestRoundEvents = rawEvents.filter((e) => Number(e.intRound) === minRound);
+  const impliedParticipants = new Set(
+    earliestRoundEvents.flatMap((e) => [e.idHomeTeam, e.idAwayTeam]).filter(Boolean)
+  ).size;
+
+  return impliedParticipants >= 6; // implies a league too large to legitimately end at round 2
+}
+
 // ---- Public adapter surface -------------------------------------------
 
 // Full season schedule for a league. This is the endpoint that replaces the
@@ -130,6 +173,20 @@ async function getSeasonSchedule(externalLeagueId, season) {
   const events = Array.isArray(body && body.schedule) ? body.schedule
     : Array.isArray(body) ? body
     : [];
+
+  if (detectIncompleteSchedule(events)) {
+    // Never returned to the caller as if it were a valid, cacheable result —
+    // sportsDataProvider.getSeasonEvents() only caches on success, so a
+    // thrown ProviderError here automatically satisfies "incomplete
+    // responses are never cached, and the next call retries against the
+    // provider" without any extra plumbing.
+    throw new ProviderError("provider_incomplete_response", "Season schedule looks truncated (capped at round <=2 for a multi-team competition)", {
+      externalLeagueId,
+      season,
+      eventCount: events.length,
+    });
+  }
+
   return events;
 }
 
@@ -169,4 +226,5 @@ module.exports = {
   getLivescore,
   // exported for tests only
   _isNoDataFound: isNoDataFound,
+  _detectIncompleteSchedule: detectIncompleteSchedule,
 };

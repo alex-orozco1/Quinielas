@@ -220,3 +220,75 @@ test("different league/season keys do not share a cache entry", async () => {
     assert.equal(calls, 2);
   } finally { global.fetch = originalFetch; }
 });
+
+// ---- provider_incomplete_response propagation through the cache layer (QA fix) ----
+
+function fakeMatchRaw(round, homeId, awayId) {
+  return { intRound: String(round), idHomeTeam: String(homeId), idAwayTeam: String(awayId), strHomeTeam: "H" + homeId, strAwayTeam: "A" + awayId };
+}
+
+test("getSeasonEvents: a complete season schedule is accepted AND cached", async () => {
+  process.env.THESPORTSDB_API_KEY = "test-key";
+  const provider = freshProvider();
+  const schedule = [];
+  for (let round = 1; round <= 17; round++) {
+    for (let i = 0; i < 9; i++) schedule.push(fakeMatchRaw(round, i * 2, i * 2 + 1));
+  }
+  let calls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => { calls++; return jsonResponse(200, { schedule }); };
+  try {
+    const events = await provider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId: "4350", season: "2026-2027" });
+    assert.equal(events.length, 153);
+    await provider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId: "4350", season: "2026-2027" });
+    assert.equal(calls, 1, "a complete response should be cached — second call must not re-fetch");
+  } finally { global.fetch = originalFetch; }
+});
+
+test("getSeasonEvents: a truncated-looking season schedule is rejected with provider_incomplete_response and is NEVER cached", async () => {
+  process.env.THESPORTSDB_API_KEY = "test-key";
+  const provider = freshProvider();
+  const schedule = [];
+  for (let i = 0; i < 9; i++) schedule.push(fakeMatchRaw(1, i * 2, i * 2 + 1));
+  for (let i = 0; i < 6; i++) schedule.push(fakeMatchRaw(2, i * 2, i * 2 + 1));
+  let calls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => { calls++; return jsonResponse(200, { schedule }); };
+  try {
+    await assert.rejects(
+      () => provider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId: "4350", season: "2026-2027" }),
+      (err) => err.reliabilityState === "provider_incomplete_response"
+    );
+    // Retry immediately after — must hit the network again, proving the
+    // incomplete result was never written to cache.
+    await assert.rejects(
+      () => provider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId: "4350", season: "2026-2027" }),
+      (err) => err.reliabilityState === "provider_incomplete_response"
+    );
+    assert.equal(calls, 2, "an incomplete-looking response must never be cached — every call should hit the network again");
+  } finally { global.fetch = originalFetch; }
+});
+
+test("getSeasonEvents: once the provider self-heals (returns a full schedule), the next call succeeds and caches normally", async () => {
+  process.env.THESPORTSDB_API_KEY = "test-key";
+  const provider = freshProvider();
+  const truncated = [];
+  for (let i = 0; i < 9; i++) truncated.push(fakeMatchRaw(1, i * 2, i * 2 + 1));
+  for (let i = 0; i < 6; i++) truncated.push(fakeMatchRaw(2, i * 2, i * 2 + 1));
+  const full = [];
+  for (let round = 1; round <= 17; round++) {
+    for (let i = 0; i < 9; i++) full.push(fakeMatchRaw(round, i * 2, i * 2 + 1));
+  }
+  let call = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    call++;
+    return jsonResponse(200, { schedule: call === 1 ? truncated : full });
+  };
+  try {
+    await assert.rejects(() => provider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId: "4350", season: "2026-2027" }));
+    const events = await provider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId: "4350", season: "2026-2027" });
+    assert.equal(events.length, 153);
+    assert.equal(call, 2);
+  } finally { global.fetch = originalFetch; }
+});
