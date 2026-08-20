@@ -616,8 +616,13 @@ async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta, no
 // every quiniela-meta write, so it also catches a correction that publishes
 // an incomplete draft, not just the first time.
 const VALID_RESULT_VALUES = new Set(["A", "D", "B"]);
-function validateRoundsIntegrity(newValue) {
+function validateRoundsIntegrity(newValue, oldValue, nowMs) {
   if (!Array.isArray(newValue.rounds)) return { ok: true };
+  const now = nowMs != null ? nowMs : Date.now();
+  const oldRoundsById = {};
+  if (oldValue && Array.isArray(oldValue.rounds)) {
+    for (const r of oldValue.rounds) oldRoundsById[r.id] = r;
+  }
   for (const round of newValue.rounds) {
     if (!round.resultsPublished) continue;
     // AUTO-001 HOTFIX (validation round, BUG 5 gap found via real end-to-end
@@ -629,6 +634,23 @@ function validateRoundsIntegrity(newValue) {
     // applied to picks writes in validatePicksDeadline().
     if (round.published === false) {
       return { ok: false, reason: "unpublished_round_results", roundNumber: round.number };
+    }
+    // AUTO-001.1 Admin lifecycle fix (FIX 2) — BLOCKING: official results
+    // can only be published the FIRST time once the round is actually
+    // closed (deadline passed). Without this, PUBLISHED/OPEN could jump
+    // straight to RESULTS PUBLISHED, skipping CLOSED entirely — a real
+    // integrity problem, not just a UI nicety, so it's enforced here, the
+    // real mutation point, not only in the button's disabled state.
+    // Corrections of an ALREADY-published round are explicitly exempt —
+    // legacy/historical deadlines that look "future" due to old data must
+    // never block a legitimate correction of results already live.
+    const oldRound = oldRoundsById[round.id];
+    const wasAlreadyPublished = !!(oldRound && oldRound.resultsPublished);
+    if (!wasAlreadyPublished) {
+      const deadlineMs = new Date(round.deadline).getTime();
+      if (Number.isFinite(deadlineMs) && now <= deadlineMs) {
+        return { ok: false, reason: "round_not_closed", roundNumber: round.number };
+      }
     }
     const results = round.results || {};
     const matches = Array.isArray(round.matches) ? round.matches : [];
@@ -858,7 +880,7 @@ app.post("/api/kv/:key", async (req, res) => {
       const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, info.slug);
       if (!authTier) return res.status(403).json({ error: "unauthorized" });
       finalValue = mergeProtectedMetaFields(oldValue, value, authTier);
-      const roundsCheck = validateRoundsIntegrity(finalValue);
+      const roundsCheck = validateRoundsIntegrity(finalValue, oldValue);
       if (!roundsCheck.ok) return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
     } else if (info.kind === "picks") {
       // SEC-001 — Atomic Round Lock: previously, reading the meta (to check the
