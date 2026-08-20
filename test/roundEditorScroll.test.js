@@ -1,11 +1,11 @@
 // UX fix: "Editar" en Admin -> Jornadas debe llevar el viewport hasta el
 // editor (determinístico, después del re-render real, no por timing) y el
 // editor debe seguir mostrando "Editando jornada N" para la jornada
-// correcta. public/index.html es un SPA monolítico sin DOM real disponible
-// en node:test (sin jsdom) — estas son verificaciones estructurales sobre
-// el código real: confirman la forma exacta del fix (await antes de
-// scrollIntoView, mismo target element, un solo punto de entrada
-// reutilizado por ambos flujos de "Editar") en vez de reimplementar el
+// correcta, SIN quedar tapado por el header sticky. public/index.html es
+// un SPA monolítico sin DOM real disponible en node:test (sin jsdom) —
+// estas son verificaciones estructurales sobre el código real: confirman
+// la forma exacta del fix (await antes de medir/scrollear, offset real del
+// header medido en vivo, no un número mágico) en vez de reimplementar el
 // comportamiento.
 
 const test = require("node:test");
@@ -27,20 +27,30 @@ function extractFunctionBody(source, signature) {
   return source.slice(start, i + 1);
 }
 
-test("openRoundEditor awaits the re-render BEFORE scrolling (deterministic, not timing-based)", () => {
+test("openRoundEditor awaits the re-render BEFORE measuring/scrolling (deterministic, not timing-based)", () => {
   const body = extractFunctionBody(indexSrc, "async function openRoundEditor(body, roundId)");
   const awaitIdx = body.indexOf("await renderAdminRondas(body);");
-  const scrollIdx = body.indexOf("scrollIntoView(");
+  const scrollIdx = body.indexOf("window.scrollTo(");
   assert.ok(awaitIdx !== -1, "the re-render must be awaited");
-  assert.ok(scrollIdx !== -1, "must scroll into view");
+  assert.ok(scrollIdx !== -1, "must scroll the window");
   assert.ok(awaitIdx < scrollIdx, "scrolling must happen strictly after the awaited re-render completes");
   assert.ok(!body.includes("setTimeout"), "must not rely on an arbitrary timeout instead of awaiting the real render");
+  assert.ok(!/^\s*requestAnimationFrame\(/m.test(body), "must not need an extra animation frame — getBoundingClientRect() already forces accurate layout synchronously");
 });
 
-test("openRoundEditor scrolls to the actual editor card (#qz-round-form), with smooth + start", () => {
+test("openRoundEditor targets the actual editor card (#qz-round-form) and offsets by the REAL sticky header height, not a magic number", () => {
   const body = extractFunctionBody(indexSrc, "async function openRoundEditor(body, roundId)");
   assert.ok(body.includes('getElementById("qz-round-form")'), "must target the real editor card element");
-  assert.match(body, /scrollIntoView\(\s*\{\s*behavior:\s*"smooth",\s*block:\s*"start"\s*\}\s*\)/, "must use smooth scroll to the start of the editor");
+  assert.ok(body.includes('querySelector("#quiniela-root .qz-header")'), "must measure the real sticky header element");
+  assert.ok(body.includes("getBoundingClientRect().height"), "the header offset must come from a live layout measurement, not a hardcoded pixel value");
+  assert.ok(!/scrollTo\(\s*\{\s*top:\s*\d/.test(body), "the scroll target must be computed from measured values, never a literal hardcoded number");
+});
+
+test("the computed scroll target accounts for header height + form position, never scrolls to a negative/undefined offset", () => {
+  const body = extractFunctionBody(indexSrc, "async function openRoundEditor(body, roundId)");
+  assert.ok(body.includes("formEl.getBoundingClientRect().top"), "must measure the editor's real position");
+  assert.ok(body.includes("window.scrollY"), "must account for current scroll position to get an absolute document offset");
+  assert.ok(body.includes("Math.max(0,"), "must clamp to 0 so a round near the top never scrolls to a negative offset");
 });
 
 test("the editor card element (#qz-round-form) is exactly where \"Editando jornada N\" is rendered", () => {

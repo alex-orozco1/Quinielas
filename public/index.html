@@ -3858,7 +3858,15 @@
   }
 
   async function renderAdminParticipacion(body){
-    const openRounds = meta.rounds.filter(r => classifyRound(r) === "porjugar").slice().sort((a,b)=>a.number-b.number);
+    // FIX 2: Admin -> Jornadas manages the whole calendar (shows everything,
+    // reads meta.rounds directly — untouched by this fix). Admin ->
+    // Participación tracks REAL participation, so it must never surface a
+    // round nobody could actually see/answer yet — reusing visibleRounds()
+    // (published !== false; undefined/legacy stays visible for
+    // compatibility) is exactly that rule, already correct elsewhere in the
+    // app. Once a round is published, it starts appearing here automatically
+    // on the next render — no separate wiring needed.
+    const openRounds = visibleRounds().filter(r => classifyRound(r) === "porjugar").slice().sort((a,b)=>a.number-b.number);
     if(!openRounds.length){
       body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas abiertas</div><p class="muted">No hay nadie por contestar en este momento. En cuanto crees una jornada nueva en Admin → Jornadas, aquí verás quién ya votó y quién falta.</p></div>${accessLinkCardHtml()}${spectatorLinkCardHtml()}`;
       wireAccessLinkCard(body);
@@ -3958,7 +3966,21 @@
     renderAdminRondas._draft = null;
     await renderAdminRondas(body);
     const formEl = document.getElementById("qz-round-form");
-    if(formEl) formEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    if(!formEl) return;
+    // scrollIntoView({block:"start"}) alone landed the editor's top edge
+    // exactly where the viewport's top edge is — but .qz-header is
+    // position:sticky, so it stays pinned on top of that same spot,
+    // covering "Editando jornada N" and however many pixels of the form
+    // below it the real (not assumed) header height happens to be. Measured
+    // live via getBoundingClientRect() (forces an accurate layout read, no
+    // stale/zero values, no requestAnimationFrame needed) so this stays
+    // correct across desktop/mobile header heights without a magic number
+    // for the offset itself — only a small fixed breathing-room margin.
+    const headerEl = document.querySelector("#quiniela-root .qz-header");
+    const headerHeight = headerEl ? headerEl.getBoundingClientRect().height : 0;
+    const BREATHING_ROOM_PX = 12;
+    const targetTop = formEl.getBoundingClientRect().top + window.scrollY - headerHeight - BREATHING_ROOM_PX;
+    window.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
   }
 
   async function renderAdminRondas(body){
