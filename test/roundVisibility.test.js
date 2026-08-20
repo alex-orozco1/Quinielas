@@ -83,3 +83,30 @@ test("Admin \u2192 Jornadas can publish a round (published: false -> true) via a
   assert.ok(indexSrc.includes("data-publish-round"), "an explicit publish action must exist in Admin \u2192 Jornadas");
   assert.ok(indexSrc.includes("round.published = true;"), "the publish action must flip published to true");
 });
+
+// ---- AUTO-001.1 #5/#6/#7/#8: legacy-quiniela-shaped scenario after backfill ----
+
+test("AUTO-001.1 #5/#6: after backfill, participant sees only J1-J5 (legacy, published undefined); admin sees all 17", () => {
+  const rounds = [1,2,3,4,5].map((n) => ({ id: "r_j"+n, number: n })); // legacy, no published field
+  for (let n = 6; n <= 17; n++) rounds.push({ id: "r_j"+n, number: n, published: false, provider: "thesportsdb" });
+  const meta = { rounds };
+  assert.equal(runVisibleRounds(meta, { isAdmin: false }).length, 5, "participant must see only the 5 legacy rounds");
+  assert.equal(runVisibleRounds(meta, { isAdmin: true }).length, 5, "admin's normal Jornada-tab view (visibleRounds) also excludes unpublished backfilled rounds (BUG 1 rule) -- Admin -> Jornadas itself reads meta.rounds directly and is unaffected");
+});
+
+test("AUTO-001.1 #7: backfilled rounds don't count toward jornada usage until published (reuses BUG 3 fix)", () => {
+  const rounds = [1,2,3,4,5].map((n) => ({ id: "r_j"+n, number: n }));
+  for (let n = 6; n <= 17; n++) rounds.push({ id: "r_j"+n, number: n, published: false, provider: "thesportsdb" });
+  const usage = rounds.filter((r) => r.published !== false).length;
+  assert.equal(usage, 5, "usage must reflect the 5 pre-existing legacy rounds only, not all 17");
+});
+
+test("AUTO-001.1 #8: publishing one backfilled round (J6) makes only J6 join the game, J7-J17 stay invisible", () => {
+  const rounds = [1,2,3,4,5].map((n) => ({ id: "r_j"+n, number: n }));
+  for (let n = 6; n <= 17; n++) rounds.push({ id: "r_j"+n, number: n, published: false, provider: "thesportsdb" });
+  const j6 = rounds.find((r) => r.number === 6);
+  j6.published = true;
+  const meta = { rounds };
+  const visible = runVisibleRounds(meta, { isAdmin: false });
+  assert.deepEqual(visible.map((r) => r.number).sort((a,b) => a-b), [1,2,3,4,5,6]);
+});

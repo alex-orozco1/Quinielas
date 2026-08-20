@@ -12,6 +12,7 @@ const sportsDataProvider = require("./sportsDataProvider");
 const { ProviderError } = require("./providers/theSportsDbAdapter");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
+const { isRoundEligibleForAutoResults } = require("./autoResults");
 
 // ---------- required configuration ----------
 // No default secrets, ever. If these aren't set, the server refuses to boot
@@ -1327,6 +1328,32 @@ app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISO
 //
 // Never returns raw provider JSON to the client — only normalized
 // suggestions (or a reliability state) per DATA-001 §5/§11.
+//
+// AUTO-002 (bulk validation round): shared by both the single-round and
+// whole-quiniela endpoints below, so "search this one round" and "search
+// every pending round" produce identical suggestions from identical logic —
+// no duplicated matching rules to drift apart.
+function buildRoundSuggestions(round, events) {
+  const suggestions = [];
+  for (const match of round.matches || []) {
+    const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline);
+    if (!hit || !hit.score) continue;
+    const [home, away] = hit.participants;
+    const straight = sportsDataProvider._teamsMatch(match.teamA, home.name);
+    const result = straight
+      ? (hit.score.home > hit.score.away ? "A" : hit.score.home < hit.score.away ? "B" : "D")
+      : (hit.score.home > hit.score.away ? "B" : hit.score.home < hit.score.away ? "A" : "D");
+    suggestions.push({
+      matchId: match.id,
+      externalEventId: hit.externalEventId,
+      score: `${hit.score.home}-${hit.score.away}`,
+      result,
+      date: hit.dateTime,
+    });
+  }
+  return suggestions;
+}
+
 app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports-results"), async (req, res) => {
   const { slug, roundId } = req.params;
   const metaKey = `quiniela:${slug}:meta`;
@@ -1338,6 +1365,16 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
 
   const round = (meta.rounds || []).find((r) => r.id === roundId);
   if (!round) return res.status(404).json({ error: "round_not_found" });
+
+  // AUTO-002: 0 requests to TheSportsDB when there's nothing worth asking
+  // about — an unpublished round, one still open (deadline hasn't passed),
+  // or one whose results QRACKS already has (resultsPublished:true is the
+  // source of truth from that point on; TheSportsDB is never consulted
+  // again for it). Legacy rounds (published === undefined) are eligible
+  // exactly like published:true, same compatibility rule as everywhere else.
+  if (!isRoundEligibleForAutoResults(round)) {
+    return res.json({ ok: true, reliabilityState: null, suggestions: [] });
+  }
 
   const externalLeagueId = meta.settings && meta.settings.sportsdbLeagueId;
   const season = (meta.settings && meta.settings.sportsdbSeason) || currentDefaultSeason();
@@ -1353,25 +1390,7 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
       externalLeagueId,
       season,
     });
-
-    const suggestions = [];
-    for (const match of round.matches || []) {
-      const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline);
-      if (!hit || !hit.score) continue;
-      const [home, away] = hit.participants;
-      const straight = sportsDataProvider._teamsMatch(match.teamA, home.name);
-      const result = straight
-        ? (hit.score.home > hit.score.away ? "A" : hit.score.home < hit.score.away ? "B" : "D")
-        : (hit.score.home > hit.score.away ? "B" : hit.score.home < hit.score.away ? "A" : "D");
-      suggestions.push({
-        matchId: match.id,
-        externalEventId: hit.externalEventId,
-        score: `${hit.score.home}-${hit.score.away}`,
-        result,
-        date: hit.dateTime,
-      });
-    }
-    res.json({ ok: true, reliabilityState: null, suggestions });
+    res.json({ ok: true, reliabilityState: null, suggestions: buildRoundSuggestions(round, events) });
   } catch (err) {
     const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
     // Diagnostic context only — never the API key, never raw response bodies
@@ -1388,6 +1407,63 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
       message: err.message,
     });
     res.json({ ok: false, reliabilityState, suggestions: [] });
+  }
+});
+
+// AUTO-002 (bulk validation round): "Buscar resultados automáticos" without
+// making the admin visit every closed-but-pending round one at a time.
+// Computes eligibility for EVERY round up front, then — if there's at least
+// one eligible round — makes exactly ONE SportsDataProvider.getSeasonEvents()
+// call (subject to its existing provider+league+season cache) and reuses
+// those same events to build suggestions for every eligible round. Ineligible
+// rounds (unpublished, still open, or already resultsPublished) are never
+// touched, never counted against the provider. This is purely additive: the
+// single-round endpoint above is untouched and still works exactly as
+// before as a fallback for searching one round on its own.
+app.get("/api/quinielas/:slug/sports-results", rateLimit("sports-results"), async (req, res) => {
+  const { slug } = req.params;
+  const metaKey = `quiniela:${slug}:meta`;
+  const meta = await getRow(metaKey);
+  if (!meta) return res.status(404).json({ error: "not_found" });
+
+  const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+  if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+
+  const eligibleRounds = (meta.rounds || []).filter((r) => isRoundEligibleForAutoResults(r));
+  if (!eligibleRounds.length) {
+    // Nothing pending — 0 provider calls, same principle as the per-round endpoint.
+    return res.json({ ok: true, reliabilityState: null, results: {} });
+  }
+
+  const externalLeagueId = meta.settings && meta.settings.sportsdbLeagueId;
+  const season = (meta.settings && meta.settings.sportsdbSeason) || currentDefaultSeason();
+  if (!externalLeagueId) {
+    return res.json({ ok: true, reliabilityState: "competition_not_supported", results: {} });
+  }
+
+  try {
+    const events = await sportsDataProvider.getSeasonEvents({
+      provider: "thesportsdb",
+      externalLeagueId,
+      season,
+    });
+    const results = {};
+    for (const round of eligibleRounds) {
+      results[round.id] = buildRoundSuggestions(round, events);
+    }
+    res.json({ ok: true, reliabilityState: null, results });
+  } catch (err) {
+    const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
+    console.error("sports-results (bulk) provider failure", {
+      slug,
+      externalLeagueId,
+      season,
+      reliabilityState,
+      message: err.message,
+    });
+    // Fail-safe: never touches meta.rounds — this endpoint is read-only,
+    // same as the single-round one. Existing results are never at risk.
+    res.json({ ok: false, reliabilityState, results: {} });
   }
 });
 
