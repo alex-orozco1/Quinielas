@@ -1504,8 +1504,9 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     if (!externalLeagueId) {
       // No competition configured for this quiniela — not a provider
       // failure, just nothing to import. Manual creation is unaffected.
+      console.log("sync-competition: no league configured", { slug });
       await client.query("ROLLBACK");
-      return res.json({ ok: true, reliabilityState: "competition_not_supported", createdRounds: 0, createdMatches: 0, skippedEvents: 0 });
+      return res.json({ ok: true, reliabilityState: "competition_not_supported", createdRounds: 0, createdMatches: 0, skippedEvents: 0, eventsFetched: 0, distinctProviderRounds: 0 });
     }
 
     let events;
@@ -1534,6 +1535,24 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       matches: r.matches.map((m) => ({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...m })),
     }));
 
+    // AUTO-001.1 production bug fix: always-on diagnostics, not just on
+    // failure. createdRounds:0 is ambiguous on its own — it can mean
+    // "genuinely everything already imported" OR "the provider returned
+    // nothing usable for this league+season" OR "every event collided with
+    // an existing round number". These two numbers (how many events came
+    // back at all, and how many distinct rounds they represent) are what
+    // let that be told apart after the fact, without guessing — see
+    // AUTO-001.1 §4 in the ticket that requested this.
+    const distinctProviderRounds = new Set(events.map((e) => e.round).filter((r) => r != null)).size;
+    console.log("sync-competition diagnostics", {
+      slug, externalLeagueId, season,
+      eventsFetched: events.length,
+      distinctProviderRounds,
+      existingRoundCount: (meta.rounds || []).length,
+      createdRounds: newRounds.length,
+      skippedEvents,
+    });
+
     if (newRounds.length) {
       meta.rounds = [...(meta.rounds || []), ...newRounds].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
       await putRow(metaKey, meta, client);
@@ -1546,6 +1565,13 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       createdRounds: newRounds.length,
       createdMatches: newRounds.reduce((n, r) => n + r.matches.length, 0),
       skippedEvents,
+      // Exposed so the frontend can tell "genuinely fully imported" (we got
+      // a real calendar back, nothing new in it) apart from "the provider
+      // call succeeded technically but returned no usable calendar data at
+      // all" (season/league mismatch, empty response, etc.) — see the UI
+      // fix below. Not sensitive: just counts, no provider payload.
+      eventsFetched: events.length,
+      distinctProviderRounds,
     });
   } catch (err) {
     await client.query("ROLLBACK");
