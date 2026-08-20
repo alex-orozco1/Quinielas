@@ -32,10 +32,10 @@ function runVisibleRounds(meta, currentUser) {
   return wrapped(meta, currentUser);
 }
 
-test("visibleRounds: admin sees every round, including published:false", () => {
+test("HOTFIX BUG 1: visibleRounds excludes published:false for admin too — Admin's normal Jornada tab must not treat unpublished imported rounds as active", () => {
   const meta = { rounds: [{ id: "r1", published: false }, { id: "r2", published: true }, { id: "r3" }] };
   const result = runVisibleRounds(meta, { isAdmin: true });
-  assert.equal(result.length, 3);
+  assert.deepEqual(result.map((r) => r.id), ["r2", "r3"], "admin's visibleRounds() must exclude published:false — only Admin -> Jornadas (which reads meta.rounds directly, not this function) shows everything");
 });
 
 test("visibleRounds: participant does NOT see published:false rounds", () => {
@@ -56,6 +56,14 @@ test("visibleRounds: publishing a round (false -> true) makes it visible to part
   assert.equal(runVisibleRounds(meta, { isAdmin: false }).length, 0);
   round.published = true;
   assert.equal(runVisibleRounds(meta, { isAdmin: false }).length, 1);
+});
+
+test("HOTFIX BUG 1: publishing a round (false -> true) makes it appear in admin's visibleRounds() too", () => {
+  const round = { id: "r1", published: false };
+  const meta = { rounds: [round] };
+  assert.equal(runVisibleRounds(meta, { isAdmin: true }).length, 0);
+  round.published = true;
+  assert.equal(runVisibleRounds(meta, { isAdmin: true }).length, 1);
 });
 
 test("visibleRounds: currentUser null/missing (defensive) does not throw, treated as non-admin", () => {

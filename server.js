@@ -351,6 +351,13 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
     // live (which keeps its old, real `results` untouched and visible the
     // whole time this is happening).
     clone.rounds.forEach((r) => { delete r.draftResults; });
+    // AUTO-001 HOTFIX (BUG 2): defense in depth — the frontend's own
+    // visibleRounds() already hides published:false rounds from
+    // participants, but that's UI, not a real barrier. A non-admin/owner
+    // must never even RECEIVE an unpublished round's data over the wire in
+    // the first place. published === undefined (legacy rounds) stays
+    // visible, same as always.
+    clone.rounds = clone.rounds.filter((r) => r.published !== false);
   }
   return clone;
 }
@@ -588,6 +595,14 @@ async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta, no
       if (oldRoundPicks !== newRoundPicks) return { ok: false };
       continue;
     }
+    // AUTO-001 HOTFIX (BUG 2): real protection at the actual mutation point,
+    // not just hiding the round from the UI — a round nobody could see yet
+    // must not be able to receive picks at all, regardless of its deadline.
+    // published === undefined (legacy rounds) is unaffected, same as always.
+    if (round.published === false) {
+      if (oldRoundPicks !== newRoundPicks) return { ok: false };
+      continue;
+    }
     if (now <= new Date(round.deadline).getTime()) continue; // still open, fine
     if (oldRoundPicks !== newRoundPicks) return { ok: false };
   }
@@ -604,6 +619,16 @@ function validateRoundsIntegrity(newValue) {
   if (!Array.isArray(newValue.rounds)) return { ok: true };
   for (const round of newValue.rounds) {
     if (!round.resultsPublished) continue;
+    // AUTO-001 HOTFIX (validation round, BUG 5 gap found via real end-to-end
+    // testing): the "can't publish results for an unpublished round" guard
+    // previously only lived in the frontend click handler — a direct API
+    // call bypassing the UI could still set resultsPublished:true on a
+    // published:false round. This is the real, server-side mutation point;
+    // this check is what actually enforces it, same principle already
+    // applied to picks writes in validatePicksDeadline().
+    if (round.published === false) {
+      return { ok: false, reason: "unpublished_round_results", roundNumber: round.number };
+    }
     const results = round.results || {};
     const matches = Array.isArray(round.matches) ? round.matches : [];
     for (const m of matches) {
