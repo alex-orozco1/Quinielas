@@ -4052,7 +4052,16 @@
           if(res.ok && data.ok && !data.reliabilityState){
             syncStatus.textContent = data.createdRounds > 0
               ? `✅ Se importaron ${data.createdRounds} jornada${data.createdRounds===1?"":"s"} nueva${data.createdRounds===1?"":"s"}.`
-              : "Ya está todo importado — no hay jornadas nuevas en el calendario.";
+              // AUTO-001.1 production bug fix: "ya está todo importado" was
+              // being shown for ANY createdRounds:0, even when the provider
+              // silently returned zero usable calendar data (wrong season,
+              // empty response) — indistinguishable from genuinely having
+              // imported everything already. Now only claims that when we
+              // actually got real calendar data back (distinctProviderRounds
+              // > 0) and it's confirmed there's nothing new in it.
+              : (data.distinctProviderRounds > 0
+                  ? "Ya está todo importado — no hay jornadas nuevas en el calendario."
+                  : "No encontramos un calendario disponible para esta competencia/temporada. Revisa la liga y temporada configuradas en Ajustes, o intenta de nuevo más tarde.");
             syncStatus.style.color = "var(--pitch-light)";
             if(data.createdRounds > 0) renderAdmin(document.getElementById("qz-main"));
           } else {

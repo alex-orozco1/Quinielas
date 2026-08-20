@@ -282,3 +282,48 @@ test("AUTO-001.1 #4: re-sync after backfill creates zero additional duplicates",
   const second = planCompetitionSync({ existingRounds: afterBackfill, events, provider: "thesportsdb" });
   assert.equal(second.newRounds.length, 0);
 });
+
+// ---- Production bug (AUTO-001.1 follow-up) — blocking regression tests ----
+// These reproduce the exact scenarios named in the production bug report,
+// beyond the 1-5/6-17 case already covered above.
+
+test("PRODBUG #1: existing 1,2,3 + provider 1..5 -> creates exactly 4,5", () => {
+  const legacyRounds = [1, 2, 3].map((n) => legacyRound(n, true));
+  const events = [];
+  for (let n = 1; n <= 5; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  const { newRounds } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.deepEqual(newRounds.map((r) => r.number).sort((a, b) => a - b), [4, 5]);
+});
+
+test("PRODBUG #2: existing 1..5 + provider 1..5 (same range, nothing new) -> creates 0, genuinely fully imported", () => {
+  const legacyRounds = [1, 2, 3, 4, 5].map((n) => legacyRound(n, true));
+  const events = [];
+  for (let n = 1; n <= 5; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  const { newRounds } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.equal(newRounds.length, 0);
+});
+
+test("PRODBUG #3: existing 1..5 + provider 1..17 where SOME events lack a round -> valid 6..17 still import, invalid ones are only skipped, not aborting the whole sync", () => {
+  const legacyRounds = [1, 2, 3, 4, 5].map((n) => legacyRound(n, true));
+  const events = [];
+  for (let n = 1; n <= 17; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  // Mix in events with no round at all — must not abort or reduce the valid result.
+  events.push(ev({ round: null, externalEventId: "no-round-1" }));
+  events.push(ev({ round: null, externalEventId: "no-round-2" }));
+  const { newRounds, skippedEvents } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.deepEqual(newRounds.map((r) => r.number).sort((a, b) => a - b), [6,7,8,9,10,11,12,13,14,15,16,17]);
+  assert.equal(skippedEvents, 2);
+});
+
+test("PRODBUG #4: collisions on 1..5 must ONLY suppress those specific numbers, never be interpreted as 'whole calendar already synced'", () => {
+  // This is the exact failure mode the production bug describes: a
+  // collision on round 1 must not cause rounds 2..17 to also be silently
+  // treated as already-covered. Verified by explicitly checking round 17
+  // (the far end of the range) is still created even though round 1 collides.
+  const legacyRounds = [legacyRound(1, true)];
+  const events = [];
+  for (let n = 1; n <= 17; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  const { newRounds } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.ok(newRounds.some((r) => r.number === 17), "round 17 must be created even though round 1 collided with an existing round");
+  assert.equal(newRounds.length, 16);
+});
