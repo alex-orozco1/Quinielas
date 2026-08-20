@@ -2224,6 +2224,14 @@
         if(ans && ans.correct === true) pts += bet.points;
       } else if(bet.scope === "jornada"){
         meta.rounds.forEach(r => {
+          // AUTO-001 HOTFIX: unlike per-match points (which can only exist
+          // for resultsPublished:true rounds, and resultsPublished can only
+          // ever become true through the one guarded handler that already
+          // requires published !== false — see the publish-results click
+          // handler), jornada-scope custom bet correctness is toggled by a
+          // separate checkbox that isn't gated by resultsPublished at all.
+          // An unpublished round must never contribute points either way.
+          if(r.published === false) return;
           if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
           const res = r.customBetResults && r.customBetResults[bet.id];
           if(res && res[participantId] === true) pts += bet.points;
@@ -2592,15 +2600,20 @@
     return "porjugar";
   }
 
-  // AUTO-001: rounds imported by Competition Sync start out with
-  // `published: false` — prepared internally, but not visible/playable for
-  // participants until the admin explicitly publishes them (see Admin →
-  // Jornadas). Admin/owner always sees everything, including unpublished
-  // ones, so they can review/edit before publishing. `published === undefined`
-  // (every round created before this ticket) is treated as published, same
-  // as always — this is what keeps existing quinielas behaving identically.
+  // AUTO-001 HOTFIX (BUG 1): rounds imported by Competition Sync start out
+  // with `published: false` — prepared internally, but not part of the game
+  // yet. The original admin-bypass here was wrong: it let unpublished
+  // imported rounds flood the ADMIN's own normal "Jornada" experience
+  // (Por jugar / En vivo counts, current round, pending picks, Historial)
+  // as if they were already active, even though the admin never published
+  // them. "Admin sees everything" belongs ONLY to Admin → Jornadas — which
+  // already reads meta.rounds directly, not through this function — where
+  // the organizer manages the prepared calendar. Everywhere else, published
+  // rounds are the only ones that count as part of the game, for admin and
+  // participant alike. `published === undefined` (every round created
+  // before this ticket) is treated as published, same as always — this is
+  // what keeps existing quinielas behaving identically.
   function visibleRounds(){
-    if(currentUser && currentUser.isAdmin) return meta.rounds;
     return meta.rounds.filter(r => r.published !== false);
   }
 
@@ -3479,7 +3492,12 @@
         const entry = await res.json();
         if(!entry.exists || entry.exempt || entry.paid) return null;
         const jornadaLimit = (entry.customJornadaLimit !== null) ? entry.customJornadaLimit : entry.jornadaLimit;
-        const roundCount = meta.rounds.length;
+        // AUTO-001 HOTFIX (BUG 3): EXISTIR != ESTAR PUBLICADA. Importing a
+        // full calendar via Competition Sync used to count every imported-
+        // but-unpublished round against the free jornada limit, blocking a
+        // brand-new quiniela before the admin had published a single one.
+        // published === undefined (legacy rounds) still counts, same as before.
+        const roundCount = meta.rounds.filter(r => r.published !== false).length;
         if(roundCount < jornadaLimit) return null;
         const participantCount = meta.participants.length;
         return {
@@ -5627,6 +5645,7 @@
                 if(ans && ans.correct === true) pts += bet.points;
               } else if(bet.scope === "jornada"){
                 tenantMeta.rounds.forEach(r => {
+                  if(r.published === false) return; // AUTO-001 HOTFIX — same gap as customBetPointsFor, mirrored here
                   const res = r.customBetResults && r.customBetResults[bet.id];
                   if(res && res[pid] === true) pts += bet.points;
                 });
