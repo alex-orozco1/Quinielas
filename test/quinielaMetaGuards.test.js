@@ -124,11 +124,11 @@ test("validatePicksDeadline: past-deadline behavior for published rounds is unch
 // testing against a real running server + real Postgres, not caught by the
 // previous round's tests because they only covered the frontend handler. ----
 
-function runValidateRoundsIntegrity(newValue) {
+function runValidateRoundsIntegrity(newValue, oldValue, nowMs) {
   const constSrc = "const VALID_RESULT_VALUES = new Set([\"A\", \"D\", \"B\"]);";
-  const fnSrc = extractFunctionSource(serverSrc, "function validateRoundsIntegrity(newValue)");
+  const fnSrc = extractFunctionSource(serverSrc, "function validateRoundsIntegrity(newValue, oldValue, nowMs)");
   const wrapped = new Function(`${constSrc}\n${fnSrc}\nreturn validateRoundsIntegrity(...arguments);`);
-  return wrapped(newValue);
+  return wrapped(newValue, oldValue, nowMs);
 }
 
 test("HOTFIX (validation round): validateRoundsIntegrity rejects resultsPublished:true on a published:false round", () => {
@@ -156,4 +156,55 @@ test("HOTFIX (validation round): the pre-existing incomplete_results check still
   const result = runValidateRoundsIntegrity(newValue);
   assert.equal(result.ok, false);
   assert.equal(result.reason, "incomplete_results");
+});
+
+// ---- AUTO-001.1 Admin Lifecycle Fixes (Grupo A) — Cases C/D/E/F/G/H/I ----
+// FIX 2 (backend, BLOCKING) + FIX 3 (reopen) real-behavior coverage.
+
+const PAST = "2020-01-01T00:00:00.000Z";
+const FUTURE = "2099-01-01T00:00:00.000Z";
+const NOW = new Date("2026-08-20T00:00:00.000Z").getTime();
+
+test("CASE C: open (published:true, deadline future, resultsPublished:false) -> cannot publish official results", () => {
+  const newValue = { rounds: [{ id: "r1", number: 1, published: true, deadline: FUTURE, resultsPublished: true, results: { m1: "A" }, matches: [{ id: "m1" }] }] };
+  const oldValue = { rounds: [{ id: "r1", number: 1, published: true, deadline: FUTURE, resultsPublished: false }] };
+  const result = runValidateRoundsIntegrity(newValue, oldValue, NOW);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "round_not_closed");
+});
+
+test("CASE D: direct API bypass attempt (false -> true before deadline) is rejected server-side, not just hidden in UI", () => {
+  const newValue = { rounds: [{ id: "r1", number: 5, published: true, deadline: FUTURE, resultsPublished: true, results: { m1: "A" }, matches: [{ id: "m1" }] }] };
+  const oldValue = { rounds: [{ id: "r1", number: 5, published: true, deadline: FUTURE, resultsPublished: false }] };
+  const result = runValidateRoundsIntegrity(newValue, oldValue, NOW);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "round_not_closed");
+});
+
+test("CASE E: closed (published:true, deadline past, resultsPublished:false) -> publishing results succeeds normally", () => {
+  const newValue = { rounds: [{ id: "r1", number: 3, published: true, deadline: PAST, resultsPublished: true, results: { m1: "A" }, matches: [{ id: "m1" }] }] };
+  const oldValue = { rounds: [{ id: "r1", number: 3, published: true, deadline: PAST, resultsPublished: false }] };
+  const result = runValidateRoundsIntegrity(newValue, oldValue, NOW);
+  assert.equal(result.ok, true);
+});
+
+test("CASE F: correction of an already-published round is exempt from the deadline check, even with a weird/future legacy deadline", () => {
+  const newValue = { rounds: [{ id: "r1", number: 2, published: true, deadline: FUTURE, resultsPublished: true, results: { m1: "D" }, matches: [{ id: "m1" }] }] };
+  const oldValue = { rounds: [{ id: "r1", number: 2, published: true, deadline: FUTURE, resultsPublished: true, results: { m1: "A" } }] }; // was ALREADY published
+  const result = runValidateRoundsIntegrity(newValue, oldValue, NOW);
+  assert.equal(result.ok, true, "a correction of an already-published round must never be blocked by the deadline guard");
+});
+
+test("CASE B (legacy): published undefined + deadline past -> still eligible / publishable, same as published:true", () => {
+  const newValue = { rounds: [{ id: "r1", number: 1, deadline: PAST, resultsPublished: true, results: { m1: "A" }, matches: [{ id: "m1" }] }] }; // no published field
+  const oldValue = { rounds: [{ id: "r1", number: 1, deadline: PAST, resultsPublished: false }] };
+  const result = runValidateRoundsIntegrity(newValue, oldValue, NOW);
+  assert.equal(result.ok, true);
+});
+
+test("no usable deadline (missing/invalid) never blocks a first-time publish -- guard only fires when it has real evidence, never guesses", () => {
+  const newValue = { rounds: [{ id: "r1", number: 1, published: true, resultsPublished: true, results: { m1: "A" }, matches: [{ id: "m1" }] }] }; // no deadline at all
+  const oldValue = { rounds: [{ id: "r1", number: 1, published: true, resultsPublished: false }] };
+  const result = runValidateRoundsIntegrity(newValue, oldValue, NOW);
+  assert.equal(result.ok, true);
 });

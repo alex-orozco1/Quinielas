@@ -1259,6 +1259,8 @@
     not_found: "No encontramos esa quiniela.",
     participant_not_found: "No encontramos a esa persona en la quiniela.",
     incomplete_results: "Faltan resultados por capturar antes de poder publicar.",
+    round_not_closed: "Todavía no puedes publicar resultados oficiales de esta jornada — el plazo para votar no ha cerrado.",
+    unpublished_round_results: "Esta jornada todavía no está publicada para los participantes. Publícala primero en Admin → Jornadas.",
     bet_locked: "Esta apuesta ya cerró.",
     bet_not_found: "No encontramos esa apuesta.",
     name_taken: "Ya existe alguien con ese nombre — búscalo en la lista de arriba.",
@@ -1744,6 +1746,69 @@
       if(isPin){
         input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 4); });
       }
+      input.focus();
+    });
+  }
+
+  // AUTO-001.1 Admin lifecycle fix (FIX 3): reopening a round must never
+  // claim success while leaving a past deadline in place — isRoundLocked()/
+  // classifyRound()/backend picks-writes would all still treat it as closed,
+  // making "ya pueden volver a votar" false. This mirrors qzPrompt's exact
+  // modal structure/CSS classes (no new component), but with a datetime
+  // input and inline validation that keeps the modal open — never resolves
+  // — until the admin picks a real future moment. No auto +24h/tomorrow
+  // guess: the admin always chooses.
+  function qzPromptDeadline(message, opts){
+    opts = opts || {};
+    const confirmLabel = opts.confirmLabel || "Aceptar";
+    const cancelLabel = opts.cancelLabel || "Cancelar";
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "qz-modal-overlay";
+      overlay.innerHTML = `
+        <div class="qz-modal-card" role="dialog" aria-modal="true" aria-label="${esc(opts.title || message)}">
+          ${opts.title ? `<div class="qz-modal-title">${esc(opts.title)}</div>` : ``}
+          <div class="qz-modal-message"><p>${esc(message)}</p></div>
+          <input class="qz-modal-input" id="qz-deadline-prompt-input" type="datetime-local">
+          <p class="muted" id="qz-deadline-prompt-error" style="color:var(--red);display:none;margin:6px 0 0;"></p>
+          <div class="qz-modal-actions">
+            <button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>
+            <button class="qz-modal-confirm qz-modal-not-destructive" id="qz-modal-confirm-btn">${esc(confirmLabel)}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      const input = overlay.querySelector("#qz-deadline-prompt-input");
+      const errorEl = overlay.querySelector("#qz-deadline-prompt-error");
+      const focusTrap = attachModalFocusTrap(overlay);
+      const cleanup = (result) => {
+        document.removeEventListener("keydown", onKey);
+        focusTrap.release();
+        overlay.remove();
+        resolve(result);
+      };
+      const submit = () => {
+        if(!input.value){
+          errorEl.textContent = "Elige una fecha y hora.";
+          errorEl.style.display = "block";
+          return;
+        }
+        const chosenMs = new Date(input.value).getTime();
+        if(!Number.isFinite(chosenMs) || chosenMs <= serverNow()){
+          errorEl.textContent = "La nueva fecha límite debe ser en el futuro.";
+          errorEl.style.display = "block";
+          return;
+        }
+        cleanup(new Date(chosenMs).toISOString());
+      };
+      const onKey = (e) => {
+        if(e.key === "Escape") cleanup(null);
+        else if(e.key === "Enter") submit();
+      };
+      document.addEventListener("keydown", onKey);
+      overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(null); });
+      overlay.querySelector("#qz-modal-cancel-btn").addEventListener("click", () => cleanup(null));
+      overlay.querySelector("#qz-modal-confirm-btn").addEventListener("click", submit);
       input.focus();
     });
   }
@@ -4388,8 +4453,16 @@
   }
 
   async function renderAdminResultados(body){
-    const candidateRounds = meta.rounds.filter(r => !r.resultsPublished);
-    const closedRounds = meta.rounds.filter(r => r.resultsPublished);
+    // AUTO-001.1 Admin lifecycle fix (FIX 1): a round that's published:false
+    // is PREPARED, not yet part of the game — it must never be selectable,
+    // draftable, or a default target here, same published !== false rule
+    // used everywhere else (visibleRounds(), Participación, etc.).
+    // published === undefined stays eligible (legacy compatibility).
+    // Admin -> Jornadas is intentionally untouched — it still reads
+    // meta.rounds directly and shows everything, including prepared ones.
+    const eligibleRounds = meta.rounds.filter(r => r.published !== false);
+    const candidateRounds = eligibleRounds.filter(r => !r.resultsPublished);
+    const closedRounds = eligibleRounds.filter(r => r.resultsPublished);
     if(!candidateRounds.length && !closedRounds.length){
       body.innerHTML = `<div class="card empty"><div class="display">No hay jornadas todavía</div><p class="muted">Crea una jornada primero en Admin → Jornadas.</p></div>`;
       return;
@@ -4403,7 +4476,7 @@
           <button class="btn btn-ghost btn-sm" id="qz-bulk-autofill">🔎 Buscar resultados pendientes (todas)</button>
         </div>
         <select id="qz-round-select">
-          ${meta.rounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>Jornada ${r.number} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
+          ${eligibleRounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>Jornada ${r.number} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
         </select>
         <p class="muted" id="qz-bulk-autofill-status" style="margin-top:8px;margin-bottom:-4px;"></p>
       </div>
@@ -4457,6 +4530,14 @@
 
     const VALID_RESULTS = ["A", "D", "B"];
     const isPublished = !!round.resultsPublished;
+    // AUTO-001.1 Admin lifecycle fix (FIX 2): official results can't be
+    // published for the FIRST time while the round is still open (deadline
+    // hasn't passed) — that would let PUBLISHED/OPEN jump straight to
+    // RESULTS PUBLISHED, skipping CLOSED, while picks could still be
+    // changing. Corrections of an already-published round are exempt —
+    // isRoundLocked() is the same "closed" definition already used
+    // everywhere else (picks blocking, classifyRound), not a new concept.
+    const stillOpenForVoting = !isPublished && !isRoundLocked(round);
     // Badge display only ("Sin resultados" vs "Borrador guardado") —
     // snapshotted once per round so the local mutation just below (needed so
     // a click has somewhere real to persist to across re-renders) doesn't
@@ -4513,8 +4594,10 @@
         `).join("")}
         ${editable ? `
           <button class="btn btn-ghost" id="qz-save-draft" style="width:100%;padding:12px;">Guardar borrador</button>
-          <button class="btn btn-primary" id="qz-publish-results" style="width:100%;padding:12px;margin-top:8px;" ${isComplete ? "" : "disabled"}>${correcting ? "Publicar corrección" : "Publicar resultados"}</button>
-          ${!isComplete ? `<p class="muted" style="text-align:center;margin-top:6px;">Falta el resultado de: ${missingMatches.map(m => `${esc(m.teamA)} vs ${esc(m.teamB)}`).join(", ")}.</p>` : ``}
+          <button class="btn btn-primary" id="qz-publish-results" style="width:100%;padding:12px;margin-top:8px;" ${(isComplete && !stillOpenForVoting) ? "" : "disabled"}>${correcting ? "Publicar corrección" : "Publicar resultados"}</button>
+          ${stillOpenForVoting
+            ? `<p class="muted" style="text-align:center;margin-top:6px;">Todavía no puedes publicar resultados oficiales — el plazo para votar de esta jornada no ha cerrado. Podrás hacerlo en cuanto pase el deadline.</p>`
+            : (!isComplete ? `<p class="muted" style="text-align:center;margin-top:6px;">Falta el resultado de: ${missingMatches.map(m => `${esc(m.teamA)} vs ${esc(m.teamB)}`).join(", ")}.</p>` : ``)}
           ${correcting ? `<button class="btn btn-ghost btn-sm" id="qz-cancel-correction" style="width:100%;margin-top:8px;">Cancelar corrección</button>` : ``}
         ` : `
           <button class="btn btn-ghost" id="qz-start-correction" style="width:100%;padding:12px;">Corregir resultados</button>
@@ -4595,9 +4678,13 @@
           row.querySelectorAll(".pick-btn").forEach(b => b.classList.toggle("selected", b===btn));
           // Completeness can change with every click — keep the publish button's
           // enabled state and the "falta X partidos" note honest without a full re-render.
+          // Must also keep respecting stillOpenForVoting (FIX 2) — otherwise
+          // completing all picks on a still-open round would silently
+          // re-enable "Publicar resultados" again after the initial render
+          // correctly disabled it.
           const nowComplete = round.matches.every(m => VALID_RESULTS.includes(editable[m.id]));
           const publishBtn = document.getElementById("qz-publish-results");
-          if(publishBtn) publishBtn.disabled = !nowComplete;
+          if(publishBtn) publishBtn.disabled = !(nowComplete && !stillOpenForVoting);
         });
       });
     });
@@ -4623,6 +4710,10 @@
         // no-op for corrections of already-published rounds — see FIX 2 §4.
         if(round.published === false){
           toast("Esta jornada todavía no está publicada para los participantes. Publícala primero en Admin → Jornadas.");
+          return;
+        }
+        if(stillOpenForVoting){
+          toast("Todavía no puedes publicar resultados oficiales — el plazo para votar de esta jornada no ha cerrado.");
           return;
         }
         const stillComplete = round.matches.every(m => VALID_RESULTS.includes(source[m.id]));
@@ -4693,11 +4784,29 @@
     const reopenBtn = document.getElementById("qz-reopen-round");
     if(reopenBtn){
       reopenBtn.addEventListener("click", async () => {
-        if(!(await qzConfirm(`Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo.`, { title: `¿Reabrir la Jornada ${round.number}?`, confirmLabel: "Reabrir" }))) return;
+        if(!(await qzConfirm(`Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo. Vas a elegir una nueva fecha y hora límite para votar.`, { title: `¿Reabrir la Jornada ${round.number}?`, confirmLabel: "Continuar" }))) return;
+        // FIX 3: never claim "reabierta" without a real future deadline —
+        // the admin always picks it, no automatic +24h/tomorrow guess.
+        const newDeadlineIso = await qzPromptDeadline(`Elige la nueva fecha y hora límite para votar la Jornada ${round.number}:`, { title: "Nueva fecha límite", confirmLabel: "Reabrir jornada" });
+        if(newDeadlineIso === null) return; // cancelled — nothing changed, no toast
+        reopenBtn.disabled = true;
+        // Atomic from the user's perspective: both fields flip together,
+        // and both roll back together if the save fails — never a
+        // resultsPublished:false + stale deadline + success toast.
+        const previousResultsPublished = round.resultsPublished;
+        const previousDeadline = round.deadline;
         round.resultsPublished = false;
+        round.deadline = newDeadlineIso;
         logAudit("Reabrió jornada", `Jornada ${round.number}`);
-        await setMeta(meta);
-        toast("🔓 Jornada reabierta — ya pueden volver a votar");
+        const result = await setMetaWithError(meta);
+        if(result.ok){
+          toast("🔓 Jornada reabierta — ya pueden volver a votar");
+        }else{
+          round.resultsPublished = previousResultsPublished;
+          round.deadline = previousDeadline;
+          toast(humanizeError(result.error));
+        }
+        reopenBtn.disabled = false;
         renderAdminResultados(body);
       });
     }
