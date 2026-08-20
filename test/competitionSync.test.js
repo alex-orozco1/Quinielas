@@ -227,3 +227,58 @@ test("FIX 1: a numeric collision never produces two rounds with the same number"
   assert.equal(allNumbers.length, uniqueNumbers.size, "no two rounds may end up sharing the same number");
   assert.equal(newRounds.length, 0);
 });
+
+// ---- AUTO-001.1: Legacy Competition Backfill ----
+// Root cause investigation (this ticket): reproduced end-to-end against a
+// real running server + real Postgres + the real sportsDataProvider/
+// competitionSync pipeline (network mocked, everything else untouched).
+// Finding: the backend ALREADY performs this backfill correctly — FIX 1's
+// number-collision protection (added in the prior hotfix) is exactly the
+// mechanism that makes "existing rounds always win" safe for legacy data
+// too, since it doesn't care whether the collision came from a manual
+// round, a legacy round, or a different provider. No production code
+// change was needed for the backfill mechanism itself; these tests lock
+// that guarantee in explicitly under the AUTO-001.1 framing, since no test
+// previously used legacy-shaped (provider-less, resultsPublished mixed)
+// existing rounds as its starting point.
+
+function legacyRound(number, resultsPublished) {
+  return {
+    id: "r_legacy_j" + number, number,
+    matches: [{ id: "m_j" + number, teamA: "EquipoA" + number, teamB: "EquipoB" + number }],
+    deadline: `2026-07-${String(number).padStart(2, "0")}T01:00:00.000Z`,
+    results: resultsPublished ? { ["m_j" + number]: "A" } : {},
+    resultsPublished,
+    // deliberately no `published`, `provider`, `externalRoundId` — exactly
+    // how a round created before AUTO-001 looks.
+  };
+}
+
+test("AUTO-001.1 #1/#3: legacy J1-J5 + provider J1-J17 -> creates only J6-J17, all published:false", () => {
+  const legacyRounds = [1, 2, 3, 4, 5].map((n) => legacyRound(n, n <= 3));
+  const events = [];
+  for (let n = 1; n <= 17; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  const { newRounds } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.deepEqual(newRounds.map((r) => r.number).sort((a, b) => a - b), [6,7,8,9,10,11,12,13,14,15,16,17]);
+  assert.ok(newRounds.every((r) => r.published === false), "every backfilled round must start published:false");
+});
+
+test("AUTO-001.1 #2: legacy J1-J5 remain byte-for-byte identical after backfill (no ids/matches/picks/results/deadline touched)", () => {
+  const legacyRounds = [1, 2, 3, 4, 5].map((n) => legacyRound(n, n <= 3));
+  const snapshot = JSON.parse(JSON.stringify(legacyRounds));
+  const events = [];
+  for (let n = 1; n <= 17; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.deepEqual(legacyRounds, snapshot);
+});
+
+test("AUTO-001.1 #4: re-sync after backfill creates zero additional duplicates", () => {
+  const legacyRounds = [1, 2, 3, 4, 5].map((n) => legacyRound(n, n <= 3));
+  const events = [];
+  for (let n = 1; n <= 17; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
+  const first = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  assert.equal(first.newRounds.length, 12);
+  const afterBackfill = [...legacyRounds, ...first.newRounds.map((r) => ({ id: "r_" + r.number, ...r }))];
+  const second = planCompetitionSync({ existingRounds: afterBackfill, events, provider: "thesportsdb" });
+  assert.equal(second.newRounds.length, 0);
+});

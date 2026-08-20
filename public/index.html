@@ -4314,6 +4314,42 @@
   // only ever consumes pre-matched suggestions from /sports-results now.
 
 
+  // AUTO-002 (bulk validation round): shared by the per-round "Buscar
+  // resultados automáticos" button and the new "buscar en todas las
+  // pendientes" flow below, so both populate suggestion tags identically —
+  // never touches source/picks/draftResults directly, only shows a
+  // suggestion the admin must still click to accept, same as always.
+  function applySuggestionsToForm(round, suggestions, form, statusEl){
+    const suggestionsByMatch = {};
+    (suggestions || []).forEach(s => { suggestionsByMatch[s.matchId] = s; });
+    let found = 0;
+    round.matches.forEach(m => {
+      const hit = suggestionsByMatch[m.id];
+      const tag = document.getElementById("qz-suggest-" + m.id);
+      if(!tag) return;
+      if(hit){
+        found++;
+        const niceDate = new Date(hit.date).toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
+        tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${m.id}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
+        tag.style.color = "var(--pitch-light)";
+      } else {
+        tag.textContent = "Sin resultado automático todavía";
+        tag.style.color = "var(--ink-soft)";
+      }
+    });
+    if(statusEl) statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.";
+    form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const matchId = btn.dataset.acceptSuggestion;
+        const val = btn.dataset.suggestedVal;
+        const row = form.querySelector(`.pick-row[data-result-match="${matchId}"]`);
+        const targetBtn = row ? row.querySelector(`[data-val="${val}"]`) : null;
+        if(targetBtn) targetBtn.click();
+      });
+    });
+    return found;
+  }
+
   async function renderAdminResultados(body){
     const candidateRounds = meta.rounds.filter(r => !r.resultsPublished);
     const closedRounds = meta.rounds.filter(r => r.resultsPublished);
@@ -4325,10 +4361,14 @@
     if(!target && candidateRounds.length) target = candidateRounds[candidateRounds.length-1].id;
     body.innerHTML = `
       <div class="card">
-        <div class="eyebrow">Elige la jornada</div>
+        <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+          <span>Elige la jornada</span>
+          <button class="btn btn-ghost btn-sm" id="qz-bulk-autofill">🔎 Buscar resultados pendientes (todas)</button>
+        </div>
         <select id="qz-round-select">
           ${meta.rounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>Jornada ${r.number} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
         </select>
+        <p class="muted" id="qz-bulk-autofill-status" style="margin-top:8px;margin-bottom:-4px;"></p>
       </div>
       <div id="qz-results-form"></div>
     `;
@@ -4336,6 +4376,39 @@
     select.addEventListener("change", () => {
       renderAdminResultados._target = select.value;
       renderAdminResultados(body);
+    });
+    const bulkBtn = document.getElementById("qz-bulk-autofill");
+    if(bulkBtn) bulkBtn.addEventListener("click", async () => {
+      const bulkStatusEl = document.getElementById("qz-bulk-autofill-status");
+      bulkBtn.disabled = true;
+      bulkStatusEl.textContent = "Buscando resultados pendientes en todas las jornadas…";
+      try{
+        const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sports-results`, {
+          headers: { "X-Qracks-Auth": adminOrOwnerCred() || "" }, credentials: "same-origin"
+        });
+        const data = await res.json();
+        if(!res.ok || !data.ok || data.reliabilityState){
+          bulkStatusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+        } else {
+          renderAdminResultados._bulkCache = data.results || {};
+          const roundIdsWithHits = Object.keys(renderAdminResultados._bulkCache).filter(id => (renderAdminResultados._bulkCache[id] || []).length);
+          bulkStatusEl.textContent = roundIdsWithHits.length
+            ? `Se encontraron resultados para ${roundIdsWithHits.length} jornada${roundIdsWithHits.length===1?"":"s"} pendiente${roundIdsWithHits.length===1?"":"s"}. Selecciónala${roundIdsWithHits.length===1?"":"s"} arriba para revisar y confirmar.`
+            : "No se encontraron resultados nuevos para las jornadas pendientes por ahora.";
+          // If the round currently open already got resolved by this bulk
+          // pass, show it immediately — no need to click the per-round
+          // button too. Never overwrites anything the admin already picked.
+          if(select.value && renderAdminResultados._bulkCache[select.value]){
+            const currentForm = document.getElementById("qz-results-form");
+            const currentRound = meta.rounds.find(r => r.id === select.value);
+            if(currentForm && currentRound) applySuggestionsToForm(currentRound, renderAdminResultados._bulkCache[select.value], currentForm, document.getElementById("qz-autofill-status"));
+          }
+        }
+      }catch(e){
+        console.error(e);
+        bulkStatusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+      }
+      bulkBtn.disabled = false;
     });
     if(!select.value) return;
     const round = meta.rounds.find(r => r.id === select.value);
@@ -4464,37 +4537,19 @@
           statusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
           return;
         }
-        const suggestionsByMatch = {};
-        (data.suggestions || []).forEach(s => { suggestionsByMatch[s.matchId] = s; });
-        let found = 0;
-        round.matches.forEach(m => {
-          const hit = suggestionsByMatch[m.id];
-          const tag = document.getElementById("qz-suggest-" + m.id);
-          if(hit){
-            found++;
-            const niceDate = new Date(hit.date).toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
-            tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${m.id}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
-            tag.style.color = "var(--pitch-light)";
-          } else {
-            tag.textContent = "Sin resultado automático todavía";
-            tag.style.color = "var(--ink-soft)";
-          }
-        });
-        statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.";
-        form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
-          btn.addEventListener("click", () => {
-            const matchId = btn.dataset.acceptSuggestion;
-            const val = btn.dataset.suggestedVal;
-            const row = form.querySelector(`.pick-row[data-result-match="${matchId}"]`);
-            const targetBtn = row ? row.querySelector(`[data-val="${val}"]`) : null;
-            if(targetBtn) targetBtn.click();
-          });
-        });
+        applySuggestionsToForm(round, data.suggestions, form, statusEl);
       }catch(e){
         console.error(e);
         statusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
       }
     });
+    // AUTO-002: if "Buscar resultados pendientes (todas)" already resolved
+    // this exact round in this same visit to Admin -> Resultados, show it
+    // immediately — the admin shouldn't have to click the per-round button
+    // again for a round QRACKS already checked.
+    if(editable && renderAdminResultados._bulkCache && renderAdminResultados._bulkCache[round.id]){
+      applySuggestionsToForm(round, renderAdminResultados._bulkCache[round.id], form, document.getElementById("qz-autofill-status"));
+    }
     form.querySelectorAll(".pick-row").forEach(row => {
       if(!editable) return; // read-only view — no click handlers, matches the disabled buttons
       row.querySelectorAll(".pick-btn").forEach(btn => {
