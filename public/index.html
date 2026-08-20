@@ -3947,6 +3947,20 @@
     return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
 
+  // UX fix: when the admin taps "Editar" on a round far down the list, the
+  // editor re-renders at the TOP of `body`, but the viewport itself never
+  // moved — the button looked like it did nothing, especially on mobile
+  // with many imported jornadas. Scrolling only happens AFTER the async
+  // re-render actually finishes (awaited, not timing-guessed), directly to
+  // the editor card itself, so "Editando jornada N" always ends up visible.
+  async function openRoundEditor(body, roundId){
+    renderAdminRondas._editingId = roundId;
+    renderAdminRondas._draft = null;
+    await renderAdminRondas(body);
+    const formEl = document.getElementById("qz-round-form");
+    if(formEl) formEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   async function renderAdminRondas(body){
     const editingId = renderAdminRondas._editingId || null;
     const editingRound = editingId ? meta.rounds.find(r => r.id === editingId) : null;
@@ -3990,7 +4004,7 @@
         <p class="muted">En cuanto se confirme el pago, se vuelve a habilitar automáticamente. Mientras tanto puedes seguir usando todo lo demás (resultados, tabla, editar jornadas existentes).</p>
       </div>
     ` : `
-      <div class="card">
+      <div class="card" id="qz-round-form">
         <div class="eyebrow">${editingRound ? `Editando jornada ${editingRound.number}` : `Crear jornada ${nextNumber}`}</div>
         ${editingRound && editingRound.resultsPublished ? `<p class="muted" style="color:var(--red);">Esta jornada ya tiene resultados publicados. Si cambias los equipos, los resultados guardados podrían dejar de tener sentido — revísalos después de guardar.</p>` : ``}
         <div id="qz-match-rows">${draft.matches.map(matchRowHtml).join("")}</div>
@@ -4096,11 +4110,7 @@
     if(blockingStatus){
       // Only the "edit existing round" and "delete round" actions apply while blocked.
       body.querySelectorAll("[data-edit-round]").forEach(btn => {
-        btn.addEventListener("click", () => {
-          renderAdminRondas._editingId = btn.dataset.editRound;
-          renderAdminRondas._draft = null;
-          renderAdminRondas(body);
-        });
+        btn.addEventListener("click", () => openRoundEditor(body, btn.dataset.editRound));
       });
       body.querySelectorAll("[data-del-round]").forEach(btn => {
         btn.addEventListener("click", async () => {
@@ -4138,11 +4148,7 @@
     document.getElementById("qz-deadline").addEventListener("input", (e) => { draft.deadline = e.target.value; });
 
     body.querySelectorAll("[data-edit-round]").forEach(btn => {
-      btn.addEventListener("click", () => {
-        renderAdminRondas._editingId = btn.dataset.editRound;
-        renderAdminRondas._draft = null;
-        renderAdminRondas(body);
-      });
+      btn.addEventListener("click", () => openRoundEditor(body, btn.dataset.editRound));
     });
     const cancelBtn = document.getElementById("qz-cancel-edit");
     if(cancelBtn){
