@@ -2306,6 +2306,43 @@
     return pts;
   }
 
+  // Payment-penalty persistence (P1 fix): a penalty is caused the moment
+  // QRACKS' own deadline passes for an eligible round while the participant
+  // is unpaid -- deadline-based (isRoundLocked), never resultsPublished, so
+  // it doesn't depend on when/whether results get captured or published.
+  //
+  // Model: instead of a raw timestamp (which can't correctly represent
+  // multiple paid<->unpaid toggles without either losing or double-counting
+  // penalty across intervals), each participant carries two small numbers:
+  //   - accruedPenaltyPoints: permanently frozen-in penalty from ALL past
+  //     unpaid intervals, updated only at toggle time.
+  //   - penaltyCheckpointCount: how many eligible-closed rounds existed at
+  //     the moment of the last toggle (the "counted through" watermark).
+  // While paid, the total is just the frozen accrued amount -- it can never
+  // grow. While unpaid, it's accrued + (new eligible-closed rounds since the
+  // watermark) -- so a later unpaid period only ever counts rounds that
+  // close from that point forward, never ones that closed during an
+  // earlier paid interval. Legacy participants (both fields undefined)
+  // default to 0/0, which is exactly correct for both legacy paid (0
+  // historical penalty, never inferred) and legacy unpaid (full live count,
+  // since there's no prior paid interval to exclude).
+  function isRoundEligibleForPenalty(round, penalty){
+    return round.number >= penalty.startsAtRound && isRoundLocked(round);
+  }
+  function penaltyPointsFor(p, cutoffRoundNumber){
+    const penalty = meta.paymentPenalty;
+    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return 0;
+    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+    const eligibleClosedCount = meta.rounds.filter(r =>
+      isRoundEligibleForPenalty(r, penalty) && (cutoffRoundNumber == null || r.number <= cutoffRoundNumber)
+    ).length;
+    const accrued = p.accruedPenaltyPoints || 0;
+    if(p.paid) return accrued; // frozen -- paying stops future penalties, never erases ones already caused
+    const checkpoint = p.penaltyCheckpointCount || 0;
+    const newSinceCheckpoint = Math.max(0, eligibleClosedCount - checkpoint);
+    return accrued + newSinceCheckpoint * perRound;
+  }
+
   function pointsFor(participantId, participantMap, cutoffRoundNumber){
     const picks = allPicksCache[participantId] || {};
     const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
@@ -2323,22 +2360,13 @@
     });
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     pts += customBetPointsFor(participantId, participantMap, cutoffRoundNumber);
-    const penalty = meta.paymentPenalty;
-    if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
-      const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound && (cutoffRoundNumber == null || r.number <= cutoffRoundNumber)).length;
-      const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-      pts -= passedRounds * perRound;
-    }
+    pts -= penaltyPointsFor(p, cutoffRoundNumber);
     return {pts, played};
   }
 
   function penaltyFor(participantId, participantMap){
-    const penalty = meta.paymentPenalty;
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p || p.paid) return 0;
-    const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
-    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-    return passedRounds * perRound;
+    return penaltyPointsFor(p, null);
   }
 
   function standingsList(){
@@ -5014,12 +5042,32 @@
       const paidCheckbox = row.querySelector("[data-role=paid]");
       paidCheckbox.addEventListener("change", async (e) => {
         const previousValue = p.paid;
+        const previousAccrued = p.accruedPenaltyPoints;
+        const previousCheckpoint = p.penaltyCheckpointCount;
+        const previousPaidAt = p.paidAt;
         paidCheckbox.disabled = true;
-        p.paid = e.target.checked;
+        const newValue = e.target.checked;
+        // Payment-penalty persistence (P1): checkpoint BEFORE flipping paid,
+        // using the OLD state -- freezes exactly what has accrued under the
+        // state that's ending, and resets the "counted through" watermark to
+        // right now. This is what makes false->true->false->true sequences
+        // correct: a later unpaid period only ever counts rounds that close
+        // from this exact moment forward, never ones that closed during an
+        // earlier paid interval, and never loses what already accrued.
+        const penalty = meta.paymentPenalty;
+        if(penalty && penalty.enabled && penalty.startsAtRound){
+          p.accruedPenaltyPoints = penaltyPointsFor(p, null);
+          p.penaltyCheckpointCount = meta.rounds.filter(r => isRoundEligibleForPenalty(r, penalty)).length;
+        }
+        p.paid = newValue;
+        if(newValue && !previousValue) p.paidAt = new Date().toISOString();
         const result = await setMetaWithError(meta);
         paidCheckbox.disabled = false;
         if(!result.ok){
           p.paid = previousValue;
+          p.accruedPenaltyPoints = previousAccrued;
+          p.penaltyCheckpointCount = previousCheckpoint;
+          p.paidAt = previousPaidAt;
           e.target.checked = previousValue;
           toast(humanizeError(result.error));
         }
@@ -5946,10 +5994,20 @@
               if(gsb && gsb.enabled && p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
             }
             const penalty = tenantMeta.paymentPenalty;
-            if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
-              const passedRounds = tenantMeta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
+            if(penalty && penalty.enabled && penalty.startsAtRound && p){
+              // Mirrors the real penaltyPointsFor() model (deadline-based via
+              // isRoundLocked, checkpoint-based accrual) -- same fix as the
+              // main app, applied here so this diagnostic view never
+              // disagrees with what participants/admins actually see.
               const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-              pts -= passedRounds * perRound;
+              const eligibleClosedCount = tenantMeta.rounds.filter(r => r.number >= penalty.startsAtRound && isRoundLocked(r)).length;
+              const accrued = p.accruedPenaltyPoints || 0;
+              if(p.paid){
+                pts -= accrued;
+              }else{
+                const checkpoint = p.penaltyCheckpointCount || 0;
+                pts -= accrued + Math.max(0, eligibleClosedCount - checkpoint) * perRound;
+              }
             }
             return pts;
           }

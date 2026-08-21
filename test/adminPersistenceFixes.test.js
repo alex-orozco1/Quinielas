@@ -101,10 +101,39 @@ test("admin-toggle: restores both meta.isAdmin AND the checkbox's checked state 
 
 test("paid-toggle: also upgraded to setMetaWithError with rollback (was previously a silent boolean-only save with no error handling at all)", () => {
   const idx = participantesBody.indexOf("paidCheckbox.addEventListener(\"change\"");
-  const slice = participantesBody.slice(idx, idx + 500);
+  const slice = participantesBody.slice(idx, idx + 1700);
   assert.ok(slice.includes("const previousValue = p.paid;"));
   assert.ok(slice.includes("await setMetaWithError(meta);"));
   assert.ok(slice.includes("p.paid = previousValue;") && slice.includes("e.target.checked = previousValue;"));
+});
+
+// ---- CASE L: payment penalty fields (accruedPenaltyPoints/penaltyCheckpointCount/paidAt) also roll back atomically ----
+
+test("CASE L: paid-toggle failure rolls back accruedPenaltyPoints, penaltyCheckpointCount, AND paidAt together with paid -- never a partial/inconsistent state", () => {
+  const idx = participantesBody.indexOf("paidCheckbox.addEventListener(\"change\"");
+  const slice = participantesBody.slice(idx, idx + 1700);
+  assert.ok(slice.includes("const previousAccrued = p.accruedPenaltyPoints;"), "must snapshot accruedPenaltyPoints before the checkpoint mutation");
+  assert.ok(slice.includes("const previousCheckpoint = p.penaltyCheckpointCount;"), "must snapshot penaltyCheckpointCount before the checkpoint mutation");
+  assert.ok(slice.includes("const previousPaidAt = p.paidAt;"), "must snapshot paidAt before setting a new one");
+  const failIdx = slice.indexOf("if(!result.ok){");
+  const failSlice = slice.slice(failIdx, failIdx + 300);
+  assert.ok(failSlice.includes("p.accruedPenaltyPoints = previousAccrued;"), "failure must restore accruedPenaltyPoints");
+  assert.ok(failSlice.includes("p.penaltyCheckpointCount = previousCheckpoint;"), "failure must restore penaltyCheckpointCount");
+  assert.ok(failSlice.includes("p.paidAt = previousPaidAt;"), "failure must restore paidAt");
+});
+
+test("paidAt is only set on the false->true transition, not on every save", () => {
+  const idx = participantesBody.indexOf("paidCheckbox.addEventListener(\"change\"");
+  const slice = participantesBody.slice(idx, idx + 1700);
+  assert.ok(slice.includes("if(newValue && !previousValue) p.paidAt = new Date().toISOString();"), "paidAt must only be stamped on the false->true transition");
+});
+
+test("the checkpoint (accruedPenaltyPoints + penaltyCheckpointCount snapshot) happens BEFORE p.paid actually flips, using the OLD state", () => {
+  const idx = participantesBody.indexOf("paidCheckbox.addEventListener(\"change\"");
+  const slice = participantesBody.slice(idx, idx + 1700);
+  const checkpointIdx = slice.indexOf("p.accruedPenaltyPoints = penaltyPointsFor(p, null);");
+  const flipIdx = slice.indexOf("p.paid = newValue;");
+  assert.ok(checkpointIdx !== -1 && checkpointIdx < flipIdx, "the checkpoint must read penaltyPointsFor(p, ...) while p.paid still holds the OLD value, before being reassigned");
 });
 
 // ---- No handler in this screen still uses the boolean-only setMeta() ----
