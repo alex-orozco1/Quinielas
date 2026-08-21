@@ -2349,17 +2349,38 @@
   // paymentPenalty.enabled is false (no new resolutions happen while the
   // feature is off) -- existing ledger entries (whether penalizing or
   // exempt) are never touched by this function either way.
+  // Resolves the fate of every currently CLOSED+not-yet-resolved round, for
+  // EVERY participant -- using whatever config/paid-state is CURRENT at the
+  // moment of this call as the source of truth. Call this BEFORE anything
+  // that could reinterpret an already-closed round's resolution: toggling
+  // paid (either direction), reopening a round, editing a round's deadline,
+  // deleting a round, OR changing paymentPenalty itself (enabled/
+  // startsAtRound/pointsPerRound) -- i.e. before ANY of the 5 things that
+  // could otherwise rewrite a settled outcome using rules that didn't apply
+  // at the time the round actually closed.
+  //
+  // QA fix #3: the gate here is deliberately isRoundLocked(r) ALONE, not
+  // isRoundEligibleForPenalty(r, penalty) -- a closed round that ISN'T
+  // currently eligible (below startsAtRound, or the whole feature
+  // disabled) still gets resolved, just resolved to 0/exempt. This is what
+  // stops a LATER startsAtRound decrease (or re-enabling the feature)
+  // from retroactively inventing a penalty for a round that closed back
+  // when the rule didn't apply to it (CASE AA) -- without this, such a
+  // round would simply never appear in the ledger at all, leaving it to
+  // fall through to the live top-up under whatever config exists NOW.
   function reconcilePenaltyLedger(meta){
     const penalty = meta.paymentPenalty;
-    if(!penalty || !penalty.enabled || !penalty.startsAtRound) return;
+    if(!penalty) return; // no penalty concept configured at all yet -- nothing to reconcile
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
     meta.participants.forEach(p => {
       if(!p.penalizedRounds) p.penalizedRounds = {};
       meta.rounds.forEach(r => {
-        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in p.penalizedRounds)){
-          // Resolved once, forever: penalize if currently unpaid, exempt
-          // (0, but still marked resolved) if currently paid.
-          p.penalizedRounds[r.id] = p.paid ? 0 : perRound;
+        if(isRoundLocked(r) && !(r.id in p.penalizedRounds)){
+          const eligibleNow = penalty.enabled && penalty.startsAtRound != null && r.number >= penalty.startsAtRound;
+          // Resolved once, forever: penalize only if currently eligible AND
+          // unpaid; exempt (0, but still marked resolved) in every other
+          // case -- ineligible-by-round-number, feature disabled, or paid.
+          p.penalizedRounds[r.id] = (eligibleNow && !p.paid) ? perRound : 0;
         }
       });
     });
@@ -3902,13 +3923,35 @@
     });
 
     document.getElementById("qz-save-penalty").addEventListener("click", async () => {
+      const saveBtn = document.getElementById("qz-save-penalty");
+      // Payment-penalty persistence (P1, QA fix #3): any change to this
+      // config (enabled/startsAtRound/pointsPerRound) could reinterpret an
+      // already-closed-but-not-yet-ledgered round's resolution -- reconcile
+      // FIRST, under the OLD configuration, so every such round's
+      // fate/points get sealed using the rules that were actually in
+      // effect when it closed, never the new ones about to be applied.
+      const previousEnabled = penalty.enabled;
+      const previousStartsAtRound = penalty.startsAtRound;
+      const previousPointsPerRound = penalty.pointsPerRound;
+      const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
+      saveBtn.disabled = true;
+      reconcilePenaltyLedger(meta);
       penalty.enabled = document.getElementById("qz-penalty-enabled").checked;
       const roundRaw = document.getElementById("qz-penalty-round").value.trim();
       penalty.startsAtRound = roundRaw === "" ? null : Number(roundRaw);
       const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
       penalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
-      const ok = await setMeta(meta);
-      toast(ok ? "✅ Listo, la penalización quedó guardada." : "No se pudo guardar, intenta de nuevo");
+      const result = await setMetaWithError(meta);
+      saveBtn.disabled = false;
+      if(result.ok){
+        toast("✅ Listo, la penalización quedó guardada.");
+      }else{
+        penalty.enabled = previousEnabled;
+        penalty.startsAtRound = previousStartsAtRound;
+        penalty.pointsPerRound = previousPointsPerRound;
+        meta.participants = participantsSnapshot;
+        toast(humanizeError(result.error));
+      }
     });
   }
 

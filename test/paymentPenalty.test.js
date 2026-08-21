@@ -317,6 +317,96 @@ test("a penalized round's contribution survives even after the round is deleted 
   assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "the ledger entry must still count even though the round object no longer exists");
 });
 
+// ---- CASE Y-AC (QA blocker #3): config changes must never reinterpret an already-closed round's resolution ----
+
+test("CASE Y: J5 closes unpaid with pointsPerRound=1 -> 1. Admin changes pointsPerRound to 3 (settings-save reconciles first) -> J5 STILL 1. J6 then closes under the NEW config -> total 1+3=4", () => {
+  const meta = { paymentPenalty: penalty({ pointsPerRound: 1 }), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
+  const p = meta.participants[0];
+  // Mirrors the real qz-save-penalty handler: reconcile BEFORE applying the new pointsPerRound.
+  runReconcile(meta, NOW);
+  meta.paymentPenalty.pointsPerRound = 3;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "J5's penalty must stay frozen at its original 1 point, not jump to 3");
+  meta.rounds.push(round("r6", 6, CLOSED)); // closes AFTER the config change, under the new rules
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 4, "J5(1, frozen) + J6(3, new config, never resolved before) = 4");
+});
+
+test("CASE Z: J5 closes unpaid with startsAtRound=5 -> 1. Admin raises startsAtRound to 6 (reconciles first) -> J5 STILL 1, never disappears", () => {
+  const meta = { paymentPenalty: penalty({ startsAtRound: 5 }), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW);
+  meta.paymentPenalty.startsAtRound = 6;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "an already-caused penalty must never disappear just because startsAtRound later excludes that round number");
+});
+
+test("CASE AA: startsAtRound=6, J5 closes unpaid -> 0 (not yet eligible). Admin lowers startsAtRound to 5 (reconciles first, under the OLD=6) -> J5 STILL 0, never retroactively invented", () => {
+  const meta = { paymentPenalty: penalty({ startsAtRound: 6 }), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
+  const p = meta.participants[0];
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "J5 is below startsAtRound=6, not eligible, live top-up shows 0");
+  // Mirrors the real settings-save handler: reconcile BEFORE lowering startsAtRound, sealing J5 as
+  // "not eligible at the time it closed" (0) using the OLD threshold.
+  runReconcile(meta, NOW);
+  meta.paymentPenalty.startsAtRound = 5;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "lowering startsAtRound must never retroactively invent a penalty for a round that closed when the rule didn't yet apply to it");
+  // A round that closes AFTER the threshold was lowered follows the new rule normally:
+  meta.rounds.push(round("r6", 6, CLOSED));
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "J6 closes under the new (lowered) threshold and is genuinely eligible now");
+});
+
+test("CASE AB: J5 closes PAID with pointsPerRound=1 -> resolved exempt (0). Config changes to pointsPerRound=5, THEN participant goes unpaid -> J5 STILL 0", () => {
+  const meta = { paymentPenalty: penalty({ pointsPerRound: 1 }), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: true }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW); // resolves r5 as exempt (0) while paid
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0);
+  meta.paymentPenalty.pointsPerRound = 5; // config changes later, unrelated to this round's already-sealed fate
+  p.paid = false;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "J5 was already resolved as exempt -- neither the later config change nor the later unpaid toggle can revive it as a penalty");
+});
+
+test("CASE AC: J5 closes unpaid with pointsPerRound=1 -> -1. Multiple subsequent config changes (all reconciling first, per the real settings handler) -> J5 always stays 1", () => {
+  const meta = { paymentPenalty: penalty({ pointsPerRound: 1, startsAtRound: 5 }), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW);
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1);
+
+  runReconcile(meta, NOW); meta.paymentPenalty.pointsPerRound = 10;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "still 1 after raising pointsPerRound");
+
+  runReconcile(meta, NOW); meta.paymentPenalty.startsAtRound = 1;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "still 1 after lowering startsAtRound");
+
+  runReconcile(meta, NOW); meta.paymentPenalty.enabled = false;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "while disabled, display is 0 (existing disable semantics -- doesn't erase the ledger, just stops applying it)");
+
+  meta.paymentPenalty.enabled = true;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "re-enabling shows the preserved, still-frozen-at-1 ledger value again");
+});
+
+// ---- QA fix #3: reconcile is called before the settings-save handler applies new paymentPenalty config ----
+
+test("reconcilePenaltyLedger is called before qz-save-penalty applies the new enabled/startsAtRound/pointsPerRound values", () => {
+  const idx = indexSrc.indexOf('document.getElementById("qz-save-penalty").addEventListener("click"');
+  const slice = indexSrc.slice(idx, idx + 1400);
+  const reconcileIdx = slice.indexOf("reconcilePenaltyLedger(meta);");
+  const enabledMutationIdx = slice.indexOf('penalty.enabled = document.getElementById("qz-penalty-enabled").checked;');
+  assert.ok(reconcileIdx !== -1 && enabledMutationIdx !== -1 && reconcileIdx < enabledMutationIdx, "reconciliation must run BEFORE any of the three penalty config fields are overwritten");
+});
+
+test("qz-save-penalty rolls back all three config fields AND the participants array together on save failure", () => {
+  const idx = indexSrc.indexOf('document.getElementById("qz-save-penalty").addEventListener("click"');
+  const slice = indexSrc.slice(idx, idx + 1800);
+  assert.ok(slice.includes("const previousEnabled = penalty.enabled;"));
+  assert.ok(slice.includes("const previousStartsAtRound = penalty.startsAtRound;"));
+  assert.ok(slice.includes("const previousPointsPerRound = penalty.pointsPerRound;"));
+  assert.ok(slice.includes("const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));"));
+  assert.ok(slice.includes("await setMetaWithError(meta);"), "must use the error-aware save, not the boolean-only setMeta");
+  const failIdx = slice.indexOf("}else{");
+  const failSlice = slice.slice(failIdx, failIdx + 450);
+  assert.ok(failSlice.includes("penalty.enabled = previousEnabled;"));
+  assert.ok(failSlice.includes("penalty.startsAtRound = previousStartsAtRound;"));
+  assert.ok(failSlice.includes("penalty.pointsPerRound = previousPointsPerRound;"));
+  assert.ok(failSlice.includes("meta.participants = participantsSnapshot;"));
+});
+
 // ---- Configuration respect ----
 
 test("respects the configured pointsPerRound at time of penalization, never hardcodes 1", () => {
@@ -350,11 +440,15 @@ test("disabling then re-enabling the penalty does not lose the ledger -- it resu
   assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "re-enabling must resume showing the preserved ledger");
 });
 
-test("reconcilePenaltyLedger does not accrue new penalties while disabled (no silent background accrual)", () => {
+test("QA fix #3: reconcilePenaltyLedger DOES resolve a closed round while disabled -- but as permanently EXEMPT (0), not skipped entirely. This is what stops re-enabling the feature later from retroactively penalizing a round that closed while it was off (see CASE AA-style enabled semantics).", () => {
   const meta = { paymentPenalty: penalty({ enabled: false }), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
   runReconcile(meta, NOW);
   const p = meta.participants[0];
-  assert.ok(!p.penalizedRounds || !("r5" in p.penalizedRounds), "no ledger entry should be created while the feature is disabled");
+  assert.ok(p.penalizedRounds && ("r5" in p.penalizedRounds), "the round must be resolved (entry present), just resolved to exempt");
+  assert.equal(p.penalizedRounds.r5, 0, "resolved value while disabled must be 0 -- the rule wasn't in effect at the time");
+  // Now confirm re-enabling doesn't retroactively penalize it:
+  meta.paymentPenalty.enabled = true;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "re-enabling must never retroactively penalize a round that was already resolved as exempt while disabled");
 });
 
 // ---- Scoring-surface consistency ----
