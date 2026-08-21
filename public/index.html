@@ -2320,33 +2320,46 @@
   // participant, regardless of what happens to the round object afterward
   // (its points value is frozen at time of penalization, so a later change
   // to pointsPerRound never retroactively rewrites history either). While
-  // unpaid, currently-eligible-closed rounds NOT YET in the ledger still
-  // show up live (so the Tabla is accurate in real time without needing a
-  // write on every tick) -- but they only become PERMANENT the moment
+  // unpaid, currently-eligible-closed rounds NEVER YET RESOLVED still show
+  // up live (so the Tabla is accurate in real time without needing a write
+  // on every tick) -- but their fate only becomes PERMANENT the moment
   // reconcilePenaltyLedger() runs, which must happen before any action that
-  // could make an eligible-closed round's closed-state non-monotonic.
+  // could make an eligible-closed round's closed-state OR the
+  // participant's paid state non-monotonic relative to each other.
+  //
+  // QA correction: a round's fate (penalize vs exempt) is decided ONCE, at
+  // the first reconciliation that observes it closed -- using the paid
+  // state AT THAT MOMENT. A round that closed while paid is permanently
+  // marked exempt (0 points) the first time it's seen, so a LATER toggle
+  // back to unpaid can never retroactively start penalizing it -- this is
+  // exactly what the earlier version got wrong: it only ever wrote ledger
+  // entries for unpaid participants, so a round closing while paid was
+  // simply never resolved at all, leaving the live top-up to incorrectly
+  // treat it as still-live once the participant went unpaid again.
   function isRoundEligibleForPenalty(round, penalty){
     return round.number >= penalty.startsAtRound && isRoundLocked(round);
   }
-  // Promotes every currently eligible+closed+not-yet-ledgered round into
-  // each unpaid participant's permanent ledger. Call this BEFORE: toggling
-  // paid to true, reopening a round, editing a round's deadline, or
-  // deleting a round -- i.e. before anything that could make the
-  // closed-round count stop being monotonic. Disabled while
-  // paymentPenalty.enabled is false (no new penalties are "caused" while
-  // the feature is off) -- existing ledger entries are never touched by
-  // this function either way (see penaltyPointsFor for why disabling
-  // doesn't erase history).
+  // Resolves the fate of every currently eligible+closed+not-yet-resolved
+  // round, for EVERY participant (paid or not) -- using each participant's
+  // CURRENT paid state as the source of truth for "was this participant
+  // paid at the moment this round's closure became known to us". Call this
+  // BEFORE: toggling paid (either direction), reopening a round, editing a
+  // round's deadline, or deleting a round -- i.e. before anything that
+  // could change either side of that relationship. Disabled while
+  // paymentPenalty.enabled is false (no new resolutions happen while the
+  // feature is off) -- existing ledger entries (whether penalizing or
+  // exempt) are never touched by this function either way.
   function reconcilePenaltyLedger(meta){
     const penalty = meta.paymentPenalty;
     if(!penalty || !penalty.enabled || !penalty.startsAtRound) return;
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
     meta.participants.forEach(p => {
-      if(p.paid) return; // only unpaid participants can be actively accruing new penalties
       if(!p.penalizedRounds) p.penalizedRounds = {};
       meta.rounds.forEach(r => {
         if(isRoundEligibleForPenalty(r, penalty) && !(r.id in p.penalizedRounds)){
-          p.penalizedRounds[r.id] = perRound;
+          // Resolved once, forever: penalize if currently unpaid, exempt
+          // (0, but still marked resolved) if currently paid.
+          p.penalizedRounds[r.id] = p.paid ? 0 : perRound;
         }
       });
     });
@@ -2357,25 +2370,27 @@
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
     const ledger = p.penalizedRounds || {};
     let total = 0;
-    // Permanent ledger entries always count (this is what survives
-    // reopening/deadline edits/round deletion -- the round object may not
-    // even exist anymore, the ledger is keyed by id with the points value
-    // already frozen in).
+    // Permanent ledger entries always count exactly as resolved (0 for
+    // exempt, perRound-at-the-time for penalized) -- this is what survives
+    // reopening/deadline edits/round deletion/later paid toggles. The round
+    // object may not even exist anymore; the ledger is keyed by id with the
+    // outcome already frozen in.
     meta.rounds.forEach(r => {
       if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
       if(r.id in ledger) total += ledger[r.id];
     });
-    // A round could be deleted after being ledgered -- its points still
-    // count even though it no longer appears in meta.rounds at all.
+    // A round could be deleted after being resolved -- its outcome still
+    // counts even though it no longer appears in meta.rounds at all.
     if(cutoffRoundNumber == null){
       Object.keys(ledger).forEach(roundId => {
         if(!meta.rounds.some(r => r.id === roundId)) total += ledger[roundId];
       });
     }
-    // Live top-up: while unpaid, currently-eligible-closed rounds not yet
-    // promoted into the permanent ledger still count for real-time display
-    // -- reconcilePenaltyLedger() is what makes them permanent before
-    // anything could make them stop counting.
+    // Live top-up: only for rounds that have NEVER been resolved before
+    // (not in the ledger at all -- not even as a 0/exempt entry), and only
+    // while currently unpaid. Once a round has ANY resolution, it never
+    // re-enters live evaluation, which is exactly what stops "closed while
+    // paid" rounds from starting to penalize after a later unpaid toggle.
     if(!p.paid){
       meta.rounds.forEach(r => {
         if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;

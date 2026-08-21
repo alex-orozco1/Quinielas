@@ -143,9 +143,11 @@ test("CASE K: legacy unpaid (paid:false, no ledger) with J5+J6 already closed ->
   assert.equal(runPenaltyPointsFor(meta, { paid: false }, null, NOW), 2);
 });
 
-// ---- CASE M ----
+// ---- CASE M (QA-corrected: a round closed while PAID is permanently
+// exempt, and a later toggle back to unpaid can never retroactively start
+// penalizing it) ----
 
-test("CASE M: false->true->false->true across closing rounds never double-counts, never erases, never counts rounds closed while paid", () => {
+test("CASE M: false->true->false->true -- J6 closes WHILE PAID and must be permanently exempt, never retroactively penalized on the later unpaid toggle", () => {
   const meta = { paymentPenalty: penalty(), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
   runReconcile(meta, NOW);
   const p = meta.participants[0];
@@ -155,16 +157,92 @@ test("CASE M: false->true->false->true across closing rounds never double-counts
   meta.rounds.push(round("r6", 6, CLOSED));
   assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "J6 closing while paid must not increase the penalty");
 
-  runReconcile(meta, NOW); // no-op: p.paid is true, reconcile skips paid participants
+  // Toggling back to unpaid reconciles FIRST, under the OLD (paid=true)
+  // state -- this is what permanently resolves J6 as exempt (0), before
+  // paid actually flips.
+  runReconcile(meta, NOW);
   p.paid = false;
-  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 2, "back to unpaid: J6 is now live-counted (not yet ledgered, but currently closed+unpaid) alongside the ledgered J5");
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "immediately after toggling back to unpaid, penalty is STILL just 1 -- J6 was already resolved as exempt while paid was true, so it can never start penalizing now");
 
-  meta.rounds.push(round("r7", 7, CLOSED));
-  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 3, "J7 also live-counts now: J5(ledgered)+J6+J7(live) = 3");
+  meta.rounds.push(round("r7", 7, CLOSED)); // this one genuinely closes DURING the new unpaid interval
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 2, "only J7 (closed during the unpaid interval) adds -- J5=1 (ledgered) + J6=0 (ledgered, exempt) + J7=1 (live, unpaid) = 2");
 
-  runReconcile(meta, NOW); // promotes J6 and J7 into the ledger too
+  runReconcile(meta, NOW); // promotes J7 into the ledger too, as penalized (currently unpaid)
   p.paid = true;
-  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 3, "frozen at 3 after the full sequence");
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 2, "frozen at 2 forever: J5(1) + J6(0, exempt) + J7(1)");
+});
+
+// ---- CASE T-X (QA blocker #2): a round's fate (penalize vs exempt) is
+// decided ONCE, at first resolution, and never changes afterward ----
+
+test("CASE T: J5 closes while PAID -> 0. Later toggling to unpaid -> STILL 0, J5 never becomes retroactively penalized", () => {
+  const meta = { paymentPenalty: penalty(), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: true }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW); // resolves r5 as exempt (0), since p.paid is true right now
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0);
+  p.paid = false;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "J5 was already resolved as exempt while paid -- it must never start penalizing just because paid later flips to false");
+});
+
+test("CASE U: mixed periods -- J5 unpaid(-1), pay, J6 paid(0, stays -1), unpaid again(stays -1 immediately), J7 unpaid(-2), pay again(stays -2)", () => {
+  const meta = { paymentPenalty: penalty(), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW);
+  p.paid = true;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1);
+
+  meta.rounds.push(round("r6", 6, CLOSED)); // closes while paid
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1);
+
+  runReconcile(meta, NOW); // resolves r6 as exempt under paid=true
+  p.paid = false;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "immediately back to unpaid: still just 1 -- J6 is permanently exempt");
+
+  meta.rounds.push(round("r7", 7, CLOSED)); // closes during the new unpaid interval
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 2);
+
+  runReconcile(meta, NOW);
+  p.paid = true;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 2, "stays 2 once paid again");
+});
+
+test("CASE V: multiple rounds closing while paid (J5,J6,J7) -> 0, stays 0 after toggling unpaid, only J8 (new unpaid interval) penalizes", () => {
+  const meta = {
+    paymentPenalty: penalty(),
+    rounds: [round("r5", 5, CLOSED), round("r6", 6, CLOSED), round("r7", 7, CLOSED)],
+    participants: [{ id: "x", paid: true }],
+  };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW); // all three resolved as exempt (paid:true)
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0);
+  p.paid = false;
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "none of J5/J6/J7 can retroactively penalize");
+  meta.rounds.push(round("r8", 8, CLOSED));
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "only J8, closed during the actual unpaid interval, penalizes");
+});
+
+test("CASE W: J5 closes while paid (0) -> reopens -> participant goes unpaid -> J5 closes again -> STILL 0, reopening never creates a new penalizing opportunity", () => {
+  const meta = { paymentPenalty: penalty(), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: true }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW); // resolved exempt while paid
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0);
+  runReconcile(meta, NOW); // mirrors the real reopen handler reconciling before moving the deadline (no-op, already resolved)
+  meta.rounds[0].deadline = OPEN; // reopened
+  p.paid = false;
+  meta.rounds[0].deadline = CLOSED; // closes again, now while unpaid
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 0, "J5's fate was already sealed as exempt -- reopening and re-closing it while unpaid must never create a new penalty");
+});
+
+test("CASE X: J5 closes unpaid (-1) -> reopens -> participant pays -> J5 closes again while paid -> STILL -1, never 0, never -2", () => {
+  const meta = { paymentPenalty: penalty(), rounds: [round("r5", 5, CLOSED)], participants: [{ id: "x", paid: false }] };
+  const p = meta.participants[0];
+  runReconcile(meta, NOW); // resolved as penalized (1) while unpaid
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1);
+  meta.rounds[0].deadline = OPEN; // reopened
+  runReconcile(meta, NOW); // no-op, already resolved
+  p.paid = true;
+  meta.rounds[0].deadline = CLOSED; // closes again while paid
+  assert.equal(runPenaltyPointsFor(meta, p, null, NOW), 1, "J5's penalty was already sealed -- it must never reset to 0 nor double to 2");
 });
 
 // ---- CASE N-S (QA-blocking): non-monotonic lifecycle changes ----
