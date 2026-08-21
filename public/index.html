@@ -4026,6 +4026,28 @@
   // with many imported jornadas. Scrolling only happens AFTER the async
   // re-render actually finishes (awaited, not timing-guessed), directly to
   // the editor card itself, so "Editando jornada N" always ends up visible.
+  // UX-ADM-007: shared by both "Eliminar jornada" entry points (the
+  // payment-blocked early-return branch and the normal branch) so a failed
+  // delete never silently commits in the UI. The round object itself holds
+  // its own matches/results/resultsPublished/customBetResults inline — no
+  // separate structure elsewhere in meta references it by id — so
+  // restoring the exact same object at its original array position is a
+  // complete rollback, not a partial one.
+  async function deleteRoundWithRollback(btn, roundId){
+    if(!(await qzConfirm("Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.", { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
+    const snapshot = meta.rounds.slice();
+    btn.disabled = true;
+    meta.rounds = meta.rounds.filter(r => r.id !== roundId);
+    const result = await setMetaWithError(meta);
+    if(result.ok){
+      renderAdmin(document.getElementById("qz-main"));
+    }else{
+      meta.rounds = snapshot;
+      btn.disabled = false;
+      toast(humanizeError(result.error));
+    }
+  }
+
   async function openRoundEditor(body, roundId){
     renderAdminRondas._editingId = roundId;
     renderAdminRondas._draft = null;
@@ -4200,12 +4222,7 @@
         btn.addEventListener("click", () => openRoundEditor(body, btn.dataset.editRound));
       });
       body.querySelectorAll("[data-del-round]").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          if(!(await qzConfirm("Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.", { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
-          meta.rounds = meta.rounds.filter(r => r.id !== btn.dataset.delRound);
-          await setMeta(meta);
-          renderAdmin(document.getElementById("qz-main"));
-        });
+        btn.addEventListener("click", () => deleteRoundWithRollback(btn, btn.dataset.delRound));
       });
       return;
     }
@@ -4297,12 +4314,7 @@
     });
 
     body.querySelectorAll("[data-del-round]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        if(!(await qzConfirm("Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.", { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
-        meta.rounds = meta.rounds.filter(r => r.id !== btn.dataset.delRound);
-        await setMeta(meta);
-        renderAdmin(document.getElementById("qz-main"));
-      });
+      btn.addEventListener("click", () => deleteRoundWithRollback(btn, btn.dataset.delRound));
     });
   }
 
@@ -4890,20 +4902,34 @@
       <p class="muted">Solo el dueño puede quitarle el permiso de admin a alguien más — desde <strong>Admin → Ajustes</strong> si esta casilla no responde.</p>
       <p class="muted">Si alguien olvida su PIN, dale "Resetear" — la próxima vez que toque su nombre podrá poner uno nuevo.</p>
     `;
-    document.getElementById("qz-add-participant").addEventListener("click", async () => {
+    const addBtn = document.getElementById("qz-add-participant");
+    addBtn.addEventListener("click", async () => {
       const inp = document.getElementById("qz-new-name");
       const name = inp.value.trim();
       if(!name) return;
+      // UX-ADM-006: optimistic mutation, but success feedback and the kept
+      // state both depend on a REAL confirmed write — never just "we tried".
+      // Snapshot for exact rollback (not just popping the last item, in case
+      // something else touches the array while this request is in flight).
+      const snapshot = meta.participants.slice();
+      addBtn.disabled = true;
       meta.participants.push({id: uid("p"), name, isAdmin:false, paid:false, pin:null});
-      await setMeta(meta);
-      renderAdminParticipantes(body);
-      toast("✅ Listo, el participante quedó agregado.");
+      const result = await setMetaWithError(meta);
+      if(result.ok){
+        renderAdminParticipantes(body);
+        toast("✅ Listo, el participante quedó agregado.");
+      }else{
+        meta.participants = snapshot;
+        addBtn.disabled = false;
+        toast(humanizeError(result.error));
+      }
     });
     document.getElementById("qz-bulk-add").addEventListener("click", async () => {
       const raw = document.getElementById("qz-bulk-names").value;
       const statusEl = document.getElementById("qz-bulk-status");
       const names = raw.split(/[\n,]+/).map(n => n.trim()).filter(Boolean);
       if(!names.length){ statusEl.textContent = "Pega al menos un nombre."; statusEl.style.color = "var(--red)"; return; }
+      const snapshot = meta.participants.slice();
       const existing = new Set(meta.participants.map(p => p.name.toLowerCase()));
       const added = [];
       const skipped = [];
@@ -4914,45 +4940,107 @@
         added.push(name);
       });
       if(!added.length){ statusEl.textContent = "Todos esos nombres ya existían, no se agregó ninguno."; statusEl.style.color = "var(--red)"; return; }
-      const ok = await setMeta(meta);
-      if(!ok){ statusEl.textContent = "No se pudo guardar, intenta de nuevo."; statusEl.style.color = "var(--red)"; return; }
+      const result = await setMetaWithError(meta);
+      if(!result.ok){
+        // UX-ADM-006: the previous version left the pushed-but-unpersisted
+        // participants sitting in meta.participants even after showing this
+        // same error — a later render/action elsewhere in the app would
+        // have seen phantom participants the server never actually has.
+        meta.participants = snapshot;
+        statusEl.textContent = humanizeError(result.error);
+        statusEl.style.color = "var(--red)";
+        return;
+      }
       toast(`✅ Listo, se agregaron ${added.length} participante${added.length===1?'':'s'}.`);
       renderAdminParticipantes(body);
     });
     body.querySelectorAll("tr[data-pid]").forEach(row => {
       const pid = row.dataset.pid;
       const p = meta.participants.find(x=>x.id===pid);
-      row.querySelector("[data-role=rename]").addEventListener("change", async (e) => {
-        p.name = e.target.value.trim() || p.name;
-        await setMeta(meta);
-        toast("✅ Listo, el nombre quedó actualizado.");
-        renderAdminParticipantes(body);
+      const renameInput = row.querySelector("[data-role=rename]");
+      renameInput.addEventListener("change", async (e) => {
+        const previousName = p.name;
+        const newName = e.target.value.trim() || p.name;
+        if(newName === previousName){ e.target.value = previousName; return; }
+        renameInput.disabled = true;
+        p.name = newName;
+        const result = await setMetaWithError(meta);
+        renameInput.disabled = false;
+        if(result.ok){
+          toast("✅ Listo, el nombre quedó actualizado.");
+          renderAdminParticipantes(body);
+        }else{
+          p.name = previousName;
+          e.target.value = previousName;
+          toast(humanizeError(result.error));
+        }
       });
-      row.querySelector("[data-role=admin]").addEventListener("change", async (e) => {
+      const adminCheckbox = row.querySelector("[data-role=admin]");
+      adminCheckbox.addEventListener("change", async (e) => {
+        const previousValue = p.isAdmin;
+        adminCheckbox.disabled = true;
         p.isAdmin = e.target.checked;
-        await setMeta(meta);
-        toast(p.isAdmin ? ("✅ " + esc(p.name) + " ahora es admin") : ("✅ " + esc(p.name) + " ya no es admin"));
+        const result = await setMetaWithError(meta);
+        adminCheckbox.disabled = false;
+        if(result.ok){
+          toast(p.isAdmin ? ("✅ " + esc(p.name) + " ahora es admin") : ("✅ " + esc(p.name) + " ya no es admin"));
+        }else{
+          p.isAdmin = previousValue;
+          e.target.checked = previousValue;
+          toast(humanizeError(result.error));
+        }
       });
       const resetBtn = row.querySelector("[data-role=resetpin]");
       if(resetBtn){
         resetBtn.addEventListener("click", async () => {
           if(!(await qzConfirm(`La próxima vez que toque su nombre podrá poner uno nuevo.`, { title: `¿Resetear el PIN de ${p.name}?`, confirmLabel: "Resetear" }))) return;
+          const previousPin = p.pin;
+          const previousHasPin = p.hasPin;
+          resetBtn.disabled = true;
           p.pin = null;
           p.hasPin = false;
-          await setMeta(meta);
-          toast("🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
-          renderAdminParticipantes(body);
+          const result = await setMetaWithError(meta);
+          if(result.ok){
+            toast("🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
+            renderAdminParticipantes(body);
+          }else{
+            p.pin = previousPin;
+            p.hasPin = previousHasPin;
+            resetBtn.disabled = false;
+            toast(humanizeError(result.error));
+          }
         });
       }
-      row.querySelector("[data-role=paid]").addEventListener("change", async (e) => {
+      const paidCheckbox = row.querySelector("[data-role=paid]");
+      paidCheckbox.addEventListener("change", async (e) => {
+        const previousValue = p.paid;
+        paidCheckbox.disabled = true;
         p.paid = e.target.checked;
-        await setMeta(meta);
+        const result = await setMetaWithError(meta);
+        paidCheckbox.disabled = false;
+        if(!result.ok){
+          p.paid = previousValue;
+          e.target.checked = previousValue;
+          toast(humanizeError(result.error));
+        }
       });
-      row.querySelector("[data-role=remove]").addEventListener("click", async () => {
+      const removeBtn = row.querySelector("[data-role=remove]");
+      removeBtn.addEventListener("click", async () => {
         if(!(await qzConfirm("Sus picks guardados dejarán de contarse.", { title: `¿Borrar a ${p.name}?`, confirmLabel: "Borrar" }))) return;
+        // UX-ADM-006: exact restoration on failure, same object at the same
+        // position — not just "push it back at the end" — so a failed
+        // delete never silently reorders the table.
+        const snapshot = meta.participants.slice();
+        removeBtn.disabled = true;
         meta.participants = meta.participants.filter(x=>x.id!==pid);
-        await setMeta(meta);
-        renderAdminParticipantes(body);
+        const result = await setMetaWithError(meta);
+        if(result.ok){
+          renderAdminParticipantes(body);
+        }else{
+          meta.participants = snapshot;
+          removeBtn.disabled = false;
+          toast(humanizeError(result.error));
+        }
       });
     });
   }
