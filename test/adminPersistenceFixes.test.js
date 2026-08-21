@@ -104,22 +104,20 @@ test("paid-toggle: also upgraded to setMetaWithError with rollback (was previous
   const slice = participantesBody.slice(idx, idx + 1700);
   assert.ok(slice.includes("const previousValue = p.paid;"));
   assert.ok(slice.includes("await setMetaWithError(meta);"));
-  assert.ok(slice.includes("p.paid = previousValue;") && slice.includes("e.target.checked = previousValue;"));
+  assert.ok(slice.includes("e.target.checked = previousValue;"));
 });
 
-// ---- CASE L: payment penalty fields (accruedPenaltyPoints/penaltyCheckpointCount/paidAt) also roll back atomically ----
+// ---- CASE L (QA-corrected): reconciliation can touch MULTIPLE participants'
+// permanent penalty ledgers, so rollback must restore the whole
+// participants array, not just this one participant's fields ----
 
-test("CASE L: paid-toggle failure rolls back accruedPenaltyPoints, penaltyCheckpointCount, AND paidAt together with paid -- never a partial/inconsistent state", () => {
+test("CASE L: paid-toggle failure restores the FULL participants array (reconcilePenaltyLedger can touch more than one participant's permanent ledger)", () => {
   const idx = participantesBody.indexOf("paidCheckbox.addEventListener(\"change\"");
   const slice = participantesBody.slice(idx, idx + 1700);
-  assert.ok(slice.includes("const previousAccrued = p.accruedPenaltyPoints;"), "must snapshot accruedPenaltyPoints before the checkpoint mutation");
-  assert.ok(slice.includes("const previousCheckpoint = p.penaltyCheckpointCount;"), "must snapshot penaltyCheckpointCount before the checkpoint mutation");
-  assert.ok(slice.includes("const previousPaidAt = p.paidAt;"), "must snapshot paidAt before setting a new one");
+  assert.ok(slice.includes("const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));"), "must deep-snapshot the whole array before reconciling, since reconciliation isn't scoped to just this participant");
   const failIdx = slice.indexOf("if(!result.ok){");
-  const failSlice = slice.slice(failIdx, failIdx + 300);
-  assert.ok(failSlice.includes("p.accruedPenaltyPoints = previousAccrued;"), "failure must restore accruedPenaltyPoints");
-  assert.ok(failSlice.includes("p.penaltyCheckpointCount = previousCheckpoint;"), "failure must restore penaltyCheckpointCount");
-  assert.ok(failSlice.includes("p.paidAt = previousPaidAt;"), "failure must restore paidAt");
+  const failSlice = slice.slice(failIdx, failIdx + 250);
+  assert.ok(failSlice.includes("meta.participants = participantsSnapshot;"), "failure must restore the full array, undoing both the paid flip AND any ledger entries reconciliation just promoted");
 });
 
 test("paidAt is only set on the false->true transition, not on every save", () => {
@@ -128,12 +126,12 @@ test("paidAt is only set on the false->true transition, not on every save", () =
   assert.ok(slice.includes("if(newValue && !previousValue) p.paidAt = new Date().toISOString();"), "paidAt must only be stamped on the false->true transition");
 });
 
-test("the checkpoint (accruedPenaltyPoints + penaltyCheckpointCount snapshot) happens BEFORE p.paid actually flips, using the OLD state", () => {
+test("reconcilePenaltyLedger runs BEFORE p.paid actually flips, using the OLD state", () => {
   const idx = participantesBody.indexOf("paidCheckbox.addEventListener(\"change\"");
   const slice = participantesBody.slice(idx, idx + 1700);
-  const checkpointIdx = slice.indexOf("p.accruedPenaltyPoints = penaltyPointsFor(p, null);");
+  const reconcileIdx = slice.indexOf("reconcilePenaltyLedger(meta);");
   const flipIdx = slice.indexOf("p.paid = newValue;");
-  assert.ok(checkpointIdx !== -1 && checkpointIdx < flipIdx, "the checkpoint must read penaltyPointsFor(p, ...) while p.paid still holds the OLD value, before being reassigned");
+  assert.ok(reconcileIdx !== -1 && reconcileIdx < flipIdx, "reconciliation must run while p.paid still holds the OLD value, before being reassigned");
 });
 
 // ---- No handler in this screen still uses the boolean-only setMeta() ----
