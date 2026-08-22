@@ -2306,6 +2306,121 @@
     return pts;
   }
 
+  // Payment-penalty persistence (P1, QA-corrected model): a penalty is
+  // CAUSED the moment an eligible round's deadline passes while the
+  // participant is unpaid, and once caused it must survive ANY later
+  // change to that round's lifecycle -- reopening it, editing its deadline
+  // back to the future, or even deleting the round entirely. A model based
+  // purely on "how many rounds are closed right now" (an earlier version of
+  // this fix) breaks the moment isRoundLocked() stops being monotonic,
+  // which QRACKS explicitly allows (reopen/edit-deadline/delete-round).
+  //
+  // Model: p.penalizedRounds is a persisted ledger, { [roundId]: pointsAtTimeOfPenalty }.
+  // Once a round id is in the ledger, it counts FOREVER for that
+  // participant, regardless of what happens to the round object afterward
+  // (its points value is frozen at time of penalization, so a later change
+  // to pointsPerRound never retroactively rewrites history either). While
+  // unpaid, currently-eligible-closed rounds NEVER YET RESOLVED still show
+  // up live (so the Tabla is accurate in real time without needing a write
+  // on every tick) -- but their fate only becomes PERMANENT the moment
+  // reconcilePenaltyLedger() runs, which must happen before any action that
+  // could make an eligible-closed round's closed-state OR the
+  // participant's paid state non-monotonic relative to each other.
+  //
+  // QA correction: a round's fate (penalize vs exempt) is decided ONCE, at
+  // the first reconciliation that observes it closed -- using the paid
+  // state AT THAT MOMENT. A round that closed while paid is permanently
+  // marked exempt (0 points) the first time it's seen, so a LATER toggle
+  // back to unpaid can never retroactively start penalizing it -- this is
+  // exactly what the earlier version got wrong: it only ever wrote ledger
+  // entries for unpaid participants, so a round closing while paid was
+  // simply never resolved at all, leaving the live top-up to incorrectly
+  // treat it as still-live once the participant went unpaid again.
+  function isRoundEligibleForPenalty(round, penalty){
+    return round.number >= penalty.startsAtRound && isRoundLocked(round);
+  }
+  // Resolves the fate of every currently eligible+closed+not-yet-resolved
+  // round, for EVERY participant (paid or not) -- using each participant's
+  // CURRENT paid state as the source of truth for "was this participant
+  // paid at the moment this round's closure became known to us". Call this
+  // BEFORE: toggling paid (either direction), reopening a round, editing a
+  // round's deadline, or deleting a round -- i.e. before anything that
+  // could change either side of that relationship. Disabled while
+  // paymentPenalty.enabled is false (no new resolutions happen while the
+  // feature is off) -- existing ledger entries (whether penalizing or
+  // exempt) are never touched by this function either way.
+  // Resolves the fate of every currently CLOSED+not-yet-resolved round, for
+  // EVERY participant -- using whatever config/paid-state is CURRENT at the
+  // moment of this call as the source of truth. Call this BEFORE anything
+  // that could reinterpret an already-closed round's resolution: toggling
+  // paid (either direction), reopening a round, editing a round's deadline,
+  // deleting a round, OR changing paymentPenalty itself (enabled/
+  // startsAtRound/pointsPerRound) -- i.e. before ANY of the 5 things that
+  // could otherwise rewrite a settled outcome using rules that didn't apply
+  // at the time the round actually closed.
+  //
+  // QA fix #3: the gate here is deliberately isRoundLocked(r) ALONE, not
+  // isRoundEligibleForPenalty(r, penalty) -- a closed round that ISN'T
+  // currently eligible (below startsAtRound, or the whole feature
+  // disabled) still gets resolved, just resolved to 0/exempt. This is what
+  // stops a LATER startsAtRound decrease (or re-enabling the feature)
+  // from retroactively inventing a penalty for a round that closed back
+  // when the rule didn't apply to it (CASE AA) -- without this, such a
+  // round would simply never appear in the ledger at all, leaving it to
+  // fall through to the live top-up under whatever config exists NOW.
+  function reconcilePenaltyLedger(meta){
+    const penalty = meta.paymentPenalty;
+    if(!penalty) return; // no penalty concept configured at all yet -- nothing to reconcile
+    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+    meta.participants.forEach(p => {
+      if(!p.penalizedRounds) p.penalizedRounds = {};
+      meta.rounds.forEach(r => {
+        if(isRoundLocked(r) && !(r.id in p.penalizedRounds)){
+          const eligibleNow = penalty.enabled && penalty.startsAtRound != null && r.number >= penalty.startsAtRound;
+          // Resolved once, forever: penalize only if currently eligible AND
+          // unpaid; exempt (0, but still marked resolved) in every other
+          // case -- ineligible-by-round-number, feature disabled, or paid.
+          p.penalizedRounds[r.id] = (eligibleNow && !p.paid) ? perRound : 0;
+        }
+      });
+    });
+  }
+  function penaltyPointsFor(p, cutoffRoundNumber){
+    const penalty = meta.paymentPenalty;
+    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return 0;
+    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+    const ledger = p.penalizedRounds || {};
+    let total = 0;
+    // Permanent ledger entries always count exactly as resolved (0 for
+    // exempt, perRound-at-the-time for penalized) -- this is what survives
+    // reopening/deadline edits/round deletion/later paid toggles. The round
+    // object may not even exist anymore; the ledger is keyed by id with the
+    // outcome already frozen in.
+    meta.rounds.forEach(r => {
+      if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
+      if(r.id in ledger) total += ledger[r.id];
+    });
+    // A round could be deleted after being resolved -- its outcome still
+    // counts even though it no longer appears in meta.rounds at all.
+    if(cutoffRoundNumber == null){
+      Object.keys(ledger).forEach(roundId => {
+        if(!meta.rounds.some(r => r.id === roundId)) total += ledger[roundId];
+      });
+    }
+    // Live top-up: only for rounds that have NEVER been resolved before
+    // (not in the ledger at all -- not even as a 0/exempt entry), and only
+    // while currently unpaid. Once a round has ANY resolution, it never
+    // re-enters live evaluation, which is exactly what stops "closed while
+    // paid" rounds from starting to penalize after a later unpaid toggle.
+    if(!p.paid){
+      meta.rounds.forEach(r => {
+        if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
+        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in ledger)) total += perRound;
+      });
+    }
+    return total;
+  }
+
   function pointsFor(participantId, participantMap, cutoffRoundNumber){
     const picks = allPicksCache[participantId] || {};
     const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
@@ -2323,22 +2438,13 @@
     });
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     pts += customBetPointsFor(participantId, participantMap, cutoffRoundNumber);
-    const penalty = meta.paymentPenalty;
-    if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
-      const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound && (cutoffRoundNumber == null || r.number <= cutoffRoundNumber)).length;
-      const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-      pts -= passedRounds * perRound;
-    }
+    pts -= penaltyPointsFor(p, cutoffRoundNumber);
     return {pts, played};
   }
 
   function penaltyFor(participantId, participantMap){
-    const penalty = meta.paymentPenalty;
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p || p.paid) return 0;
-    const passedRounds = meta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
-    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-    return passedRounds * perRound;
+    return penaltyPointsFor(p, null);
   }
 
   function standingsList(){
@@ -3817,13 +3923,35 @@
     });
 
     document.getElementById("qz-save-penalty").addEventListener("click", async () => {
+      const saveBtn = document.getElementById("qz-save-penalty");
+      // Payment-penalty persistence (P1, QA fix #3): any change to this
+      // config (enabled/startsAtRound/pointsPerRound) could reinterpret an
+      // already-closed-but-not-yet-ledgered round's resolution -- reconcile
+      // FIRST, under the OLD configuration, so every such round's
+      // fate/points get sealed using the rules that were actually in
+      // effect when it closed, never the new ones about to be applied.
+      const previousEnabled = penalty.enabled;
+      const previousStartsAtRound = penalty.startsAtRound;
+      const previousPointsPerRound = penalty.pointsPerRound;
+      const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
+      saveBtn.disabled = true;
+      reconcilePenaltyLedger(meta);
       penalty.enabled = document.getElementById("qz-penalty-enabled").checked;
       const roundRaw = document.getElementById("qz-penalty-round").value.trim();
       penalty.startsAtRound = roundRaw === "" ? null : Number(roundRaw);
       const ptsRaw = document.getElementById("qz-penalty-points").value.trim();
       penalty.pointsPerRound = ptsRaw === "" ? 1 : Number(ptsRaw);
-      const ok = await setMeta(meta);
-      toast(ok ? "✅ Listo, la penalización quedó guardada." : "No se pudo guardar, intenta de nuevo");
+      const result = await setMetaWithError(meta);
+      saveBtn.disabled = false;
+      if(result.ok){
+        toast("✅ Listo, la penalización quedó guardada.");
+      }else{
+        penalty.enabled = previousEnabled;
+        penalty.startsAtRound = previousStartsAtRound;
+        penalty.pointsPerRound = previousPointsPerRound;
+        meta.participants = participantsSnapshot;
+        toast(humanizeError(result.error));
+      }
     });
   }
 
@@ -4036,6 +4164,14 @@
   async function deleteRoundWithRollback(btn, roundId){
     if(!(await qzConfirm("Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.", { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
     const snapshot = meta.rounds.slice();
+    // Payment-penalty persistence (P1, QA-corrected): deleting a round must
+    // not silently erase a penalty it already caused -- reconcile
+    // (promote it into each unpaid participant's permanent ledger) BEFORE
+    // it's removed from meta.rounds. penaltyPointsFor() already knows how
+    // to keep counting a ledgered round even after it's gone from
+    // meta.rounds entirely.
+    const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
+    reconcilePenaltyLedger(meta);
     btn.disabled = true;
     meta.rounds = meta.rounds.filter(r => r.id !== roundId);
     const result = await setMetaWithError(meta);
@@ -4043,6 +4179,7 @@
       renderAdmin(document.getElementById("qz-main"));
     }else{
       meta.rounds = snapshot;
+      meta.participants = participantsSnapshot;
       btn.disabled = false;
       toast(humanizeError(result.error));
     }
@@ -4269,6 +4406,11 @@
       if(!draft.deadline){ toast("Selecciona la fecha y hora límite"); return; }
 
       if(editingRound){
+        // Payment-penalty persistence (P1, QA-corrected): editing a round's
+        // deadline could move it back into the future, exactly the kind of
+        // non-monotonic change that must never retroactively erase an
+        // already-caused penalty -- reconcile BEFORE the deadline moves.
+        reconcilePenaltyLedger(meta);
         editingRound.matches = clean;
         editingRound.deadline = new Date(draft.deadline).toISOString();
         const ok = await setMeta(meta);
@@ -4807,6 +4949,16 @@
         // resultsPublished:false + stale deadline + success toast.
         const previousResultsPublished = round.resultsPublished;
         const previousDeadline = round.deadline;
+        // Payment-penalty persistence (P1, QA-corrected): reopening this
+        // round is exactly the kind of non-monotonic lifecycle change that
+        // must never retroactively erase an already-caused penalty --
+        // reconcile (promote any currently eligible+closed+unledgered
+        // rounds into each unpaid participant's permanent ledger) BEFORE
+        // this round's deadline moves back into the future. Snapshot the
+        // whole participants array since reconciliation can touch more
+        // than one participant.
+        const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
+        reconcilePenaltyLedger(meta);
         round.resultsPublished = false;
         round.deadline = newDeadlineIso;
         logAudit("Reabrió jornada", `Jornada ${round.number}`);
@@ -4816,6 +4968,7 @@
         }else{
           round.resultsPublished = previousResultsPublished;
           round.deadline = previousDeadline;
+          meta.participants = participantsSnapshot;
           toast(humanizeError(result.error));
         }
         reopenBtn.disabled = false;
@@ -5014,12 +5167,28 @@
       const paidCheckbox = row.querySelector("[data-role=paid]");
       paidCheckbox.addEventListener("change", async (e) => {
         const previousValue = p.paid;
+        const previousPaidAt = p.paidAt;
+        // reconcilePenaltyLedger() can promote NEW permanent ledger entries
+        // for ANY currently-unpaid participant (not just this one), so a
+        // full rollback on failure needs the whole participants array, not
+        // just this participant's fields.
+        const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
         paidCheckbox.disabled = true;
-        p.paid = e.target.checked;
+        const newValue = e.target.checked;
+        // Payment-penalty persistence (P1, QA-corrected): reconcile BEFORE
+        // flipping paid, using the OLD state -- this is what freezes
+        // currently-caused-but-not-yet-permanent penalties into p's ledger
+        // right before paid turns true (after which the live top-up stops
+        // running for this participant). Once ledgered, a penalty survives
+        // reopening/deadline edits/round deletion -- see
+        // reconcilePenaltyLedger()/penaltyPointsFor() above.
+        reconcilePenaltyLedger(meta);
+        p.paid = newValue;
+        if(newValue && !previousValue) p.paidAt = new Date().toISOString();
         const result = await setMetaWithError(meta);
         paidCheckbox.disabled = false;
         if(!result.ok){
-          p.paid = previousValue;
+          meta.participants = participantsSnapshot;
           e.target.checked = previousValue;
           toast(humanizeError(result.error));
         }
@@ -5946,10 +6115,20 @@
               if(gsb && gsb.enabled && p && p.golScorerCorrect === true) pts += (gsb.bonusPoints != null ? gsb.bonusPoints : 3);
             }
             const penalty = tenantMeta.paymentPenalty;
-            if(penalty && penalty.enabled && penalty.startsAtRound && p && !p.paid){
-              const passedRounds = tenantMeta.rounds.filter(r => r.resultsPublished && r.number >= penalty.startsAtRound).length;
+            if(penalty && penalty.enabled && penalty.startsAtRound && p){
+              // Mirrors the real penaltyPointsFor() ledger model (QA-corrected:
+              // permanent per-round ledger, immune to reopen/deadline-edit/
+              // round-deletion non-monotonicity) -- same fix as the main app,
+              // applied here so this diagnostic view never disagrees with
+              // what participants/admins actually see.
               const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-              pts -= passedRounds * perRound;
+              const ledger = p.penalizedRounds || {};
+              Object.keys(ledger).forEach(roundId => { pts -= ledger[roundId]; });
+              if(!p.paid){
+                tenantMeta.rounds.forEach(r => {
+                  if(r.number >= penalty.startsAtRound && isRoundLocked(r) && !(r.id in ledger)) pts -= perRound;
+                });
+              }
             }
             return pts;
           }

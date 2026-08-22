@@ -96,7 +96,7 @@ test("CASE H: reopen does not invent a deadline -- no automatic +24h/tomorrow an
 test("CASE I: reopen rolls back BOTH resultsPublished and deadline together on save failure -- never a stale success toast", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminResultados(body)");
   const reopenIdx = body.indexOf('const reopenBtn = document.getElementById("qz-reopen-round");');
-  const reopenSlice = body.slice(reopenIdx, reopenIdx + 2000);
+  const reopenSlice = body.slice(reopenIdx, reopenIdx + 2400);
   assert.ok(reopenSlice.includes("const previousResultsPublished = round.resultsPublished;"), "must snapshot the previous resultsPublished before mutating");
   assert.ok(reopenSlice.includes("const previousDeadline = round.deadline;"), "must snapshot the previous deadline before mutating");
   assert.ok(reopenSlice.includes("round.resultsPublished = previousResultsPublished;"), "failure path must restore resultsPublished");
@@ -109,14 +109,14 @@ test("CASE I: reopen rolls back BOTH resultsPublished and deadline together on s
 test("CASE H: reopen requires setMetaWithError (real success/failure signal), not the boolean-only setMeta", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminResultados(body)");
   const reopenIdx = body.indexOf('const reopenBtn = document.getElementById("qz-reopen-round");');
-  const reopenSlice = body.slice(reopenIdx, reopenIdx + 2000);
+  const reopenSlice = body.slice(reopenIdx, reopenIdx + 2400);
   assert.ok(reopenSlice.includes("await setMetaWithError(meta);"), "must use the error-aware save so failure can be distinguished from success");
 });
 
 test("reopen cancels cleanly (no toast, no mutation) if the admin cancels the new-deadline prompt", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminResultados(body)");
   const reopenIdx = body.indexOf('const reopenBtn = document.getElementById("qz-reopen-round");');
-  const reopenSlice = body.slice(reopenIdx, reopenIdx + 2000);
+  const reopenSlice = body.slice(reopenIdx, reopenIdx + 2400);
   assert.ok(reopenSlice.includes("if(newDeadlineIso === null) return;"), "cancelling the deadline prompt must exit before any mutation happens");
 });
 
