@@ -112,9 +112,19 @@ test("CASE F (PIN save failure): the PIN input's value/state is never cleared on
 
 test("CASE G: renderAdminSetupReview's publish failure restores the round from a snapshot AND keeps the admin on the same screen", () => {
   const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
-  assert.ok(body.includes("const snapshot = JSON.parse(JSON.stringify(round));"), "must snapshot before mutating");
+  assert.ok(body.includes("const snapshot = JSON.parse(JSON.stringify(liveRound));"), "must snapshot before mutating");
   assert.ok(body.includes('errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";'));
   assert.ok(!body.includes("renderAdminSetupManual()"), "failure path must not navigate to a different screen");
+});
+
+test("QA fix (Blocker 2): every click re-fetches the round CURRENTLY living in meta.rounds by id, never reusing a stale reference across a failed retry", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  assert.ok(body.includes("const roundId = round.id;"), "must capture the id once, independent of the round object reference");
+  assert.ok(body.includes("const liveRound = meta.rounds.find(r => r.id === roundId);"), "must re-look-up the live object fresh on every click, not reuse a captured closure reference");
+  assert.ok(!body.includes("round.matches = clean;"), "must never mutate the original stale `round` parameter directly -- only the freshly re-fetched liveRound");
+  const failIdx = body.indexOf("} else {");
+  const failBody = body.slice(failIdx, failIdx + 400);
+  assert.ok(failBody.includes("meta.rounds = meta.rounds.map(r => r.id === roundId ? snapshot : r);"), "rollback must key off the stable roundId, not a stale object reference");
 });
 
 test("CASE G: renderAdminSetupManual's publish failure removes only the failed round, keeps typed content for retry", () => {
@@ -221,4 +231,112 @@ test("no forbidden onboarding-wizard UI patterns anywhere in the new setup code"
 test("the review screen keeps the word 'picks' as instructed, never substituting 'pronósticos'", () => {
   const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("mandar sus picks"));
+});
+
+// ---- Blocker 1 (QA fix): persisted exit signal from the invite screen ----
+
+test("CASE W: published round + admin left invite screen once -> app, never invite again, using ONLY existing data + the new persisted flag", () => {
+  const meta = { rounds: [round(1, true)], participants: [admin], settings: { adminLeftInviteScreen: true } };
+  assert.equal(runResolveSetupDestination(meta, admin), "app");
+});
+
+test("CASE X: shared invitation (flag set), nobody joined yet -> app, not invite", () => {
+  // Sharing sets the SAME flag as "Ver mi jornada" -- confirmed structurally below.
+  const meta = { rounds: [round(1, true)], participants: [admin], settings: { adminLeftInviteScreen: true } };
+  assert.equal(runResolveSetupDestination(meta, admin), "app");
+});
+
+test("CASE Y: admin had already left the invite screen in an earlier session -- a later session with the SAME persisted meta still resolves to app, not invite (proves this is NOT memory-only)", () => {
+  // Simulates a completely fresh page load: a brand new meta object read
+  // from Postgres, no relation at all to any earlier in-memory state.
+  const freshlyReadMeta = JSON.parse(JSON.stringify({ rounds: [round(1, true)], participants: [admin], settings: { adminLeftInviteScreen: true } }));
+  assert.equal(runResolveSetupDestination(freshlyReadMeta, admin), "app");
+});
+
+test("CASE Z: admin abandons BEFORE publishing -- the flag is irrelevant/absent, must still resolve review/manual correctly (never marks setup complete prematurely)", () => {
+  const metaNoRounds = { rounds: [], participants: [admin], settings: {} };
+  assert.equal(runResolveSetupDestination(metaNoRounds, admin), "manual");
+  const metaUnpublished = { rounds: [round(1, false)], participants: [admin], settings: {} };
+  assert.equal(runResolveSetupDestination(metaUnpublished, admin), "review");
+});
+
+test("without the flag and without other participants, a published round still correctly resolves to invite (the flag is additive, not a replacement for the existing signal)", () => {
+  const meta = { rounds: [round(1, true)], participants: [admin], settings: {} };
+  assert.equal(runResolveSetupDestination(meta, admin), "invite");
+});
+
+test("Blocker 1 fix: markLeftInviteScreen() persists via setMetaWithError (real server round-trip), not just an in-memory variable", () => {
+  const body = extractFunctionBody(indexSrc, "async function markLeftInviteScreen()");
+  assert.ok(body.includes("meta.settings.adminLeftInviteScreen = true;"));
+  assert.ok(body.includes("await setMetaWithError(meta);"), "must actually persist to the server, not just set a JS variable");
+});
+
+test("Blocker 1 fix: 'Ver mi jornada' awaits markLeftInviteScreen() before transitioning away", () => {
+  const idx = indexSrc.indexOf('document.getElementById("qz-setup-view-round").addEventListener("click"');
+  const body = indexSrc.slice(idx, idx + 300);
+  assert.ok(body.includes("await markLeftInviteScreen();"));
+});
+
+test("Blocker 1 fix: both the Web Share success path AND the clipboard fallback path call markLeftInviteScreen()", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupInvite()");
+  const shareHandlerIdx = body.indexOf('document.getElementById("qz-setup-share").addEventListener');
+  const shareHandlerEnd = body.indexOf('document.getElementById("qz-setup-add-participants")');
+  const shareHandlerBody = body.slice(shareHandlerIdx, shareHandlerEnd);
+  const occurrences = [...shareHandlerBody.matchAll(/markLeftInviteScreen\(\);/g)];
+  assert.equal(occurrences.length, 2, "both the navigator.share success branch and the clipboard fallback branch must mark the exit");
+});
+
+test("Blocker 1 fix: cancelling the native share sheet does NOT call markLeftInviteScreen() (the admin hasn't actually left/done anything yet)", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupInvite()");
+  const shareIdx = body.indexOf("if(navigator.share){");
+  const catchIdx = body.indexOf("catch(e){", shareIdx);
+  const catchBody = body.slice(catchIdx, body.indexOf("}", catchIdx) + 1);
+  assert.ok(!catchBody.includes("markLeftInviteScreen"), "a cancelled share sheet must not be treated as having left the screen");
+});
+
+// ---- Blocker 2 (QA fix): CASE AA/AB retry correctness ----
+
+test("CASE AA (structural): a second click after a failed publish targets the object CURRENTLY in meta.rounds, so a successful retry actually persists the retried edits, not the pre-edit snapshot", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  // The handler is defined once (addEventListener called once), and its
+  // body re-derives liveRound fresh on every invocation via roundId --
+  // confirmed by the absence of any mutation of the original `round` param.
+  const clickHandlerIdx = body.indexOf('cta.addEventListener("click"');
+  const handlerBody = body.slice(clickHandlerIdx);
+  assert.ok(handlerBody.includes("meta.rounds.find(r => r.id === roundId)"), "must look up by the stable id inside the click handler itself, not once outside it");
+});
+
+test("CASE AB (structural): the retry path never reconstructs match objects from scratch -- `clean` (built from the preserved local `matches` array, itself seeded via {...m} spread) is applied directly to liveRound, preserving any field neither teamA/teamB editing nor the filter touches", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  assert.ok(body.includes("const matches = round.matches.map(m => ({...m}));"), "the local editable copy must be a full spread of each original match, preserving external metadata fields");
+  assert.ok(body.includes("liveRound.matches = clean;"), "clean (filtered from that same preserved array) must be assigned directly, not rebuilt field-by-field");
+});
+
+// ---- Payment Penalty audit on the new deadline-mutation site ----
+
+test("Payment Penalty audit: renderAdminSetupReview calls reconcilePenaltyLedger(meta) before mutating liveRound.deadline, matching the exact invariant already used in Admin -> Jornadas -> Editar", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
+  const deadlineMutationIdx = body.indexOf("liveRound.deadline = new Date(deadlineVal).toISOString();");
+  assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx, "reconciliation must run before this new deadline-mutation site too, exactly like the existing Editar-jornada flow");
+});
+
+// ---- Bug found during my own E2E validation (not from the QA ticket, but
+// a real bug caught while testing FLOW 3): the very first, pre-PIN meta
+// fetch has no admin credential yet, so the backend correctly strips
+// published:false rounds from it (a non-admin visitor must never see
+// prepared-but-unpublished jornadas). Without an unconditional re-fetch
+// using the now-available admin credential, an imported-but-unpublished
+// round would be invisible and the admin would incorrectly land on
+// "Prepara tu primera jornada" (manual) instead of "Revisa tu primera
+// jornada" (review) for a round that genuinely already exists. ----
+
+test("renderAdminSetupResolve unconditionally re-fetches meta with the admin credential BEFORE checking rounds/resolving destination -- not only inside the sync-competition branch", () => {
+  const body = extractFunctionBody(indexSrc, "async function renderAdminSetupResolve()");
+  const firstFetchIdx = body.indexOf("const freshWithAuth = await getMeta({ owner: adminOrOwnerCred() });");
+  const leagueCheckIdx = body.indexOf("const leagueId = meta.settings");
+  const destIdx = body.indexOf("const dest = resolveSetupDestination(meta, currentUser);");
+  assert.ok(firstFetchIdx !== -1, "must unconditionally re-fetch meta with admin credentials at the top of this function");
+  assert.ok(firstFetchIdx < leagueCheckIdx, "the unconditional refresh must happen before the league/sync-competition branch, not only inside it");
+  assert.ok(firstFetchIdx < destIdx, "the unconditional refresh must happen before resolveSetupDestination reads meta.rounds");
 });

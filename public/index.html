@@ -2647,17 +2647,46 @@
   // back into first-time setup just because, say, they deleted a round.
   //   "manual"  -- no rounds exist at all yet.
   //   "review"  -- rounds exist (imported/prepared) but none published yet.
-  //   "invite"  -- a round has been published, but the admin is still the
-  //                only participant (no social activation yet).
-  //   "app"     -- normal app: a round is published AND at least one other
-  //                participant already exists.
+  //   "invite"  -- a round has been published, the admin is still the only
+  //                participant, AND the admin hasn't explicitly left this
+  //                screen before (see adminLeftInviteScreen below).
+  //   "app"     -- normal app.
+  //
+  // QA fix (Blocker 1): "invite" alone is genuinely ambiguous from data
+  // that's already there -- "published round + solo admin" is
+  // indistinguishable between "admin hasn't decided yet" and "admin
+  // already chose Ver mi jornada/compartió and moved on". A page-load-only
+  // JS flag can't answer this across a refresh/new tab/later session, so
+  // the ONE minimal persisted signal this needs is
+  // meta.settings.adminLeftInviteScreen -- set true the moment the admin
+  // takes ANY of the three invite-screen actions that count as "consciously
+  // done here" (compartir, ver mi jornada; "añadir participantes" doesn't
+  // need it separately since a real added participant already flips
+  // hasOtherParticipants on its own). This is a single boolean, not a step
+  // counter or state machine, and it's only ever meaningful while
+  // hasPublishedRound && !hasOtherParticipants is still true in the first
+  // place -- once real social activation happens, this flag becomes
+  // irrelevant on its own (the hasOtherParticipants branch already wins).
   function resolveSetupDestination(m, user){
     if(!user || !user.isAdmin) return "app";
     const rounds = m.rounds || [];
     const hasPublishedRound = rounds.some(r => r.published !== false);
     if(!hasPublishedRound) return rounds.length > 0 ? "review" : "manual";
     const hasOtherParticipants = (m.participants || []).length > 1;
-    return hasOtherParticipants ? "app" : "invite";
+    const leftInviteScreen = !!(m.settings && m.settings.adminLeftInviteScreen);
+    if(hasOtherParticipants || leftInviteScreen) return "app";
+    return "invite";
+  }
+  // Persists the exit signal above. Never blocks the UI action it's
+  // attached to on failure -- worst case the admin sees "Invita a tus
+  // amigos" again on a later visit, which is a minor repeat, not a broken
+  // state or a lost action (share already happened, or they're already
+  // looking at their round either way).
+  async function markLeftInviteScreen(){
+    if(!meta.settings) meta.settings = {};
+    if(meta.settings.adminLeftInviteScreen) return; // already persisted, no need to write again
+    meta.settings.adminLeftInviteScreen = true;
+    try{ await setMetaWithError(meta); }catch(e){ console.error("markLeftInviteScreen failed", e); }
   }
 
   // The 4-digit PIN as ONE real, focusable, always-numeric-keyboard input
@@ -2751,6 +2780,19 @@
   // never gets misread as "no rounds -> manual" -- the skeleton stays up
   // until the real outcome (imported rounds, or genuinely none) is known.
   async function renderAdminSetupResolve(){
+    // The very first page load (before the admin's PIN exists) has no
+    // admin/owner credential yet, so the backend correctly strips
+    // published:false rounds from that response -- a non-admin visitor
+    // should never see prepared-but-unpublished jornadas. That means the
+    // in-memory `meta` from that initial load can UNDER-represent what
+    // actually exists (an imported-but-unpublished round could be
+    // invisible here even though it's really there). Now that the PIN is
+    // saved and we have a real admin credential, always re-fetch with it
+    // before deciding review vs. manual -- otherwise a genuinely-imported
+    // round could be misread as "no rounds yet" and send the admin to the
+    // wrong (manual) screen.
+    const freshWithAuth = await getMeta({ owner: adminOrOwnerCred() });
+    if(freshWithAuth) meta = freshWithAuth;
     const leagueId = meta.settings && meta.settings.sportsdbLeagueId;
     if(leagueId && meta.rounds.length === 0){
       renderAdminSetupWaiting();
@@ -2855,6 +2897,7 @@
   }
 
   function renderAdminSetupReview(round){
+    const roundId = round.id;
     const matches = round.matches.map(m => ({...m}));
     root.innerHTML = setupRoundShellHtml({
       headline: "Revisa tu primera jornada",
@@ -2876,17 +2919,39 @@
       }
       cta.disabled = true;
       cta.textContent = "Publicando...";
-      const snapshot = JSON.parse(JSON.stringify(round));
-      round.matches = clean;
-      round.deadline = new Date(deadlineVal).toISOString();
-      round.published = true;
+      // QA fix: always re-locate the round CURRENTLY living in meta.rounds
+      // by id, on every single click -- never reuse a reference captured
+      // at the initial render. A failed save swaps that array slot for a
+      // freshly restored object; retrying against the OLD (now detached)
+      // object would silently apply the user's edits to nothing, while
+      // meta.rounds itself still held the untouched snapshot -- exactly
+      // the "UI shows changes, retry says success, server keeps the old
+      // version" bug QA found.
+      const liveRound = meta.rounds.find(r => r.id === roundId);
+      const snapshot = JSON.parse(JSON.stringify(liveRound));
+      // Payment-penalty persistence: matches the exact invariant already
+      // enforced in Admin -> Jornadas -> Editar -- reconcile BEFORE any
+      // deadline mutation, in case this round's original (imported)
+      // deadline had already passed by the time the admin reaches this
+      // screen. In the common case meta.paymentPenalty doesn't exist yet
+      // for a brand-new quiniela (this call is then a documented no-op —
+      // see reconcilePenaltyLedger's own top-level guard), but this
+      // screen doesn't structurally forbid Payment Penalty already being
+      // configured, so the call is kept rather than assumed unnecessary.
+      reconcilePenaltyLedger(meta);
+      liveRound.matches = clean;
+      liveRound.deadline = new Date(deadlineVal).toISOString();
+      liveRound.published = true;
       const result = await setMetaWithError(meta);
       if(result.ok){
         trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
         renderAdminSetupInvite();
       } else {
-        meta.rounds = meta.rounds.map(r => r.id === round.id ? snapshot : r);
-        round.matches = snapshot.matches; round.deadline = snapshot.deadline; round.published = snapshot.published;
+        meta.rounds = meta.rounds.map(r => r.id === roundId ? snapshot : r);
+        // No longer touching `round`/`liveRound` here at all -- the next
+        // click re-fetches whatever object now lives in meta.rounds by id
+        // (the freshly restored snapshot), so there's nothing stale left
+        // for a subsequent retry to accidentally mutate.
         errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
         errorEl.style.display = "block";
         cta.disabled = false;
@@ -2963,6 +3028,7 @@
         try{
           await navigator.share({ text });
           markSharedInvite(SLUG);
+          markLeftInviteScreen();
           trackEvent("invite_shared", { source: "setup_web_share" });
           feedback.textContent = "✓ Invitación compartida";
         }catch(e){
@@ -2974,6 +3040,7 @@
       try{
         await navigator.clipboard.writeText(text);
         markSharedInvite(SLUG);
+        markLeftInviteScreen();
         trackEvent("invite_shared", { source: "setup_copy_fallback" });
         feedback.textContent = "✓ Invitación copiada";
       }catch(e){
@@ -3004,8 +3071,9 @@
         feedback.textContent = humanizeError(result.error);
       }
     });
-    document.getElementById("qz-setup-view-round").addEventListener("click", () => {
+    document.getElementById("qz-setup-view-round").addEventListener("click", async () => {
       setupContinuityResolved = true;
+      await markLeftInviteScreen();
       activeTab = "jornada";
       render();
     });
