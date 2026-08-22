@@ -2863,22 +2863,17 @@
       if(usableRound){
         renderAdminSetupReview(usableRound);
       } else {
-        // Every prepared (published:false) round that exists is already
-        // expired -- never hand the admin a round that would publish
-        // already-closed. Reuse the earliest-numbered one's real imported
-        // matches as the starting point (never discard/duplicate imported
-        // data) but leave the deadline field blank instead of pre-filling
-        // the expired one, forcing the admin to actively choose a real
-        // future date before they can publish -- the same submit-time
-        // isSetupDeadlineValid() check that protects the manual path
-        // protects this one too.
-        const preparedRounds = meta.rounds.filter(r => r.published === false);
-        if(preparedRounds.length > 0){
-          const earliestExpired = preparedRounds.slice().sort((a, b) => a.number - b.number)[0];
-          renderAdminSetupReview(earliestExpired, { forceBlankDeadline: true });
-        } else {
-          renderAdminSetupManual();
-        }
+        // QA fix: every prepared (published:false) round that exists is
+        // already expired -- do NOT reuse any of them as the setup's next
+        // best action. Their matches already happened (or their deadline
+        // simply can't be trusted); giving them a fresh future deadline
+        // and letting the admin publish would let participants submit
+        // picks on games that are already over. They stay completely
+        // untouched -- not modified, not deleted, not hidden from
+        // Admin -> Jornadas -- this only changes what the SETUP itself
+        // offers next. The safe fallback is always a brand-new manual
+        // round.
+        renderAdminSetupManual({ noneUsablePrepared: meta.rounds.length > 0 });
       }
     } else if(dest === "manual"){
       renderAdminSetupManual();
@@ -2972,15 +2967,20 @@
     });
   }
 
-  function renderAdminSetupReview(round, opts){
-    const forceBlankDeadline = !!(opts && opts.forceBlankDeadline);
+  // QA fix: no longer accepts a forceBlankDeadline option -- this screen
+  // is now ONLY ever shown for a round pickSetupRound() already confirmed
+  // is genuinely usable (published:false + real future deadline), so its
+  // own deadline is always safe to pre-fill as-is. Reusing an EXPIRED
+  // round here (with a blanked deadline, forcing a new one) was the exact
+  // pattern this fix removes -- see renderAdminSetupResolve.
+  function renderAdminSetupReview(round){
     const roundId = round.id;
     const matches = round.matches.map(m => ({...m}));
     root.innerHTML = setupRoundShellHtml({
       headline: "Revisa tu primera jornada",
       supporting: "Revisa los partidos y hasta cuándo pueden mandar sus picks.",
       matchesHtml: matches.map(setupMatchRowHtml).join(""),
-      deadlineValue: forceBlankDeadline ? "" : toLocalInputValue(round.deadline),
+      deadlineValue: toLocalInputValue(round.deadline),
       ctaLabel: "Publicar jornada",
     });
     wireSetupMatchRows(matches);
@@ -3047,11 +3047,18 @@
     });
   }
 
-  function renderAdminSetupManual(){
+  // QA fix: accepts an optional context flag so the copy can correctly
+  // distinguish "you've never had a round at all" from "everything
+  // prepared was already expired, so we're not reusing any of it" --
+  // per the approved product copy for the latter case.
+  function renderAdminSetupManual(opts){
+    const noneUsablePrepared = !!(opts && opts.noneUsablePrepared);
     const matches = [blankMatch(), blankMatch()];
     root.innerHTML = setupRoundShellHtml({
       headline: "Prepara tu primera jornada",
-      supporting: "Agrega los partidos que van a jugar.",
+      supporting: noneUsablePrepared
+        ? "No encontramos una jornada próxima para publicar. Agrega los partidos que quieras jugar."
+        : "Agrega los partidos que van a jugar.",
       matchesHtml: matches.map(setupMatchRowHtml).join(""),
       deadlineValue: "",
       ctaLabel: "Publicar jornada",
@@ -3075,7 +3082,13 @@
       cta.disabled = true;
       cta.textContent = "Publicando...";
       const isFirstRoundEver = meta.rounds.length === 0;
-      const round = { id: uid("r"), number: 1, matches: clean, deadline: new Date(deadlineVal).toISOString(), results: {}, resultsPublished: false, published: true };
+      // QA fix: never assume number:1 -- this screen can now be reached
+      // with existing (expired-but-preserved) imported rounds already in
+      // meta.rounds. Same next-round-number rule already used by the real
+      // Admin -> Jornadas round creator, so this can never collide with
+      // an existing round.number.
+      const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r => r.number)) + 1 : 1;
+      const round = { id: uid("r"), number: nextNumber, matches: clean, deadline: new Date(deadlineVal).toISOString(), results: {}, resultsPublished: false, published: true };
       meta.rounds.push(round);
       const result = await setMetaWithError(meta);
       if(result.ok){

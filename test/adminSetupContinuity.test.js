@@ -116,14 +116,14 @@ test("CASE F (PIN save failure): the PIN input's value/state is never cleared on
 });
 
 test("CASE G: renderAdminSetupReview's publish failure restores the round from a snapshot AND keeps the admin on the same screen", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("const snapshot = JSON.parse(JSON.stringify(liveRound));"), "must snapshot before mutating");
   assert.ok(body.includes('errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";'));
   assert.ok(!body.includes("renderAdminSetupManual()"), "failure path must not navigate to a different screen");
 });
 
 test("QA fix (Blocker 2): every click re-fetches the round CURRENTLY living in meta.rounds by id, never reusing a stale reference across a failed retry", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("const roundId = round.id;"), "must capture the id once, independent of the round object reference");
   assert.ok(body.includes("const liveRound = meta.rounds.find(r => r.id === roundId);"), "must re-look-up the live object fresh on every click, not reuse a captured closure reference");
   assert.ok(!body.includes("round.matches = clean;"), "must never mutate the original stale `round` parameter directly -- only the freshly re-fetched liveRound");
@@ -133,7 +133,7 @@ test("QA fix (Blocker 2): every click re-fetches the round CURRENTLY living in m
 });
 
 test("CASE G: renderAdminSetupManual's publish failure removes only the failed round, keeps typed content for retry", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual()");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
   assert.ok(body.includes("meta.rounds = meta.rounds.filter(r => r.id !== round.id);"), "must roll back the optimistic push on failure");
   assert.ok(body.includes('errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";'));
 });
@@ -189,8 +189,8 @@ test("no persisted onboardingStep or progress-bar pattern is introduced anywhere
     "function resolveSetupDestination(m, user)",
     "async function renderAdminSetupPin()",
     "async function renderAdminSetupResolve()",
-    "function renderAdminSetupReview(round, opts)",
-    "function renderAdminSetupManual()",
+    "function renderAdminSetupReview(round)",
+    "function renderAdminSetupManual(opts)",
     "function renderAdminSetupInvite()",
   ];
   fns.forEach(sig => {
@@ -203,7 +203,7 @@ test("no persisted onboardingStep or progress-bar pattern is introduced anywhere
 test("the 3-minute headline appears on the PIN screen and is not repeated on review/manual/invite", () => {
   const pinBody = extractFunctionBody(indexSrc, "async function renderAdminSetupPin()");
   assert.ok(pinBody.includes("Configura tu quiniela en 3 minutos"));
-  ["function renderAdminSetupReview(round, opts)", "function renderAdminSetupManual()", "function renderAdminSetupInvite()"].forEach(sig => {
+  ["function renderAdminSetupReview(round)", "function renderAdminSetupManual(opts)", "function renderAdminSetupInvite()"].forEach(sig => {
     const body = extractFunctionBody(indexSrc, sig);
     assert.ok(!body.includes("Configura tu quiniela en 3 minutos"), `${sig} must not repeat the headline`);
   });
@@ -220,8 +220,8 @@ test("no forbidden onboarding-wizard UI patterns anywhere in the new setup code"
   const fns = [
     "async function renderAdminSetupPin()",
     "function renderAdminSetupWaiting()",
-    "function renderAdminSetupReview(round, opts)",
-    "function renderAdminSetupManual()",
+    "function renderAdminSetupReview(round)",
+    "function renderAdminSetupManual(opts)",
     "function renderAdminSetupInvite()",
   ];
   fns.forEach(sig => {
@@ -234,7 +234,7 @@ test("no forbidden onboarding-wizard UI patterns anywhere in the new setup code"
 });
 
 test("the review screen keeps the word 'picks' as instructed, never substituting 'pronósticos'", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("mandar sus picks"));
 });
 
@@ -302,7 +302,7 @@ test("Blocker 1 fix: cancelling the native share sheet does NOT call markLeftInv
 // ---- Blocker 2 (QA fix): CASE AA/AB retry correctness ----
 
 test("CASE AA (structural): a second click after a failed publish targets the object CURRENTLY in meta.rounds, so a successful retry actually persists the retried edits, not the pre-edit snapshot", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   // The handler is defined once (addEventListener called once), and its
   // body re-derives liveRound fresh on every invocation via roundId --
   // confirmed by the absence of any mutation of the original `round` param.
@@ -312,7 +312,7 @@ test("CASE AA (structural): a second click after a failed publish targets the ob
 });
 
 test("CASE AB (structural): the retry path never reconstructs match objects from scratch -- `clean` (built from the preserved local `matches` array, itself seeded via {...m} spread) is applied directly to liveRound, preserving any field neither teamA/teamB editing nor the filter touches", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("const matches = round.matches.map(m => ({...m}));"), "the local editable copy must be a full spread of each original match, preserving external metadata fields");
   assert.ok(body.includes("liveRound.matches = clean;"), "clean (filtered from that same preserved array) must be assigned directly, not rebuilt field-by-field");
 });
@@ -320,7 +320,7 @@ test("CASE AB (structural): the retry path never reconstructs match objects from
 // ---- Payment Penalty audit on the new deadline-mutation site ----
 
 test("Payment Penalty audit: renderAdminSetupReview calls reconcilePenaltyLedger(meta) before mutating liveRound.deadline, matching the exact invariant already used in Admin -> Jornadas -> Editar", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const deadlineMutationIdx = body.indexOf("liveRound.deadline = new Date(deadlineVal).toISOString();");
   assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx, "reconciliation must run before this new deadline-mutation site too, exactly like the existing Editar-jornada flow");
@@ -456,34 +456,55 @@ test("renderAdminSetupResolve uses pickSetupRound(meta.rounds, serverNow()) inst
   assert.ok(!body.includes('meta.rounds.find(r => r.published === false) || meta.rounds[0]'), "the old naive selection must be gone");
 });
 
-test("CASE F fallback: when no round is usable but prepared rounds exist, renderAdminSetupResolve reuses the earliest-numbered one via renderAdminSetupReview with forceBlankDeadline, never renderAdminSetupManual (never discards imported match data)", () => {
+// ---- QA final fix: expired prepared rounds are NEVER reused as the setup's next round ----
+
+test("CASE AD: when no round is usable (all prepared rounds are expired), renderAdminSetupResolve goes DIRECTLY to renderAdminSetupManual -- never reuses/repurposes any expired round's matches or deadline", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminSetupResolve()");
   const elseIdx = body.indexOf("} else {", body.indexOf("if(usableRound){"));
-  const fallbackBody = body.slice(elseIdx, elseIdx + 1300);
-  assert.ok(fallbackBody.includes("preparedRounds.slice().sort((a, b) => a.number - b.number)[0]"));
-  assert.ok(fallbackBody.includes("renderAdminSetupReview(earliestExpired, { forceBlankDeadline: true });"));
+  const fallbackBody = body.slice(elseIdx, elseIdx + 800);
+  assert.ok(fallbackBody.includes("renderAdminSetupManual({ noneUsablePrepared: meta.rounds.length > 0 });"), "must go straight to the manual builder, passing context for the copy only");
+  assert.ok(!fallbackBody.includes("earliestExpired"), "must never select/reuse any specific expired round object");
+  assert.ok(!fallbackBody.includes("forceBlankDeadline"), "the forceBlankDeadline reuse path must be fully removed, not just unused");
 });
 
-test("CASE F fallback: only falls through to renderAdminSetupManual() (a brand-new empty round) when there are NO prepared rounds at all -- never when there are expired-but-real ones", () => {
-  const body = extractFunctionBody(indexSrc, "async function renderAdminSetupResolve()");
-  const elseIdx = body.indexOf("} else {", body.indexOf("if(usableRound){"));
-  const fallbackBody = body.slice(elseIdx, elseIdx + 1300);
-  const innerElseIdx = fallbackBody.indexOf("} else {", fallbackBody.indexOf("if(preparedRounds.length > 0){"));
-  const innerElseBody = fallbackBody.slice(innerElseIdx, innerElseIdx + 100);
-  assert.ok(innerElseBody.includes("renderAdminSetupManual();"));
+test("renderAdminSetupReview no longer accepts or references any blank-deadline override -- it is only ever shown for a round pickSetupRound() already confirmed is genuinely usable", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  assert.ok(!body.includes("forceBlankDeadline"));
+  assert.ok(body.includes('deadlineValue: toLocalInputValue(round.deadline),'), "must always pre-fill the round's own (already-confirmed-future) deadline directly");
 });
 
-// ---- forceBlankDeadline never pre-fills an expired deadline ----
+test("CASE AE copy: renderAdminSetupManual shows the approved fallback copy when reached because nothing prepared was usable, and the ORIGINAL copy for a genuinely first-ever round -- never mentions provider/API/sync", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes('"No encontramos una jornada próxima para publicar. Agrega los partidos que quieras jugar."'));
+  assert.ok(body.includes('"Agrega los partidos que van a jugar."'), "the original first-time copy must still be used when noneUsablePrepared is false");
+  assert.ok(!/provider|sportsdb|sync-competition|reliabilityState/i.test(body), "must never mention the technical provider/sync integration to the admin");
+});
 
-test("renderAdminSetupReview(round, {forceBlankDeadline:true}) renders an EMPTY deadline field, never the round's own (expired) deadline", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
-  assert.ok(body.includes('deadlineValue: forceBlankDeadline ? "" : toLocalInputValue(round.deadline),'));
+test("CASE AG/AH: renderAdminSetupManual never touches meta.rounds' EXISTING entries -- it only ever pushes a brand-new round object, the expired imported ones are never modified/removed", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes("meta.rounds.push(round);"));
+  const beforePush = body.slice(0, body.indexOf("meta.rounds.push(round);"));
+  assert.ok(!/meta\.rounds\s*=\s*meta\.rounds\.filter/.test(beforePush), "no filtering/removal of existing rounds before the push");
+  // meta.rounds.map(r => r.number) (read-only, just to compute nextNumber)
+  // is fine and expected -- what must NOT happen is any WRITE to an
+  // existing round's own fields (matches/deadline/published) before the
+  // new round is pushed.
+  assert.ok(!/\.deadline\s*=|\.matches\s*=|\.published\s*=/.test(beforePush.replace("const round = { id: uid(\"r\")", "")), "no existing round's fields may be reassigned before the new round is created");
+});
+
+// ---- Round numbering fix: never assume number:1 when rounds already exist ----
+
+test("QA fix: renderAdminSetupManual computes the real next round.number (matching Admin -> Jornadas' own rule), never hardcodes 1", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes("const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r => r.number)) + 1 : 1;"));
+  assert.ok(body.includes("number: nextNumber,"));
+  assert.ok(!body.includes("number: 1,"), "the old hardcoded number:1 must be gone");
 });
 
 // ---- Submit-time validation wired into BOTH screens, never relying on `min` alone ----
 
 test("CASE G: renderAdminSetupReview's submit handler validates isSetupDeadlineValid against serverNow() at click time, before persisting anything", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   const clickIdx = body.indexOf('cta.addEventListener("click"');
   const validateIdx = body.indexOf("isSetupDeadlineValid(deadlineVal, serverNow())", clickIdx);
   const mutateIdx = body.indexOf("liveRound.matches = clean;", clickIdx);
@@ -491,7 +512,7 @@ test("CASE G: renderAdminSetupReview's submit handler validates isSetupDeadlineV
 });
 
 test("CASE A/B (manual side): renderAdminSetupManual's submit handler has the same isSetupDeadlineValid check before persisting", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual()");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
   const clickIdx = body.indexOf('cta.addEventListener("click"');
   const validateIdx = body.indexOf("isSetupDeadlineValid(deadlineVal, serverNow())", clickIdx);
   const pushIdx = body.indexOf("meta.rounds.push(round);", clickIdx);
@@ -500,8 +521,8 @@ test("CASE A/B (manual side): renderAdminSetupManual's submit handler has the sa
 
 test("the inline error copy is exactly 'Elige una fecha y hora a partir de ahora.' in both screens, and nothing gets cleared alongside it (no reset of matches/deadline input)", () => {
   [
-    "function renderAdminSetupReview(round, opts)",
-    "function renderAdminSetupManual()",
+    "function renderAdminSetupReview(round)",
+    "function renderAdminSetupManual(opts)",
   ].forEach(sig => {
     const body = extractFunctionBody(indexSrc, sig);
     const msgIdx = body.indexOf('errorEl.textContent = "Elige una fecha y hora a partir de ahora.";');
@@ -540,8 +561,50 @@ test("CASE L: pickSetupRound/isRoundUsableForSetup are pure read-only functions 
 });
 
 test("CASE M: reconcilePenaltyLedger(meta) is still called before liveRound.deadline mutation in renderAdminSetupReview, unaffected by the round-selection change", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round, opts)");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const deadlineMutationIdx = body.indexOf("liveRound.deadline = new Date(deadlineVal).toISOString();");
   assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx);
+});
+
+// ---- CASE AC: still PASS -- at least one genuinely future prepared round is selected normally ----
+
+test("CASE AC: J1/J2 expired, J3 future -- pickSetupRound still selects J3 (unaffected by this QA fix)", () => {
+  const rounds = [
+    roundFull(1, false, "2026-08-01T00:00:00.000Z"),
+    roundFull(2, false, "2026-08-05T00:00:00.000Z"),
+    roundFull(3, false, "2099-01-01T00:00:00.000Z"),
+  ];
+  const picked = runPickSetupRound(rounds, NOW);
+  assert.equal(picked.number, 3);
+});
+
+// ---- CASE AD: all prepared rounds expired -> pickSetupRound returns null, and NONE of them are ever reused ----
+
+test("CASE AD: J1/J2/J3 all expired -> pickSetupRound returns null (nothing usable)", () => {
+  const rounds = [
+    roundFull(1, false, "2026-08-01T00:00:00.000Z"),
+    roundFull(2, false, "2026-08-05T00:00:00.000Z"),
+    roundFull(3, false, "2026-08-10T00:00:00.000Z"),
+  ];
+  assert.equal(runPickSetupRound(rounds, NOW), null);
+});
+
+// ---- CASE AE: invalid/null deadlines never crash, never selected ----
+
+test("CASE AE: a round with an invalid deadline string and one with a null deadline are both excluded, no crash", () => {
+  const rounds = [
+    { id: "r1", number: 1, published: false, deadline: "not-a-real-date", matches: [] },
+    { id: "r2", number: 2, published: false, deadline: null, matches: [] },
+  ];
+  assert.doesNotThrow(() => runPickSetupRound(rounds, NOW));
+  assert.equal(runPickSetupRound(rounds, NOW), null);
+});
+
+// ---- CASE AF (structural): after the manual fallback publishes, setup proceeds to Invitar exactly like the normal manual path ----
+
+test("CASE AF: renderAdminSetupManual's success path is identical regardless of noneUsablePrepared -- same setMetaWithError + renderAdminSetupInvite() transition", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes("await setMetaWithError(meta);"));
+  assert.ok(body.includes("renderAdminSetupInvite();"));
 });
