@@ -4406,6 +4406,22 @@
       if(!draft.deadline){ toast("Selecciona la fecha y hora límite"); return; }
 
       if(editingRound){
+        const saveBtn = document.getElementById("qz-publish-round");
+        // Deep snapshot of the ENTIRE round object -- not just matches/
+        // deadline. Whatever other fields it carries (published, provider,
+        // externalRoundId, results, resultsPublished, customBetResults,
+        // kickoffAt/externalEventId on individual matches, etc.) must all
+        // come back exactly as they were if the save fails. A shallow
+        // matches+deadline-only rollback would silently lose any of that.
+        const roundSnapshot = JSON.parse(JSON.stringify(editingRound));
+        // reconcilePenaltyLedger() (payment-penalty persistence) can mutate
+        // MULTIPLE participants' permanent ledgers before the deadline
+        // moves -- a full rollback on failure needs the whole participants
+        // array too, so the round-edit + its related reconciliation is
+        // atomic from the admin's point of view: either both persist, or
+        // neither does.
+        const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
+        saveBtn.disabled = true;
         // Payment-penalty persistence (P1, QA-corrected): editing a round's
         // deadline could move it back into the future, exactly the kind of
         // non-monotonic change that must never retroactively erase an
@@ -4413,14 +4429,24 @@
         reconcilePenaltyLedger(meta);
         editingRound.matches = clean;
         editingRound.deadline = new Date(draft.deadline).toISOString();
-        const ok = await setMeta(meta);
-        if(ok){
+        const result = await setMetaWithError(meta);
+        if(result.ok){
           toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");
           renderAdminRondas._editingId = null;
           renderAdminRondas._draft = null;
           renderAdmin(document.getElementById("qz-main"));
         } else {
-          toast("No se pudo guardar, intenta otra vez");
+          // Full rollback: the round goes back to its exact pre-edit
+          // snapshot (every field, not just matches/deadline), and the
+          // participants array goes back too (undoing whatever
+          // reconciliation just did) -- never a partial revert.
+          meta.rounds = meta.rounds.map(r => r.id === editingRound.id ? roundSnapshot : r);
+          meta.participants = participantsSnapshot;
+          // Force the form to rebuild from the restored round on the next
+          // render, instead of showing the failed edit as if it had stuck.
+          renderAdminRondas._draft = null;
+          toast(humanizeError(result.error));
+          renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
         }
         return;
       }
