@@ -12,7 +12,12 @@ const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.htm
 function extractFunctionBody(source, signature) {
   const start = source.indexOf(signature);
   assert.ok(start !== -1, `could not locate "${signature}"`);
-  const braceStart = source.indexOf("{", start);
+  // If the signature itself already ends at the body-opening brace (e.g.
+  // a destructured-parameter function like "function f({ a, b }){"), use
+  // THAT exact brace -- otherwise source.indexOf("{", start) would find
+  // the destructuring pattern's own opening brace first and mis-count
+  // depth from there instead of from the real function body.
+  const braceStart = signature.trimEnd().endsWith("{") ? start + signature.length - 1 : source.indexOf("{", start);
   let depth = 0, i = braceStart;
   for (; i < source.length; i++) {
     if (source[i] === "{") depth++;
@@ -128,7 +133,7 @@ test("QA fix (Blocker 2): every click re-fetches the round CURRENTLY living in m
 });
 
 test("CASE G: renderAdminSetupManual's publish failure removes only the failed round, keeps typed content for retry", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual()");
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
   assert.ok(body.includes("meta.rounds = meta.rounds.filter(r => r.id !== round.id);"), "must roll back the optimistic push on failure");
   assert.ok(body.includes('errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";'));
 });
@@ -185,7 +190,7 @@ test("no persisted onboardingStep or progress-bar pattern is introduced anywhere
     "async function renderAdminSetupPin()",
     "async function renderAdminSetupResolve()",
     "function renderAdminSetupReview(round)",
-    "function renderAdminSetupManual()",
+    "function renderAdminSetupManual(opts)",
     "function renderAdminSetupInvite()",
   ];
   fns.forEach(sig => {
@@ -198,7 +203,7 @@ test("no persisted onboardingStep or progress-bar pattern is introduced anywhere
 test("the 3-minute headline appears on the PIN screen and is not repeated on review/manual/invite", () => {
   const pinBody = extractFunctionBody(indexSrc, "async function renderAdminSetupPin()");
   assert.ok(pinBody.includes("Configura tu quiniela en 3 minutos"));
-  ["function renderAdminSetupReview(round)", "function renderAdminSetupManual()", "function renderAdminSetupInvite()"].forEach(sig => {
+  ["function renderAdminSetupReview(round)", "function renderAdminSetupManual(opts)", "function renderAdminSetupInvite()"].forEach(sig => {
     const body = extractFunctionBody(indexSrc, sig);
     assert.ok(!body.includes("Configura tu quiniela en 3 minutos"), `${sig} must not repeat the headline`);
   });
@@ -216,7 +221,7 @@ test("no forbidden onboarding-wizard UI patterns anywhere in the new setup code"
     "async function renderAdminSetupPin()",
     "function renderAdminSetupWaiting()",
     "function renderAdminSetupReview(round)",
-    "function renderAdminSetupManual()",
+    "function renderAdminSetupManual(opts)",
     "function renderAdminSetupInvite()",
   ];
   fns.forEach(sig => {
@@ -339,4 +344,267 @@ test("renderAdminSetupResolve unconditionally re-fetches meta with the admin cre
   assert.ok(firstFetchIdx !== -1, "must unconditionally re-fetch meta with admin credentials at the top of this function");
   assert.ok(firstFetchIdx < leagueCheckIdx, "the unconditional refresh must happen before the league/sync-competition branch, not only inside it");
   assert.ok(firstFetchIdx < destIdx, "the unconditional refresh must happen before resolveSetupDestination reads meta.rounds");
+});
+
+// ---- P1 fixes: deadline-in-the-past validation + usable-round selection ----
+
+function runIsSetupDeadlineValid(deadlineInputValue, nowMs){
+  const body = extractFunctionBody(indexSrc, "function isSetupDeadlineValid(deadlineInputValue, nowMs)");
+  const fn = new Function(`return function isSetupDeadlineValid(deadlineInputValue, nowMs)${body.slice(body.indexOf("{"))}`)();
+  return fn(deadlineInputValue, nowMs);
+}
+function runIsRoundUsableForSetup(r, nowMs){
+  const body = extractFunctionBody(indexSrc, "function isRoundUsableForSetup(round, nowMs)");
+  const fn = new Function(`return function isRoundUsableForSetup(round, nowMs)${body.slice(body.indexOf("{"))}`)();
+  return fn(r, nowMs);
+}
+function runPickSetupRound(rounds, nowMs){
+  const usableBody = extractFunctionBody(indexSrc, "function isRoundUsableForSetup(round, nowMs)");
+  const pickBody = extractFunctionBody(indexSrc, "function pickSetupRound(rounds, nowMs)");
+  const fn = new Function(`
+    function isRoundUsableForSetup(round, nowMs)${usableBody.slice(usableBody.indexOf("{"))}
+    return function pickSetupRound(rounds, nowMs)${pickBody.slice(pickBody.indexOf("{"))};
+  `)();
+  return fn(rounds, nowMs);
+}
+
+const NOW = new Date("2026-08-22T15:00:00.000Z").getTime();
+function roundFull(number, published, deadlineIso){ return { id: "r"+number, number, published, deadline: deadlineIso, matches: [{id:"m"+number, teamA:"A", teamB:"B"}] }; }
+
+// ---- CASE A/B/C: deadline-in-the-past validation ----
+
+test("CASE A: a datetime-local value from yesterday is rejected", () => {
+  const yesterday = new Date(NOW - 24*3600*1000);
+  const pad = n => String(n).padStart(2,"0");
+  const val = `${yesterday.getUTCFullYear()}-${pad(yesterday.getUTCMonth()+1)}-${pad(yesterday.getUTCDate())}T${pad(yesterday.getUTCHours())}:${pad(yesterday.getUTCMinutes())}`;
+  assert.equal(runIsSetupDeadlineValid(val, NOW), false);
+});
+
+test("CASE B: today but an hour that already passed is rejected", () => {
+  // NOW is 15:00 UTC -- 14:00 same day must be rejected.
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", new Date("2026-08-22T14:00:00.000Z").getTime() + 1), false);
+});
+
+test("CASE C: a genuinely future datetime is accepted", () => {
+  assert.equal(runIsSetupDeadlineValid("2099-01-01T18:00", NOW), true);
+});
+
+test("empty/blank deadline is rejected, not treated as valid", () => {
+  assert.equal(runIsSetupDeadlineValid("", NOW), false);
+  assert.equal(runIsSetupDeadlineValid(null, NOW), false);
+});
+
+test("CASE H (deadline validation side): an unparseable deadline string is rejected, never crashes, never treated as valid", () => {
+  assert.equal(runIsSetupDeadlineValid("not-a-date", NOW), false);
+});
+
+// ---- CASE D/E: usable round selection ----
+
+test("CASE D: J1/J2 expired, J3 future, all published:false -> setup picks J3", () => {
+  const rounds = [
+    roundFull(1, false, "2026-08-20T00:00:00.000Z"),
+    roundFull(2, false, "2026-08-21T00:00:00.000Z"),
+    roundFull(3, false, "2099-01-01T00:00:00.000Z"),
+  ];
+  const picked = runPickSetupRound(rounds, NOW);
+  assert.equal(picked.number, 3);
+});
+
+test("CASE E: multiple future rounds -> picks the lowest round.number (documented as the real chronological order QRACKS uses everywhere else)", () => {
+  const rounds = [
+    roundFull(5, false, "2099-03-01T00:00:00.000Z"),
+    roundFull(3, false, "2099-01-01T00:00:00.000Z"),
+    roundFull(4, false, "2099-02-01T00:00:00.000Z"),
+  ];
+  const picked = runPickSetupRound(rounds, NOW);
+  assert.equal(picked.number, 3, "must pick by round.number ascending, not array order or deadline order");
+});
+
+test("CASE F: every prepared round is expired -> pickSetupRound returns null (no usable round to auto-select)", () => {
+  const rounds = [
+    roundFull(1, false, "2026-08-20T00:00:00.000Z"),
+    roundFull(2, false, "2026-08-21T00:00:00.000Z"),
+  ];
+  assert.equal(runPickSetupRound(rounds, NOW), null);
+});
+
+test("CASE H (round side): a round with a null/missing deadline is never treated as usable/future", () => {
+  const r = { id: "r1", number: 1, published: false, deadline: null, matches: [] };
+  assert.equal(runIsRoundUsableForSetup(r, NOW), false);
+});
+
+test("CASE H (round side): a round with an unparseable deadline string is never treated as usable, never crashes", () => {
+  const r = { id: "r1", number: 1, published: false, deadline: "garbage", matches: [] };
+  assert.equal(runIsRoundUsableForSetup(r, NOW), false);
+});
+
+test("CASE J: a legacy round (published undefined) is never selected as a 'usable prepared' round -- it's already-published history, not prepared", () => {
+  const r = { id: "r1", number: 1, deadline: "2099-01-01T00:00:00.000Z", matches: [] }; // no `published` field at all
+  assert.equal(runIsRoundUsableForSetup(r, NOW), false);
+});
+
+test("a round already published:true is never selected by pickSetupRound either", () => {
+  const rounds = [roundFull(1, true, "2099-01-01T00:00:00.000Z")];
+  assert.equal(runPickSetupRound(rounds, NOW), null);
+});
+
+// ---- Structural: renderAdminSetupResolve uses pickSetupRound, and falls back correctly when nothing is usable ----
+
+test("renderAdminSetupResolve uses pickSetupRound(meta.rounds, serverNow()) instead of blindly taking the first published:false round", () => {
+  const body = extractFunctionBody(indexSrc, "async function renderAdminSetupResolve()");
+  assert.ok(body.includes("const usableRound = pickSetupRound(meta.rounds, now);"));
+  assert.ok(!body.includes('meta.rounds.find(r => r.published === false) || meta.rounds[0]'), "the old naive selection must be gone");
+});
+
+// ---- QA final fix: expired prepared rounds are NEVER reused as the setup's next round ----
+
+test("CASE AD: when no round is usable (all prepared rounds are expired), renderAdminSetupResolve goes DIRECTLY to renderAdminSetupManual -- never reuses/repurposes any expired round's matches or deadline", () => {
+  const body = extractFunctionBody(indexSrc, "async function renderAdminSetupResolve()");
+  const elseIdx = body.indexOf("} else {", body.indexOf("if(usableRound){"));
+  const fallbackBody = body.slice(elseIdx, elseIdx + 800);
+  assert.ok(fallbackBody.includes("renderAdminSetupManual({ noneUsablePrepared: meta.rounds.length > 0 });"), "must go straight to the manual builder, passing context for the copy only");
+  assert.ok(!fallbackBody.includes("earliestExpired"), "must never select/reuse any specific expired round object");
+  assert.ok(!fallbackBody.includes("forceBlankDeadline"), "the forceBlankDeadline reuse path must be fully removed, not just unused");
+});
+
+test("renderAdminSetupReview no longer accepts or references any blank-deadline override -- it is only ever shown for a round pickSetupRound() already confirmed is genuinely usable", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  assert.ok(!body.includes("forceBlankDeadline"));
+  assert.ok(body.includes('deadlineValue: toLocalInputValue(round.deadline),'), "must always pre-fill the round's own (already-confirmed-future) deadline directly");
+});
+
+test("CASE AE copy: renderAdminSetupManual shows the approved fallback copy when reached because nothing prepared was usable, and the ORIGINAL copy for a genuinely first-ever round -- never mentions provider/API/sync", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes('"No encontramos una jornada próxima para publicar. Agrega los partidos que quieras jugar."'));
+  assert.ok(body.includes('"Agrega los partidos que van a jugar."'), "the original first-time copy must still be used when noneUsablePrepared is false");
+  assert.ok(!/provider|sportsdb|sync-competition|reliabilityState/i.test(body), "must never mention the technical provider/sync integration to the admin");
+});
+
+test("CASE AG/AH: renderAdminSetupManual never touches meta.rounds' EXISTING entries -- it only ever pushes a brand-new round object, the expired imported ones are never modified/removed", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes("meta.rounds.push(round);"));
+  const beforePush = body.slice(0, body.indexOf("meta.rounds.push(round);"));
+  assert.ok(!/meta\.rounds\s*=\s*meta\.rounds\.filter/.test(beforePush), "no filtering/removal of existing rounds before the push");
+  // meta.rounds.map(r => r.number) (read-only, just to compute nextNumber)
+  // is fine and expected -- what must NOT happen is any WRITE to an
+  // existing round's own fields (matches/deadline/published) before the
+  // new round is pushed.
+  assert.ok(!/\.deadline\s*=|\.matches\s*=|\.published\s*=/.test(beforePush.replace("const round = { id: uid(\"r\")", "")), "no existing round's fields may be reassigned before the new round is created");
+});
+
+// ---- Round numbering fix: never assume number:1 when rounds already exist ----
+
+test("QA fix: renderAdminSetupManual computes the real next round.number (matching Admin -> Jornadas' own rule), never hardcodes 1", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes("const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r => r.number)) + 1 : 1;"));
+  assert.ok(body.includes("number: nextNumber,"));
+  assert.ok(!body.includes("number: 1,"), "the old hardcoded number:1 must be gone");
+});
+
+// ---- Submit-time validation wired into BOTH screens, never relying on `min` alone ----
+
+test("CASE G: renderAdminSetupReview's submit handler validates isSetupDeadlineValid against serverNow() at click time, before persisting anything", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  const clickIdx = body.indexOf('cta.addEventListener("click"');
+  const validateIdx = body.indexOf("isSetupDeadlineValid(deadlineVal, serverNow())", clickIdx);
+  const mutateIdx = body.indexOf("liveRound.matches = clean;", clickIdx);
+  assert.ok(validateIdx !== -1 && validateIdx < mutateIdx, "the deadline-in-the-past check must run before any mutation/persistence is attempted");
+});
+
+test("CASE A/B (manual side): renderAdminSetupManual's submit handler has the same isSetupDeadlineValid check before persisting", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  const clickIdx = body.indexOf('cta.addEventListener("click"');
+  const validateIdx = body.indexOf("isSetupDeadlineValid(deadlineVal, serverNow())", clickIdx);
+  const pushIdx = body.indexOf("meta.rounds.push(round);", clickIdx);
+  assert.ok(validateIdx !== -1 && validateIdx < pushIdx);
+});
+
+test("the inline error copy is exactly 'Elige una fecha y hora a partir de ahora.' in both screens, and nothing gets cleared alongside it (no reset of matches/deadline input)", () => {
+  [
+    "function renderAdminSetupReview(round)",
+    "function renderAdminSetupManual(opts)",
+  ].forEach(sig => {
+    const body = extractFunctionBody(indexSrc, sig);
+    const msgIdx = body.indexOf('errorEl.textContent = "Elige una fecha y hora a partir de ahora.";');
+    assert.ok(msgIdx !== -1, `${sig} must show the exact required copy`);
+    const surroundingSlice = body.slice(Math.max(0, msgIdx - 300), msgIdx + 150);
+    assert.ok(!surroundingSlice.includes(".value = \"\""), `${sig} must never clear an input's value alongside this error`);
+    assert.ok(!surroundingSlice.includes("matches.length = 0") && !surroundingSlice.includes("matches.splice(0"), `${sig} must never clear the matches array alongside this error`);
+  });
+});
+
+test("`min` is set on the deadline input as a UX hint, computed from serverNow() via the same toLocalInputValue used everywhere else -- but is documented as defense-in-depth only, not the real guard", () => {
+  const body = extractFunctionBody(indexSrc, "function setupRoundShellHtml({ headline, supporting, matchesHtml, deadlineValue, ctaLabel }){");
+  assert.ok(body.includes("const minDeadline = toLocalInputValue(new Date(serverNow()).toISOString());"));
+  assert.ok(body.includes('min="${minDeadline}"'));
+});
+
+// ---- CASE I/K/L/M: no regressions to unrelated invariants ----
+
+test("CASE I: this fix does not touch resolveSetupDestination's own review/manual/invite/app branching logic (anti-trap and hasPublishedRound checks untouched)", () => {
+  const body = extractFunctionBody(indexSrc, "function resolveSetupDestination(m, user)");
+  assert.ok(body.includes("const hasPublishedRound = rounds.some(r => r.published !== false);"));
+  assert.ok(body.includes("if(hasOtherParticipants || leftInviteScreen) return \"app\";"));
+});
+
+test("CASE K: Admin -> Jornadas (renderAdminRondas) still reads meta.rounds directly and unfiltered -- this fix only changes the setup continuity's OWN round selection, never what Admin -> Jornadas displays", () => {
+  const body = indexSrc.slice(indexSrc.indexOf("async function renderAdminRondas(body)"), indexSrc.indexOf("async function renderAdminRondas(body)") + 8000);
+  assert.ok(body.includes("meta.rounds.length ? meta.rounds.slice().reverse()"));
+  assert.ok(!body.includes("isRoundUsableForSetup"), "Admin -> Jornadas must never filter by setup-usability");
+});
+
+test("CASE L: pickSetupRound/isRoundUsableForSetup are pure read-only functions that never reference competitionSync/planCompetitionSync -- Competition Sync's own idempotency logic is untouched by this fix", () => {
+  ["function isRoundUsableForSetup(round, nowMs)", "function pickSetupRound(rounds, nowMs)"].forEach(sig => {
+    const body = extractFunctionBody(indexSrc, sig);
+    assert.ok(!/competitionSync|planCompetitionSync|sync-competition/.test(body));
+  });
+});
+
+test("CASE M: reconcilePenaltyLedger(meta) is still called before liveRound.deadline mutation in renderAdminSetupReview, unaffected by the round-selection change", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
+  const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
+  const deadlineMutationIdx = body.indexOf("liveRound.deadline = new Date(deadlineVal).toISOString();");
+  assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx);
+});
+
+// ---- CASE AC: still PASS -- at least one genuinely future prepared round is selected normally ----
+
+test("CASE AC: J1/J2 expired, J3 future -- pickSetupRound still selects J3 (unaffected by this QA fix)", () => {
+  const rounds = [
+    roundFull(1, false, "2026-08-01T00:00:00.000Z"),
+    roundFull(2, false, "2026-08-05T00:00:00.000Z"),
+    roundFull(3, false, "2099-01-01T00:00:00.000Z"),
+  ];
+  const picked = runPickSetupRound(rounds, NOW);
+  assert.equal(picked.number, 3);
+});
+
+// ---- CASE AD: all prepared rounds expired -> pickSetupRound returns null, and NONE of them are ever reused ----
+
+test("CASE AD: J1/J2/J3 all expired -> pickSetupRound returns null (nothing usable)", () => {
+  const rounds = [
+    roundFull(1, false, "2026-08-01T00:00:00.000Z"),
+    roundFull(2, false, "2026-08-05T00:00:00.000Z"),
+    roundFull(3, false, "2026-08-10T00:00:00.000Z"),
+  ];
+  assert.equal(runPickSetupRound(rounds, NOW), null);
+});
+
+// ---- CASE AE: invalid/null deadlines never crash, never selected ----
+
+test("CASE AE: a round with an invalid deadline string and one with a null deadline are both excluded, no crash", () => {
+  const rounds = [
+    { id: "r1", number: 1, published: false, deadline: "not-a-real-date", matches: [] },
+    { id: "r2", number: 2, published: false, deadline: null, matches: [] },
+  ];
+  assert.doesNotThrow(() => runPickSetupRound(rounds, NOW));
+  assert.equal(runPickSetupRound(rounds, NOW), null);
+});
+
+// ---- CASE AF (structural): after the manual fallback publishes, setup proceeds to Invitar exactly like the normal manual path ----
+
+test("CASE AF: renderAdminSetupManual's success path is identical regardless of noneUsablePrepared -- same setMetaWithError + renderAdminSetupInvite() transition", () => {
+  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
+  assert.ok(body.includes("await setMetaWithError(meta);"));
+  assert.ok(body.includes("renderAdminSetupInvite();"));
 });
