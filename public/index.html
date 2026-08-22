@@ -5421,7 +5421,17 @@
         closedAt: new Date().toISOString(),
         champion,
         standings: finalStandings,
-        rounds: meta.rounds
+        // UX-ADM-005: a round that's published:false is only a prepared
+        // calendar entry -- the admin configured it ahead of time, but it
+        // never became part of the actual game for participants. Storing
+        // it in the historical snapshot would make "X jornadas jugadas"
+        // count preparation as if it had been played. published===undefined
+        // (legacy) is still treated as published, same rule as everywhere
+        // else in QRACKS. Deliberately NOT filtering on resultsPublished
+        // here -- a published round that's still open/pending results is
+        // real, official history, not preparation; only published:false is
+        // preparation.
+        rounds: meta.rounds.filter(r => r.published !== false)
       });
       meta.rounds = [];
       meta.participants.forEach(p => p.paid = false);
