@@ -1133,6 +1133,11 @@
   else { ROUTE = "unknown"; }
 
   function currentMetaKey(){ return SLUG ? ("quiniela:" + SLUG + ":meta") : "quiniela_meta_v1"; }
+  // Post-creation continuity: /crear redirects here with ?setup=1 right
+  // after a successful creation. Read once at load — renderAdminSetupPin()
+  // strips it from the URL bar itself once the PIN is saved, so a later
+  // hard reload never re-enters this branch.
+  const IS_SETUP_FLOW = ROUTE === "quiniela" && new URLSearchParams(window.location.search).has("setup");
   function currentPicksKey(pid){ return SLUG ? ("quiniela:" + SLUG + ":picks:" + pid) : ("quiniela_picks_" + pid + "_v1"); }
   function metaKeyFor(slug){ return "quiniela:" + slug + ":meta"; }
 
@@ -2556,12 +2561,17 @@
   let sessionCheckDone = false;
   let accessLinkOpenedTracked = false;
   let adminMetaRefreshed = false;
+  let setupContinuityResolved = false; // set true once the admin explicitly leaves setup (or never needed it) -- prevents re-entering review/manual/invite on every render() call once they've moved on
   async function render(){
     if(!meta){
       root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
       return;
     }
     if(!currentUser){
+      if(ROUTE === "quiniela" && IS_SETUP_FLOW && meta.participants.length === 1 && !meta.participants[0].hasPin){
+        renderAdminSetupPin();
+        return;
+      }
       if(ROUTE === "quiniela" && !sessionCheckDone){
         sessionCheckDone = true;
         const session = await checkSession();
@@ -2580,6 +2590,17 @@
         const fresh = await getMeta({ owner: adminOrOwnerCred() });
         if(fresh) meta = fresh;
       }catch(e){ console.error("admin meta refresh failed", e); }
+    }
+    if(currentUser.isAdmin && !setupContinuityResolved){
+      setupContinuityResolved = true;
+      const dest = resolveSetupDestination(meta, currentUser);
+      if(dest === "review"){
+        const round = meta.rounds.find(r => r.published === false) || meta.rounds[0];
+        renderAdminSetupReview(round);
+        return;
+      }
+      if(dest === "manual"){ renderAdminSetupManual(); return; }
+      if(dest === "invite"){ renderAdminSetupInvite(); return; }
     }
     renderApp();
   }
@@ -2608,6 +2629,385 @@
       trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
       await clearSessionCookie();
       renderLogin();
+    });
+  }
+
+  // ==================================================================
+  // Admin post-creation continuity (replaces the old "figure out how to
+  // log in as yourself" friction right after /crear). NOT an "onboarding
+  // wizard" -- no persisted step counter, no progress bar. The next screen
+  // is always derived from the quiniela's REAL state (rounds/participants),
+  // so leaving and coming back always resumes at the right place.
+  // ==================================================================
+
+  // Pure: given the real quiniela state and the logged-in admin, decides
+  // which continuity screen (if any) is still relevant. Once a round has
+  // ever been published, "review"/"manual" never apply again -- this alone
+  // is what keeps an established quiniela's admin from ever getting pulled
+  // back into first-time setup just because, say, they deleted a round.
+  //   "manual"  -- no rounds exist at all yet.
+  //   "review"  -- rounds exist (imported/prepared) but none published yet.
+  //   "invite"  -- a round has been published, but the admin is still the
+  //                only participant (no social activation yet).
+  //   "app"     -- normal app: a round is published AND at least one other
+  //                participant already exists.
+  function resolveSetupDestination(m, user){
+    if(!user || !user.isAdmin) return "app";
+    const rounds = m.rounds || [];
+    const hasPublishedRound = rounds.some(r => r.published !== false);
+    if(!hasPublishedRound) return rounds.length > 0 ? "review" : "manual";
+    const hasOtherParticipants = (m.participants || []).length > 1;
+    return hasOtherParticipants ? "app" : "invite";
+  }
+
+  // The 4-digit PIN as ONE real, focusable, always-numeric-keyboard input
+  // -- not four fragile auto-advancing boxes. The 4 visual boxes are pure
+  // display, driven off this single input's value; the input itself sits
+  // transparently on top so the whole row is one tap target.
+  function pinBoxesHtml(inputId, boxesId){
+    return `
+      <div class="qz-pin-wrap" id="${boxesId}-wrap" style="position:relative;max-width:220px;margin:18px auto 0;">
+        <div class="qz-pin-boxes" id="${boxesId}" style="display:flex;gap:10px;justify-content:center;">
+          ${[0,1,2,3].map(() => `<div class="qz-pin-box" style="width:48px;height:56px;border:2px solid var(--line, #ddd);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;font-family:inherit;"></div>`).join("")}
+        </div>
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" id="${inputId}"
+          style="position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;color:transparent;caret-color:transparent;font-size:24px;text-align:center;letter-spacing:20px;padding:0;">
+      </div>
+    `;
+  }
+  function wirePinBoxes(inputId, boxesId, onChange){
+    const input = document.getElementById(inputId);
+    const boxesWrap = document.getElementById(boxesId);
+    const boxes = () => [...boxesWrap.children];
+    const paint = () => {
+      const digits = input.value.split("");
+      boxes().forEach((box, i) => {
+        box.textContent = digits[i] || "";
+        box.style.borderColor = i === input.value.length ? "var(--gold, #c9a227)" : "var(--line, #ddd)";
+      });
+      onChange(input.value);
+    };
+    input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 4); paint(); });
+    boxesWrap.addEventListener("click", () => input.focus());
+    paint();
+    input.focus();
+    return input;
+  }
+
+  function setupEyebrowHtml(text){
+    return `<div class="eyebrow" style="text-align:center;">${esc(text)}</div>`;
+  }
+
+  async function renderAdminSetupPin(){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="text-align:center;">
+          <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:10px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
+          ${setupEyebrowHtml("Configura tu quiniela en 3 minutos")}
+          <div class="login-title display" style="margin-top:6px;">Crea tu PIN</div>
+          <p class="login-sub">Usarás estos 4 números para volver a entrar a tu quiniela.</p>
+          ${pinBoxesHtml("qz-setup-pin-input", "qz-setup-pin-boxes")}
+          <p class="muted" id="qz-setup-pin-error" style="color:var(--red);display:none;margin-top:10px;"></p>
+          <button class="btn btn-primary" id="qz-setup-pin-continue" style="width:100%;padding:12px;margin-top:20px;" disabled>Continuar</button>
+        </div>
+      </div>
+    `;
+    const continueBtn = document.getElementById("qz-setup-pin-continue");
+    const errorEl = document.getElementById("qz-setup-pin-error");
+    let currentValue = "";
+    const input = wirePinBoxes("qz-setup-pin-input", "qz-setup-pin-boxes", (val) => {
+      currentValue = val;
+      continueBtn.disabled = val.length !== 4;
+      errorEl.style.display = "none";
+    });
+    const submit = async () => {
+      if(currentValue.length !== 4) return;
+      const creator = meta.participants.find(p => p.isAdmin) || meta.participants[0];
+      continueBtn.disabled = true;
+      continueBtn.textContent = "Guardando...";
+      const ok = await apiSetPin(creator.id, null, currentValue);
+      if(!ok){
+        // Never clear the PIN the admin already typed -- just let them retry.
+        errorEl.textContent = "No pudimos guardar tu PIN. Intenta de nuevo.";
+        errorEl.style.display = "block";
+        continueBtn.disabled = false;
+        continueBtn.textContent = "Continuar";
+        return;
+      }
+      currentUser = { ...creator, hasPin: true };
+      currentUserPinCache = currentValue;
+      // Strip ?setup=1 now -- a later hard reload should go through the
+      // normal session-confirm flow, not re-enter this exact screen.
+      try{ window.history.replaceState(null, "", "/q/" + encodeURIComponent(SLUG)); }catch(e){}
+      trackEvent("admin_setup_step_viewed", { participantId: creator.id, source: "setup_pin_saved" });
+      await renderAdminSetupResolve();
+    };
+    continueBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => { if(e.key === "Enter") submit(); });
+  }
+
+  // Fires (and awaits) Competition Sync if a league is configured, so a
+  // quiniela that's still importing when the admin finishes their PIN
+  // never gets misread as "no rounds -> manual" -- the skeleton stays up
+  // until the real outcome (imported rounds, or genuinely none) is known.
+  async function renderAdminSetupResolve(){
+    const leagueId = meta.settings && meta.settings.sportsdbLeagueId;
+    if(leagueId && meta.rounds.length === 0){
+      renderAdminSetupWaiting();
+      try{
+        await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sync-competition`, {
+          method: "POST", credentials: "same-origin"
+        });
+      }catch(e){ console.error("setup sync-competition failed", e); }
+      // Whatever happened (success, genuine failure, or nothing new) --
+      // never surfaced as a technical error here. Re-fetch real state and
+      // move on; a manual builder is always the safe fallback.
+      const fresh = await getMeta({ owner: adminOrOwnerCred() });
+      if(fresh) meta = fresh;
+    }
+    const dest = resolveSetupDestination(meta, currentUser);
+    if(dest === "review"){
+      const round = meta.rounds.find(r => r.published === false) || meta.rounds[0];
+      renderAdminSetupReview(round);
+    } else if(dest === "manual"){
+      renderAdminSetupManual();
+    } else if(dest === "invite"){
+      renderAdminSetupInvite();
+    } else {
+      setupContinuityResolved = true;
+      activeTab = "jornada";
+      render();
+    }
+  }
+
+  function renderAdminSetupWaiting(){
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="max-width:480px;">
+          <div class="login-title display">Revisa tu primera jornada</div>
+          <p class="login-sub">Estamos preparando los partidos…</p>
+          <div style="margin-top:18px;display:flex;flex-direction:column;gap:10px;">
+            ${[1,2,3].map(() => `<div style="height:52px;border-radius:10px;background:var(--paper-soft, #f2f2ef);"></div>`).join("")}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function setupMatchRowHtml(m){
+    return `
+      <div class="match-edit-row" data-mid="${m.id}">
+        <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off"></div>
+        <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off"></div>
+        <button class="icon-x" data-remove="${m.id}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+      </div>
+    `;
+  }
+
+  // Shared by both 3A (review an imported round) and 3B (build one
+  // manually) -- same sticky-CTA layout, same deadline copy, same
+  // publish-failure handling (never lose what was typed).
+  function setupRoundShellHtml({ headline, supporting, matchesHtml, deadlineValue, ctaLabel }){
+    return `
+      <div class="qz-main" style="padding-top:24px;padding-bottom:96px;max-width:560px;">
+        <div class="login-title display" style="text-align:center;">${esc(headline)}</div>
+        <p class="login-sub" style="text-align:center;">${esc(supporting)}</p>
+        <div class="card" style="margin-top:16px;">
+          <div id="qz-setup-match-rows">${matchesHtml}</div>
+          <button class="btn btn-ghost btn-sm" id="qz-setup-add-match" style="margin-top:6px;">+ Agregar partido</button>
+          <div class="field" style="margin-top:14px;">
+            <label>Pueden mandar sus picks hasta</label>
+            <input type="datetime-local" id="qz-setup-deadline" value="${deadlineValue}">
+            <p class="muted" style="margin-top:4px;">Después de esa hora ya no podrán cambiarlos.</p>
+          </div>
+          <p class="muted" id="qz-setup-error" style="color:var(--red);display:none;margin-top:10px;"></p>
+        </div>
+      </div>
+      <div id="qz-setup-sticky" style="position:sticky;bottom:0;left:0;right:0;background:var(--paper, #fff);padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line, #eee);">
+        <button class="btn btn-primary" id="qz-setup-cta" style="width:100%;padding:14px;max-width:560px;margin:0 auto;display:block;">${esc(ctaLabel)}</button>
+      </div>
+    `;
+  }
+
+  function wireSetupMatchRows(matches){
+    document.getElementById("qz-setup-add-match").addEventListener("click", () => {
+      matches.push(blankMatch());
+      document.getElementById("qz-setup-match-rows").insertAdjacentHTML("beforeend", setupMatchRowHtml(matches[matches.length-1]));
+      wireOneSetupRow(matches, matches[matches.length-1].id);
+    });
+    matches.forEach(m => wireOneSetupRow(matches, m.id));
+  }
+  function wireOneSetupRow(matches, mid){
+    const row = document.querySelector(`.match-edit-row[data-mid="${mid}"]`);
+    if(!row) return;
+    row.querySelectorAll("input[data-role]").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const m = matches.find(x => x.id === mid);
+        if(m) m[inp.dataset.role] = inp.value;
+      });
+    });
+    const removeBtn = row.querySelector("[data-remove]");
+    if(removeBtn) removeBtn.addEventListener("click", () => {
+      const idx = matches.findIndex(x => x.id === mid);
+      if(idx !== -1) matches.splice(idx, 1);
+      row.remove();
+    });
+  }
+
+  function renderAdminSetupReview(round){
+    const matches = round.matches.map(m => ({...m}));
+    root.innerHTML = setupRoundShellHtml({
+      headline: "Revisa tu primera jornada",
+      supporting: "Revisa los partidos y hasta cuándo pueden mandar sus picks.",
+      matchesHtml: matches.map(setupMatchRowHtml).join(""),
+      deadlineValue: toLocalInputValue(round.deadline),
+      ctaLabel: "Publicar jornada",
+    });
+    wireSetupMatchRows(matches);
+    const cta = document.getElementById("qz-setup-cta");
+    const errorEl = document.getElementById("qz-setup-error");
+    cta.addEventListener("click", async () => {
+      const clean = matches.filter(m => m.teamA.trim() && m.teamB.trim());
+      const deadlineVal = document.getElementById("qz-setup-deadline").value;
+      if(!clean.length || !deadlineVal){
+        errorEl.textContent = "Agrega al menos un partido y elige la fecha límite.";
+        errorEl.style.display = "block";
+        return;
+      }
+      cta.disabled = true;
+      cta.textContent = "Publicando...";
+      const snapshot = JSON.parse(JSON.stringify(round));
+      round.matches = clean;
+      round.deadline = new Date(deadlineVal).toISOString();
+      round.published = true;
+      const result = await setMetaWithError(meta);
+      if(result.ok){
+        trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
+        renderAdminSetupInvite();
+      } else {
+        meta.rounds = meta.rounds.map(r => r.id === round.id ? snapshot : r);
+        round.matches = snapshot.matches; round.deadline = snapshot.deadline; round.published = snapshot.published;
+        errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+        errorEl.style.display = "block";
+        cta.disabled = false;
+        cta.textContent = "Publicar jornada";
+      }
+    });
+  }
+
+  function renderAdminSetupManual(){
+    const matches = [blankMatch(), blankMatch()];
+    root.innerHTML = setupRoundShellHtml({
+      headline: "Prepara tu primera jornada",
+      supporting: "Agrega los partidos que van a jugar.",
+      matchesHtml: matches.map(setupMatchRowHtml).join(""),
+      deadlineValue: "",
+      ctaLabel: "Publicar jornada",
+    });
+    wireSetupMatchRows(matches);
+    const cta = document.getElementById("qz-setup-cta");
+    const errorEl = document.getElementById("qz-setup-error");
+    cta.addEventListener("click", async () => {
+      const clean = matches.filter(m => m.teamA.trim() && m.teamB.trim());
+      const deadlineVal = document.getElementById("qz-setup-deadline").value;
+      if(!clean.length || !deadlineVal){
+        errorEl.textContent = "Agrega al menos un partido y elige la fecha límite.";
+        errorEl.style.display = "block";
+        return;
+      }
+      cta.disabled = true;
+      cta.textContent = "Publicando...";
+      const isFirstRoundEver = meta.rounds.length === 0;
+      const round = { id: uid("r"), number: 1, matches: clean, deadline: new Date(deadlineVal).toISOString(), results: {}, resultsPublished: false, published: true };
+      meta.rounds.push(round);
+      const result = await setMetaWithError(meta);
+      if(result.ok){
+        if(isFirstRoundEver){
+          trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
+        }
+        renderAdminSetupInvite();
+      } else {
+        meta.rounds = meta.rounds.filter(r => r.id !== round.id);
+        errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+        errorEl.style.display = "block";
+        cta.disabled = false;
+        cta.textContent = "Publicar jornada";
+      }
+    });
+  }
+
+  function renderAdminSetupInvite(){
+    const link = `${window.location.origin}/q/${esc(SLUG)}`;
+    root.innerHTML = `
+      <div class="qz-main" style="padding-top:24px;max-width:480px;">
+        <p class="muted" style="text-align:center;">✓ Jornada 1 publicada</p>
+        <div class="login-title display" style="text-align:center;margin-top:4px;">Invita a tus amigos</div>
+        <p class="login-sub" style="text-align:center;">Ya pueden entrar y mandar sus picks.</p>
+        <div class="card" style="margin-top:16px;">
+          <p class="muted">No necesitan crear una cuenta.<br>Cada persona escribe su nombre y crea un PIN de 4 números.</p>
+          <button class="btn btn-primary" id="qz-setup-share" style="width:100%;padding:14px;margin-top:10px;">Compartir invitación</button>
+          <p class="qz-setup-feedback muted" id="qz-setup-share-feedback" style="text-align:center;margin-top:8px;min-height:18px;"></p>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <button class="btn btn-ghost" id="qz-setup-add-participants" style="width:100%;padding:14px;">Añadir participantes</button>
+          <p class="muted" style="margin-top:6px;">Agrega sus nombres tú. Ellos crearán su PIN la primera vez que entren.</p>
+          <p class="qz-setup-feedback muted" id="qz-setup-add-feedback" style="text-align:center;margin-top:4px;min-height:18px;"></p>
+        </div>
+        <button class="btn btn-ghost" id="qz-setup-view-round" style="width:100%;padding:12px;margin-top:16px;">Ver mi jornada</button>
+      </div>
+    `;
+    document.getElementById("qz-setup-share").addEventListener("click", async () => {
+      const feedback = document.getElementById("qz-setup-share-feedback");
+      const text = inviteMessage(link);
+      if(navigator.share){
+        try{
+          await navigator.share({ text });
+          markSharedInvite(SLUG);
+          trackEvent("invite_shared", { source: "setup_web_share" });
+          feedback.textContent = "✓ Invitación compartida";
+        }catch(e){
+          // AbortError == the person just closed the native share sheet --
+          // never treated as a failure, and we stay right here either way.
+        }
+        return;
+      }
+      try{
+        await navigator.clipboard.writeText(text);
+        markSharedInvite(SLUG);
+        trackEvent("invite_shared", { source: "setup_copy_fallback" });
+        feedback.textContent = "✓ Invitación copiada";
+      }catch(e){
+        feedback.textContent = "No se pudo compartir, intenta de nuevo";
+      }
+    });
+    document.getElementById("qz-setup-add-participants").addEventListener("click", async () => {
+      const raw = await qzPrompt("Escribe uno o varios nombres, separados por coma o uno por línea:", { title: "Añadir participantes", confirmLabel: "Agregar" });
+      if(raw === null) return;
+      const names = raw.split(/[\n,]+/).map(n => n.trim()).filter(Boolean);
+      if(!names.length) return;
+      const existing = new Set(meta.participants.map(p => p.name.toLowerCase()));
+      const added = [];
+      names.forEach(name => {
+        if(existing.has(name.toLowerCase())) return;
+        meta.participants.push({ id: uid("p"), name, isAdmin: false, paid: false, pin: null });
+        existing.add(name.toLowerCase());
+        added.push(name);
+      });
+      const feedback = document.getElementById("qz-setup-add-feedback");
+      if(!added.length){ feedback.textContent = "Esos nombres ya existían."; return; }
+      const result = await setMetaWithError(meta);
+      if(result.ok){
+        trackEvent("first_participant_added", { source: "admin_setup" });
+        feedback.textContent = `✓ ${added.length} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
+      }else{
+        meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
+        feedback.textContent = humanizeError(result.error);
+      }
+    });
+    document.getElementById("qz-setup-view-round").addEventListener("click", () => {
+      setupContinuityResolved = true;
+      activeTab = "jornada";
+      render();
     });
   }
 
@@ -5761,36 +6161,14 @@
           statusEl.style.color = "var(--red)";
           return;
         }
-        // AUTO-001: creation itself never depends on the provider (see
-        // §10) — this is a separate call, made only after creation already
-        // succeeded, so a TheSportsDB hiccup here can never undo or block
-        // the quiniela that already exists. Errors surface here, briefly,
-        // then the organizer continues into the quiniela either way — the
-        // manual "Reintentar importar calendario" button in Admin →
-        // Jornadas covers a later retry.
-        if((draft.leagueId || "").trim()){
-          statusEl.textContent = "Importando calendario…";
-          statusEl.style.color = "var(--ink-soft)";
-          try{
-            const syncRes = await fetch(`/api/quinielas/${encodeURIComponent(result.slug || slug)}/sync-competition`, {
-              method: "POST", headers: { "X-Qracks-Auth": password }
-            });
-            const syncData = await syncRes.json().catch(() => ({}));
-            if(syncRes.ok && syncData.ok && !syncData.reliabilityState && syncData.createdRounds > 0){
-              statusEl.textContent = `✅ Calendario importado — ${syncData.createdRounds} jornada${syncData.createdRounds===1?"":"s"} lista${syncData.createdRounds===1?"":"s"} para publicar.`;
-              statusEl.style.color = "var(--pitch-light)";
-            }else if(!(syncRes.ok && syncData.ok)){
-              statusEl.textContent = sportsDataFailureMessage(syncData.reliabilityState) + " O crea las jornadas manualmente desde Jornadas.";
-              statusEl.style.color = "var(--gold-dim)";
-            }
-            // ok:true with createdRounds:0 (nothing new, or competition_not_supported) needs no message — not an error.
-          }catch(e){
-            statusEl.textContent = sportsDataFailureMessage(null) + " O crea las jornadas manualmente desde Jornadas.";
-            statusEl.style.color = "var(--gold-dim)";
-          }
-          await new Promise(r => setTimeout(r, 1400)); // give the status message a moment to actually be read before navigating away
-        }
-        window.location.href = "/q/" + encodeURIComponent(result.slug || slug);
+        // Post-creation continuity: no "Creando... Importando calendario..."
+        // intermediate screen anymore -- go straight into the same flow as
+        // creating the PIN. Competition Sync (if a league was configured)
+        // now happens FROM that next screen instead (see
+        // renderAdminSetupResolve), authenticated by the session cookie
+        // /api/set-pin issues rather than by re-sending this plaintext
+        // password across a page navigation.
+        window.location.href = "/q/" + encodeURIComponent(result.slug || slug) + "?setup=1";
       }catch(e){
         console.error(e);
         statusEl.textContent = "No se pudo crear, intenta de nuevo.";
