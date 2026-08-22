@@ -107,3 +107,92 @@ test("CASE E: the handler only ever mutates .matches and .deadline on the round 
   }
   assert.deepEqual([...assignedFields].sort(), ["deadline", "matches"], "the edit handler must only ever assign .matches and .deadline on the round object -- any other field must be left completely alone");
 });
+
+// ---- QA BLOCKER: behavioral proof, not just structural, that `clean` (the
+// actual array assigned to editingRound.matches) preserves each match's
+// external metadata when only teamA/teamB are edited. Executes the REAL
+// three transformation steps extracted verbatim from production --
+// (1) how draft.matches is built from editingRound.matches,
+// (2) how the row's `input` handler mutates a match when the admin types,
+// (3) the `clean` filter itself -- wired together against a controlled
+// match object, not a reimplementation. ----
+
+function assertRealFragment(source, fragment){
+  assert.ok(source.includes(fragment), `could not locate real source fragment: "${fragment}"`);
+  return fragment;
+}
+
+test("QA BLOCKER: editing ONLY teamA on an imported match preserves externalEventId/externalHomeId/externalAwayId/kickoffAt exactly, in the real `clean` array assigned back to editingRound.matches", () => {
+  // Each fragment below is copied verbatim from public/index.html and
+  // verified present via assertRealFragment() before being executed --
+  // this is the real production transformation pipeline, not a
+  // reimplementation of it.
+  const draftMatchesExpr = assertRealFragment(indexSrc, "editingRound.matches.map(m => ({...m}))");
+  const inputHandlerLine = assertRealFragment(indexSrc, "m[inp.dataset.role] = inp.value;");
+  const cleanExpr = assertRealFragment(indexSrc, "draft.matches.filter(m => m.teamA.trim() && m.teamB.trim())");
+
+  const runPipeline = new Function("editingRound", `
+    // Step 1: exactly how draft.matches is constructed from editingRound.matches.
+    const draft = { matches: ${draftMatchesExpr} };
+    // Step 2: exactly how the real input handler mutates a match when the
+    // admin edits teamA in the browser (data-role="teamA").
+    const inp = { dataset: { role: "teamA" }, value: "Necaxa FC" };
+    const mid = editingRound.matches[0].id;
+    const m = draft.matches.find(x => x.id === mid);
+    ${inputHandlerLine}
+    // Step 3: the real clean filter, exactly as written in production.
+    const clean = ${cleanExpr};
+    return clean;
+  `);
+
+  const originalMatch = {
+    id: "m1",
+    teamA: "Necaxa",
+    teamB: "Pumas",
+    externalEventId: "123",
+    externalHomeId: "10",
+    externalAwayId: "20",
+    kickoffAt: "2026-08-30T18:00:00Z",
+  };
+  const editingRound = { matches: [originalMatch], deadline: "2026-08-30T18:00:00.000Z" };
+
+  const clean = runPipeline(editingRound);
+
+  assert.equal(clean.length, 1);
+  assert.deepEqual(clean[0], {
+    id: "m1",
+    teamA: "Necaxa FC", // the only field that changed
+    teamB: "Pumas",
+    externalEventId: "123",
+    externalHomeId: "10",
+    externalAwayId: "20",
+    kickoffAt: "2026-08-30T18:00:00Z",
+  }, "the persisted match after a teamA-only edit must be identical to the original except teamA -- every external metadata field must survive exactly");
+
+  // Confirm the ORIGINAL match object passed in was never mutated in place
+  // (draft.matches is built via spread {...m}, a fresh copy per match).
+  assert.equal(originalMatch.teamA, "Necaxa", "the source match object itself must remain untouched -- only the draft copy changes");
+});
+
+test("QA BLOCKER (deadline-only edit): editing only the deadline leaves every match's fields, including external metadata, completely untouched", () => {
+  const draftMatchesExpr = assertRealFragment(indexSrc, "editingRound.matches.map(m => ({...m}))");
+  const cleanExpr = assertRealFragment(indexSrc, "draft.matches.filter(m => m.teamA.trim() && m.teamB.trim())");
+
+  const runPipeline = new Function("editingRound", `
+    const draft = { matches: ${draftMatchesExpr} };
+    // No input event fired at all -- this is a deadline-only edit.
+    const clean = ${cleanExpr};
+    return clean;
+  `);
+
+  const originalMatch = {
+    id: "m1", teamA: "Necaxa", teamB: "Pumas",
+    externalEventId: "123", externalHomeId: "10", externalAwayId: "20", kickoffAt: "2026-08-30T18:00:00Z",
+  };
+  const editingRound = { matches: [originalMatch], deadline: "2020-01-01T00:00:00.000Z" };
+  const clean = runPipeline(editingRound);
+
+  assert.deepEqual(clean[0], originalMatch, "a deadline-only edit must leave every match field, including external metadata, byte-for-byte identical");
+});
+
+
