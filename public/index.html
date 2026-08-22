@@ -1197,6 +1197,21 @@
       return data;
     }catch(e){ console.error("getPlatformAnalytics failed", e); return empty; }
   }
+  // AUTO-004: same fetch pattern as getPlatformAnalytics -- a network/auth
+  // failure here must never break the rest of the dashboard, so it falls
+  // back to the same "never attempted" shape the seeded DB row uses,
+  // which the UI already renders as UNKNOWN rather than inventing OK.
+  async function getPlatformSportsHealth(){
+    const empty = { lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastOutcome: null, lastReliabilityState: null, lastOperation: null, provider: null, statusCode: null };
+    try{
+      const res = await fetch("/api/platform-sports-health", {
+        headers: { "X-Qracks-Platform-Auth": platformPasswordCache || "" }
+      });
+      const data = await res.json().catch(() => ({}));
+      if(!res.ok || !data.ok) return empty;
+      return data.health || empty;
+    }catch(e){ console.error("getPlatformSportsHealth failed", e); return empty; }
+  }
   // Self-service: anyone can register a brand-new quiniela in the platform index
   // (that's how /crear and "move to my own link" work) — no platform password needed,
   // it only ever adds one new entry, it can't touch or remove anyone else's.
@@ -1270,6 +1285,43 @@
   };
   function humanizeError(code){
     return ERROR_MESSAGES[code] || "No se pudo completar la acción. Intenta de nuevo.";
+  }
+
+  // AUTO-004: groups the 9 possible reliabilityState values TheSportsDB
+  // integration can produce into the 3 categories an Admin can actually act
+  // on -- they don't need to know which of 9 technical states happened,
+  // just whether it's worth retrying now or not. Every one of these paths
+  // already keeps the manual fallback fully available regardless of which
+  // message shows.
+  //
+  // TEMPORAL: rate limit, timeout, unavailable, and incomplete-response are
+  // grouped together deliberately -- none of these are things the Admin (or
+  // QRACKS) caused, and a later retry is plausibly going to succeed once
+  // the provider's own hiccup clears.
+  //
+  // REQUIERE REVISIÓN DE QRACKS: auth errors and persistently invalid
+  // responses are the ones a retry from the Admin's side won't fix --
+  // these need the API key or integration itself looked at.
+  //
+  // competition_not_supported is intentionally NOT in either bucket here --
+  // callers that already have a more specific, contextual message for it
+  // (missing league/season configuration) keep using that instead of this
+  // generic categorization; see the two dedicated messages already in
+  // Admin -> Jornadas for that exact case.
+  const SPORTS_DATA_TEMPORARY_STATES = new Set([
+    "provider_rate_limited", "provider_timeout", "provider_unavailable", "provider_incomplete_response",
+  ]);
+  const SPORTS_DATA_NEEDS_QRACKS_REVIEW_STATES = new Set([
+    "provider_auth_error", "provider_invalid_response",
+  ]);
+  function sportsDataFailureMessage(reliabilityState){
+    if(SPORTS_DATA_TEMPORARY_STATES.has(reliabilityState)){
+      return "No pudimos conectarnos con el proveedor deportivo en este momento. Intenta nuevamente en unos minutos. También puedes continuar manualmente.";
+    }
+    if(SPORTS_DATA_NEEDS_QRACKS_REVIEW_STATES.has(reliabilityState)){
+      return "No pudimos actualizar la información deportiva en este momento. Puedes continuar manualmente mientras revisamos el problema.";
+    }
+    return "No pudimos completar esta acción automáticamente. Puedes continuar manualmente.";
   }
   // Same request kvSet already makes, but keeps the server's actual error code
   // instead of collapsing everything down to a bare true/false — needed
@@ -4325,11 +4377,11 @@
             syncStatus.style.color = "var(--pitch-light)";
             if(data.createdRounds > 0) renderAdmin(document.getElementById("qz-main"));
           } else {
-            syncStatus.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo o crear las jornadas manualmente.";
+            syncStatus.textContent = sportsDataFailureMessage(data.reliabilityState) + " O crea las jornadas manualmente.";
             syncStatus.style.color = "var(--gold-dim)";
           }
         }catch(e){
-          syncStatus.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo o crear las jornadas manualmente.";
+          syncStatus.textContent = sportsDataFailureMessage(null) + " O crea las jornadas manualmente.";
           syncStatus.style.color = "var(--gold-dim)";
         }
         syncBtn.disabled = false;
@@ -4678,7 +4730,7 @@
         });
         const data = await res.json();
         if(!res.ok || !data.ok || data.reliabilityState){
-          bulkStatusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+          bulkStatusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState);
         } else {
           renderAdminResultados._bulkCache = data.results || {};
           const roundIdsWithHits = Object.keys(renderAdminResultados._bulkCache).filter(id => (renderAdminResultados._bulkCache[id] || []).length);
@@ -4696,7 +4748,7 @@
         }
       }catch(e){
         console.error(e);
-        bulkStatusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+        bulkStatusEl.textContent = "⚠️ " + sportsDataFailureMessage(null);
       }
       bulkBtn.disabled = false;
     });
@@ -4834,13 +4886,13 @@
         // to the organizer — a failed lookup is always safe to retry and
         // never blocks the manual capture flow below.
         if(!data.ok || data.reliabilityState){
-          statusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+          statusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState);
           return;
         }
         applySuggestionsToForm(round, data.suggestions, form, statusEl);
       }catch(e){
         console.error(e);
-        statusEl.textContent = "⚠️ No pudimos actualizar los resultados automáticamente. Puedes intentar de nuevo o capturarlos manualmente.";
+        statusEl.textContent = "⚠️ " + sportsDataFailureMessage(null);
       }
     });
     // AUTO-002: if "Buscar resultados pendientes (todas)" already resolved
@@ -5728,12 +5780,12 @@
               statusEl.textContent = `✅ Calendario importado — ${syncData.createdRounds} jornada${syncData.createdRounds===1?"":"s"} lista${syncData.createdRounds===1?"":"s"} para publicar.`;
               statusEl.style.color = "var(--pitch-light)";
             }else if(!(syncRes.ok && syncData.ok)){
-              statusEl.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo desde Jornadas o crear las jornadas manualmente.";
+              statusEl.textContent = sportsDataFailureMessage(syncData.reliabilityState) + " O crea las jornadas manualmente desde Jornadas.";
               statusEl.style.color = "var(--gold-dim)";
             }
             // ok:true with createdRounds:0 (nothing new, or competition_not_supported) needs no message — not an error.
           }catch(e){
-            statusEl.textContent = "No pudimos importar el calendario automáticamente. Puedes intentarlo de nuevo desde Jornadas o crear las jornadas manualmente.";
+            statusEl.textContent = sportsDataFailureMessage(null) + " O crea las jornadas manualmente desde Jornadas.";
             statusEl.style.color = "var(--gold-dim)";
           }
           await new Promise(r => setTimeout(r, 1400)); // give the status message a moment to actually be read before navigating away
@@ -5749,6 +5801,56 @@
 
   // ---------- /panel-plataforma : owner dashboard across every quiniela ----------
   let platformUnlocked = false;
+  // AUTO-004: turns the real persisted sports_data_health row into the
+  // compact display the Panel shows. UNKNOWN (lastOutcome === null) is a
+  // real, distinct state — it means we've simply never recorded an
+  // attempt, and is never collapsed into OK. WARNING vs ERROR is decided
+  // ONLY from the last recorded reliabilityState, per the same grouping
+  // used for the Admin-facing messages (sportsDataFailureMessage) --
+  // TEMPORARY states show WARNING, states that likely need QRACKS's own
+  // review show ERROR. competition_not_supported never reaches this
+  // function at all (the server never records it), so it can never turn
+  // this into a false global ERROR just because one quiniela's league
+  // isn't supported.
+  function relativeTimeEs(iso){
+    if(!iso) return null;
+    const diffMs = Date.now() - new Date(iso).getTime();
+    if(!Number.isFinite(diffMs) || diffMs < 0) return null;
+    const mins = Math.floor(diffMs / 60000);
+    if(mins < 1) return "hace un momento";
+    if(mins < 60) return `hace ${mins} min`;
+    const hours = Math.floor(mins / 60);
+    if(hours < 24) return `hace ${hours} h`;
+    const days = Math.floor(hours / 24);
+    return `hace ${days} día${days === 1 ? "" : "s"}`;
+  }
+  function sportsDataHealthHtml(health){
+    if(!health || !health.lastOutcome){
+      return `
+        <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">❔</span><strong>Sin datos todavía</strong></div>
+        <p class="muted" style="margin:6px 0 0;font-size:13px;">Todavía no se ha registrado ningún intento de Competition Sync o Automatic Results.</p>
+      `;
+    }
+    const lastAttempt = relativeTimeEs(health.lastAttemptAt);
+    const lastSuccess = relativeTimeEs(health.lastSuccessAt);
+    if(health.lastOutcome === "success"){
+      return `
+        <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">✅</span><strong style="color:var(--pitch-light);">OK</strong></div>
+        <p class="muted" style="margin:6px 0 0;font-size:13px;">Último éxito: ${lastSuccess || "—"} · Último intento: ${lastAttempt || "—"}</p>
+      `;
+    }
+    // failure
+    const isError = health.lastReliabilityState === "provider_auth_error" || health.lastReliabilityState === "provider_invalid_response";
+    const problemText = isError
+      ? "Error persistente — requiere revisión del equipo de QRACKS"
+      : "Problema temporal con el proveedor deportivo";
+    return `
+      <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">${isError ? "🔴" : "⚠️"}</span><strong style="color:${isError ? "var(--red)" : "var(--gold-dim)"};">${isError ? "Error" : "Warning"}</strong></div>
+      <p class="muted" style="margin:6px 0 0;font-size:13px;">Último éxito: ${lastSuccess || "nunca registrado"} · Último intento: ${lastAttempt || "—"}</p>
+      <p class="muted" style="margin:4px 0 0;font-size:13px;">Problema: ${esc(problemText)} (${esc(health.lastOperation || "?")})</p>
+    `;
+  }
+
   async function renderPlatformDashboard(){
     if(!platformUnlocked){
       root.innerHTML = `
@@ -5771,7 +5873,7 @@
       return;
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
-    const [idx, settings, analytics] = await Promise.all([getPlatformIndex(), getPlatformSettings(), getPlatformAnalytics()]);
+    const [idx, settings, analytics, sportsHealth] = await Promise.all([getPlatformIndex(), getPlatformSettings(), getPlatformAnalytics(), getPlatformSportsHealth()]);
     const rows = idx.quinielas.map(q => {
       const effectiveJornadaLimit = (q.customJornadaLimit !== undefined && q.customJornadaLimit !== null) ? q.customJornadaLimit : settings.jornadaLimit;
       // Counts now live on the index entry itself (kept fresh whenever that
@@ -5946,6 +6048,10 @@
             </table>
           </div>
           <p class="muted" style="margin-top:10px;font-size:12px;">Cada etapa muestra el total de eventos en esa ventana de tiempo. Estos conteos no representan un embudo de conversión — las etapas no comparten una unidad consistente entre sí, así que no se muestra ningún porcentaje entre ellas.</p>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Sports Data</div>
+          ${sportsDataHealthHtml(sportsHealth)}
         </div>
         <div class="card" style="overflow-x:auto;padding:16px 12px;">
           <table class="qz-platform-table" style="min-width:800px;">

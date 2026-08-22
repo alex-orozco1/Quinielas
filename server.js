@@ -10,6 +10,7 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const sportsDataProvider = require("./sportsDataProvider");
 const { ProviderError } = require("./providers/theSportsDbAdapter");
+const { nextSportsDataHealth, DEFAULT_SPORTS_DATA_HEALTH } = require("./sportsDataHealth");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
@@ -204,6 +205,20 @@ async function ensureTable() {
   await pool.query(
     `INSERT INTO kv (key, value, updated_at) VALUES ('platform_index', '{"quinielas":[]}'::jsonb, now())
      ON CONFLICT (key) DO NOTHING`
+  );
+  // AUTO-004: Sports Data health singleton — a real row from the start
+  // (never absent) so the platform endpoint never has to special-case "no
+  // row yet" vs. "row exists but nothing recorded" as two different shapes.
+  // lastOutcome:null is what the frontend reads as UNKNOWN — never invented
+  // as OK just because the row exists.
+  await pool.query(
+    `INSERT INTO kv (key, value, updated_at) VALUES ('sports_data_health', $1::jsonb, now())
+     ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify({
+      lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null,
+      lastOutcome: null, lastReliabilityState: null, lastOperation: null,
+      provider: null, statusCode: null,
+    })]
   );
   // Session-signing secret — generated once, reused forever after. Stored in
   // the DB (not an env var) so nothing new has to be configured in Render.
@@ -1350,7 +1365,51 @@ app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISO
 //
 // Never returns raw provider JSON to the client — only normalized
 // suggestions (or a reliability state) per DATA-001 §5/§11.
+
+// AUTO-004: Sports Data Reliability / Observability. Everything the
+// provider layer already computes (RELIABILITY_STATES) was being
+// calculated, logged, and immediately discarded — this is the one place
+// that persists the LATEST outcome of the only two operations that talk
+// to TheSportsDB (competition_sync, automatic_results), reusing the
+// existing `kv` table as a single singleton row. No new table, no
+// scheduler, no polling.
 //
+// Deliberately excludes competition_not_supported from ever updating this
+// row: a specific quiniela's league/season not being supported is a
+// per-quiniela configuration fact, not a signal about whether the
+// provider itself is reachable — see the ticket's explicit warning
+// against marking global Sports Data health as ERROR just because one
+// quiniela asked for an unsupported competition. The caller simply never
+// invokes this function for that reliabilityState.
+//
+// Deliberately never throws and never blocks its caller on failure:
+// observability must stay strictly secondary to the actual Sports Data
+// operation. A DB hiccup writing this row must never turn an otherwise-
+// successful Competition Sync/Automatic Results call into a visible error
+// for the Admin (see CASE L in the ticket) — the read-then-write below can
+// itself fail for any reason and the catch swallows it, logging only.
+//
+// Read-then-write (not a single atomic UPSERT): given this is a
+// low-frequency, admin-triggered action (not high-concurrency background
+// traffic), the tiny race window this leaves is an accepted, documented
+// tradeoff in exchange for code that's simple to read and simple to test
+// deterministically — matching the ticket's own preference for the
+// smallest solution over a more sophisticated one.
+async function recordSportsDataHealth({ operation, outcome, reliabilityState, statusCode }) {
+  try {
+    const existingRow = await pool.query("SELECT value FROM kv WHERE key = 'sports_data_health'");
+    const prev = (existingRow.rows[0] && existingRow.rows[0].value) || {};
+    const next = nextSportsDataHealth(prev, { operation, outcome, reliabilityState, statusCode });
+    await pool.query(
+      `INSERT INTO kv (key, value, updated_at) VALUES ('sports_data_health', $1::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
+      [JSON.stringify(next)]
+    );
+  } catch (err) {
+    console.error("recordSportsDataHealth failed (non-fatal, ignored)", err.message);
+  }
+}
+
 // AUTO-002 (bulk validation round): shared by both the single-round and
 // whole-quiniela endpoints below, so "search this one round" and "search
 // every pending round" produce identical suggestions from identical logic —
@@ -1412,9 +1471,16 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
       externalLeagueId,
       season,
     });
+    recordSportsDataHealth({ operation: "automatic_results", outcome: "success" });
     res.json({ ok: true, reliabilityState: null, suggestions: buildRoundSuggestions(round, events) });
   } catch (err) {
     const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
+    if (reliabilityState !== "competition_not_supported") {
+      recordSportsDataHealth({
+        operation: "automatic_results", outcome: "failure", reliabilityState,
+        statusCode: err instanceof ProviderError ? err.meta && err.meta.status : null,
+      });
+    }
     // Diagnostic context only — never the API key, never raw response bodies
     // that might contain it, never anything the organizer typed. This is the
     // observability DATA-001 was missing: a future truncation or outage
@@ -1469,6 +1535,7 @@ app.get("/api/quinielas/:slug/sports-results", rateLimit("sports-results"), asyn
       externalLeagueId,
       season,
     });
+    recordSportsDataHealth({ operation: "automatic_results", outcome: "success" });
     const results = {};
     for (const round of eligibleRounds) {
       results[round.id] = buildRoundSuggestions(round, events);
@@ -1476,6 +1543,12 @@ app.get("/api/quinielas/:slug/sports-results", rateLimit("sports-results"), asyn
     res.json({ ok: true, reliabilityState: null, results });
   } catch (err) {
     const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
+    if (reliabilityState !== "competition_not_supported") {
+      recordSportsDataHealth({
+        operation: "automatic_results", outcome: "failure", reliabilityState,
+        statusCode: err instanceof ProviderError ? err.meta && err.meta.status : null,
+      });
+    }
     console.error("sports-results (bulk) provider failure", {
       slug,
       externalLeagueId,
@@ -1537,11 +1610,18 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     } catch (err) {
       await client.query("ROLLBACK"); // fail-safe: no partial writes on provider failure
       const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
+      if (reliabilityState !== "competition_not_supported") {
+        recordSportsDataHealth({
+          operation: "competition_sync", outcome: "failure", reliabilityState,
+          statusCode: err instanceof ProviderError ? err.meta && err.meta.status : null,
+        });
+      }
       console.error("sync-competition provider failure", {
         slug, externalLeagueId, season, reliabilityState, message: err.message,
       });
       return res.json({ ok: false, reliabilityState, createdRounds: 0, createdMatches: 0, skippedEvents: 0 });
     }
+    recordSportsDataHealth({ operation: "competition_sync", outcome: "success" });
 
     // All grouping/idempotency/deadline-seeding decisions live in
     // competitionSync.js (pure, unit-tested) — this endpoint only assigns
@@ -1675,6 +1755,29 @@ const FUNNEL_EVENT_NAMES = [
   "standings_viewed",
   "standings_shared"
 ];
+app.get("/api/platform-sports-health", async (req, res) => {
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  try {
+    const row = await pool.query("SELECT value FROM kv WHERE key = 'sports_data_health'");
+    // Seeded in ensureTable() so this row always exists — but fall back to
+    // the same never-attempted shape defensively, rather than a 500, if
+    // somehow it's ever missing.
+    const health = (row.rows[0] && row.rows[0].value) || {
+      lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null,
+      lastOutcome: null, lastReliabilityState: null, lastOperation: null,
+      provider: null, statusCode: null,
+    };
+    res.json({ ok: true, health });
+  } catch (err) {
+    console.error("platform-sports-health failed", err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
 app.get("/api/platform-analytics", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
