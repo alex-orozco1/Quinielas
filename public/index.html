@@ -4882,7 +4882,8 @@
         <button class="btn btn-ghost btn-sm" id="qz-add-match" style="margin-bottom:14px;">+ Agregar partido</button>
         <div class="field">
           <label>Fecha y hora límite para votar</label>
-          <input type="datetime-local" id="qz-deadline" value="${draft.deadline}">
+          <input type="datetime-local" id="qz-deadline" value="${draft.deadline}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">
+          <p class="muted" id="qz-deadline-error" style="color:var(--red);display:none;margin-top:4px;"></p>
         </div>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-primary" id="qz-publish-round" style="flex:1;padding:12px;">${editingRound ? "Guardar cambios" : `Publicar jornada ${nextNumber}`}</button>
@@ -5029,6 +5030,19 @@
       const clean = draft.matches.filter(m => m.teamA.trim() && m.teamB.trim());
       if(!clean.length){ toast("Agrega al menos un partido con ambos equipos"); return; }
       if(!draft.deadline){ toast("Selecciona la fecha y hora límite"); return; }
+      // Same rule, same helper as Admin Setup Continuity's own screens --
+      // reused directly rather than duplicated. `min` above is a UX hint
+      // only; this is the real guard, checked at the moment of the click
+      // against serverNow() (not the value `min` had when the form first
+      // rendered, since time can pass while the editor stays open -- see
+      // CASE F).
+      const deadlineErrorEl = document.getElementById("qz-deadline-error");
+      if(!isSetupDeadlineValid(draft.deadline, serverNow())){
+        deadlineErrorEl.textContent = "Elige una fecha y hora a partir de ahora.";
+        deadlineErrorEl.style.display = "block";
+        return;
+      }
+      deadlineErrorEl.style.display = "none";
 
       if(editingRound){
         const saveBtn = document.getElementById("qz-publish-round");
@@ -6259,13 +6273,11 @@
     trackEvent("create_started", { source: "create_flow" });
     const draft = renderCrear._draft || { groupName: "", creatorName: "", contact: "", slug: "", password: "", leagueId: "", slugTouched: false };
     renderCrear._draft = draft;
-    const settings = await getPlatformSettings();
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card" style="max-width:440px;">
           <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
           <div class="login-title display">Crea tu quiniela</div>
-          <div class="login-sub">Gratis las primeras ${settings.jornadaLimit} jornadas. Después, $${settings.pricePerParticipant} MXN por participante para toda la quiniela.</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
           <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando sea momento de realizar el pago" value="${esc(draft.contact)}"></div>
