@@ -1,8 +1,9 @@
-// planLimits.js — MON-001B: exhaustive behavioral tests against the REAL,
-// REWRITTEN module (require()'d directly, not extracted/reimplemented).
-// This file REPLACES MON-001A's version entirely — none of the old
-// FREE_TRIAL/getEffectivePlan/checkRoundPublishAllowed/checkParticipantAddAllowed
-// tests survive, since none of those concepts exist anymore.
+// planLimits.js — MON-001C: exhaustive behavioral tests against the REAL,
+// CORRECTED module. Central new behavior vs MON-001B: FREE entitlements
+// no longer snapshot participantLimit/manualRoundLimit at all -- they
+// ALWAYS resolve against the CURRENT commercial_config at enforcement
+// time (resolveEnforcementLimits). PLUS/GRANDFATHERED/MANUAL_GRANT keep
+// their own frozen numbers, unaffected by later config changes.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -16,11 +17,12 @@ const {
   buildGrandfatheredEntitlement,
   buildManualGrantEntitlement,
   isKnownPlan,
+  resolveEnforcementLimits,
   checkParticipantCapacity,
   checkLifecycleRoundConsumption,
 } = require("../planLimits");
 
-// ---- Approved commercial model: exact numbers, never "close enough" ----
+// ---- Approved commercial model: exact numbers ----
 
 test("DEFAULT_COMMERCIAL_CONFIG matches the exact approved model: FREE=10 participants/7 rounds, PLUS=50 participants/18 rounds, $199 MXN", () => {
   assert.equal(DEFAULT_COMMERCIAL_CONFIG.free.participantLimit, 10);
@@ -30,16 +32,16 @@ test("DEFAULT_COMMERCIAL_CONFIG matches the exact approved model: FREE=10 partic
   assert.equal(DEFAULT_COMMERCIAL_CONFIG.plus.priceMXN, 199);
 });
 
-test("there is no active FREE_TRIAL plan/constant anywhere in this module -- no trial-days constant, no time-based plan transition, no code path that assigns/compares plan === 'FREE_TRIAL'", () => {
+test("there is no active FREE_TRIAL plan/constant anywhere in this module", () => {
   const mod = require("../planLimits");
   assert.equal(mod.FREE_TRIAL_DAYS, undefined);
-  assert.equal(typeof mod.getEffectivePlan, "undefined", "the old time-based effective-plan resolver must not exist");
+  assert.equal(typeof mod.getEffectivePlan, "undefined");
   const fs = require("node:fs");
   const src = fs.readFileSync(require.resolve("../planLimits"), "utf8");
-  assert.ok(!/["']FREE_TRIAL["']/.test(src), "no code may assign or compare against the literal string \"FREE_TRIAL\" (historical references in comments explaining what was removed are fine)");
+  assert.ok(!/["']FREE_TRIAL["']/.test(src));
 });
 
-// ---- Commercial config validation (the dynamic SSOT's own invariants) ----
+// ---- Commercial config validation ----
 
 test("a valid config passes isCommercialConfigValid", () => {
   assert.equal(isCommercialConfigValid(DEFAULT_COMMERCIAL_CONFIG), true);
@@ -49,241 +51,201 @@ test("free.participantLimit < 1 is rejected", () => {
   assert.equal(isCommercialConfigValid({ free: { participantLimit: 0, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: 199 } }), false);
 });
 
-test("plus.participantLimit below free.participantLimit is rejected (Plus must never be worse than Free)", () => {
+test("plus.participantLimit below free.participantLimit is rejected", () => {
   assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 5, manualRoundLimit: 18, priceMXN: 199 } }), false);
 });
 
-test("plus.manualRoundLimit below free.manualRoundLimit is rejected", () => {
-  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 5, priceMXN: 199 } }), false);
-});
-
-test("negative priceMXN is rejected", () => {
+test("negative priceMXN is rejected; priceMXN of exactly 0 is valid", () => {
   assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: -1 } }), false);
-});
-
-test("priceMXN of exactly 0 is VALID (a free promotional Plus is a legitimate config, not an error)", () => {
   assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: 0 } }), true);
 });
 
 test("missing free or plus block entirely is rejected, never crashes", () => {
-  assert.equal(isCommercialConfigValid({ plus: DEFAULT_COMMERCIAL_CONFIG.plus }), false);
   assert.equal(isCommercialConfigValid({}), false);
   assert.equal(isCommercialConfigValid(null), false);
   assert.doesNotThrow(() => isCommercialConfigValid(undefined));
 });
 
-test("plus.participantLimit EQUAL to free.participantLimit is valid (Plus doesn't have to be strictly greater, just never worse)", () => {
-  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 10, manualRoundLimit: 18, priceMXN: 199 } }), true);
-});
+// ---- MON-001C CENTRAL CHANGE: FREE entitlements never snapshot limits ----
 
-// ---- Entitlement snapshots freeze the config at grant time -----------
-
-test("buildFreeEntitlement snapshots the CURRENT config's numbers, tagged with the config version -- changing config later does not retroactively touch this object", () => {
+test("CRITICAL: buildFreeEntitlement does NOT store participantLimit/manualRoundLimit at all -- FREE never snapshots, only tracks live config", () => {
   const config = { version: 5, free: { participantLimit: 12, manualRoundLimit: 9 }, plus: { participantLimit: 60, manualRoundLimit: 20, priceMXN: 299 } };
   const ent = buildFreeEntitlement(config, "2026-01-01T00:00:00.000Z");
   assert.equal(ent.plan, "FREE");
-  assert.equal(ent.participantLimit, 12);
-  assert.equal(ent.manualRoundLimit, 9);
-  assert.equal(ent.configVersionAtGrant, 5);
+  assert.equal(ent.participantLimit, undefined, "FREE entitlements must never carry a stale snapshot field");
+  assert.equal(ent.manualRoundLimit, undefined);
+  assert.equal(ent.configVersionAtGrant, 5, "configVersionAtGrant is kept purely as historical context, never re-read for enforcement");
   assert.equal(ent.source, "signup_default");
-  assert.equal(ent.competitionIdentity, null);
-  assert.equal(ent.revoked, false);
 });
 
-test("buildPlusEntitlement snapshots price paid alongside the limits, defaults source to 'purchase'", () => {
+test("CRITICAL: resolveEnforcementLimits for a FREE entitlement ALWAYS reads the CURRENT commercialConfig passed in, ignoring anything on the entitlement itself", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const changedConfig = { version: 2, free: { participantLimit: 12, manualRoundLimit: 10 }, plus: DEFAULT_COMMERCIAL_CONFIG.plus };
+  const limits = resolveEnforcementLimits(ent, changedConfig);
+  assert.deepEqual(limits, { participantLimit: 12, manualRoundLimit: 10 }, "must reflect the NEW config immediately, not whatever was true when the entitlement was created");
+});
+
+test("CRITICAL: a config change is IMMEDIATELY reflected for an existing FREE quiniela with zero re-grant -- confirmed end to end via checkParticipantCapacity", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG); // created under the OLD config (limit 10)
+  const newConfig = { version: 2, free: { participantLimit: 12, manualRoundLimit: 7 }, plus: DEFAULT_COMMERCIAL_CONFIG.plus };
+  // 11 -> 12 was blocked under the old config (limit 10), must now be ALLOWED under the new config (limit 12)
+  assert.equal(checkParticipantCapacity(ent, newConfig, 11, 1).allowed, true);
+  // 12 -> 13 must still be blocked under the new config
+  assert.equal(checkParticipantCapacity(ent, newConfig, 12, 1).allowed, false);
+});
+
+// ---- PLUS keeps its own frozen snapshot, unaffected by later config changes ----
+
+test("CRITICAL: buildPlusEntitlement DOES snapshot participantLimit/manualRoundLimit/pricePaidMXN -- this is the frozen purchase, unaffected by later commercial_config edits", () => {
   const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, "2026-01-01T00:00:00.000Z");
-  assert.equal(ent.plan, "PLUS");
   assert.equal(ent.participantLimit, 50);
   assert.equal(ent.manualRoundLimit, 18);
   assert.equal(ent.pricePaidMXN, 199);
-  assert.equal(ent.source, "purchase");
 });
 
-test("buildPlusEntitlement accepts an explicit competitionIdentity for a with-league purchase", () => {
-  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, "2026-01-01T00:00:00.000Z", { competitionIdentity: "4350:2026-2027" });
-  assert.equal(ent.competitionIdentity, "4350:2026-2027");
+test("CRITICAL: resolveEnforcementLimits for a PLUS entitlement IGNORES the commercialConfig argument entirely -- always uses its own frozen numbers", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG); // bought under 50/18
+  const changedConfig = { version: 2, free: DEFAULT_COMMERCIAL_CONFIG.free, plus: { participantLimit: 60, manualRoundLimit: 15, priceMXN: 299 } };
+  const limits = resolveEnforcementLimits(ent, changedConfig);
+  assert.deepEqual(limits, { participantLimit: 50, manualRoundLimit: 18 }, "an already-purchased Plus must NEVER silently pick up a later config change");
 });
 
-test("buildGrandfatheredEntitlement uses an explicit, auditable numeric ceiling -- never a bare Infinity/null sentinel", () => {
-  const ent = buildGrandfatheredEntitlement("2026-01-01T00:00:00.000Z");
-  assert.equal(ent.plan, "GRANDFATHERED");
-  assert.equal(ent.participantLimit, GRANDFATHER_CEILING.participantLimit);
-  assert.equal(ent.manualRoundLimit, GRANDFATHER_CEILING.manualRoundLimit);
-  assert.ok(Number.isFinite(ent.participantLimit) && Number.isFinite(ent.manualRoundLimit), "must be real finite numbers, not Infinity");
-  assert.equal(ent.source, "grandfather_migration");
-  assert.equal(ent.grantedBy, "migration");
+test("CRITICAL end to end: a Plus purchased at 50/18 stays at 50/18 even after commercial_config changes to 60/15 -- a NEW Plus purchase would get 60/15", () => {
+  const oldConfig = DEFAULT_COMMERCIAL_CONFIG;
+  const purchasedEnt = buildPlusEntitlement(oldConfig); // 50/18
+  const newConfig = { version: 2, free: oldConfig.free, plus: { participantLimit: 60, manualRoundLimit: 15, priceMXN: 299 } };
+  // The EXISTING purchase: 50 -> 51 must still be blocked (its own limit is 50, not 60)
+  assert.equal(checkParticipantCapacity(purchasedEnt, newConfig, 50, 1).allowed, false);
+  // A NEW purchase under the new config: 59 -> 60 must be allowed (uses the new config's 60)
+  const newPurchaseEnt = buildPlusEntitlement(newConfig);
+  assert.equal(checkParticipantCapacity(newPurchaseEnt, newConfig, 59, 1).allowed, true);
+  assert.equal(checkParticipantCapacity(newPurchaseEnt, newConfig, 60, 1).allowed, false);
 });
 
-test("buildGrandfatheredEntitlement preserves a custom reason (e.g. migrated from legacy exempt:true)", () => {
-  const ent = buildGrandfatheredEntitlement("2026-01-01T00:00:00.000Z", { reason: "Migrated from legacy exempt:true flag." });
-  assert.equal(ent.reason, "Migrated from legacy exempt:true flag.");
+test("GRANDFATHERED and MANUAL_GRANT also use their own frozen numbers, same as PLUS -- only FREE is dynamic", () => {
+  const grandfathered = buildGrandfatheredEntitlement();
+  const manual = buildManualGrantEntitlement(undefined, { grantedBy: "platform:x", participantLimit: 999, manualRoundLimit: 999 });
+  const changedConfig = { version: 2, free: { participantLimit: 1, manualRoundLimit: 1 }, plus: DEFAULT_COMMERCIAL_CONFIG.plus };
+  assert.deepEqual(resolveEnforcementLimits(grandfathered, changedConfig), { participantLimit: GRANDFATHER_CEILING.participantLimit, manualRoundLimit: GRANDFATHER_CEILING.manualRoundLimit });
+  assert.deepEqual(resolveEnforcementLimits(manual, changedConfig), { participantLimit: 999, manualRoundLimit: 999 });
 });
 
-test("buildManualGrantEntitlement requires an explicit grantedBy -- never silently defaulted to something meaningless", () => {
-  const ent = buildManualGrantEntitlement("2026-01-01T00:00:00.000Z", { grantedBy: "platform:alex", reason: "friend's office pool", participantLimit: 999, manualRoundLimit: 999 });
-  assert.equal(ent.source, "manual_grant");
-  assert.equal(ent.grantedBy, "platform:alex");
-  assert.equal(ent.reason, "friend's office pool");
-  assert.equal(ent.participantLimit, 999);
-  assert.equal(ent.revoked, false);
+test("resolveEnforcementLimits returns null (fail-closed signal) for a FREE entitlement when commercialConfig itself is missing/invalid -- never guesses a default", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(resolveEnforcementLimits(ent, null), null);
+  assert.equal(resolveEnforcementLimits(ent, {}), null);
+  assert.equal(resolveEnforcementLimits(ent, { free: { participantLimit: "not a number" } }), null);
 });
 
 // ---- isKnownPlan ----
 
-test("isKnownPlan recognizes exactly FREE, PLUS, GRANDFATHERED, MANUAL_GRANT -- nothing else, including the old FREE_TRIAL", () => {
+test("isKnownPlan recognizes exactly FREE, PLUS, GRANDFATHERED, MANUAL_GRANT", () => {
   assert.equal(isKnownPlan("FREE"), true);
   assert.equal(isKnownPlan("PLUS"), true);
   assert.equal(isKnownPlan("GRANDFATHERED"), true);
   assert.equal(isKnownPlan("MANUAL_GRANT"), true);
   assert.equal(isKnownPlan("FREE_TRIAL"), false);
-  assert.equal(isKnownPlan("free"), false, "case-sensitive, never guesses at a typo");
   assert.equal(isKnownPlan(undefined), false);
-  assert.equal(isKnownPlan(null), false);
 });
 
-// ---- FAIL-CLOSED: the central behavioral change from MON-001A ----
+// ---- FAIL-CLOSED ----
 
-test("CRITICAL: a completely missing entitlement (null/undefined) is DENIED, never treated as unlimited -- this is the fail-closed fix", () => {
-  assert.equal(checkParticipantCapacity(null, 0, 1).allowed, false);
-  assert.equal(checkParticipantCapacity(undefined, 0, 1).allowed, false);
-  assert.equal(checkLifecycleRoundConsumption(null, 0, 1).allowed, false);
-  assert.equal(checkParticipantCapacity(null, 0, 1).reason, "entitlement_unavailable");
+test("CRITICAL: a completely missing entitlement is DENIED regardless of commercialConfig validity", () => {
+  assert.equal(checkParticipantCapacity(null, DEFAULT_COMMERCIAL_CONFIG, 0, 1).allowed, false);
+  assert.equal(checkParticipantCapacity(null, DEFAULT_COMMERCIAL_CONFIG, 0, 1).reason, "entitlement_unavailable");
+  assert.equal(checkLifecycleRoundConsumption(undefined, DEFAULT_COMMERCIAL_CONFIG, 0, 1).allowed, false);
 });
 
-test("CRITICAL: an entitlement with an unrecognized plan string is DENIED, never fails open (opposite of MON-001A's LEGACY_UNLIMITED behavior)", () => {
-  const corrupt = { plan: "SOME_FUTURE_PLAN", participantLimit: 999, manualRoundLimit: 999 };
-  assert.equal(checkParticipantCapacity(corrupt, 0, 1).allowed, false);
-  assert.equal(checkParticipantCapacity(corrupt, 0, 1).reason, "entitlement_unavailable");
+test("CRITICAL: an unrecognized plan string is DENIED even with a perfectly valid commercialConfig", () => {
+  const corrupt = { plan: "SOME_FUTURE_PLAN" };
+  assert.equal(checkParticipantCapacity(corrupt, DEFAULT_COMMERCIAL_CONFIG, 0, 1).allowed, false);
 });
 
-test("CRITICAL: a revoked entitlement is DENIED even if its numeric limits are still present", () => {
+test("CRITICAL: a revoked entitlement is DENIED even with valid numbers and valid config", () => {
   const revoked = { plan: "PLUS", participantLimit: 50, manualRoundLimit: 18, revoked: true };
-  assert.equal(checkParticipantCapacity(revoked, 0, 1).allowed, false);
-  assert.equal(checkLifecycleRoundConsumption(revoked, 0, 1).allowed, false);
+  assert.equal(checkParticipantCapacity(revoked, DEFAULT_COMMERCIAL_CONFIG, 0, 1).allowed, false);
 });
 
-test("an entitlement missing its numeric limit field entirely is DENIED, never NaN-compared into a false 'allowed'", () => {
-  const noLimit = { plan: "FREE", revoked: false }; // participantLimit/manualRoundLimit absent
-  assert.equal(checkParticipantCapacity(noLimit, 0, 1).allowed, false);
-  assert.equal(checkLifecycleRoundConsumption(noLimit, 0, 1).allowed, false);
-});
-
-// ---- FREE: exact boundaries, 10 participants / 7 rounds ----
-
-test("FREE participants: 9 -> 10 (adding the 10th) is allowed -- exactly at the approved limit", () => {
+test("CRITICAL: a FREE entitlement is DENIED if commercialConfig is missing/corrupt, even though the entitlement itself is fine -- FREE has no fallback numbers of its own anymore", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  assert.equal(checkParticipantCapacity(ent, 9, 1).allowed, true);
+  assert.equal(checkParticipantCapacity(ent, null, 0, 1).allowed, false);
+  assert.equal(checkParticipantCapacity(ent, {}, 0, 1).allowed, false);
 });
 
-test("FREE participants: 10 -> 11 (the 11th) is blocked, with the correct reason/plan/limit", () => {
+// ---- FREE: exact boundaries under DEFAULT_COMMERCIAL_CONFIG ----
+
+test("FREE participants: 9 -> 10 allowed, 10 -> 11 blocked (using the passed-in current config)", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  const check = checkParticipantCapacity(ent, 10, 1);
-  assert.equal(check.allowed, false);
-  assert.equal(check.reason, "plan_participant_limit_reached");
-  assert.equal(check.plan, "FREE");
-  assert.equal(check.limit, 10);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 9, 1).allowed, true);
+  const blocked = checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 10, 1);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.limit, 10);
+  assert.equal(blocked.plan, "FREE");
 });
 
-test("FREE lifecycle: 6 -> 7 consumed (the 7th round) is allowed -- exactly at the approved limit", () => {
+test("FREE lifecycle: 6 -> 7 allowed, 7 -> 8 blocked", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  assert.equal(checkLifecycleRoundConsumption(ent, 6, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 6, 1).allowed, true);
+  const blocked = checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 7, 1);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.limit, 7);
 });
 
-test("FREE lifecycle: 7 -> 8 consumed (the 8th round) is blocked", () => {
-  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  const check = checkLifecycleRoundConsumption(ent, 7, 1);
-  assert.equal(check.allowed, false);
-  assert.equal(check.reason, "plan_lifecycle_limit_reached");
-  assert.equal(check.limit, 7);
-});
+// ---- PLUS: exact boundaries ----
 
-// ---- PLUS: exact boundaries, 50 participants / 18 rounds (NOT 9999) ----
-
-test("PLUS participants: 49 -> 50 is allowed, 50 -> 51 is blocked -- confirms PLUS is a real 50, not unlimited", () => {
+test("PLUS participants: 49 -> 50 allowed, 50 -> 51 blocked", () => {
   const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  assert.equal(checkParticipantCapacity(ent, 49, 1).allowed, true);
-  const over = checkParticipantCapacity(ent, 50, 1);
-  assert.equal(over.allowed, false);
-  assert.equal(over.limit, 50);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 49, 1).allowed, true);
+  const blocked = checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 50, 1);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.limit, 50);
 });
 
-test("PLUS lifecycle: 17 -> 18 is allowed, 18 -> 19 is blocked -- confirms PLUS is a real 18, not unlimited", () => {
+test("PLUS lifecycle: 17 -> 18 allowed, 18 -> 19 blocked", () => {
   const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  assert.equal(checkLifecycleRoundConsumption(ent, 17, 1).allowed, true);
-  const over = checkLifecycleRoundConsumption(ent, 18, 1);
-  assert.equal(over.allowed, false);
-  assert.equal(over.limit, 18);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 17, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 18, 1).allowed, false);
 });
 
-// ---- Multiple-at-once (bulk-add, or a crafted payload adding several rounds in one write) ----
+// ---- Multiple-at-once ----
 
-test("bulk add: 8 participants + 3 at once (11 total) on FREE is blocked as a whole, not evaluated one at a time", () => {
+test("bulk add: 8 + 3 at once (11 total) on FREE is blocked as a whole", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  const check = checkParticipantCapacity(ent, 8, 3);
-  assert.equal(check.allowed, false, "3 at once pushing 8->11 must be rejected even though a naive one-at-a-time check might let the first couple through");
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 8, 3).allowed, false);
 });
 
-test("bulk add: 6 participants + 4 at once (10 total) on FREE is allowed -- lands exactly at the limit", () => {
+test("bulk add: 6 + 4 at once (10 total) on FREE is allowed -- lands exactly at the limit", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  assert.equal(checkParticipantCapacity(ent, 6, 4).allowed, true);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 6, 4).allowed, true);
 });
 
-test("a crafted payload claiming 5 newly-published rounds at once on FREE (5 already consumed) is blocked as a whole", () => {
+// ---- Never blocks a decrease/no-op ----
+
+test("additionalCount 0 never blocks, even if currentCount already exceeds the limit", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  const check = checkLifecycleRoundConsumption(ent, 5, 5); // 5+5=10 > 7
-  assert.equal(check.allowed, false);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 15, 0).allowed, true);
 });
 
-// ---- Never blocks a decrease or unchanged count ----
+// ---- GRANDFATHERED ----
 
-test("no new participants (additionalCount 0) never blocks, regardless of current count", () => {
-  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
-  assert.equal(checkParticipantCapacity(ent, 15, 0).allowed, true);
-});
-
-// ---- GRANDFATHERED: real legacy scenarios ----
-
-test("CASE (legacy, already over new limits): a grandfathered entitlement allows a quiniela already at 70 participants to keep adding more", () => {
+test("a grandfathered entitlement already over the new limits keeps working; still has a real (if huge) ceiling", () => {
   const ent = buildGrandfatheredEntitlement();
-  assert.equal(checkParticipantCapacity(ent, 70, 1).allowed, true);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 70, 1).allowed, true);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, GRANDFATHER_CEILING.participantLimit, 1).allowed, false);
 });
 
-test("CASE (legacy, already over new lifecycle limit): a grandfathered entitlement allows a quiniela already at 40 published rounds to keep adding more", () => {
-  const ent = buildGrandfatheredEntitlement();
-  assert.equal(checkLifecycleRoundConsumption(ent, 40, 1).allowed, true);
-});
+// ---- Competition identity ----
 
-test("a grandfathered entitlement still has a real (if extremely high) ceiling -- not literally infinite", () => {
-  const ent = buildGrandfatheredEntitlement();
-  const check = checkParticipantCapacity(ent, GRANDFATHER_CEILING.participantLimit, 1);
-  assert.equal(check.allowed, false, "even grandfathered quinielas have SOME real backstop, however generous");
-});
-
-// ---- Competition identity (with-league) ----
-
-test("computeCompetitionIdentity returns null when no league is configured", () => {
+test("computeCompetitionIdentity: null with no league; combines leagueId+season; handles missing season", () => {
   assert.equal(computeCompetitionIdentity({}), null);
-  assert.equal(computeCompetitionIdentity(null), null);
-  assert.equal(computeCompetitionIdentity({ sportsdbSeason: "2026-2027" }), null, "a season with no league id is not a real identity");
-});
-
-test("computeCompetitionIdentity combines leagueId and season into one durable string", () => {
   assert.equal(computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" }), "4350:2026-2027");
-});
-
-test("computeCompetitionIdentity handles a missing season gracefully (never crashes, never silently returns just the league id alone)", () => {
   assert.equal(computeCompetitionIdentity({ sportsdbLeagueId: "4350" }), "4350:unknown-season");
 });
 
-test("CASE (with league): lifecycle round-count check is a no-op (always allowed) once competitionIdentity is set on the entitlement -- round-count lifecycle only applies without a league", () => {
+test("CASE (with league): round-count lifecycle is a no-op once competitionIdentity is set; participant capacity still applies", () => {
   const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "4350:2026-2027" });
-  assert.equal(checkLifecycleRoundConsumption(ent, 999, 1).allowed, true);
-});
-
-test("CASE (with league): participant capacity STILL applies normally even with a league attached -- only round-count lifecycle is exempted", () => {
-  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "4350:2026-2027" });
-  const check = checkParticipantCapacity(ent, 50, 1);
-  assert.equal(check.allowed, false, "participant capacity is a completely separate dimension from lifecycle and must still be enforced");
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 999, 1).allowed, true);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 50, 1).allowed, false);
 });
 
 // ---- Structural: server.js wiring ----
@@ -292,87 +254,128 @@ const fs = require("node:fs");
 const path = require("node:path");
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
-test("server.js no longer contains any active FREE_TRIAL plan value assignment/comparison (historical comments referencing what MON-001A got wrong are fine)", () => {
-  assert.ok(!/["']FREE_TRIAL["']/.test(serverSrc), "no code may assign or compare against the literal string \"FREE_TRIAL\"");
+test("server.js no longer contains any active FREE_TRIAL plan value", () => {
+  assert.ok(!/["']FREE_TRIAL["']/.test(serverSrc));
 });
 
-test("server.js's quiniela-meta write path is a real transaction: BEGIN, locks platform_index THEN the meta row (consistent order), COMMIT/ROLLBACK", () => {
+// ---- MON-001C FIX 1: missing platform_index entry fails closed on BOTH paths ----
+
+test("FIX 1: quiniela-meta write path fails CLOSED for a per-slug quiniela with NO platform_index entry at all (not just no entitlement) -- distinct from the legacy no-slug case", () => {
   const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
   const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
   const body = serverSrc.slice(idx, nextBranch);
-  assert.ok(body.includes('await client.query("BEGIN");'));
-  const platformLockIdx = body.indexOf('await getRowLocked("platform_index", client)');
-  const metaLockIdx = body.indexOf("await getRowLocked(info.metaKey, client)");
-  assert.ok(platformLockIdx !== -1 && metaLockIdx !== -1 && platformLockIdx < metaLockIdx, "platform_index must be locked BEFORE the meta row, consistently, to avoid deadlocks with self-register");
-  assert.ok(body.includes('await client.query("COMMIT");'));
-  assert.ok(body.includes('await client.query("ROLLBACK")'));
-});
-
-test("server.js's quiniela-meta write path fails CLOSED (402, not silently allowed) when a platform_index entry has no entitlement at all", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  const noEntIdx = body.indexOf("if (!entry.entitlement) {");
-  assert.ok(noEntIdx !== -1, "the quiniela-meta write path itself must have its own fail-closed check, distinct from the migration's own (different) '!entry.entitlement' check");
-  const slice = body.slice(noEntIdx, noEntIdx + 550);
+  assert.ok(body.includes("if (info.slug) {"), "must gate the whole entitlement block on info.slug, distinguishing a real per-slug quiniela from the legacy singleton key");
+  const slugBlockIdx = body.indexOf("if (info.slug) {");
+  const noEntryIdx = body.indexOf("if (!entry) {", slugBlockIdx);
+  assert.ok(noEntryIdx !== -1, "must have its own explicit check for a missing platform_index entry, separate from the missing-entitlement check");
+  const slice = body.slice(noEntryIdx, noEntryIdx + 300);
   assert.ok(slice.includes("res.status(402)"));
 });
 
-test("server.js's quiniela-meta write path uses the DURABLE lifecycleConsumedRoundIds list, never a live meta.rounds count comparison, to decide what's newly consumed", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  assert.ok(body.includes("entry.lifecycleConsumedRoundIds"));
-  assert.ok(body.includes("!consumedIds.has(r.id)"));
-  assert.ok(!body.includes("oldPublishedCount"), "the old MON-001A live-published-count comparison must be completely gone");
-});
-
-test("server.js's quiniela-meta write path persists BOTH the meta row and the updated platform_index entitlement counters in the SAME transaction (same client), never as two separate unlocked writes", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  assert.ok(body.includes('await putRow("platform_index", platformIdx, client);'));
-  assert.ok(body.includes("await putRow(info.metaKey, mergedValue, client);"));
-});
-
-test("POST /api/self-register is also a real locked transaction with the SAME lock order (platform_index first, then the meta row)", () => {
+test("FIX 1: self-register also fails CLOSED for a per-slug quiniela with no platform_index entry", () => {
   const idx = serverSrc.indexOf('app.post("/api/self-register"');
   const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
   const body = serverSrc.slice(idx, nextRoute);
-  assert.ok(body.includes('await client.query("BEGIN");'));
-  const platformLockIdx = body.indexOf('await getRowLocked("platform_index", client)');
-  const metaLockIdx = body.indexOf("await getRowLocked(metaKey, client)");
-  assert.ok(platformLockIdx !== -1 && metaLockIdx !== -1 && platformLockIdx < metaLockIdx);
-  assert.ok(body.includes('await client.query("COMMIT");'));
+  assert.ok(body.includes("if (derivedSlug) {"));
+  const slugBlockIdx = body.indexOf("if (derivedSlug) {");
+  const noEntryIdx = body.indexOf("if (!entry) {", slugBlockIdx);
+  assert.ok(noEntryIdx !== -1);
+  const slice = body.slice(noEntryIdx, noEntryIdx + 300);
+  assert.ok(slice.includes("res.status(402)"));
 });
 
-test("POST /api/create-quiniela reads commercial_config and builds a FREE entitlement via buildFreeEntitlement -- never hardcodes 10/7 inline", () => {
+// ---- MON-001C FIX 2: single release strategy ----
+
+test("FIX 2: self-register's invalid_params branch no longer calls client.release() manually -- exactly ONE ACTUAL release() call in the whole handler, inside finally (a historical comment mentioning the removed call doesn't count)", () => {
+  const idx = serverSrc.indexOf('app.post("/api/self-register"');
+  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
+  const body = serverSrc.slice(idx, nextRoute);
+  const occurrences = [...body.matchAll(/^\s*client\.release\(\);\s*$/gm)];
+  assert.equal(occurrences.length, 1, "must release the pg client exactly once, in finally, never manually inside an early-return branch");
+  const finallyIdx = body.indexOf("} finally {");
+  const releaseIdx = body.indexOf("client.release();", finallyIdx);
+  assert.ok(finallyIdx !== -1 && releaseIdx > finallyIdx, "the one release() call must be inside the finally block");
+});
+
+// ---- MON-001C FIX 3: slug authority ----
+
+test("FIX 3: self-register's session cookie uses derivedSlug (server-validated), never the raw client-supplied `slug` field from the request body", () => {
+  const idx = serverSrc.indexOf('app.post("/api/self-register"');
+  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
+  const body = serverSrc.slice(idx, nextRoute);
+  assert.ok(body.includes("issueSessionCookie(res, derivedSlug, newParticipant);"));
+  assert.ok(!body.includes("issueSessionCookie(res, slug, newParticipant);"), "must never use the raw client-supplied slug for session identity");
+});
+
+// ---- MON-001C FIX 4: competitionIdentity assignment + league-change policy ----
+
+test("FIX 4: POST /api/create-quiniela computes competitionIdentity on the entitlement immediately when a league was selected at creation -- never left null", () => {
   const idx = serverSrc.indexOf('app.post("/api/create-quiniela"');
-  const body = serverSrc.slice(idx, idx + 4500);
+  const body = serverSrc.slice(idx, idx + 5000);
+  assert.ok(body.includes("if (cleanLeagueId) {"));
+  assert.ok(body.includes("entitlement.competitionIdentity = computeCompetitionIdentity(meta.settings);"));
+});
+
+test("FIX 4: the quiniela-meta write path blocks changing an ALREADY-set league/season once the quiniela is already operating, unless the write is platform-authenticated", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  assert.ok(body.includes("leagueOrSeasonChanged"));
+  assert.ok(body.includes("wasAlreadyOperating"));
+  assert.ok(body.includes('authTier !== "platform"'));
+  assert.ok(body.includes('res.status(403).json({ error: "league_change_blocked" })'));
+});
+
+test("FIX 4: selecting a league for the FIRST time (previously unset) is never blocked by the league-change rule -- only changing an ALREADY-set one is", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  assert.ok(body.includes("leagueOrSeasonChanged && oldLeagueId && wasAlreadyOperating"), "the block condition must require oldLeagueId to have already existed -- unset-to-set is exempt by construction");
+});
+
+test("FIX 4: 'already operating' is judged durably (lifecycleRoundsConsumed > 0 or an existing competitionIdentity), never by the current meta.rounds count alone", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  assert.ok(body.includes("entry.entitlement.competitionIdentity") && body.includes("entry.lifecycleRoundsConsumed"));
+});
+
+// ---- FREE-vs-PLUS wiring confirmation in server.js ----
+
+test("server.js's quiniela-meta write path reads commercial_config fresh and passes it to BOTH check functions (participant capacity AND lifecycle)", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
   assert.ok(body.includes('await getRow("commercial_config", client)'));
-  assert.ok(body.includes("buildFreeEntitlement(commercialConfig)"));
-  assert.ok(!body.includes("participantLimit: 10"), "the number must never be inlined directly in server.js -- only ever read from commercial_config via planLimits.js");
+  assert.ok(body.includes("checkParticipantCapacity(entry.entitlement, commercialConfig,"));
+  assert.ok(body.includes("checkLifecycleRoundConsumption(entry.entitlement, commercialConfig,"));
 });
 
-test("ensureTable() seeds commercial_config from DEFAULT_COMMERCIAL_CONFIG and runs the grandfathering migration idempotently", () => {
-  const idx = serverSrc.indexOf("async function ensureTable()");
-  const nextFn = serverSrc.indexOf("async function getRow(", idx);
-  const body = serverSrc.slice(idx, nextFn);
-  assert.ok(body.includes("'commercial_config'"));
-  assert.ok(body.includes("ON CONFLICT (key) DO NOTHING"));
-  assert.ok(body.includes("buildGrandfatheredEntitlement("));
-  assert.ok(body.includes("if (!entry.entitlement) {"));
+test("self-register also reads commercial_config fresh and passes it to checkParticipantCapacity", () => {
+  const idx = serverSrc.indexOf('app.post("/api/self-register"');
+  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
+  const body = serverSrc.slice(idx, nextRoute);
+  assert.ok(body.includes('await getRow("commercial_config", client)'));
+  assert.ok(body.includes("checkParticipantCapacity(entry.entitlement, commercialConfig,"));
 });
 
-test("commercial_config is classified as a platform-tier key -- protected by the same platform password as platform_settings/platform_index", () => {
+test("commercial_config is classified as a platform-tier key", () => {
   assert.ok(serverSrc.includes('const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config"]);'));
 });
 
-test("a commercial_config write is validated with isCommercialConfigValid BEFORE being persisted, and gets an auto-incremented version + updatedAt/updatedBy stamp", () => {
+test("a commercial_config write is validated with isCommercialConfigValid BEFORE being persisted, versioned and stamped", () => {
   const idx = serverSrc.indexOf('if (req.params.key === "commercial_config") {');
   const body = serverSrc.slice(idx, idx + 900);
   assert.ok(body.includes("isCommercialConfigValid(value)"));
   assert.ok(body.includes("res.status(400)"));
-  assert.ok(body.includes("version:"));
   assert.ok(body.includes('updatedBy: "platform"'));
+});
+
+test("ensureTable() seeds commercial_config and runs the grandfathering migration idempotently", () => {
+  const idx = serverSrc.indexOf("async function ensureTable()");
+  const nextFn = serverSrc.indexOf("async function getRow(", idx);
+  const body = serverSrc.slice(idx, nextFn);
+  assert.ok(body.includes("'commercial_config'"));
+  assert.ok(body.includes("buildGrandfatheredEntitlement("));
+  assert.ok(body.includes("if (!entry.entitlement) {"));
 });

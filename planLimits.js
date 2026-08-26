@@ -97,16 +97,18 @@ function computeCompetitionIdentity(settings) {
 // numbers, purely for audit/debugging — it is never re-read at
 // enforcement time.
 
-// A brand-new quiniela's default entitlement: FREE, using whatever
-// commercial_config says FREE means RIGHT NOW. No trial period, no time
-// component at all — this is who they are until something explicit
-// changes it (a purchase, a manual grant, or an admin editing their own
-// override later).
+// A brand-new quiniela's default entitlement: FREE. Deliberately does
+// NOT snapshot participantLimit/manualRoundLimit -- per the approved
+// product decision, FREE is a free product that always tracks whatever
+// commercial_config says FREE means RIGHT NOW (see resolveEnforcementLimits
+// below), not a frozen grant. Keeping stale numbers here that are never
+// actually used for enforcement would be actively misleading to anyone
+// reading this object later, so they're simply absent. configVersionAtGrant
+// is kept purely as historical/informational context ("this is what was
+// live when the quiniela signed up"), never re-read for enforcement.
 function buildFreeEntitlement(config, nowIso) {
   return {
     plan: "FREE",
-    participantLimit: config.free.participantLimit,
-    manualRoundLimit: config.free.manualRoundLimit,
     source: "signup_default",
     grantedAt: nowIso || new Date().toISOString(),
     grantedBy: "system",
@@ -205,20 +207,49 @@ function isKnownPlan(plan) {
   return plan === "FREE" || plan === "PLUS" || plan === "GRANDFATHERED" || plan === "MANUAL_GRANT";
 }
 
+// MON-001C: the approved FREE-vs-PLUS split. FREE is a free product that
+// always tracks the CURRENT commercial_config — a platform-wide config
+// change (10 -> 12 participants) applies to every existing FREE quiniela
+// immediately, with zero migration, zero re-grant, zero snapshot to go
+// stale. PLUS (and GRANDFATHERED/MANUAL_GRANT, which have their own
+// explicit, deliberately-frozen semantics already) use the entitlement's
+// OWN numbers, captured at grant time — a later commercial_config change
+// must never retroactively alter what was already purchased/granted.
+// Returns null (never guesses/defaults) if the entitlement or the
+// relevant config section is missing/invalid — callers treat null as
+// fail-closed, same as any other entitlement_unavailable case.
+function resolveEnforcementLimits(entitlement, commercialConfig) {
+  if (!entitlement || !isKnownPlan(entitlement.plan)) return null;
+  if (entitlement.plan === "FREE") {
+    if (!commercialConfig || !commercialConfig.free
+      || !Number.isFinite(commercialConfig.free.participantLimit)
+      || !Number.isFinite(commercialConfig.free.manualRoundLimit)) {
+      return null;
+    }
+    return { participantLimit: commercialConfig.free.participantLimit, manualRoundLimit: commercialConfig.free.manualRoundLimit };
+  }
+  if (!Number.isFinite(entitlement.participantLimit) || !Number.isFinite(entitlement.manualRoundLimit)) return null;
+  return { participantLimit: entitlement.participantLimit, manualRoundLimit: entitlement.manualRoundLimit };
+}
+
 // currentCount = participants.length BEFORE this write; additionalCount =
 // how many NEW participants this write would add (usually 1, but bulk-add
 // can genuinely add several at once — and a maliciously crafted payload
 // could claim to add many in a single call, so this must handle N, not
 // just assume 1). A live check — removing a participant later genuinely
 // frees a slot for someone new.
-function checkParticipantCapacity(entitlement, currentCount, additionalCount) {
+function checkParticipantCapacity(entitlement, commercialConfig, currentCount, additionalCount) {
   const add = Number.isFinite(additionalCount) ? additionalCount : 1;
   if (add <= 0) return { allowed: true }; // no new capacity requested -- never block, even if currentCount already exceeds the limit (e.g. a later-reduced config, or a grandfathered/legacy quiniela)
-  if (!entitlement || entitlement.revoked || !isKnownPlan(entitlement.plan) || !Number.isFinite(entitlement.participantLimit)) {
+  if (!entitlement || entitlement.revoked) {
     return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
   }
-  if (currentCount + add > entitlement.participantLimit) {
-    return { allowed: false, reason: "plan_participant_limit_reached", plan: entitlement.plan, limit: entitlement.participantLimit };
+  const limits = resolveEnforcementLimits(entitlement, commercialConfig);
+  if (!limits) {
+    return { allowed: false, reason: "entitlement_unavailable", plan: entitlement.plan };
+  }
+  if (currentCount + add > limits.participantLimit) {
+    return { allowed: false, reason: "plan_participant_limit_reached", plan: entitlement.plan, limit: limits.participantLimit };
   }
   return { allowed: true };
 }
@@ -234,10 +265,10 @@ function checkParticipantCapacity(entitlement, currentCount, additionalCount) {
 // meaningful when entitlement.competitionIdentity is null (no league) —
 // see the OPEN DECISION above for why with-league lifecycle isn't
 // enforced by round count at all yet.
-function checkLifecycleRoundConsumption(entitlement, consumedCount, additionalCount) {
+function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedCount, additionalCount) {
   const add = Number.isFinite(additionalCount) ? additionalCount : 1;
   if (add <= 0) return { allowed: true }; // no new consumption requested -- never block
-  if (!entitlement || entitlement.revoked || !isKnownPlan(entitlement.plan) || !Number.isFinite(entitlement.manualRoundLimit)) {
+  if (!entitlement || entitlement.revoked) {
     return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
   }
   if (entitlement.competitionIdentity) {
@@ -246,8 +277,12 @@ function checkLifecycleRoundConsumption(entitlement, consumedCount, additionalCo
     // not implemented yet. Never block here in that case.
     return { allowed: true };
   }
-  if (consumedCount + add > entitlement.manualRoundLimit) {
-    return { allowed: false, reason: "plan_lifecycle_limit_reached", plan: entitlement.plan, limit: entitlement.manualRoundLimit };
+  const limits = resolveEnforcementLimits(entitlement, commercialConfig);
+  if (!limits) {
+    return { allowed: false, reason: "entitlement_unavailable", plan: entitlement.plan };
+  }
+  if (consumedCount + add > limits.manualRoundLimit) {
+    return { allowed: false, reason: "plan_lifecycle_limit_reached", plan: entitlement.plan, limit: limits.manualRoundLimit };
   }
   return { allowed: true };
 }
@@ -262,6 +297,7 @@ module.exports = {
   buildGrandfatheredEntitlement,
   buildManualGrantEntitlement,
   isKnownPlan,
+  resolveEnforcementLimits,
   checkParticipantCapacity,
   checkLifecycleRoundConsumption,
 };
