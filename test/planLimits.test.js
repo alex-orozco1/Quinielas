@@ -1,286 +1,378 @@
-// planLimits.js — MON-001A: exhaustive behavioral tests against the REAL
-// module (require()'d directly, not extracted/reimplemented -- this file
-// lives in server-side code, unlike the frontend-extraction pattern used
-// for public/index.html functions elsewhere in this test suite).
+// planLimits.js — MON-001B: exhaustive behavioral tests against the REAL,
+// REWRITTEN module (require()'d directly, not extracted/reimplemented).
+// This file REPLACES MON-001A's version entirely — none of the old
+// FREE_TRIAL/getEffectivePlan/checkRoundPublishAllowed/checkParticipantAddAllowed
+// tests survive, since none of those concepts exist anymore.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  FREE_TRIAL_DAYS,
-  PLAN_LIMITS,
-  KNOWN_PLANS,
-  getEffectivePlan,
-  checkRoundPublishAllowed,
-  checkParticipantAddAllowed,
+  DEFAULT_COMMERCIAL_CONFIG,
+  GRANDFATHER_CEILING,
+  isCommercialConfigValid,
+  computeCompetitionIdentity,
+  buildFreeEntitlement,
+  buildPlusEntitlement,
+  buildGrandfatheredEntitlement,
+  buildManualGrantEntitlement,
+  isKnownPlan,
+  checkParticipantCapacity,
+  checkLifecycleRoundConsumption,
 } = require("../planLimits");
 
-const NOW = new Date("2026-08-25T12:00:00.000Z").getTime();
-const DAY_MS = 24 * 60 * 60 * 1000;
+// ---- Approved commercial model: exact numbers, never "close enough" ----
 
-// ---- Basic plan catalog sanity ----
-
-test("PLAN_LIMITS defines FREE and PLUS with sensible, documented numbers", () => {
-  assert.equal(typeof PLAN_LIMITS.FREE.maxPublishedRounds, "number");
-  assert.equal(typeof PLAN_LIMITS.FREE.maxParticipants, "number");
-  assert.equal(typeof PLAN_LIMITS.PLUS.maxPublishedRounds, "number");
-  assert.equal(typeof PLAN_LIMITS.PLUS.maxParticipants, "number");
-  assert.ok(PLAN_LIMITS.PLUS.maxPublishedRounds > PLAN_LIMITS.FREE.maxPublishedRounds, "PLUS must be more generous than FREE");
-  assert.ok(PLAN_LIMITS.PLUS.maxParticipants > PLAN_LIMITS.FREE.maxParticipants, "PLUS must be more generous than FREE");
+test("DEFAULT_COMMERCIAL_CONFIG matches the exact approved model: FREE=10 participants/7 rounds, PLUS=50 participants/18 rounds, $199 MXN", () => {
+  assert.equal(DEFAULT_COMMERCIAL_CONFIG.free.participantLimit, 10);
+  assert.equal(DEFAULT_COMMERCIAL_CONFIG.free.manualRoundLimit, 7);
+  assert.equal(DEFAULT_COMMERCIAL_CONFIG.plus.participantLimit, 50);
+  assert.equal(DEFAULT_COMMERCIAL_CONFIG.plus.manualRoundLimit, 18);
+  assert.equal(DEFAULT_COMMERCIAL_CONFIG.plus.priceMXN, 199);
 });
 
-test("KNOWN_PLANS lists exactly the 3 named plans, nothing else", () => {
-  assert.deepEqual(KNOWN_PLANS.slice().sort(), ["FREE", "FREE_TRIAL", "PLUS"]);
+test("there is no active FREE_TRIAL plan/constant anywhere in this module -- no trial-days constant, no time-based plan transition, no code path that assigns/compares plan === 'FREE_TRIAL'", () => {
+  const mod = require("../planLimits");
+  assert.equal(mod.FREE_TRIAL_DAYS, undefined);
+  assert.equal(typeof mod.getEffectivePlan, "undefined", "the old time-based effective-plan resolver must not exist");
+  const fs = require("node:fs");
+  const src = fs.readFileSync(require.resolve("../planLimits"), "utf8");
+  assert.ok(!/["']FREE_TRIAL["']/.test(src), "no code may assign or compare against the literal string \"FREE_TRIAL\" (historical references in comments explaining what was removed are fine)");
 });
 
-test("FREE_TRIAL_DAYS is a positive, finite number", () => {
-  assert.ok(Number.isFinite(FREE_TRIAL_DAYS) && FREE_TRIAL_DAYS > 0);
+// ---- Commercial config validation (the dynamic SSOT's own invariants) ----
+
+test("a valid config passes isCommercialConfigValid", () => {
+  assert.equal(isCommercialConfigValid(DEFAULT_COMMERCIAL_CONFIG), true);
 });
 
-// ---- CASE: legacy quinielas (no plan field at all) ----
-
-test("CASE (legacy): a platform_index entry with no plan field at all is LEGACY_UNLIMITED, never silently forced into FREE", () => {
-  const result = getEffectivePlan({}, NOW);
-  assert.equal(result.effectivePlan, "LEGACY_UNLIMITED");
-  assert.equal(result.limits, null);
-  assert.equal(result.isLegacy, true);
+test("free.participantLimit < 1 is rejected", () => {
+  assert.equal(isCommercialConfigValid({ free: { participantLimit: 0, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: 199 } }), false);
 });
 
-test("CASE (legacy): plan explicitly null is also treated as legacy, not as an unrecognized-string case", () => {
-  const result = getEffectivePlan({ plan: null }, NOW);
-  assert.equal(result.effectivePlan, "LEGACY_UNLIMITED");
-  assert.equal(result.isLegacy, true);
+test("plus.participantLimit below free.participantLimit is rejected (Plus must never be worse than Free)", () => {
+  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 5, manualRoundLimit: 18, priceMXN: 199 } }), false);
 });
 
-test("CASE (legacy): a legacy quiniela that already has more published rounds than FREE's limit is never retroactively blocked", () => {
-  const check = checkRoundPublishAllowed({}, 12, 13, NOW);
-  assert.equal(check.allowed, true);
+test("plus.manualRoundLimit below free.manualRoundLimit is rejected", () => {
+  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 5, priceMXN: 199 } }), false);
 });
 
-test("CASE (legacy): a legacy quiniela with 50 participants already can still add more", () => {
-  const check = checkParticipantAddAllowed({}, 50, 51, NOW);
-  assert.equal(check.allowed, true);
+test("negative priceMXN is rejected", () => {
+  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: -1 } }), false);
 });
 
-// ---- CASE: unrecognized/corrupt plan values fail OPEN, not closed ----
-
-test("CASE (corrupt data): an unrecognized plan string is treated as LEGACY_UNLIMITED (fails open), never crashes", () => {
-  const result = getEffectivePlan({ plan: "SOME_FUTURE_PLAN_THIS_CODE_DOESNT_KNOW" }, NOW);
-  assert.equal(result.effectivePlan, "LEGACY_UNLIMITED");
-  assert.equal(result.limits, null);
+test("priceMXN of exactly 0 is VALID (a free promotional Plus is a legitimate config, not an error)", () => {
+  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: 0 } }), true);
 });
 
-test("CASE (corrupt data): a typo'd plan value ('free' lowercase, 'Plus' mixed case) is NOT silently matched -- fails open rather than guessing", () => {
-  assert.equal(getEffectivePlan({ plan: "free" }, NOW).limits, null);
-  assert.equal(getEffectivePlan({ plan: "Plus" }, NOW).limits, null);
+test("missing free or plus block entirely is rejected, never crashes", () => {
+  assert.equal(isCommercialConfigValid({ plus: DEFAULT_COMMERCIAL_CONFIG.plus }), false);
+  assert.equal(isCommercialConfigValid({}), false);
+  assert.equal(isCommercialConfigValid(null), false);
+  assert.doesNotThrow(() => isCommercialConfigValid(undefined));
 });
 
-test("CASE (corrupt data): a numeric or object plan value never crashes, resolves to LEGACY_UNLIMITED", () => {
-  assert.doesNotThrow(() => getEffectivePlan({ plan: 123 }, NOW));
-  assert.doesNotThrow(() => getEffectivePlan({ plan: {} }, NOW));
-  assert.equal(getEffectivePlan({ plan: 123 }, NOW).limits, null);
+test("plus.participantLimit EQUAL to free.participantLimit is valid (Plus doesn't have to be strictly greater, just never worse)", () => {
+  assert.equal(isCommercialConfigValid({ free: { participantLimit: 10, manualRoundLimit: 7 }, plus: { participantLimit: 10, manualRoundLimit: 18, priceMXN: 199 } }), true);
 });
 
-// ---- CASE: FREE plan, exact limit boundaries ----
+// ---- Entitlement snapshots freeze the config at grant time -----------
 
-test("CASE (FREE, at limit): going from limit-1 to limit is allowed", () => {
-  const limit = PLAN_LIMITS.FREE.maxPublishedRounds;
-  const check = checkRoundPublishAllowed({ plan: "FREE" }, limit - 1, limit, NOW);
-  assert.equal(check.allowed, true);
+test("buildFreeEntitlement snapshots the CURRENT config's numbers, tagged with the config version -- changing config later does not retroactively touch this object", () => {
+  const config = { version: 5, free: { participantLimit: 12, manualRoundLimit: 9 }, plus: { participantLimit: 60, manualRoundLimit: 20, priceMXN: 299 } };
+  const ent = buildFreeEntitlement(config, "2026-01-01T00:00:00.000Z");
+  assert.equal(ent.plan, "FREE");
+  assert.equal(ent.participantLimit, 12);
+  assert.equal(ent.manualRoundLimit, 9);
+  assert.equal(ent.configVersionAtGrant, 5);
+  assert.equal(ent.source, "signup_default");
+  assert.equal(ent.competitionIdentity, null);
+  assert.equal(ent.revoked, false);
 });
 
-test("CASE (FREE, over limit): going from limit to limit+1 is blocked, with the correct reason/plan/limit fields", () => {
-  const limit = PLAN_LIMITS.FREE.maxPublishedRounds;
-  const check = checkRoundPublishAllowed({ plan: "FREE" }, limit, limit + 1, NOW);
-  assert.equal(check.allowed, false);
-  assert.equal(check.reason, "plan_round_limit_reached");
-  assert.equal(check.plan, "FREE");
-  assert.equal(check.limit, limit);
+test("buildPlusEntitlement snapshots price paid alongside the limits, defaults source to 'purchase'", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, "2026-01-01T00:00:00.000Z");
+  assert.equal(ent.plan, "PLUS");
+  assert.equal(ent.participantLimit, 50);
+  assert.equal(ent.manualRoundLimit, 18);
+  assert.equal(ent.pricePaidMXN, 199);
+  assert.equal(ent.source, "purchase");
 });
 
-test("CASE (FREE, far over limit): a single write that jumps from well under the limit to well over it is still blocked (not just off-by-one)", () => {
-  const check = checkRoundPublishAllowed({ plan: "FREE" }, 1, 999, NOW);
-  assert.equal(check.allowed, false);
+test("buildPlusEntitlement accepts an explicit competitionIdentity for a with-league purchase", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, "2026-01-01T00:00:00.000Z", { competitionIdentity: "4350:2026-2027" });
+  assert.equal(ent.competitionIdentity, "4350:2026-2027");
 });
 
-test("CASE (FREE participants, at limit): going from limit-1 to limit is allowed", () => {
-  const limit = PLAN_LIMITS.FREE.maxParticipants;
-  const check = checkParticipantAddAllowed({ plan: "FREE" }, limit - 1, limit, NOW);
-  assert.equal(check.allowed, true);
+test("buildGrandfatheredEntitlement uses an explicit, auditable numeric ceiling -- never a bare Infinity/null sentinel", () => {
+  const ent = buildGrandfatheredEntitlement("2026-01-01T00:00:00.000Z");
+  assert.equal(ent.plan, "GRANDFATHERED");
+  assert.equal(ent.participantLimit, GRANDFATHER_CEILING.participantLimit);
+  assert.equal(ent.manualRoundLimit, GRANDFATHER_CEILING.manualRoundLimit);
+  assert.ok(Number.isFinite(ent.participantLimit) && Number.isFinite(ent.manualRoundLimit), "must be real finite numbers, not Infinity");
+  assert.equal(ent.source, "grandfather_migration");
+  assert.equal(ent.grantedBy, "migration");
 });
 
-test("CASE (FREE participants, over limit): blocked with correct fields", () => {
-  const limit = PLAN_LIMITS.FREE.maxParticipants;
-  const check = checkParticipantAddAllowed({ plan: "FREE" }, limit, limit + 1, NOW);
+test("buildGrandfatheredEntitlement preserves a custom reason (e.g. migrated from legacy exempt:true)", () => {
+  const ent = buildGrandfatheredEntitlement("2026-01-01T00:00:00.000Z", { reason: "Migrated from legacy exempt:true flag." });
+  assert.equal(ent.reason, "Migrated from legacy exempt:true flag.");
+});
+
+test("buildManualGrantEntitlement requires an explicit grantedBy -- never silently defaulted to something meaningless", () => {
+  const ent = buildManualGrantEntitlement("2026-01-01T00:00:00.000Z", { grantedBy: "platform:alex", reason: "friend's office pool", participantLimit: 999, manualRoundLimit: 999 });
+  assert.equal(ent.source, "manual_grant");
+  assert.equal(ent.grantedBy, "platform:alex");
+  assert.equal(ent.reason, "friend's office pool");
+  assert.equal(ent.participantLimit, 999);
+  assert.equal(ent.revoked, false);
+});
+
+// ---- isKnownPlan ----
+
+test("isKnownPlan recognizes exactly FREE, PLUS, GRANDFATHERED, MANUAL_GRANT -- nothing else, including the old FREE_TRIAL", () => {
+  assert.equal(isKnownPlan("FREE"), true);
+  assert.equal(isKnownPlan("PLUS"), true);
+  assert.equal(isKnownPlan("GRANDFATHERED"), true);
+  assert.equal(isKnownPlan("MANUAL_GRANT"), true);
+  assert.equal(isKnownPlan("FREE_TRIAL"), false);
+  assert.equal(isKnownPlan("free"), false, "case-sensitive, never guesses at a typo");
+  assert.equal(isKnownPlan(undefined), false);
+  assert.equal(isKnownPlan(null), false);
+});
+
+// ---- FAIL-CLOSED: the central behavioral change from MON-001A ----
+
+test("CRITICAL: a completely missing entitlement (null/undefined) is DENIED, never treated as unlimited -- this is the fail-closed fix", () => {
+  assert.equal(checkParticipantCapacity(null, 0, 1).allowed, false);
+  assert.equal(checkParticipantCapacity(undefined, 0, 1).allowed, false);
+  assert.equal(checkLifecycleRoundConsumption(null, 0, 1).allowed, false);
+  assert.equal(checkParticipantCapacity(null, 0, 1).reason, "entitlement_unavailable");
+});
+
+test("CRITICAL: an entitlement with an unrecognized plan string is DENIED, never fails open (opposite of MON-001A's LEGACY_UNLIMITED behavior)", () => {
+  const corrupt = { plan: "SOME_FUTURE_PLAN", participantLimit: 999, manualRoundLimit: 999 };
+  assert.equal(checkParticipantCapacity(corrupt, 0, 1).allowed, false);
+  assert.equal(checkParticipantCapacity(corrupt, 0, 1).reason, "entitlement_unavailable");
+});
+
+test("CRITICAL: a revoked entitlement is DENIED even if its numeric limits are still present", () => {
+  const revoked = { plan: "PLUS", participantLimit: 50, manualRoundLimit: 18, revoked: true };
+  assert.equal(checkParticipantCapacity(revoked, 0, 1).allowed, false);
+  assert.equal(checkLifecycleRoundConsumption(revoked, 0, 1).allowed, false);
+});
+
+test("an entitlement missing its numeric limit field entirely is DENIED, never NaN-compared into a false 'allowed'", () => {
+  const noLimit = { plan: "FREE", revoked: false }; // participantLimit/manualRoundLimit absent
+  assert.equal(checkParticipantCapacity(noLimit, 0, 1).allowed, false);
+  assert.equal(checkLifecycleRoundConsumption(noLimit, 0, 1).allowed, false);
+});
+
+// ---- FREE: exact boundaries, 10 participants / 7 rounds ----
+
+test("FREE participants: 9 -> 10 (adding the 10th) is allowed -- exactly at the approved limit", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(checkParticipantCapacity(ent, 9, 1).allowed, true);
+});
+
+test("FREE participants: 10 -> 11 (the 11th) is blocked, with the correct reason/plan/limit", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const check = checkParticipantCapacity(ent, 10, 1);
   assert.equal(check.allowed, false);
   assert.equal(check.reason, "plan_participant_limit_reached");
-  assert.equal(check.limit, limit);
+  assert.equal(check.plan, "FREE");
+  assert.equal(check.limit, 10);
 });
 
-// ---- CASE: decreasing/unchanged counts are NEVER blocked, regardless of plan ----
-
-test("CASE (never blocks a decrease): deleting rounds down from over-the-limit is always allowed on any plan", () => {
-  assert.equal(checkRoundPublishAllowed({ plan: "FREE" }, 10, 3, NOW).allowed, true);
-  assert.equal(checkRoundPublishAllowed({ plan: "FREE_TRIAL", planSetAt: new Date(NOW - 100 * DAY_MS).toISOString() }, 10, 3, NOW).allowed, true);
+test("FREE lifecycle: 6 -> 7 consumed (the 7th round) is allowed -- exactly at the approved limit", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(checkLifecycleRoundConsumption(ent, 6, 1).allowed, true);
 });
 
-test("CASE (never blocks unchanged count): a write that doesn't change round/participant count is always allowed", () => {
-  assert.equal(checkRoundPublishAllowed({ plan: "FREE" }, 5, 5, NOW).allowed, true);
-  assert.equal(checkParticipantAddAllowed({ plan: "FREE" }, 20, 20, NOW).allowed, true);
+test("FREE lifecycle: 7 -> 8 consumed (the 8th round) is blocked", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const check = checkLifecycleRoundConsumption(ent, 7, 1);
+  assert.equal(check.allowed, false);
+  assert.equal(check.reason, "plan_lifecycle_limit_reached");
+  assert.equal(check.limit, 7);
 });
 
-test("CASE (never blocks a decrease): removing participants is always allowed even while already over the limit (e.g. after a manual plan downgrade)", () => {
-  const check = checkParticipantAddAllowed({ plan: "FREE" }, 30, 29, NOW);
-  assert.equal(check.allowed, true);
+// ---- PLUS: exact boundaries, 50 participants / 18 rounds (NOT 9999) ----
+
+test("PLUS participants: 49 -> 50 is allowed, 50 -> 51 is blocked -- confirms PLUS is a real 50, not unlimited", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(checkParticipantCapacity(ent, 49, 1).allowed, true);
+  const over = checkParticipantCapacity(ent, 50, 1);
+  assert.equal(over.allowed, false);
+  assert.equal(over.limit, 50);
 });
 
-// ---- CASE: PLUS plan is effectively unlimited for any real usage ----
-
-test("CASE (PLUS): a very large round/participant count is still allowed", () => {
-  assert.equal(checkRoundPublishAllowed({ plan: "PLUS" }, 500, 501, NOW).allowed, true);
-  assert.equal(checkParticipantAddAllowed({ plan: "PLUS" }, 500, 501, NOW).allowed, true);
+test("PLUS lifecycle: 17 -> 18 is allowed, 18 -> 19 is blocked -- confirms PLUS is a real 18, not unlimited", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(checkLifecycleRoundConsumption(ent, 17, 1).allowed, true);
+  const over = checkLifecycleRoundConsumption(ent, 18, 1);
+  assert.equal(over.allowed, false);
+  assert.equal(over.limit, 18);
 });
 
-test("CASE (PLUS): even PLUS has an explicit, auditable numeric ceiling -- not a bare 'no limit at all' code path", () => {
-  const overCeiling = PLAN_LIMITS.PLUS.maxPublishedRounds + 1;
-  const check = checkRoundPublishAllowed({ plan: "PLUS" }, PLAN_LIMITS.PLUS.maxPublishedRounds, overCeiling, NOW);
-  assert.equal(check.allowed, false, "PLUS must still have SOME real backstop, even if extremely generous");
+// ---- Multiple-at-once (bulk-add, or a crafted payload adding several rounds in one write) ----
+
+test("bulk add: 8 participants + 3 at once (11 total) on FREE is blocked as a whole, not evaluated one at a time", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const check = checkParticipantCapacity(ent, 8, 3);
+  assert.equal(check.allowed, false, "3 at once pushing 8->11 must be rejected even though a naive one-at-a-time check might let the first couple through");
 });
 
-// ---- CASE: FREE_TRIAL, active vs. expired, using a REAL clock comparison ----
-
-test("CASE (trial active): a FREE_TRIAL quiniela created 1 day ago is fully unlimited", () => {
-  const entry = { plan: "FREE_TRIAL", planSetAt: new Date(NOW - 1 * DAY_MS).toISOString() };
-  const result = getEffectivePlan(entry, NOW);
-  assert.equal(result.limits, null);
-  assert.equal(result.isTrialExpired, false);
-  assert.equal(checkRoundPublishAllowed(entry, 100, 101, NOW).allowed, true);
+test("bulk add: 6 participants + 4 at once (10 total) on FREE is allowed -- lands exactly at the limit", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(checkParticipantCapacity(ent, 6, 4).allowed, true);
 });
 
-test("CASE (trial boundary): just before the trial window elapses, still active", () => {
-  const entry = { plan: "FREE_TRIAL", planSetAt: new Date(NOW - (FREE_TRIAL_DAYS * DAY_MS - 1)).toISOString() };
-  assert.equal(getEffectivePlan(entry, NOW).isTrialExpired, false);
+test("a crafted payload claiming 5 newly-published rounds at once on FREE (5 already consumed) is blocked as a whole", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const check = checkLifecycleRoundConsumption(ent, 5, 5); // 5+5=10 > 7
+  assert.equal(check.allowed, false);
 });
 
-test("CASE (trial boundary): exactly 1ms after the trial window is expired", () => {
-  const entry = { plan: "FREE_TRIAL", planSetAt: new Date(NOW - (FREE_TRIAL_DAYS * DAY_MS + 1)).toISOString() };
-  assert.equal(getEffectivePlan(entry, NOW).isTrialExpired, true);
+// ---- Never blocks a decrease or unchanged count ----
+
+test("no new participants (additionalCount 0) never blocks, regardless of current count", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  assert.equal(checkParticipantCapacity(ent, 15, 0).allowed, true);
 });
 
-test("CASE (trial expired): an expired FREE_TRIAL is enforced exactly like FREE -- same numeric limits", () => {
-  const entry = { plan: "FREE_TRIAL", planSetAt: new Date(NOW - 100 * DAY_MS).toISOString() };
-  const result = getEffectivePlan(entry, NOW);
-  assert.deepEqual(result.limits, PLAN_LIMITS.FREE);
-  const limit = PLAN_LIMITS.FREE.maxPublishedRounds;
-  assert.equal(checkRoundPublishAllowed(entry, limit, limit + 1, NOW).allowed, false);
+// ---- GRANDFATHERED: real legacy scenarios ----
+
+test("CASE (legacy, already over new limits): a grandfathered entitlement allows a quiniela already at 70 participants to keep adding more", () => {
+  const ent = buildGrandfatheredEntitlement();
+  assert.equal(checkParticipantCapacity(ent, 70, 1).allowed, true);
 });
 
-test("CASE (trial expired): the STORED plan value is never mutated by this function -- effectivePlan still reports 'FREE_TRIAL', not 'FREE'", () => {
-  const entry = { plan: "FREE_TRIAL", planSetAt: new Date(NOW - 100 * DAY_MS).toISOString() };
-  const result = getEffectivePlan(entry, NOW);
-  assert.equal(result.effectivePlan, "FREE_TRIAL", "the stored/reported plan name must stay FREE_TRIAL -- only enforcement (limits) changes, distinguishing 'still nominally trialing but lapsed' from a deliberate downgrade");
+test("CASE (legacy, already over new lifecycle limit): a grandfathered entitlement allows a quiniela already at 40 published rounds to keep adding more", () => {
+  const ent = buildGrandfatheredEntitlement();
+  assert.equal(checkLifecycleRoundConsumption(ent, 40, 1).allowed, true);
 });
 
-test("CASE (trial, missing planSetAt): a FREE_TRIAL row with no planSetAt at all is treated as NOT expired (safest default for an unexpected data shape)", () => {
-  const entry = { plan: "FREE_TRIAL" };
-  const result = getEffectivePlan(entry, NOW);
-  assert.equal(result.isTrialExpired, false);
-  assert.equal(result.limits, null);
+test("a grandfathered entitlement still has a real (if extremely high) ceiling -- not literally infinite", () => {
+  const ent = buildGrandfatheredEntitlement();
+  const check = checkParticipantCapacity(ent, GRANDFATHER_CEILING.participantLimit, 1);
+  assert.equal(check.allowed, false, "even grandfathered quinielas have SOME real backstop, however generous");
 });
 
-test("CASE (trial, unparseable planSetAt): a garbage date string is also treated as NOT expired, never crashes", () => {
-  const entry = { plan: "FREE_TRIAL", planSetAt: "not-a-real-date" };
-  assert.doesNotThrow(() => getEffectivePlan(entry, NOW));
-  assert.equal(getEffectivePlan(entry, NOW).isTrialExpired, false);
+// ---- Competition identity (with-league) ----
+
+test("computeCompetitionIdentity returns null when no league is configured", () => {
+  assert.equal(computeCompetitionIdentity({}), null);
+  assert.equal(computeCompetitionIdentity(null), null);
+  assert.equal(computeCompetitionIdentity({ sportsdbSeason: "2026-2027" }), null, "a season with no league id is not a real identity");
 });
 
-// ---- CASE: mid-session trial expiry ----
-
-test("CASE (mid-session expiry): the SAME entry evaluated just before and just after the trial boundary (simulating real time passing during a long-open admin session) transitions correctly with no special handling needed by the caller", () => {
-  const setAt = new Date(NOW - FREE_TRIAL_DAYS * DAY_MS + 5000).toISOString();
-  const entry = { plan: "FREE_TRIAL", planSetAt: setAt };
-  const beforeExpiry = getEffectivePlan(entry, NOW);
-  const afterExpiry = getEffectivePlan(entry, NOW + 10000);
-  assert.equal(beforeExpiry.isTrialExpired, false);
-  assert.equal(afterExpiry.isTrialExpired, true);
+test("computeCompetitionIdentity combines leagueId and season into one durable string", () => {
+  assert.equal(computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" }), "4350:2026-2027");
 });
 
-// ---- CASE: exempt is a server.js-level concern, not inside these pure functions ----
-
-test("checkRoundPublishAllowed does not itself know about `exempt` -- that gate is applied one level up in server.js", () => {
-  const check = checkRoundPublishAllowed({ plan: "FREE", exempt: true }, 5, 6, NOW);
-  assert.equal(check.allowed, false, "exempt must be handled by the CALLER (server.js), not silently inside this pure function");
+test("computeCompetitionIdentity handles a missing season gracefully (never crashes, never silently returns just the league id alone)", () => {
+  assert.equal(computeCompetitionIdentity({ sportsdbLeagueId: "4350" }), "4350:unknown-season");
 });
 
-// ---- Server.js wiring: real structural confirmation ----
+test("CASE (with league): lifecycle round-count check is a no-op (always allowed) once competitionIdentity is set on the entitlement -- round-count lifecycle only applies without a league", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "4350:2026-2027" });
+  assert.equal(checkLifecycleRoundConsumption(ent, 999, 1).allowed, true);
+});
+
+test("CASE (with league): participant capacity STILL applies normally even with a league attached -- only round-count lifecycle is exempted", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "4350:2026-2027" });
+  const check = checkParticipantCapacity(ent, 50, 1);
+  assert.equal(check.allowed, false, "participant capacity is a completely separate dimension from lifecycle and must still be enforced");
+});
+
+// ---- Structural: server.js wiring ----
 
 const fs = require("node:fs");
 const path = require("node:path");
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
-test("server.js requires planLimits.js and never duplicates its logic inline", () => {
-  assert.ok(serverSrc.includes('require("./planLimits")'));
-  assert.ok(!serverSrc.includes("maxPublishedRounds:"), "the plan limit NUMBERS must live only in planLimits.js, never inlined/duplicated in server.js");
+test("server.js no longer contains any active FREE_TRIAL plan value assignment/comparison (historical comments referencing what MON-001A got wrong are fine)", () => {
+  assert.ok(!/["']FREE_TRIAL["']/.test(serverSrc), "no code may assign or compare against the literal string \"FREE_TRIAL\"");
 });
 
-test("POST /api/create-quiniela assigns an explicit FREE_TRIAL plan to every new quiniela -- never relies on the legacy fallback for a brand-new row", () => {
+test("server.js's quiniela-meta write path is a real transaction: BEGIN, locks platform_index THEN the meta row (consistent order), COMMIT/ROLLBACK", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  assert.ok(body.includes('await client.query("BEGIN");'));
+  const platformLockIdx = body.indexOf('await getRowLocked("platform_index", client)');
+  const metaLockIdx = body.indexOf("await getRowLocked(info.metaKey, client)");
+  assert.ok(platformLockIdx !== -1 && metaLockIdx !== -1 && platformLockIdx < metaLockIdx, "platform_index must be locked BEFORE the meta row, consistently, to avoid deadlocks with self-register");
+  assert.ok(body.includes('await client.query("COMMIT");'));
+  assert.ok(body.includes('await client.query("ROLLBACK")'));
+});
+
+test("server.js's quiniela-meta write path fails CLOSED (402, not silently allowed) when a platform_index entry has no entitlement at all", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  const noEntIdx = body.indexOf("if (!entry.entitlement) {");
+  assert.ok(noEntIdx !== -1, "the quiniela-meta write path itself must have its own fail-closed check, distinct from the migration's own (different) '!entry.entitlement' check");
+  const slice = body.slice(noEntIdx, noEntIdx + 550);
+  assert.ok(slice.includes("res.status(402)"));
+});
+
+test("server.js's quiniela-meta write path uses the DURABLE lifecycleConsumedRoundIds list, never a live meta.rounds count comparison, to decide what's newly consumed", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  assert.ok(body.includes("entry.lifecycleConsumedRoundIds"));
+  assert.ok(body.includes("!consumedIds.has(r.id)"));
+  assert.ok(!body.includes("oldPublishedCount"), "the old MON-001A live-published-count comparison must be completely gone");
+});
+
+test("server.js's quiniela-meta write path persists BOTH the meta row and the updated platform_index entitlement counters in the SAME transaction (same client), never as two separate unlocked writes", () => {
+  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
+  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
+  const body = serverSrc.slice(idx, nextBranch);
+  assert.ok(body.includes('await putRow("platform_index", platformIdx, client);'));
+  assert.ok(body.includes("await putRow(info.metaKey, mergedValue, client);"));
+});
+
+test("POST /api/self-register is also a real locked transaction with the SAME lock order (platform_index first, then the meta row)", () => {
+  const idx = serverSrc.indexOf('app.post("/api/self-register"');
+  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
+  const body = serverSrc.slice(idx, nextRoute);
+  assert.ok(body.includes('await client.query("BEGIN");'));
+  const platformLockIdx = body.indexOf('await getRowLocked("platform_index", client)');
+  const metaLockIdx = body.indexOf("await getRowLocked(metaKey, client)");
+  assert.ok(platformLockIdx !== -1 && metaLockIdx !== -1 && platformLockIdx < metaLockIdx);
+  assert.ok(body.includes('await client.query("COMMIT");'));
+});
+
+test("POST /api/create-quiniela reads commercial_config and builds a FREE entitlement via buildFreeEntitlement -- never hardcodes 10/7 inline", () => {
   const idx = serverSrc.indexOf('app.post("/api/create-quiniela"');
-  const body = serverSrc.slice(idx, idx + 3600);
-  assert.ok(body.includes('plan: "FREE_TRIAL"'));
-  assert.ok(body.includes("planSetAt: new Date().toISOString()"));
-  assert.ok(body.includes('planSetBy: "system_default"'));
+  const body = serverSrc.slice(idx, idx + 4500);
+  assert.ok(body.includes('await getRow("commercial_config", client)'));
+  assert.ok(body.includes("buildFreeEntitlement(commercialConfig)"));
+  assert.ok(!body.includes("participantLimit: 10"), "the number must never be inlined directly in server.js -- only ever read from commercial_config via planLimits.js");
 });
 
-test("POST /api/kv/:key's quiniela-meta branch reads platform_index FRESH from the database for the plan check -- never trusts a plan value from the request body itself", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  assert.ok(body.includes('await getRow("platform_index")'));
-  assert.ok(!body.includes("value.plan"), "must never read a plan value from the client-supplied write payload");
+test("ensureTable() seeds commercial_config from DEFAULT_COMMERCIAL_CONFIG and runs the grandfathering migration idempotently", () => {
+  const idx = serverSrc.indexOf("async function ensureTable()");
+  const nextFn = serverSrc.indexOf("async function getRow(", idx);
+  const body = serverSrc.slice(idx, nextFn);
+  assert.ok(body.includes("'commercial_config'"));
+  assert.ok(body.includes("ON CONFLICT (key) DO NOTHING"));
+  assert.ok(body.includes("buildGrandfatheredEntitlement("));
+  assert.ok(body.includes("if (!entry.entitlement) {"));
 });
 
-test("the plan-limit check in POST /api/kv/:key only evaluates when the published-round-count or participant-count actually INCREASED", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  assert.ok(body.includes("newPublishedCount > oldPublishedCount || newParticipantCount > oldParticipantCount"));
+test("commercial_config is classified as a platform-tier key -- protected by the same platform password as platform_settings/platform_index", () => {
+  assert.ok(serverSrc.includes('const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config"]);'));
 });
 
-test("entries with exempt:true are never subjected to the plan-limit check in the generic write path", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  assert.ok(body.includes("if (entry && !entry.exempt) {"));
-});
-
-test("a plan-limit rejection in the generic write path returns HTTP 402 with the structured {error, limitType, plan, limit} shape, for both round and participant checks", () => {
-  const idx = serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {');
-  const nextBranch = serverSrc.indexOf('} else if (info.kind === "picks")', idx);
-  const body = serverSrc.slice(idx, nextBranch);
-  const occurrences = [...body.matchAll(/res\.status\(402\)\.json\(\{ error: \w+Check\.reason, limitType: "(rounds|participants)", plan: \w+Check\.plan, limit: \w+Check\.limit \}\)/g)];
-  assert.equal(occurrences.length, 2, "both the rounds check and the participants check must return this exact structured 402 shape");
-});
-
-test("POST /api/self-register derives the slug from metaKey itself (never trusts the separate client-supplied slug field) for its plan-limit check", () => {
-  const idx = serverSrc.indexOf('app.post("/api/self-register"');
-  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
-  const body = serverSrc.slice(idx, nextRoute);
-  assert.ok(body.includes("const metaKeyMatch = String(metaKey).match(/^quiniela:([a-z0-9-]{1,60}):meta$/);"));
-  assert.ok(body.includes("const derivedSlug = metaKeyMatch ? metaKeyMatch[1] : null;"));
-  assert.ok(!body.includes("q.slug === slug)"), "must never look up the plan using the raw client-supplied slug field");
-});
-
-test("POST /api/self-register's plan-limit check runs BEFORE the new participant is pushed/persisted", () => {
-  const idx = serverSrc.indexOf('app.post("/api/self-register"');
-  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
-  const body = serverSrc.slice(idx, nextRoute);
-  const checkIdx = body.indexOf("checkParticipantAddAllowed(entry,");
-  const pushIdx = body.indexOf("value.participants.push(newParticipant);");
-  assert.ok(checkIdx !== -1 && pushIdx !== -1 && checkIdx < pushIdx);
-});
-
-test("POST /api/self-register also respects exempt:true", () => {
-  const idx = serverSrc.indexOf('app.post("/api/self-register"');
-  const nextRoute = serverSrc.indexOf("app.post(", idx + 10);
-  const body = serverSrc.slice(idx, nextRoute);
-  assert.ok(body.includes("if (entry && !entry.exempt) {"));
+test("a commercial_config write is validated with isCommercialConfigValid BEFORE being persisted, and gets an auto-incremented version + updatedAt/updatedBy stamp", () => {
+  const idx = serverSrc.indexOf('if (req.params.key === "commercial_config") {');
+  const body = serverSrc.slice(idx, idx + 900);
+  assert.ok(body.includes("isCommercialConfigValid(value)"));
+  assert.ok(body.includes("res.status(400)"));
+  assert.ok(body.includes("version:"));
+  assert.ok(body.includes('updatedBy: "platform"'));
 });

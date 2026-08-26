@@ -1287,19 +1287,24 @@
     invalid_key: "Eso no se puede guardar aquí.",
     server_error: "Algo falló de nuestro lado. Intenta de nuevo en un momento.",
     network_error: "No hay conexión en este momento. Revisa tu internet e intenta de nuevo.",
-    // MON-001A: real plan limits, enforced server-side. Never shows the
+    // MON-001B: real plan limits, enforced server-side. Never shows the
     // plan name or the exact numeric limit in this generic fallback (the
     // callers that already know those details — see the specific handlers
     // below — show a more precise message with the real numbers; this is
     // only the safety-net copy for any call site that doesn't).
-    plan_round_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
-    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite."
+    plan_lifecycle_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
+    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
+    // Fail-closed edge case (should be structurally impossible thanks to
+    // the startup grandfathering migration, but the copy still needs to
+    // exist rather than fall through to "undefined") — never blames the
+    // admin, never mentions internal architecture.
+    entitlement_unavailable: "No pudimos confirmar el plan de esta quiniela en este momento. Intenta de nuevo en unos minutos; si sigue pasando, contacta al equipo de QRACKS."
   };
   function humanizeError(code){
     return ERROR_MESSAGES[code] || "No se pudo completar la acción. Intenta de nuevo.";
   }
 
-  // MON-001A: turns the server's structured plan-limit rejection
+  // MON-001B: turns the server's structured plan-limit rejection
   // ({error, limitType, plan, limit}) into a precise, friendly message —
   // never the raw plan name/enum, always the real number so the admin
   // knows exactly what they hit. Falls back to the generic
@@ -1311,7 +1316,7 @@
       return humanizeError(errorBody && errorBody.error);
     }
     if(errorBody.limitType === "rounds"){
-      return `Esta quiniela ya llegó a su límite de ${errorBody.limit} jornada${errorBody.limit === 1 ? "" : "s"} publicada${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
+      return `Esta quiniela ya llegó a su límite de ${errorBody.limit} jornada${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
     }
     if(errorBody.limitType === "participants"){
       return `Esta quiniela ya llegó a su límite de ${errorBody.limit} participante${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
@@ -3075,7 +3080,7 @@
         // (0 -> 1 published rounds) can never actually be blocked by the
         // limit check -- wired here anyway for correctness/defense in
         // depth, in case that constant ever changes.
-        errorEl.textContent = result.error === "plan_round_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+        errorEl.textContent = result.error === "plan_lifecycle_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
         errorEl.style.display = "block";
         cta.disabled = false;
         cta.textContent = "Publicar jornada";
@@ -3134,7 +3139,7 @@
         renderAdminSetupInvite();
       } else {
         meta.rounds = meta.rounds.filter(r => r.id !== round.id);
-        errorEl.textContent = result.error === "plan_round_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+        errorEl.textContent = result.error === "plan_lifecycle_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
         errorEl.style.display = "block";
         cta.disabled = false;
         cta.textContent = "Publicar jornada";

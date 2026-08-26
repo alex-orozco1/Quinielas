@@ -1,184 +1,267 @@
-// planLimits.js — MON-001A: real, server-enforced plan limits.
+// planLimits.js — MON-001B: corrected commercial architecture.
+//
+// This REPLACES the MON-001A version, which shipped with a wrong
+// commercial model (FREE_TRIAL, hardcoded FREE=5/20 and PLUS=9999/9999,
+// fail-OPEN on unknown/corrupt data). None of that is preserved here.
 //
 // Deliberately separate from server.js (same documented limitation as
-// competitionSync.js/autoResults.js/sportsDataHealth.js/seasonDefaults.js:
-// can't be require()'d in tests without a live Postgres connection) — this
-// is the one place that decides which plan is EFFECTIVELY in force right
-// now and whether a given round-publish or participant-add should be
-// allowed, which is what makes the CASE-by-CASE enforcement behavior
-// (trial expiring mid-session, legacy quinielas, unknown/corrupt plan
-// values, etc.) testable in isolation, deterministically, without a
+// competitionSync.js/autoResults.js/sportsDataHealth.js: can't be
+// require()'d in tests without a live Postgres connection) — pure, no
+// I/O, no mutation of inputs, fully deterministic and testable without a
 // database or a live clock.
 //
-// Everything here is pure: no I/O, no mutation of its inputs.
+// ==========================================================================
+// THE TWO DIMENSIONS — kept structurally separate throughout this file,
+// never conflated into one number:
+//
+//   PLAN / CAPACITY  — how many PEOPLE can be registered right now. A live
+//                       count: participants.length vs entitlement.participantLimit.
+//                       Removing a participant genuinely frees a slot.
+//
+//   LIFECYCLE        — how much TIME/USE a quiniela gets, expressed (when
+//                       there's no league) as a durable, monotonically
+//                       increasing count of rounds ever published. Deleting
+//                       a round does NOT return lifecycle budget — the
+//                       counter lives in platform_index (owner-writable
+//                       meta can never touch it), not in meta.rounds.length.
+//                       When there IS a league, lifecycle is meant to track
+//                       the tournament/season itself (see competitionIdentity
+//                       below) rather than a round count — enforcement of
+//                       THAT is explicitly NOT implemented yet (see the
+//                       OPEN DECISION comment on computeCompetitionIdentity).
+// ==========================================================================
 
-// ---- Plan catalog ------------------------------------------------------
+// ---- Commercial config: the DYNAMIC, server-side SSOT ------------------
 //
-// These numbers are a proposed starting point for review, not a final
-// pricing decision -- documented explicitly as such per the ticket's own
-// instruction not to silently invent final business numbers. They are
-// intentionally centralized here as named constants (never inlined at
-// each call site) so a future pricing change is a one-line edit, not a
-// grep-and-replace across server.js.
-//
-// FREE: mirrors the CURRENT global default (jornadaLimit: 5 in
-// platform_settings) that the legacy system has used until now, so a
-// brand-new Free quiniela sees limits it would already have been
-// familiar with under the old (unenforced) system. maxParticipants is a
-// new cap that did not exist at all before this ticket -- chosen as a
-// generous number for a small office/friends pool (proposed, not final).
-//
-// PLUS: not a bare "unlimited" (no limit fields at all) -- a very high
-// numeric ceiling instead. This is a deliberate choice: an explicit
-// number is auditable, testable, and gives a real (if extremely
-// generous) backstop against a runaway bug or genuine abuse, whereas
-// "no limit at all" is a single code path that, if ever miswired, has no
-// safety net. Effectively unlimited for any real usage QRACKS supports
-// today.
-//
-// FREE_TRIAL: "temporal, todo abierto" -- generous like PLUS while the
-// trial is active, automatically becomes equivalent to FREE once the
-// trial window elapses (computed at read/enforcement time below, never
-// via a background job -- consistent with this project's standing rule
-// of no schedulers/cron). The STORED plan value on platform_index never
-// changes itself when a trial expires; only the EFFECTIVE limits used
-// for enforcement do. An explicit plan change (FREE_TRIAL -> FREE or
-// FREE_TRIAL -> PLUS) is always a deliberate platform action, never
-// silently auto-applied to the stored record.
-const FREE_TRIAL_DAYS = 14; // proposed, not final -- see comment above
-
-const PLAN_LIMITS = Object.freeze({
-  FREE: Object.freeze({ maxPublishedRounds: 5, maxParticipants: 20 }),
-  PLUS: Object.freeze({ maxPublishedRounds: 9999, maxParticipants: 9999 }),
+// These are only the SEED/DEFAULT values, used exactly once when the
+// commercial_config row doesn't exist yet (fresh install / first boot
+// after this ships). Once seeded, the row in Postgres is the live
+// authority — Panel Plataforma edits it there, and every enforcement
+// decision reads the CURRENT row, never these constants directly. This
+// is what makes "$199 -> $299", "10 -> 12 participantes", etc. a config
+// change instead of a deploy.
+const DEFAULT_COMMERCIAL_CONFIG = Object.freeze({
+  version: 1,
+  updatedAt: null,
+  updatedBy: "system_default",
+  free: Object.freeze({ participantLimit: 10, manualRoundLimit: 7 }),
+  plus: Object.freeze({ participantLimit: 50, manualRoundLimit: 18, priceMXN: 199 }),
 });
 
-// The 3 named plans a platform operator can explicitly assign. Any other
-// stored value (including entirely absent -- a legacy quiniela created
-// before this ticket) is handled by getEffectivePlan below, never treated
-// as one of these three.
-const KNOWN_PLANS = Object.freeze(["FREE_TRIAL", "FREE", "PLUS"]);
-
-// ---- Effective plan resolution -----------------------------------------
-//
-// `entry` is the platform_index.quinielas[] row for one quiniela (never
-// the quiniela's own meta -- the plan is intentionally NOT trusted from
-// anything the quiniela owner can write, see server.js's classifyKey():
-// platform_index is a "platform"-tier key, writable only with the
-// platform password).
-//
-// Returns { effectivePlan, limits, isLegacy, isTrialExpired }.
-//   limits === null means "no cap enforced" (legacy quinielas created
-//   before this ticket, and any unrecognized/corrupt plan value --
-//   see the reasoning below for why unrecognized values fail OPEN, not
-//   closed).
-function getEffectivePlan(entry, nowMs) {
-  const now = typeof nowMs === "number" ? nowMs : Date.now();
-  const rawPlan = entry && entry.plan;
-
-  // Legacy: a quiniela created before this ticket shipped, or any
-  // platform_index row that was never explicitly given a plan. These
-  // were running under the OLD system, which had a global default limit
-  // that was never actually enforced server-side (see MON-001's own
-  // investigation report) -- some of them may already have MORE
-  // published rounds or participants than any new plan's limits allow.
-  // Silently reclassifying them into a hard-capped tier the moment this
-  // ships would retroactively break already-working, already-paid-for
-  // (informally) quinielas with zero admin action on their part -- an
-  // unacceptable regression for a live product with real users. They
-  // stay unlimited (exactly matching today's real, if accidental,
-  // behavior) until a platform operator explicitly assigns them a real
-  // plan via the dashboard -- a deliberate, visible, reviewable action.
-  if (!rawPlan) {
-    return { effectivePlan: "LEGACY_UNLIMITED", limits: null, isLegacy: true, isTrialExpired: false };
-  }
-
-  if (rawPlan === "FREE") {
-    return { effectivePlan: "FREE", limits: PLAN_LIMITS.FREE, isLegacy: false, isTrialExpired: false };
-  }
-  if (rawPlan === "PLUS") {
-    return { effectivePlan: "PLUS", limits: PLAN_LIMITS.PLUS, isLegacy: false, isTrialExpired: false };
-  }
-  if (rawPlan === "FREE_TRIAL") {
-    const setAtMs = entry.planSetAt ? new Date(entry.planSetAt).getTime() : NaN;
-    // Missing/unparseable planSetAt on a FREE_TRIAL row should never
-    // happen (creation always sets both together), but if it somehow
-    // does, treat the trial as NOT yet expired rather than guessing --
-    // punishing an admin with a hard block over a data anomaly that
-    // isn't their fault is worse than being briefly too generous.
-    const trialExpired = Number.isFinite(setAtMs) && (now - setAtMs) > FREE_TRIAL_DAYS * 24 * 60 * 60 * 1000;
-    if (trialExpired) {
-      // The STORED plan is still "FREE_TRIAL" -- only what gets enforced
-      // changes. A platform operator can later look at this same entry
-      // and see it's still nominally a trial that lapsed, versus a
-      // quiniela someone deliberately downgraded.
-      return { effectivePlan: "FREE_TRIAL", limits: PLAN_LIMITS.FREE, isLegacy: false, isTrialExpired: true };
-    }
-    return { effectivePlan: "FREE_TRIAL", limits: null, isLegacy: false, isTrialExpired: false };
-  }
-
-  // An entirely unrecognized plan string (a typo, a future value this
-  // deployed code doesn't know about yet, manual DB corruption, etc.).
-  // Fails OPEN (unlimited), not closed -- the same reasoning as the
-  // missing-planSetAt case above: a data anomaly should never silently
-  // lock a real admin out of publishing a jornada. The caller is
-  // expected to log this loudly (see server.js's wiring) so it gets
-  // noticed and fixed, exactly like AUTO-004's Sports Data Reliability
-  // work already established the pattern of "observe, never silently
-  // swallow."
-  return { effectivePlan: "LEGACY_UNLIMITED", limits: null, isLegacy: false, isTrialExpired: false };
+// Validates the invariants a commercial_config write must satisfy before
+// it's accepted — called by server.js before persisting an edit from
+// Panel Plataforma, so an admin fat-fingering "0" or a negative number,
+// or setting Plus below Free, can never corrupt the SSOT every
+// enforcement decision depends on.
+function isCommercialConfigValid(config) {
+  if (!config || typeof config !== "object") return false;
+  const f = config.free, p = config.plus;
+  if (!f || !p) return false;
+  if (!Number.isFinite(f.participantLimit) || f.participantLimit < 1) return false;
+  if (!Number.isFinite(f.manualRoundLimit) || f.manualRoundLimit < 1) return false;
+  if (!Number.isFinite(p.participantLimit) || p.participantLimit < f.participantLimit) return false;
+  if (!Number.isFinite(p.manualRoundLimit) || p.manualRoundLimit < f.manualRoundLimit) return false;
+  if (!Number.isFinite(p.priceMXN) || p.priceMXN < 0) return false;
+  return true;
 }
 
-// ---- Enforcement checks -------------------------------------------------
+// ---- Competition identity (with-league lifecycle) -----------------------
 //
-// Both of the following are pure, symmetric checks: they only ever
-// BLOCK an INCREASE that would cross the limit. A write that keeps the
-// count the same or decreases it (deleting a round, removing a
-// participant) is always allowed regardless of plan, and is not even
-// expected to call these functions in the first place, but they're safe
-// to call in either direction as an extra guarantee.
+// OPEN DECISION, documented explicitly rather than silently assumed:
+// sportsdbSeason (see seasonDefaults.js) is a single calendar-year string
+// like "2026-2027" covering the WHOLE football year. For a split-format
+// league (Liga MX's Apertura Jul-Dec / Clausura Jan-Jun is the concrete
+// example already in this codebase), Apertura 2026 and Clausura 2027
+// BOTH fall inside the same "2026-2027" season string — so
+// leagueId+season alone can NOT reliably distinguish them. This function
+// returns the best available identity today (leagueId:season) and this
+// comment is the flag: treat any enforcement that depends on this being
+// a unique per-tournament identity as provisional until a real
+// tournament/stage identifier is confirmed available from the provider
+// (or a product decision picks a different signal).
+function computeCompetitionIdentity(settings) {
+  const leagueId = settings && settings.sportsdbLeagueId;
+  const season = settings && settings.sportsdbSeason;
+  if (!leagueId) return null;
+  return `${leagueId}:${season || "unknown-season"}`;
+}
 
-// oldCount/newCount are the number of PUBLISHED rounds (published !== false)
-// before and after the write being validated. Only an INCREASE that
-// would push newCount over the effective limit is blocked -- editing an
-// already-published round's matches/deadline, or Competition Sync adding
-// any number of published:false prepared rounds, never changes this
-// count and is therefore never affected.
-function checkRoundPublishAllowed(entry, oldCount, newCount, nowMs) {
-  const { effectivePlan, limits } = getEffectivePlan(entry, nowMs);
-  if (newCount <= oldCount) return { allowed: true };
-  if (!limits) return { allowed: true };
-  if (newCount > limits.maxPublishedRounds) {
-    return {
-      allowed: false,
-      reason: "plan_round_limit_reached",
-      plan: effectivePlan,
-      limit: limits.maxPublishedRounds,
-    };
+// ---- Entitlement snapshots ------------------------------------------------
+//
+// An entitlement is a FROZEN snapshot of what a specific quiniela is
+// entitled to, taken at a specific moment for a specific reason. It is
+// NEVER recomputed from the live commercial_config after being granted —
+// that's the whole point: changing commercial_config tomorrow must never
+// silently change what a quiniela that already has an entitlement gets.
+// configVersionAtGrant records which config version produced these
+// numbers, purely for audit/debugging — it is never re-read at
+// enforcement time.
+
+// A brand-new quiniela's default entitlement: FREE, using whatever
+// commercial_config says FREE means RIGHT NOW. No trial period, no time
+// component at all — this is who they are until something explicit
+// changes it (a purchase, a manual grant, or an admin editing their own
+// override later).
+function buildFreeEntitlement(config, nowIso) {
+  return {
+    plan: "FREE",
+    participantLimit: config.free.participantLimit,
+    manualRoundLimit: config.free.manualRoundLimit,
+    source: "signup_default",
+    grantedAt: nowIso || new Date().toISOString(),
+    grantedBy: "system",
+    reason: null,
+    configVersionAtGrant: config.version,
+    competitionIdentity: null, // set later, if/when a league gets selected — see server.js wiring
+    revoked: false,
+  };
+}
+
+// A PLUS purchase's entitlement snapshot (the numbers this specific
+// quiniela paid for, frozen — see the module header comment on why this
+// must never silently track a later commercial_config change).
+function buildPlusEntitlement(config, nowIso, opts) {
+  const o = opts || {};
+  return {
+    plan: "PLUS",
+    participantLimit: config.plus.participantLimit,
+    manualRoundLimit: config.plus.manualRoundLimit,
+    pricePaidMXN: config.plus.priceMXN,
+    source: o.source || "purchase",
+    grantedAt: nowIso || new Date().toISOString(),
+    grantedBy: o.grantedBy || "system",
+    reason: o.reason || null,
+    configVersionAtGrant: config.version,
+    competitionIdentity: o.competitionIdentity || null,
+    revoked: false,
+  };
+}
+
+// A quiniela that existed before this ticket shipped. Deliberately NOT
+// "no entitlement at all" (that was MON-001A's mistake — see the fail-
+// closed section below for why absence must never mean unlimited).
+// Deliberately NOT a bare-infinity sentinel either — an explicit,
+// auditable, very generous numeric ceiling, consistent with this
+// project's established "PLUS is a real number, not a magic unlimited
+// code path" philosophy. Grandfathered quinielas keep exactly the
+// experience they already had (which had no real enforcement at all) —
+// this just makes that an explicit, visible, auditable fact instead of
+// an accidental side effect of missing data.
+const GRANDFATHER_CEILING = Object.freeze({ participantLimit: 100000, manualRoundLimit: 100000 });
+function buildGrandfatheredEntitlement(nowIso, opts) {
+  const o = opts || {};
+  return {
+    plan: "GRANDFATHERED",
+    participantLimit: GRANDFATHER_CEILING.participantLimit,
+    manualRoundLimit: GRANDFATHER_CEILING.manualRoundLimit,
+    source: o.source || "grandfather_migration",
+    grantedAt: nowIso || new Date().toISOString(),
+    grantedBy: "migration",
+    reason: o.reason || "Existed before commercial enforcement shipped — preserved as-is.",
+    configVersionAtGrant: null,
+    competitionIdentity: null,
+    revoked: false,
+  };
+}
+
+// A platform operator's manual grant/override (support, testing,
+// friends, promotions) — replaces MON-001A's bare `exempt:true` boolean.
+// Every field the ticket asked for an audit trail to contain lives
+// directly on the entitlement object itself: what was granted (plan/
+// limits), when, by whom, why, and — via `revoked`/`revokedAt`/
+// `revokedBy` — whether/when it was taken back. server.js additionally
+// appends every grant/revoke to entry.entitlementHistory (see server.js
+// wiring) so the FULL sequence of an entitlement's life is reconstructable,
+// not just its current state.
+function buildManualGrantEntitlement(nowIso, opts) {
+  const o = opts || {};
+  return {
+    plan: "MANUAL_GRANT",
+    participantLimit: o.participantLimit,
+    manualRoundLimit: o.manualRoundLimit,
+    source: "manual_grant",
+    grantedAt: nowIso || new Date().toISOString(),
+    grantedBy: o.grantedBy, // e.g. "platform:<identifier>" — required, never defaulted silently
+    reason: o.reason || null,
+    configVersionAtGrant: null,
+    competitionIdentity: null,
+    revoked: false,
+  };
+}
+
+// ---- Enforcement checks ---------------------------------------------------
+//
+// FAIL-CLOSED, unlike MON-001A: a missing/invalid entitlement NEVER
+// grants capacity. This is safe in practice because server.js's startup
+// migration guarantees every platform_index row has an entitlement
+// before enforcement code can ever run against it (see server.js) — so
+// "missing entitlement" should be structurally impossible in normal
+// operation. If it somehow still happens (a bug, a row created through
+// an unexpected path), the correct behavior for a commercial system is
+// to deny NEW consumption, not to silently allow it — and to make the
+// anomaly loud (server.js logs it), never silent.
+
+function isKnownPlan(plan) {
+  return plan === "FREE" || plan === "PLUS" || plan === "GRANDFATHERED" || plan === "MANUAL_GRANT";
+}
+
+// currentCount = participants.length BEFORE this write; additionalCount =
+// how many NEW participants this write would add (usually 1, but bulk-add
+// can genuinely add several at once — and a maliciously crafted payload
+// could claim to add many in a single call, so this must handle N, not
+// just assume 1). A live check — removing a participant later genuinely
+// frees a slot for someone new.
+function checkParticipantCapacity(entitlement, currentCount, additionalCount) {
+  const add = Number.isFinite(additionalCount) ? additionalCount : 1;
+  if (add <= 0) return { allowed: true }; // no new capacity requested -- never block, even if currentCount already exceeds the limit (e.g. a later-reduced config, or a grandfathered/legacy quiniela)
+  if (!entitlement || entitlement.revoked || !isKnownPlan(entitlement.plan) || !Number.isFinite(entitlement.participantLimit)) {
+    return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
+  }
+  if (currentCount + add > entitlement.participantLimit) {
+    return { allowed: false, reason: "plan_participant_limit_reached", plan: entitlement.plan, limit: entitlement.participantLimit };
   }
   return { allowed: true };
 }
 
-// oldCount/newCount are meta.participants.length before and after.
-function checkParticipantAddAllowed(entry, oldCount, newCount, nowMs) {
-  const { effectivePlan, limits } = getEffectivePlan(entry, nowMs);
-  if (newCount <= oldCount) return { allowed: true };
-  if (!limits) return { allowed: true };
-  if (newCount > limits.maxParticipants) {
-    return {
-      allowed: false,
-      reason: "plan_participant_limit_reached",
-      plan: effectivePlan,
-      limit: limits.maxParticipants,
-    };
+// consumedCount = the DURABLE count of rounds this quiniela has EVER
+// published (platform_index's lifecycleRoundsConsumed in server.js —
+// never meta.rounds.length, which deleting a round can reduce).
+// additionalCount = how many NEWLY-published round IDs this write
+// introduces (normally 1, but see the participant note above — a single
+// write could claim several at once, whether legitimately or as an
+// attempted bypass, and both must be evaluated against the total, not
+// checked one at a time as if each were independently a "+1"). Only
+// meaningful when entitlement.competitionIdentity is null (no league) —
+// see the OPEN DECISION above for why with-league lifecycle isn't
+// enforced by round count at all yet.
+function checkLifecycleRoundConsumption(entitlement, consumedCount, additionalCount) {
+  const add = Number.isFinite(additionalCount) ? additionalCount : 1;
+  if (add <= 0) return { allowed: true }; // no new consumption requested -- never block
+  if (!entitlement || entitlement.revoked || !isKnownPlan(entitlement.plan) || !Number.isFinite(entitlement.manualRoundLimit)) {
+    return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
+  }
+  if (entitlement.competitionIdentity) {
+    // With a league selected, round-count lifecycle does not apply —
+    // tournament-end enforcement is the OPEN DECISION documented above,
+    // not implemented yet. Never block here in that case.
+    return { allowed: true };
+  }
+  if (consumedCount + add > entitlement.manualRoundLimit) {
+    return { allowed: false, reason: "plan_lifecycle_limit_reached", plan: entitlement.plan, limit: entitlement.manualRoundLimit };
   }
   return { allowed: true };
 }
 
 module.exports = {
-  FREE_TRIAL_DAYS,
-  PLAN_LIMITS,
-  KNOWN_PLANS,
-  getEffectivePlan,
-  checkRoundPublishAllowed,
-  checkParticipantAddAllowed,
+  DEFAULT_COMMERCIAL_CONFIG,
+  GRANDFATHER_CEILING,
+  isCommercialConfigValid,
+  computeCompetitionIdentity,
+  buildFreeEntitlement,
+  buildPlusEntitlement,
+  buildGrandfatheredEntitlement,
+  buildManualGrantEntitlement,
+  isKnownPlan,
+  checkParticipantCapacity,
+  checkLifecycleRoundConsumption,
 };
