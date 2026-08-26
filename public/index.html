@@ -1286,10 +1286,37 @@
     name_taken: "Ya existe alguien con ese nombre — búscalo en la lista de arriba.",
     invalid_key: "Eso no se puede guardar aquí.",
     server_error: "Algo falló de nuestro lado. Intenta de nuevo en un momento.",
-    network_error: "No hay conexión en este momento. Revisa tu internet e intenta de nuevo."
+    network_error: "No hay conexión en este momento. Revisa tu internet e intenta de nuevo.",
+    // MON-001A: real plan limits, enforced server-side. Never shows the
+    // plan name or the exact numeric limit in this generic fallback (the
+    // callers that already know those details — see the specific handlers
+    // below — show a more precise message with the real numbers; this is
+    // only the safety-net copy for any call site that doesn't).
+    plan_round_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
+    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite."
   };
   function humanizeError(code){
     return ERROR_MESSAGES[code] || "No se pudo completar la acción. Intenta de nuevo.";
+  }
+
+  // MON-001A: turns the server's structured plan-limit rejection
+  // ({error, limitType, plan, limit}) into a precise, friendly message —
+  // never the raw plan name/enum, always the real number so the admin
+  // knows exactly what they hit. Falls back to the generic
+  // ERROR_MESSAGES copy above if the response ever lacks the extra
+  // fields (e.g. an older cached client hitting a newer server, or any
+  // other unexpected shape) — never throws, never shows "undefined".
+  function planLimitMessage(errorBody){
+    if(!errorBody || !errorBody.limitType || !Number.isFinite(errorBody.limit)){
+      return humanizeError(errorBody && errorBody.error);
+    }
+    if(errorBody.limitType === "rounds"){
+      return `Esta quiniela ya llegó a su límite de ${errorBody.limit} jornada${errorBody.limit === 1 ? "" : "s"} publicada${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
+    }
+    if(errorBody.limitType === "participants"){
+      return `Esta quiniela ya llegó a su límite de ${errorBody.limit} participante${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
+    }
+    return humanizeError(errorBody.error);
   }
 
   // AUTO-004: groups the 9 possible reliabilityState values TheSportsDB
@@ -1344,7 +1371,11 @@
       });
       if(res.ok) return { ok: true };
       const data = await res.json().catch(() => ({}));
-      return { ok: false, error: data.error };
+      // MON-001A: pass through any extra structured fields the server sent
+      // (limitType/plan/limit for a plan-limit rejection today; harmless
+      // and unused by every pre-existing caller, which only ever reads
+      // .error) rather than discarding everything but the error code.
+      return { ok: false, ...data, error: data.error };
     }catch(e){
       return { ok: false, error: "network_error" };
     }
@@ -3039,7 +3070,12 @@
         // click re-fetches whatever object now lives in meta.rounds by id
         // (the freshly restored snapshot), so there's nothing stale left
         // for a subsequent retry to accidentally mutate.
-        errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+        // MON-001A note: with the currently chosen plan constants (FREE
+        // allows 5 published rounds), this specific screen's own publish
+        // (0 -> 1 published rounds) can never actually be blocked by the
+        // limit check -- wired here anyway for correctness/defense in
+        // depth, in case that constant ever changes.
+        errorEl.textContent = result.error === "plan_round_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
         errorEl.style.display = "block";
         cta.disabled = false;
         cta.textContent = "Publicar jornada";
@@ -3098,7 +3134,7 @@
         renderAdminSetupInvite();
       } else {
         meta.rounds = meta.rounds.filter(r => r.id !== round.id);
-        errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+        errorEl.textContent = result.error === "plan_round_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
         errorEl.style.display = "block";
         cta.disabled = false;
         cta.textContent = "Publicar jornada";
@@ -3173,7 +3209,7 @@
         feedback.textContent = `✓ ${added.length} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
       }else{
         meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
-        feedback.textContent = humanizeError(result.error);
+        feedback.textContent = planLimitMessage(result);
       }
     });
     document.getElementById("qz-setup-view-round").addEventListener("click", async () => {
@@ -3221,7 +3257,16 @@
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
       const result = await apiSelfRegister(cleanName, cleanPin);
       if(!result.ok){
-        toast(result.error === "name_taken" ? "Ya existe alguien con ese nombre — búscalo en la lista de arriba." : "No se pudo guardar, intenta de nuevo");
+        // Participant-facing copy never mentions "plan"/QRACKS billing --
+        // that's an Admin/organizer-facing concept. A regular participant
+        // just needs to know why they can't join and who to ask.
+        if(result.error === "name_taken"){
+          toast("Ya existe alguien con ese nombre — búscalo en la lista de arriba.");
+        }else if(result.error === "plan_participant_limit_reached"){
+          toast("Esta quiniela ya llegó al límite de participantes que puede aceptar por ahora. Avísale al organizador.");
+        }else{
+          toast("No se pudo guardar, intenta de nuevo");
+        }
         return;
       }
       toast("¡Bienvenido, " + cleanName + "! ✅");
@@ -5084,7 +5129,7 @@
           // Force the form to rebuild from the restored round on the next
           // render, instead of showing the failed edit as if it had stuck.
           renderAdminRondas._draft = null;
-          toast(humanizeError(result.error));
+          toast(planLimitMessage(result));
           renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
         }
         return;
@@ -5101,8 +5146,16 @@
         published: true // manual rounds are visible to participants immediately, same as always — see AUTO-001
       };
       meta.rounds.push(round);
-      const ok = await setMeta(meta);
-      if(ok){
+      // MON-001A: upgraded from the boolean-only setMeta() to
+      // setMetaWithError() -- this is the primary way an admin creates
+      // rounds 2+ (round 1 goes through Admin Setup Continuity's own
+      // already-upgraded handlers), so it's the main real-world place a
+      // plan's round limit gets hit day to day. A generic "No se pudo
+      // guardar" with no rollback was already a latent gap; closing it
+      // here is what lets the new limit rejection show a precise,
+      // friendly message instead of a dead-end retry loop.
+      const result = await setMetaWithError(meta);
+      if(result.ok){
         toast("✅ Listo, la Jornada " + nextNumber + " quedó publicada.");
         if(isFirstRoundEver){
           trackOnceConfirmed(
@@ -5116,7 +5169,11 @@
         renderAdminRondas._draft = null;
         renderAdmin(document.getElementById("qz-main"));
       } else {
-        toast("No se pudo guardar, intenta otra vez");
+        // Roll back the optimistic push -- the admin's typed matches/
+        // deadline stay in the (still-open) form via renderAdminRondas._draft,
+        // exactly like every other failure path in this same function.
+        meta.rounds = meta.rounds.filter(r => r.id !== round.id);
+        toast(planLimitMessage(result));
       }
     });
 
@@ -5739,7 +5796,7 @@
       }else{
         meta.participants = snapshot;
         addBtn.disabled = false;
-        toast(humanizeError(result.error));
+        toast(planLimitMessage(result));
       }
     });
     document.getElementById("qz-bulk-add").addEventListener("click", async () => {
@@ -5765,7 +5822,7 @@
         // same error — a later render/action elsewhere in the app would
         // have seen phantom participants the server never actually has.
         meta.participants = snapshot;
-        statusEl.textContent = humanizeError(result.error);
+        statusEl.textContent = planLimitMessage(result);
         statusEl.style.color = "var(--red)";
         return;
       }

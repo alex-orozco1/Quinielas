@@ -11,6 +11,7 @@ const { Pool } = require("pg");
 const sportsDataProvider = require("./sportsDataProvider");
 const { ProviderError } = require("./providers/theSportsDbAdapter");
 const { nextSportsDataHealth, DEFAULT_SPORTS_DATA_HEALTH } = require("./sportsDataHealth");
+const { getEffectivePlan, checkRoundPublishAllowed, checkParticipantAddAllowed } = require("./planLimits");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
@@ -897,6 +898,48 @@ app.post("/api/kv/:key", async (req, res) => {
       finalValue = mergeProtectedMetaFields(oldValue, value, authTier);
       const roundsCheck = validateRoundsIntegrity(finalValue, oldValue);
       if (!roundsCheck.ok) return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
+
+      // MON-001A: real, server-side enforcement of plan limits — closes the
+      // gap the MON-001 investigation found (the old "free jornada limit"
+      // only ever hid a button in the UI; nothing on the server actually
+      // stopped a round or a participant from being added past it). Only
+      // fires on a genuine INCREASE in published-round-count or
+      // participant-count — editing an already-published round, adding any
+      // number of published:false prepared rounds (Competition Sync),
+      // removing a round/participant, or any other meta change is
+      // completely unaffected. The plan itself is read fresh from
+      // platform_index here — never trusted from the request body, which
+      // the quiniela owner controls and could otherwise simply omit any
+      // limit check by never sending one.
+      if (info.slug) {
+        const oldPublishedCount = (oldValue.rounds || []).filter((r) => r.published !== false).length;
+        const newPublishedCount = (finalValue.rounds || []).filter((r) => r.published !== false).length;
+        const oldParticipantCount = (oldValue.participants || []).length;
+        const newParticipantCount = (finalValue.participants || []).length;
+        if (newPublishedCount > oldPublishedCount || newParticipantCount > oldParticipantCount) {
+          const platformIdx = await getRow("platform_index");
+          const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+            ? platformIdx.quinielas.find((q) => q.slug === info.slug)
+            : null;
+          if (entry && entry.plan && !["FREE_TRIAL", "FREE", "PLUS"].includes(entry.plan)) {
+            // Defensive observability only (see planLimits.js's own comment
+            // on why unrecognized plan values fail open, not closed) — a
+            // corrupt/unknown plan string should never silently block a
+            // real admin, but it should never silently go unnoticed either.
+            console.error("unrecognized plan value on platform_index entry", { slug: info.slug, plan: entry.plan });
+          }
+          if (entry && !entry.exempt) {
+            const roundCheck = checkRoundPublishAllowed(entry, oldPublishedCount, newPublishedCount);
+            if (!roundCheck.allowed) {
+              return res.status(402).json({ error: roundCheck.reason, limitType: "rounds", plan: roundCheck.plan, limit: roundCheck.limit });
+            }
+            const participantCheck = checkParticipantAddAllowed(entry, oldParticipantCount, newParticipantCount);
+            if (!participantCheck.allowed) {
+              return res.status(402).json({ error: participantCheck.reason, limitType: "participants", plan: participantCheck.plan, limit: participantCheck.limit });
+            }
+          }
+        }
+      }
     } else if (info.kind === "picks") {
       // SEC-001 — Atomic Round Lock: previously, reading the meta (to check the
       // deadline) and writing the picks were two separate, unlocked operations,
@@ -1112,6 +1155,27 @@ app.post("/api/self-register", async (req, res) => {
     if (value.participants.some((p) => p.name.toLowerCase() === cleanName.toLowerCase())) {
       return res.status(409).json({ error: "name_taken" });
     }
+    // MON-001A: same real, server-side plan-limit enforcement as the
+    // generic meta-write path, for the one write flow that bypasses it
+    // entirely (self-registration writes meta directly, not through
+    // POST /api/kv/:key). Slug is derived from metaKey itself (the same
+    // pattern classifyKey() already uses) rather than trusted from the
+    // request body's separate `slug` field, so this can never be pointed
+    // at a different quiniela's plan than the one actually being written to.
+    const metaKeyMatch = String(metaKey).match(/^quiniela:([a-z0-9-]{1,60}):meta$/);
+    const derivedSlug = metaKeyMatch ? metaKeyMatch[1] : null;
+    if (derivedSlug) {
+      const platformIdx = await getRow("platform_index");
+      const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+        ? platformIdx.quinielas.find((q) => q.slug === derivedSlug)
+        : null;
+      if (entry && !entry.exempt) {
+        const participantCheck = checkParticipantAddAllowed(entry, value.participants.length, value.participants.length + 1);
+        if (!participantCheck.allowed) {
+          return res.status(402).json({ error: participantCheck.reason, limitType: "participants", plan: participantCheck.plan, limit: participantCheck.limit });
+        }
+      }
+    }
     const newParticipant = {
       id: "p_" + crypto.randomBytes(9).toString("hex"),
       name: cleanName, isAdmin: false, paid: false, pin: hashPassword(pin)
@@ -1233,10 +1297,16 @@ app.post("/api/create-quiniela", async (req, res) => {
 
     // Note: exempt is intentionally never settable here — only the platform
     // dashboard (with the platform password) can grant that.
+    // MON-001A: every new quiniela starts on an explicit FREE_TRIAL plan —
+    // never relies on getEffectivePlan()'s legacy fallback, which exists
+    // only for rows that predate this ticket. planSetBy documents WHY this
+    // value exists, distinguishing "the system assigned this automatically
+    // at creation" from a deliberate later platform action.
     idx.quinielas.push({
       slug: cleanSlug, name: cleanGroupName, creatorName: cleanCreatorName,
       contact: cleanContact, createdAt: new Date().toISOString(),
-      participantCount: 1, roundCount: 0
+      participantCount: 1, roundCount: 0,
+      plan: "FREE_TRIAL", planSetAt: new Date().toISOString(), planSetBy: "system_default"
     });
     await putRow("platform_index", idx, client);
 

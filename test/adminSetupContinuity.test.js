@@ -118,7 +118,11 @@ test("CASE F (PIN save failure): the PIN input's value/state is never cleared on
 test("CASE G: renderAdminSetupReview's publish failure restores the round from a snapshot AND keeps the admin on the same screen", () => {
   const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("const snapshot = JSON.parse(JSON.stringify(liveRound));"), "must snapshot before mutating");
-  assert.ok(body.includes('errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";'));
+  // MON-001A: the generic fallback copy is now conditional on the error
+  // NOT being a plan-limit rejection (which shows the precise
+  // planLimitMessage() instead) -- still shown for every other failure.
+  assert.ok(body.includes('"No pudimos publicar la jornada. Tus cambios siguen aquí."'));
+  assert.ok(body.includes("planLimitMessage(result)"));
   assert.ok(!body.includes("renderAdminSetupManual()"), "failure path must not navigate to a different screen");
 });
 
@@ -135,7 +139,8 @@ test("QA fix (Blocker 2): every click re-fetches the round CURRENTLY living in m
 test("CASE G: renderAdminSetupManual's publish failure removes only the failed round, keeps typed content for retry", () => {
   const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
   assert.ok(body.includes("meta.rounds = meta.rounds.filter(r => r.id !== round.id);"), "must roll back the optimistic push on failure");
-  assert.ok(body.includes('errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";'));
+  assert.ok(body.includes('"No pudimos publicar la jornada. Tus cambios siguen aquí."'));
+  assert.ok(body.includes("planLimitMessage(result)"));
 });
 
 test("CASE C: renderAdminSetupResolve AWAITS the sync-competition fetch before deciding review vs manual", () => {
