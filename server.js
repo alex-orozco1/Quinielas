@@ -13,6 +13,7 @@ const { ProviderError } = require("./providers/theSportsDbAdapter");
 const { nextSportsDataHealth, DEFAULT_SPORTS_DATA_HEALTH } = require("./sportsDataHealth");
 const {
   DEFAULT_COMMERCIAL_CONFIG, isCommercialConfigValid, computeCompetitionIdentity,
+  evaluateCompetitionBinding,
   buildFreeEntitlement, buildGrandfatheredEntitlement,
   checkParticipantCapacity, checkLifecycleRoundConsumption,
 } = require("./planLimits");
@@ -1882,6 +1883,13 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // MON-001D: platform_index is locked FIRST, before this quiniela's own
+    // meta row — the SAME order already used by POST /api/kv/:key's
+    // quiniela-meta branch and POST /api/self-register (MON-001B/C).
+    // Before this ticket, sync-competition locked only metaKey; adding the
+    // entitlement read in the opposite order would have introduced a real
+    // deadlock risk against those two paths.
+    const platformIdx = await getRowLocked("platform_index", client);
     const meta = await getRowLocked(metaKey, client);
     if (!meta) {
       await client.query("ROLLBACK");
@@ -1902,6 +1910,48 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       console.log("sync-competition: no league configured", { slug });
       await client.query("ROLLBACK");
       return res.json({ ok: true, reliabilityState: "competition_not_supported", createdRounds: 0, createdMatches: 0, skippedEvents: 0, eventsFetched: 0, distinctProviderRounds: 0 });
+    }
+
+    // MON-001D: competition binding enforcement — the real backend guard
+    // that stops one quiniela (and one Plus purchase) from being reused
+    // for a second tournament. The requested identity is derived from the
+    // league+season THIS request would import, and compared against the
+    // identity the quiniela's entitlement is bound to (platform_index,
+    // platform-tier — not owner-writable). A mismatch is refused before
+    // the provider is even called, so no data is fetched, imported, or
+    // partially written for the wrong tournament.
+    const requestedIdentity = computeCompetitionIdentity({ sportsdbLeagueId: externalLeagueId, sportsdbSeason: season });
+    const bindingEntry = platformIdx && Array.isArray(platformIdx.quinielas)
+      ? platformIdx.quinielas.find((q) => q.slug === slug)
+      : null;
+    if (bindingEntry) {
+      const binding = evaluateCompetitionBinding(bindingEntry.entitlement, requestedIdentity);
+      if (binding.violation) {
+        await client.query("ROLLBACK");
+        console.error("sync-competition blocked by competition binding", {
+          slug, requestedIdentity, boundIdentity: binding.boundIdentity, reason: binding.reason,
+        });
+        return res.status(402).json({
+          error: binding.reason,
+          boundIdentity: binding.boundIdentity || null,
+          requestedIdentity: requestedIdentity || null,
+          createdRounds: 0, createdMatches: 0, skippedEvents: 0,
+        });
+      }
+      // Not yet bound (a quiniela created without a league that has just
+      // selected one, or one created before this ticket): adopt this
+      // tournament now, forward-looking. Any manual rounds already played
+      // keep their consumed lifecycle — adoption never refunds, resets, or
+      // deletes anything (MON-001D §8).
+      if (binding.adopt) {
+        bindingEntry.entitlement.competitionIdentity = binding.identity;
+        bindingEntry.entitlementHistory = bindingEntry.entitlementHistory || [];
+        bindingEntry.entitlementHistory.push({
+          action: "competition_bound", at: new Date().toISOString(),
+          competitionIdentity: binding.identity, source: "sync_competition",
+        });
+        await putRow("platform_index", platformIdx, client);
+      }
     }
 
     let events;
@@ -1934,6 +1984,13 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     const newRounds = plannedRounds.map((r) => ({
       id: "r_" + crypto.randomBytes(5).toString("hex"),
       ...r,
+      // MON-001D: record which tournament each imported round belongs to.
+      // Purely additive and audit-oriented -- enforcement itself is the
+      // binding check above, never this field (which lives in
+      // owner-writable meta and therefore can never be trusted as an
+      // authority). It makes "are these rounds all from one tournament?"
+      // answerable after the fact without re-querying the provider.
+      competitionIdentity: requestedIdentity,
       matches: r.matches.map((m) => ({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...m })),
     }));
 

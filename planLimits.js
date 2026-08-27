@@ -287,11 +287,53 @@ function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedC
   return { allowed: true };
 }
 
+// ---- Competition binding (MON-001D) --------------------------------------
+//
+// A quiniela with a league is commercially bound to ONE tournament. Once
+// bound, importing/publishing rounds that belong to a DIFFERENT tournament
+// must be impossible — that's what stops one quiniela (and one Plus
+// purchase) from being reused season after season.
+//
+// The binding lives on the entitlement (platform_index, platform-tier
+// key) — NOT in meta.settings, which the quiniela owner can write. The
+// owner CAN still edit meta.settings.sportsdbSeason/sportsdbLeagueId
+// (subject to MON-001C's league-change block on the meta-write path), but
+// doing so can never move the binding itself; this function is what makes
+// a mismatch fail loudly instead of silently importing another tournament.
+//
+// Returns:
+//   { violation: false, adopt: true }  -- not yet bound, this identity
+//                                         should be adopted now
+//   { violation: false, adopt: false } -- already bound to exactly this
+//                                         identity, proceed normally
+//   { violation: true, ... }           -- bound to a DIFFERENT tournament
+//   { violation: true, reason: "competition_identity_unavailable" }
+//                                      -- requested identity couldn't be
+//                                         determined at all; never adopt
+//                                         or proceed on a guess
+function evaluateCompetitionBinding(entitlement, requestedIdentity) {
+  if (!entitlement) {
+    return { violation: true, reason: "entitlement_unavailable" };
+  }
+  const bound = entitlement.competitionIdentity || null;
+  if (!requestedIdentity) {
+    // An ambiguous/undeterminable competition must never extend a
+    // quiniela's commercial life: if it's already bound, an unreadable
+    // request identity can't be proven to match, so it's refused; if it's
+    // not bound yet, there's nothing safe to adopt either.
+    return { violation: true, reason: "competition_identity_unavailable", boundIdentity: bound };
+  }
+  if (!bound) return { violation: false, adopt: true, identity: requestedIdentity };
+  if (bound === requestedIdentity) return { violation: false, adopt: false, identity: bound };
+  return { violation: true, reason: "competition_mismatch", boundIdentity: bound, requestedIdentity };
+}
+
 module.exports = {
   DEFAULT_COMMERCIAL_CONFIG,
   GRANDFATHER_CEILING,
   isCommercialConfigValid,
   computeCompetitionIdentity,
+  evaluateCompetitionBinding,
   buildFreeEntitlement,
   buildPlusEntitlement,
   buildGrandfatheredEntitlement,

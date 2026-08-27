@@ -379,3 +379,220 @@ test("ensureTable() seeds commercial_config and runs the grandfathering migratio
   assert.ok(body.includes("buildGrandfatheredEntitlement("));
   assert.ok(body.includes("if (!entry.entitlement) {"));
 });
+
+// ==========================================================================
+// MON-001D: competition binding / lifecycle enforcement
+// ==========================================================================
+
+const { evaluateCompetitionBinding } = require("../planLimits");
+
+// ---- CASE M: not yet bound -> adopt (forward-looking, never destructive) ----
+
+test("CASE M: an entitlement with no competitionIdentity yet ADOPTS the requested tournament (the 'sin liga -> con liga' transition)", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const r = evaluateCompetitionBinding(ent, "thesportsdb:4350:2026-2027");
+  assert.equal(r.violation, false);
+  assert.equal(r.adopt, true);
+  assert.equal(r.identity, "thesportsdb:4350:2026-2027");
+});
+
+test("CASE M: adoption is a pure decision -- evaluateCompetitionBinding never mutates the entitlement it was handed", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  evaluateCompetitionBinding(ent, "thesportsdb:4350:2026-2027");
+  assert.equal(ent.competitionIdentity, null, "the caller decides whether/when to persist the adoption, inside its own transaction");
+});
+
+// ---- CASE D/J: same tournament -> always allowed, idempotent ----
+
+test("CASE D/J: an entitlement already bound to exactly the requested tournament proceeds normally, with no re-adoption", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  const r = evaluateCompetitionBinding(ent, "thesportsdb:4350:2026-2027");
+  assert.equal(r.violation, false);
+  assert.equal(r.adopt, false, "must not re-stamp/re-log an identity it already has -- keeps re-syncing the same tournament idempotent");
+});
+
+// ---- CASE G/I: different tournament -> blocked ----
+
+test("CASE G/I: an entitlement bound to one tournament REFUSES a different season of the same league (the 'next tournament' bypass)", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  const r = evaluateCompetitionBinding(ent, "thesportsdb:4350:2027-2028");
+  assert.equal(r.violation, true);
+  assert.equal(r.reason, "competition_mismatch");
+  assert.equal(r.boundIdentity, "thesportsdb:4350:2026-2027");
+  assert.equal(r.requestedIdentity, "thesportsdb:4350:2027-2028");
+});
+
+test("CASE N: an entitlement bound to one league REFUSES a different league entirely", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  const r = evaluateCompetitionBinding(ent, "thesportsdb:4328:2026-2027");
+  assert.equal(r.violation, true);
+  assert.equal(r.reason, "competition_mismatch");
+});
+
+// ---- CASE L: every supported annual league distinguishes season to season ----
+
+test("CASE L: for each of the 6 annual leagues QRACKS supports, consecutive seasons produce DIFFERENT identities (never collide)", () => {
+  ["4328", "4335", "4331", "4332", "4334", "4480"].forEach((leagueId) => {
+    const a = computeCompetitionIdentity({ sportsdbLeagueId: leagueId, sportsdbSeason: "2026-2027" });
+    const b = computeCompetitionIdentity({ sportsdbLeagueId: leagueId, sportsdbSeason: "2027-2028" });
+    assert.notEqual(a, b, `league ${leagueId}: consecutive seasons must never share an identity`);
+    const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: a });
+    assert.equal(evaluateCompetitionBinding(ent, b).violation, true, `league ${leagueId}: next season must be refused`);
+  });
+});
+
+// ---- CASE K: Liga MX Apertura/Clausura -- the documented, UNRESOLVED gap ----
+
+test("CASE K (KNOWN GAP, documented not hidden): Liga MX Apertura and Clausura within the same football year currently produce the SAME identity -- this test asserts the CURRENT limitation truthfully rather than pretending it's solved", () => {
+  // seasonDefaults.js's currentDefaultSeason() yields one "YYYY-YYYY"
+  // string per football year, and the normalized provider event
+  // (sportsDataProvider.normalizeEvent) does not carry strSeason or any
+  // tournament/stage label at all -- so there is genuinely no available
+  // signal today that separates Apertura from Clausura. Asserting the
+  // real behavior keeps this visible and will fail loudly the moment a
+  // future ticket introduces a real distinguishing signal.
+  const apertura = computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" });
+  const clausura = computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" });
+  assert.equal(apertura, clausura, "DOCUMENTED GAP: not currently distinguishable -- see the delivery report's open decision");
+});
+
+test("CASE K: Liga MX across DIFFERENT football years IS correctly distinguished (the partial protection that does work today)", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  assert.equal(evaluateCompetitionBinding(ent, "thesportsdb:4350:2027-2028").violation, true);
+});
+
+// ---- CASE P/Q/Z: ambiguous / missing / corrupt -> never extends lifecycle ----
+
+test("CASE Q/Z: an undeterminable requested identity (null) is REFUSED for an already-bound quiniela -- ambiguity never extends a lifecycle", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  const r = evaluateCompetitionBinding(ent, null);
+  assert.equal(r.violation, true);
+  assert.equal(r.reason, "competition_identity_unavailable");
+  assert.equal(r.boundIdentity, "thesportsdb:4350:2026-2027", "the already-confirmed identity is reported back intact, never cleared");
+});
+
+test("CASE Q/Z: an undeterminable requested identity is ALSO refused when not yet bound -- never adopts a guess", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const r = evaluateCompetitionBinding(ent, null);
+  assert.equal(r.violation, true);
+  assert.equal(r.adopt, undefined, "must never adopt an identity it couldn't determine");
+});
+
+test("CASE Z: a missing entitlement is refused (fail-closed), never treated as 'unbound, adopt anything'", () => {
+  const r = evaluateCompetitionBinding(null, "thesportsdb:4350:2026-2027");
+  assert.equal(r.violation, true);
+  assert.equal(r.reason, "entitlement_unavailable");
+});
+
+// ---- CASE P: a provider outage never mutates an already-confirmed identity ----
+
+test("CASE P: evaluateCompetitionBinding is pure and read-only -- a provider failure elsewhere can never cause it to clear or rewrite a bound identity", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  const before = ent.competitionIdentity;
+  evaluateCompetitionBinding(ent, null);
+  evaluateCompetitionBinding(ent, "thesportsdb:4328:2027-2028");
+  assert.equal(ent.competitionIdentity, before, "the bound identity survives any number of failed/mismatched evaluations untouched");
+});
+
+// ---- CASE E/F: a league-bound quiniela is NOT limited to 7/18 rounds ----
+
+test("CASE E: a FREE quiniela WITH a league is never accidentally capped at the manual 7-round limit", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  ent.competitionIdentity = "thesportsdb:4350:2026-2027";
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 30, 1).allowed, true);
+});
+
+test("CASE F: a PLUS quiniela WITH a league is never accidentally capped at the manual 18-round limit", () => {
+  const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: "thesportsdb:4350:2026-2027" });
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 40, 1).allowed, true);
+});
+
+test("CASE S: participant capacity is completely unaffected by competition binding -- a league-bound FREE quiniela still stops at its dynamic participant limit", () => {
+  const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  ent.competitionIdentity = "thesportsdb:4350:2026-2027";
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 9, 1).allowed, true);
+  assert.equal(checkParticipantCapacity(ent, DEFAULT_COMMERCIAL_CONFIG, 10, 1).allowed, false);
+});
+
+// ---- CASE R: grandfathered quinielas are never retroactively bound ----
+
+test("CASE R: a GRANDFATHERED entitlement has no competitionIdentity and is therefore never blocked by binding -- legacy quinielas are not retroactively locked to a tournament", () => {
+  const ent = buildGrandfatheredEntitlement();
+  assert.equal(ent.competitionIdentity, null);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 500, 1).allowed, true);
+  // It CAN still adopt one if it ever syncs a league -- forward-looking only, never retroactive.
+  assert.equal(evaluateCompetitionBinding(ent, "thesportsdb:4350:2026-2027").adopt, true);
+});
+
+// ---- Structural: server.js wiring for MON-001D ----
+
+test("MON-001D: sync-competition locks platform_index BEFORE the meta row -- same global order as the kv-write and self-register paths (deadlock safety)", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 2000);
+  const pIdx = body.indexOf('await getRowLocked("platform_index", client)');
+  const mIdx = body.indexOf("await getRowLocked(metaKey, client)");
+  assert.ok(pIdx !== -1 && mIdx !== -1 && pIdx < mIdx, "platform_index must be locked first");
+});
+
+test("MON-001D: sync-competition evaluates the competition binding BEFORE calling the provider -- a mismatch fetches and writes nothing at all", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 6000);
+  const bindIdx = body.indexOf("evaluateCompetitionBinding(bindingEntry.entitlement, requestedIdentity)");
+  const fetchIdx = body.indexOf("await sportsDataProvider.getSeasonEvents(");
+  assert.ok(bindIdx !== -1 && fetchIdx !== -1 && bindIdx < fetchIdx, "binding must be checked before any provider call");
+});
+
+test("MON-001D: a binding violation in sync-competition ROLLBACKs and returns 402 with both identities, importing nothing", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 6000);
+  const vIdx = body.indexOf("if (binding.violation) {");
+  assert.ok(vIdx !== -1);
+  const slice = body.slice(vIdx, vIdx + 600);
+  assert.ok(slice.includes('await client.query("ROLLBACK")'));
+  assert.ok(slice.includes("res.status(402)"));
+  assert.ok(slice.includes("boundIdentity") && slice.includes("requestedIdentity"));
+});
+
+test("MON-001D: adoption persists the identity onto the ENTITLEMENT (platform_index, platform-tier) and appends an audit-trail entry -- never into owner-writable meta", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 6000);
+  assert.ok(body.includes("bindingEntry.entitlement.competitionIdentity = binding.identity;"));
+  assert.ok(body.includes('action: "competition_bound"'));
+  assert.ok(body.includes('await putRow("platform_index", platformIdx, client);'));
+});
+
+test("MON-001D: the requested identity is derived server-side from the resolved league+season, never read from the request body", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 6000);
+  assert.ok(body.includes("const requestedIdentity = computeCompetitionIdentity({ sportsdbLeagueId: externalLeagueId, sportsdbSeason: season });"));
+  assert.ok(!body.includes("req.body.competitionIdentity"), "must never accept a client-supplied competition identity");
+});
+
+test("CASE Y: imported rounds carry competitionIdentity for auditability, but it lives in owner-writable meta and is explicitly NOT the enforcement authority", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 6000);
+  assert.ok(body.includes("competitionIdentity: requestedIdentity,"));
+  // The enforcement path reads the ENTITLEMENT, never the round's own stamp.
+  assert.ok(body.includes("evaluateCompetitionBinding(bindingEntry.entitlement,"));
+});
+
+// ---- CASE P (adoption side): a provider failure must never leave a
+// quiniela bound to an UNVERIFIED tournament ----
+
+test("CASE P: adoption is written inside the same transaction the provider-failure path ROLLBACKs -- a quiniela never gets bound to a tournament whose schedule could not actually be fetched", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 7000);
+  const adoptIdx = body.indexOf("bindingEntry.entitlement.competitionIdentity = binding.identity;");
+  const providerCatchIdx = body.indexOf('await client.query("ROLLBACK"); // fail-safe: no partial writes on provider failure');
+  assert.ok(adoptIdx !== -1 && providerCatchIdx !== -1 && adoptIdx < providerCatchIdx,
+    "adoption happens before the provider call, inside the same transaction, so a provider failure undoes it -- confirmed E2E: a sync that fails at the provider leaves competitionIdentity null rather than binding to something unverified");
+});
+
+test("CASE P: an ALREADY-bound identity is never touched by a mismatch check -- the mismatch path returns before any write, so a wrong/ambiguous request cannot clear a confirmed binding", () => {
+  const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
+  const body = serverSrc.slice(idx, idx + 7000);
+  const vIdx = body.indexOf("if (binding.violation) {");
+  const slice = body.slice(vIdx, vIdx + 600);
+  assert.ok(!slice.includes("competitionIdentity ="), "the violation branch must never assign a competition identity");
+  assert.ok(!slice.includes('putRow("platform_index"'), "the violation branch must never write platform_index at all");
+});
