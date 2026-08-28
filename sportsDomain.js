@@ -59,7 +59,7 @@ function makeCompetition({ provider, providerCompetitionId, name, sportKey }) {
 // provider season without colliding.
 function makeCompetitionInstance({
   provider, competitionId, providerSeasonId, instanceKey,
-  name, startsAt, endsAt, finished,
+  name, startsAt, endsAt, finished, instanceSeparationConfirmed,
 }) {
   if (!provider || !competitionId) {
     throw new Error("makeCompetitionInstance: provider and competitionId are required");
@@ -79,6 +79,13 @@ function makeCompetitionInstance({
     // Tri-state on purpose: true / false / null(unknown). TheSportsDB cannot
     // answer this at all, and null must never be read as "not finished".
     finished: typeof finished === "boolean" ? finished : null,
+    // DATA-003 (QA correction): does QRACKS actually KNOW how to split this
+    // competition's provider season into tournaments, or is this instance the
+    // fail-safe "one season == one tournament" default? Consumers (especially
+    // anything commercial) must be able to tell the difference instead of
+    // assuming the separation was verified. Defaults to false: unverified
+    // until a competition strategy says otherwise.
+    instanceSeparationConfirmed: instanceSeparationConfirmed === true,
   });
 }
 

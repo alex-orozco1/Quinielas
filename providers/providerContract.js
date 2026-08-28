@@ -13,9 +13,20 @@ const CAPABILITIES = Object.freeze({
   STAGES: "stages",
   // Can it say a stage/season is finished, explicitly?
   FINISHED_SIGNAL: "finished_signal",
-  // Does it model two-legged ties (leg 1/2, 2/2)?
+  // Does the provider's SCHEMA model two-legged ties (leg "1/2", "2/2")?
   LEGS: "legs",
-  // Does it group the legs of a tie under one aggregate?
+  // Does the provider's SCHEMA include an aggregate concept grouping the legs
+  // of a tie?
+  //
+  // READ THIS BEFORE RELYING ON IT. Every capability here means
+  // "the provider's schema CAN supply this", NOT "every event will have it".
+  // The distinction is concrete, not theoretical: the real Sportmonks
+  // Apertura 2025 Final (stage 77479151, fixtures 19609341 / 19609342) came
+  // back with aggregate_id = null on BOTH legs even though Sportmonks models
+  // aggregates. Consumers must therefore treat event.aggregateKey as
+  // genuinely optional and must never read hasCapability(AGGREGATES) as a
+  // guarantee of a non-null value. The same applies to providerRoundId, which
+  // was also null on those fixtures.
   AGGREGATES: "aggregates",
   // Can more than one tournament (Apertura/Clausura) live in one provider
   // season, distinguishably?
