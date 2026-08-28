@@ -13,9 +13,6 @@
 // The caller (server.js) is responsible for assigning ids (a
 // storage/DB-adjacent concern) and persisting the result.
 
-// MON-001E: see the grouping comment below. Conservative on purpose.
-const ROUND_SPLIT_GAP_DAYS = 5;
-
 function planCompetitionSync({ existingRounds, events, provider }) {
   const existingExternalRoundIds = new Set(
     (existingRounds || [])
@@ -38,55 +35,19 @@ function planCompetitionSync({ existingRounds, events, provider }) {
   // Group by provider round (string). Events with no round at all are never
   // guessed into an existing or invented round — they're counted and
   // otherwise ignored.
-  const rawGroups = new Map();
+  const groups = new Map();
   let skippedEvents = 0;
   for (const ev of events) {
     if (ev.round == null) { skippedEvents++; continue; }
     if (existingExternalRoundIds.has(ev.round)) continue; // already imported — untouched, not a "skip"
-    if (!rawGroups.has(ev.round)) rawGroups.set(ev.round, []);
-    rawGroups.get(ev.round).push(ev);
-  }
-
-  // MON-001E: a single provider round id does NOT always mean a single
-  // matchday. Two real, confirmed cases from Liga MX broke the old
-  // "group by intRound alone" rule:
-  //   1. A whole knockout phase can share one code — Apertura 2025 returned
-  //      intRound=0 for four separate matchdays (Nov 21, Nov 27, Dec 4,
-  //      Dec 12). They were collapsing into ONE round.
-  //   2. Within one strSeason, Apertura and Clausura BOTH restart at
-  //      intRound=1 — so Apertura J1 and Clausura J1 (five months apart)
-  //      were merging into a single "Jornada 1".
-  // Splitting on a date gap fixes both WITHOUT inventing any semantics about
-  // what 0/125/200 mean: it only asserts that matches played weeks apart are
-  // not the same matchday. The threshold is deliberately conservative — a
-  // normal matchday spans Fri→Mon (<=3 days), while the real observed gaps
-  // between distinct phases were 6-8 days — so ordinary rounds, including
-  // ones with a postponed match a few days later, are never split.
-  const groups = [];
-  for (const [externalRoundId, evs] of rawGroups) {
-    const dated = evs.filter((e) => e.dateTime && Number.isFinite(new Date(e.dateTime).getTime()));
-    const undated = evs.filter((e) => !(e.dateTime && Number.isFinite(new Date(e.dateTime).getTime())));
-    if (!dated.length) { groups.push({ externalRoundId, evs }); continue; }
-    dated.sort((a, b) => new Date(a.dateTime) - new Date(b.dateTime));
-    let bucket = [dated[0]];
-    for (let i = 1; i < dated.length; i++) {
-      const gapMs = new Date(dated[i].dateTime) - new Date(dated[i - 1].dateTime);
-      if (gapMs > ROUND_SPLIT_GAP_DAYS * 24 * 60 * 60 * 1000) {
-        groups.push({ externalRoundId, evs: bucket });
-        bucket = [];
-      }
-      bucket.push(dated[i]);
-    }
-    // Undated events (if any) ride along with the first bucket rather than
-    // being dropped — same defensive posture as before.
-    groups.push({ externalRoundId, evs: bucket.concat(groups.length ? [] : undated) });
-    if (undated.length && groups.length > 1) groups[groups.length - 1].evs = groups[groups.length - 1].evs.concat(undated);
+    if (!groups.has(ev.round)) groups.set(ev.round, []);
+    groups.get(ev.round).push(ev);
   }
 
   let nextFallbackNumber = Math.max(0, ...(existingRounds || []).map((r) => Number(r.number) || 0)) + 1;
   const newRounds = [];
 
-  for (const { externalRoundId, evs } of groups) {
+  for (const [externalRoundId, evs] of groups) {
     // Numeric provider round ids get QRACKS's natural round number (so
     // "Jornada 17" matches the provider's own round 17); non-numeric labels
     // (e.g. "Final") fall back to the next sequential number, same as manual
@@ -127,42 +88,10 @@ function planCompetitionSync({ existingRounds, events, provider }) {
     // seed a deadline from is skipped rather than guessed at.
     if (!matches.length || earliestKickoffMs == null) continue;
 
-    // MON-001E: round.number keeps its EXACT existing meaning and behaviour —
-    // it is the commercial/ordering key that Payment Penalty
-    // (r.number >= startsAtRound), Adicionales (bet.closesAtRound), scoring
-    // cutoffs (r.number > cutoffRoundNumber) and "next manual round"
-    // (max(number)+1) all depend on. It is NOT a display field and NOT a
-    // provider passthrough to be reinterpreted.
-    //
-    // The ONE correction here: a provider round id of 0 was previously taken
-    // literally, producing round.number = 0. That is not a valid QRACKS round
-    // number (rounds are 1-based) and it silently broke Payment Penalty —
-    // `0 >= startsAtRound` is false, so a knockout round coded 0 was excluded
-    // from penalties entirely. Codes below 1 now take the same sequential
-    // fallback that non-numeric labels ("Final") have always used. Every
-    // other value keeps byte-for-byte identical behaviour.
-    const numericValue = isNumeric ? Number(externalRoundId) : null;
-    const usableAsNumber = numericValue != null && numericValue >= 1;
-    const number = usableAsNumber ? numericValue : nextFallbackNumber++;
+    const number = isNumeric ? Number(externalRoundId) : nextFallbackNumber++;
 
     newRounds.push({
       number,
-      // MON-001E: monotonic chronological ordering key, derived from the
-      // round's own earliest kickoff — never from a provider code. Additive
-      // and currently unread by any consumer: it exists so ordering can
-      // later stop depending on `number` without another migration. Assigned
-      // after the loop, once every new round's kickoff is known.
-      sortKey: null,
-      // MON-001E: the semantic label the UI shows. null means "no semantic
-      // label known — fall back to Jornada {number}", which is exactly the
-      // current behaviour for every existing round. Deliberately NOT derived
-      // from provider codes: MON-001D.2 proved 0/125/200 have no stable
-      // meaning (125 appeared in Clausura but not Apertura, and 0 covered
-      // four different matchdays), so inventing "Cuartos de Final" here would
-      // be a guess. An Admin can set it manually; a future ticket can
-      // populate it from a provider that actually models stages.
-      displayLabel: null,
-      stage: "UNKNOWN",
       matches,
       deadline: new Date(earliestKickoffMs).toISOString(),
       results: {},
@@ -170,32 +99,8 @@ function planCompetitionSync({ existingRounds, events, provider }) {
       published: false, // prepared, not yet visible to participants — see AUTO-001 §14/§15
       provider,
       externalRoundId,
-      // MON-001E: raw provider metadata carried through from
-      // sportsDataProvider.normalizeEvent(). Persisted for auditability and
-      // future work; never an enforcement authority (it lives in
-      // owner-writable meta).
-      providerReferences: {
-        [provider]: {
-          rawRound: (evs[0] && evs[0].providerMeta && evs[0].providerMeta.rawRound) || externalRoundId,
-          season: (evs[0] && evs[0].providerMeta && evs[0].providerMeta.season) || null,
-          eventIds: matches.map((m) => m.externalEventId).filter(Boolean),
-        },
-      },
     });
   }
-
-  // MON-001E: assign sortKey chronologically across the rounds this sync is
-  // proposing, continuing after whatever the quiniela already has. Existing
-  // rounds are never touched (they simply have no sortKey until a future
-  // ticket backfills one), consistent with this ticket being purely additive.
-  const existingMaxSortKey = Math.max(
-    0,
-    ...(existingRounds || []).map((r) => Number(r.sortKey) || 0)
-  );
-  newRounds
-    .slice()
-    .sort((a, b) => new Date(a.deadline) - new Date(b.deadline))
-    .forEach((r, i) => { r.sortKey = existingMaxSortKey + i + 1; });
 
   return { newRounds, skippedEvents };
 }
