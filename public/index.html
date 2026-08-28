@@ -2284,6 +2284,19 @@
   }
 
   // ---------- derived helpers ----------
+  // MON-001E: the single place the UI decides what a round is CALLED.
+  // round.number stays the commercial/ordering key (Payment Penalty,
+  // Adicionales, scoring cutoffs) and is never shown directly again from
+  // these call sites. displayLabel is null for every existing round, so this
+  // returns exactly "Jornada {number}" — byte-for-byte the current
+  // behaviour — until something sets a real semantic label (an Admin, or a
+  // future provider that actually models stages).
+  function roundLabel(round){
+    if(!round) return "";
+    if(round.displayLabel) return round.displayLabel;
+    return "Jornada " + round.number;
+  }
+
   function isRoundLocked(round){
     if(!round) return true;
     return serverNow() > new Date(round.deadline).getTime();
@@ -3334,7 +3347,7 @@
           <div>
             <span class="qz-brand-mark"><img src="${QRACKS_ICON_SRC}" alt="" style="width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:4px;">QRACKS</span>
             <div class="qz-brand-context">${esc(meta.groupName)}</div>
-            ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
+            ${contextRound ? `<div class="qz-brand-round">${esc(roundLabel(contextRound))}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             ${currentUser.isAdmin ? `<span class="qz-tooltip-wrap${headerShareTooltipVisible ? ' qz-tooltip-active' : ''}" id="qz-header-copy-wrap"><button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Compartir esta quiniela" aria-label="Compartir esta quiniela" aria-describedby="qz-header-copy-tooltip" aria-expanded="${headerShareTooltipVisible ? 'true' : 'false'}" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button><span class="qz-tooltip-bubble" id="qz-header-copy-tooltip" role="tooltip">Compartir esta quiniela</span></span>` : ``}
@@ -3679,7 +3692,7 @@
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     box.innerHTML = `
       <div class="clock-card" style="margin-bottom:14px;">
-        <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `Jornada ${round.number} · cierre de quiniela`}</div>
+        <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `${roundLabel(round)} · cierre de quiniela`}</div>
         <div id="qz-clockbody-${round.id}">${clockDigitsHtml(round.deadline)}</div>
       </div>
       <div id="qz-matches-${round.id}"></div>
@@ -3807,7 +3820,7 @@
     const pickLabel = (val, m) => val==='A' ? m.teamA : val==='B' ? m.teamB : val==='D' ? 'Empate' : '—';
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Jornada ${round.number}</span>
+        <span>${esc(roundLabel(round))}</span>
         <span class="badge unpaid">🔒 Cerrada, esperando resultado</span>
       </div>
       ${round.matches.map(m => {
@@ -3866,7 +3879,7 @@
     }).join("");
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Jornada ${round.number}</span>
+        <span>${esc(roundLabel(round))}</span>
         <span class="badge paid">${correct}/${total} aciertos</span>
       </div>
       ${matchesHtml}
@@ -4261,7 +4274,7 @@
     const list = document.getElementById("qz-hist-list");
     list.innerHTML = published.map(r => `
       <div class="history-item">
-        <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos</span></div>
+        <div><strong>${esc(roundLabel(r))}</strong> <span class="muted">· ${r.matches.length} partidos</span></div>
         <button class="btn btn-ghost btn-sm" data-round="${r.id}">Ver detalle</button>
       </div>
     `).join("");
@@ -4299,12 +4312,12 @@
     detail.innerHTML = `
       ${mvps.length ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
-          <div class="eyebrow" style="color:var(--gold-dim);">🏅 MVP de la Jornada ${round.number}</div>
+          <div class="eyebrow" style="color:var(--gold-dim);">🏅 MVP de la ${esc(roundLabel(round))}</div>
           <p style="margin:4px 0 0;">${mvps.map(esc).join(", ")} — ${maxCorrect} de ${round.matches.length} aciertos</p>
         </div>
       ` : ``}
       <div class="card" style="overflow-x:auto;">
-        <h3>Jornada ${round.number} — detalle</h3>
+        <h3>${esc(roundLabel(round))} — detalle</h3>
         <table>
           <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Pts</th></tr></thead>
           <tbody>
@@ -4759,7 +4772,7 @@
       return `
         <div class="card">
           <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-            <span>Jornada ${round.number} · ${total} partidos</span>
+            <span>${esc(roundLabel(round))} · ${total} partidos</span>
             <div style="display:flex;gap:6px;">
               ${missingNames.length ? `<button class="btn btn-ghost btn-sm" data-copy="${round.id}">📋 Copiar</button>` : ``}
               ${missingNames.length ? `<button class="btn btn-gold btn-sm" data-whatsapp="${round.id}">🟢 Abrir en WhatsApp</button>` : ``}
@@ -4779,7 +4792,7 @@
     function reminderText(round, missing){
       const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
       const bullets = missing.map(n => `• ${n}`).join("\n");
-      return `${link}\n\n⏰ Faltan por contestar la Jornada ${round.number}:\n\n${bullets}\n\n¡No se les olvide antes del cierre!`;
+      return `${link}\n\n⏰ Faltan por contestar la ${roundLabel(round)}:\n\n${bullets}\n\n¡No se les olvide antes del cierre!`;
     }
 
     function missingFor(round){
@@ -4961,7 +4974,7 @@
             : (r.resultsPublished ? "resultados capturados" : (isRoundLocked(r) ? "cerrada, sin resultados" : "abierta"));
           return `
           <div class="history-item">
-            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}</span></div>
+            <div><strong>${esc(roundLabel(r))}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}</span></div>
             <div style="display:flex;gap:6px;">
               ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${r.id}">Publicar jornada</button>` : ``}
               <button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>
@@ -5019,7 +5032,7 @@
         round.published = true;
         const ok = await setMeta(meta);
         if(ok){
-          toast(`✅ Listo, la Jornada ${round.number} ya es visible para los participantes.`);
+          toast(`✅ Listo, la ${roundLabel(round)} ya es visible para los participantes.`);
           renderAdmin(document.getElementById("qz-main"));
         }else{
           round.published = false; // roll back the in-memory flip on failure
@@ -5120,7 +5133,7 @@
         editingRound.deadline = new Date(draft.deadline).toISOString();
         const result = await setMetaWithError(meta);
         if(result.ok){
-          toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");
+          toast("✅ Listo, la " + roundLabel(editingRound) + " quedó actualizada.");
           renderAdminRondas._editingId = null;
           renderAdminRondas._draft = null;
           renderAdmin(document.getElementById("qz-main"));
@@ -5357,7 +5370,7 @@
           <button class="btn btn-ghost btn-sm" id="qz-bulk-autofill">🔎 Buscar resultados pendientes (todas)</button>
         </div>
         <select id="qz-round-select">
-          ${eligibleRounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>Jornada ${r.number} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
+          ${eligibleRounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>${esc(roundLabel(r))} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
         </select>
         <p class="muted" id="qz-bulk-autofill-status" style="margin-top:8px;margin-bottom:-4px;"></p>
       </div>
@@ -5454,7 +5467,7 @@
           ${correcting ? `<span class="badge unpaid" style="margin-left:6px;">✏️ Corrigiendo — lo publicado no cambia hasta que confirmes</span>` : ``}
         </p>
         <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-          <span>Jornada ${round.number} — resultado de cada partido</span>
+          <span>${esc(roundLabel(round))} — resultado de cada partido</span>
           ${editable ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>` : ``}
         </div>
         <p class="muted" id="qz-autofill-status" style="margin-top:-4px;"></p>
@@ -5493,7 +5506,7 @@
       </div>
       ${jornadaBets.length ? `
         <div class="card" style="padding:8px 12px;overflow-x:auto;">
-          <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas de esta jornada (Jornada ${round.number})</div>
+          <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas de esta jornada (${esc(roundLabel(round))})</div>
           <p class="muted" style="padding:0 12px;margin-top:-4px;">Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
           <table>
             <thead>
@@ -5599,7 +5612,7 @@
         }
         const stillComplete = round.matches.every(m => VALID_RESULTS.includes(source[m.id]));
         if(!stillComplete){ toast("Falta el resultado de algún partido"); return; }
-        const confirmTitle = correcting ? `¿Publicar la corrección de la Jornada ${round.number}?` : `¿Publicar los resultados de la Jornada ${round.number}?`;
+        const confirmTitle = correcting ? `¿Publicar la corrección de la ${roundLabel(round)}?` : `¿Publicar los resultados de la ${roundLabel(round)}?`;
         const confirmMsg = correcting
           ? `• Los resultados oficiales van a cambiar a los que acabas de capturar.\n` +
             `• Los puntos de todos se van a recalcular.\n` +
@@ -5617,7 +5630,7 @@
         round.draftResults = null;
         logAudit(
           wasAlreadyPublished ? "Corrigió resultados" : "Publicó resultados",
-          `Jornada ${round.number}`
+          roundLabel(round)
         );
         const result = await setMetaWithError(meta);
         if(result.ok){
@@ -5665,10 +5678,10 @@
     const reopenBtn = document.getElementById("qz-reopen-round");
     if(reopenBtn){
       reopenBtn.addEventListener("click", async () => {
-        if(!(await qzConfirm(`Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo. Vas a elegir una nueva fecha y hora límite para votar.`, { title: `¿Reabrir la Jornada ${round.number}?`, confirmLabel: "Continuar" }))) return;
+        if(!(await qzConfirm(`Los participantes van a poder volver a votar, y los resultados ya no contarán para la tabla hasta que publiques de nuevo. Vas a elegir una nueva fecha y hora límite para votar.`, { title: `¿Reabrir la ${roundLabel(round)}?`, confirmLabel: "Continuar" }))) return;
         // FIX 3: never claim "reabierta" without a real future deadline —
         // the admin always picks it, no automatic +24h/tomorrow guess.
-        const newDeadlineIso = await qzPromptDeadline(`Elige la nueva fecha y hora límite para votar la Jornada ${round.number}:`, { title: "Nueva fecha límite", confirmLabel: "Reabrir jornada" });
+        const newDeadlineIso = await qzPromptDeadline(`Elige la nueva fecha y hora límite para votar la ${roundLabel(round)}:`, { title: "Nueva fecha límite", confirmLabel: "Reabrir jornada" });
         if(newDeadlineIso === null) return; // cancelled — nothing changed, no toast
         reopenBtn.disabled = true;
         // Atomic from the user's perspective: both fields flip together,
@@ -5688,7 +5701,7 @@
         reconcilePenaltyLedger(meta);
         round.resultsPublished = false;
         round.deadline = newDeadlineIso;
-        logAudit("Reabrió jornada", `Jornada ${round.number}`);
+        logAudit("Reabrió jornada", roundLabel(round));
         const result = await setMetaWithError(meta);
         if(result.ok){
           toast("🔓 Jornada reabierta — ya pueden volver a votar");
@@ -7146,7 +7159,7 @@
         ${published.length ? `
           <div class="section-title" style="margin-top:20px;"><span class="display" style="font-size:22px;">Jornadas jugadas</span></div>
           <div class="card">
-            ${published.map(r => `<div class="history-item"><div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos</span></div></div>`).join("")}
+            ${published.map(r => `<div class="history-item"><div><strong>${esc(roundLabel(r))}</strong> <span class="muted">· ${r.matches.length} partidos</span></div></div>`).join("")}
           </div>
         ` : ``}
         <p class="muted" style="text-align:center;margin-top:20px;">👁 Estás viendo esta quiniela en modo solo lectura — no puedes votar ni modificar nada.</p>

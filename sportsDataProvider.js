@@ -107,6 +107,18 @@ function normalizeEvent(raw, provider) {
     ],
     score: hasScore ? { home: Number(raw.intHomeScore), away: Number(raw.intAwayScore) } : null,
     providerStatus: raw.strStatus || null,
+    // MON-001E: raw provider metadata, preserved verbatim and NEVER
+    // interpreted here. DATA-002/MON-001D.1 confirmed QRACKS was discarding
+    // strSeason entirely -- information we already pay for and that is a
+    // prerequisite for any future tournament-identity work. `round` above is
+    // the normalized (string) label the sync pipeline groups on; rawRound is
+    // kept alongside it so nothing is lost if that normalization ever
+    // changes. Deliberately NOT used for any enforcement or semantic
+    // decision in this ticket -- purely carried forward and persisted.
+    providerMeta: {
+      season: raw.strSeason != null && raw.strSeason !== "" ? String(raw.strSeason) : null,
+      rawRound: raw.intRound != null && raw.intRound !== "" ? String(raw.intRound) : null,
+    },
   };
 }
 

@@ -58,7 +58,11 @@ test("CASE C/D/G: on failure, restores the round to its exact snapshot AND resto
 
 test("no success toast/exit-edit-mode happens before result.ok is confirmed true", () => {
   const resultOkIdx = editHandler.indexOf("if(result.ok){");
-  const successToastIdx = editHandler.indexOf('toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");');
+  // MON-001E: the literal "Jornada N" was replaced by roundLabel(), which
+  // returns exactly "Jornada {number}" for every existing round. The
+  // assertion this test actually cares about -- that the success toast is
+  // gated behind a confirmed result.ok -- is unchanged.
+  const successToastIdx = editHandler.indexOf('toast("✅ Listo, la " + roundLabel(editingRound) + " quedó actualizada.");');
   assert.ok(resultOkIdx !== -1 && successToastIdx > resultOkIdx, "the success toast must be gated behind a confirmed successful save");
 });
 
