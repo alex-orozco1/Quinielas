@@ -32,11 +32,22 @@ function domainId(provider, kind, ...parts) {
   return [provider, kind, ...tail].join(":");
 }
 
+// A provider id is usable only if it is a non-empty scalar. Found during
+// adversarial self-QA: `providerEventId == null` let the empty string through,
+// producing ids like "sportmonks:event:" -- superficially valid, and worse,
+// every malformed record would collide on the SAME id. Objects/arrays would
+// stringify to "[object Object]" and collide identically. Rejected outright.
+function isUsableProviderId(value) {
+  if (value == null) return false;
+  if (typeof value === "object") return false;
+  return String(value).trim() !== "";
+}
+
 // ---- Competition ----------------------------------------------------------
 // A recurring competition: Liga MX, Premier League, NBA.
 function makeCompetition({ provider, providerCompetitionId, name, sportKey }) {
-  if (!provider || providerCompetitionId == null) {
-    throw new Error("makeCompetition: provider and providerCompetitionId are required");
+  if (!provider || !isUsableProviderId(providerCompetitionId)) {
+    throw new Error("makeCompetition: provider and a usable providerCompetitionId are required");
   }
   return Object.freeze({
     id: domainId(provider, "competition", providerCompetitionId),
@@ -63,6 +74,12 @@ function makeCompetitionInstance({
 }) {
   if (!provider || !competitionId) {
     throw new Error("makeCompetitionInstance: provider and competitionId are required");
+  }
+  // The id is built from providerSeasonId + instanceKey. If BOTH are absent
+  // the result would be "provider:instance:_:_" -- an id every anonymous
+  // instance would share. Refuse rather than mint a colliding identity.
+  if (!isUsableProviderId(providerSeasonId) && !isUsableProviderId(instanceKey)) {
+    throw new Error("makeCompetitionInstance: at least one of providerSeasonId or instanceKey must be usable");
   }
   return Object.freeze({
     id: domainId(provider, "instance", providerSeasonId, instanceKey),
@@ -100,11 +117,16 @@ function makeStage({
   if (!provider || !instanceId) {
     throw new Error("makeStage: provider and instanceId are required");
   }
+  // Same collision hazard as above: a stage with no id would become
+  // "provider:stage:_", shared by every id-less stage in the payload.
+  if (!isUsableProviderId(providerStageId)) {
+    throw new Error("makeStage: a usable providerStageId is required");
+  }
   return Object.freeze({
     id: domainId(provider, "stage", providerStageId),
     provider,
     instanceId,
-    providerStageId: providerStageId == null ? null : String(providerStageId),
+    providerStageId: String(providerStageId),
     name: name || null,
     sortOrder: Number.isFinite(sortOrder) ? sortOrder : null,
     finished: typeof finished === "boolean" ? finished : null,
@@ -137,8 +159,8 @@ function makeEvent({
   providerRoundId, leg, aggregateKey,
   startsAt, status, competitors, score, providerRaw,
 }) {
-  if (!provider || providerEventId == null) {
-    throw new Error("makeEvent: provider and providerEventId are required");
+  if (!provider || !isUsableProviderId(providerEventId)) {
+    throw new Error("makeEvent: provider and a usable providerEventId are required");
   }
   return Object.freeze({
     id: domainId(provider, "event", providerEventId),
@@ -167,6 +189,7 @@ function makeEvent({
 module.exports = {
   SPORT_FOOTBALL,
   domainId,
+  isUsableProviderId,
   makeCompetition,
   makeCompetitionInstance,
   makeStage,

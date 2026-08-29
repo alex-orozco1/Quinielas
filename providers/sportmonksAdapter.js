@@ -64,7 +64,9 @@ function toCompetition(rawLeague) {
 // instance -- the normal case -- so this is safe for every league.
 function toCompetitionInstances({ season, stages, competitionId, providerCompetitionId }) {
   const config = getCompetitionConfig(providerCompetitionId);
-  const list = Array.isArray(stages) ? stages : [];
+  // Same rule as toStages: an unusable stage never contributes to instance
+  // grouping or to the instance's date span.
+  const list = (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id));
   const byKey = new Map();
   for (const st of list) {
     const key = deriveInstanceKey(st && st.name, config);
@@ -110,7 +112,11 @@ function toCompetitionInstances({ season, stages, competitionId, providerCompeti
 
 function toStages({ stages, instances, providerCompetitionId }) {
   const config = getCompetitionConfig(providerCompetitionId);
-  const list = Array.isArray(stages) ? stages : [];
+  // A stage with no usable id cannot be given a stable domain identity, and
+  // minting one anyway would make every malformed stage collide. Skipped
+  // rather than fabricated -- and never silently: skippedStages is reported
+  // by the payload normalizers below.
+  const list = (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id));
   const instanceByKey = new Map((instances || []).map((i) => [i.instanceKey, i.id]));
   return list.map((st) => {
     const key = deriveInstanceKey(st && st.name, config);
@@ -150,7 +156,7 @@ function mapParticipants(fixture) {
 // identity in stage_id + leg ("1/2" / "2/2"). The mapper must therefore treat
 // round_id and aggregate_id as genuinely optional and must NOT synthesise them.
 function toEvents({ fixtures, stages }) {
-  const list = Array.isArray(fixtures) ? fixtures : [];
+  const list = (Array.isArray(fixtures) ? fixtures : []).filter((fx) => fx && domain.isUsableProviderId(fx.id));
   const stageById = new Map((stages || []).map((s) => [s.providerStageId, s]));
   return list.map((fx) => {
     const st = fx.stage_id != null ? stageById.get(String(fx.stage_id)) : null;
@@ -171,8 +177,41 @@ function toEvents({ fixtures, stages }) {
   });
 }
 
+// ---- Client -> Adapter boundary -------------------------------------------
+//
+// The Sportmonks client returns the provider's own nested envelope: a season
+// object with `stages` inside it, and a stage object with `fixtures` inside
+// it. These two functions are the ONLY place that knows that shape. Product
+// code receives domain entities and never touches `.stages` or `.fixtures`.
+//
+// Both report what they skipped, so a malformed payload degrades visibly
+// instead of silently producing fewer entities than the provider sent.
+
+function fromSeasonPayload(seasonData, { competitionId, providerCompetitionId }) {
+  const data = seasonData && typeof seasonData === "object" ? seasonData : {};
+  const rawStages = Array.isArray(data.stages) ? data.stages : [];
+  const usable = rawStages.filter((st) => st && domain.isUsableProviderId(st.id));
+  const season = {
+    id: data.id, name: data.name,
+    finished: data.finished, starting_at: data.starting_at, ending_at: data.ending_at,
+  };
+  const instances = toCompetitionInstances({ season, stages: usable, competitionId, providerCompetitionId });
+  const stages = toStages({ stages: usable, instances, providerCompetitionId });
+  return { season, instances, stages, skippedStages: rawStages.length - usable.length };
+}
+
+function fromStagePayload(stageData, { stages }) {
+  const data = stageData && typeof stageData === "object" ? stageData : {};
+  const rawFixtures = Array.isArray(data.fixtures) ? data.fixtures : [];
+  const usable = rawFixtures.filter((fx) => fx && domain.isUsableProviderId(fx.id));
+  const events = toEvents({ fixtures: usable, stages });
+  return { events, skippedFixtures: rawFixtures.length - usable.length };
+}
+
 module.exports = {
   key: KEY,
+  fromSeasonPayload,
+  fromStagePayload,
   capabilities: new Set([
     CAPABILITIES.STAGES,
     CAPABILITIES.FINISHED_SIGNAL,

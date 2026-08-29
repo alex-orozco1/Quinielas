@@ -12,11 +12,11 @@ const { RELIABILITY_STATES } = require("../providers/theSportsDbAdapter");
 // A deliberately non-secret placeholder. Never a real credential.
 const FAKE_TOKEN = "test-token-not-a-real-credential";
 
-function withToken(token, fn) {
+async function withToken(token, fn) {
   const prev = process.env.SPORTMONKS_API_TOKEN;
   if (token == null) delete process.env.SPORTMONKS_API_TOKEN;
   else process.env.SPORTMONKS_API_TOKEN = token;
-  try { return fn(); } finally {
+  try { return await fn(); } finally {
     if (prev === undefined) delete process.env.SPORTMONKS_API_TOKEN;
     else process.env.SPORTMONKS_API_TOKEN = prev;
   }
@@ -63,21 +63,35 @@ test("CLIENT 2: HTTP 401 maps to provider_auth_error", async () => {
   await expectState(null, "provider_auth_error", async () => res(401, {}));
 });
 
-test("CLIENT 2: HTTP 403 maps to provider_auth_error, NOT to a guessed coverage state", async () => {
-  // Deliberate: Sportmonks uses 403 for both a bad token and an
-  // out-of-plan resource, and we have no verified body sample to tell them
-  // apart. We do not guess -- same precedent AUTO-004 set for 429/quota.
-  await expectState(null, "provider_auth_error", async () => res(403, {}));
+test("CLIENT 2: HTTP 403 is a COVERAGE condition, never reported as a broken token", async () => {
+  // Sportmonks v3 documents 401 (unauthenticated) and 403 (resource not in
+  // plan) as different conditions. Telling an admin their token is broken
+  // when a league simply is not in the subscription would be actively
+  // misleading, and will happen routinely as QRACKS adds competitions.
+  await expectState(null, "competition_not_supported", async () => res(403, {}));
 });
 
-test("CLIENT 2b: SUBSCRIPTION/COVERAGE is expressed by the OBSERVABLE signal -- an empty data set maps to competition_not_supported", async () => {
-  await withToken(FAKE_TOKEN, async () => {
-    const client = createSportmonksClient({ transport: async () => res(200, { data: [] }) });
-    await assert.rejects(() => client.getSeasonWithStages(25539), (err) => {
-      assert.equal(err.reliabilityState, "competition_not_supported");
-      return true;
+test("CLIENT 2b: 200 with empty data degrades conservatively WITHOUT claiming a commercial cause", async () => {
+  // Empty data can mean a nonexistent resource, a wrong id, a genuinely empty
+  // result, coverage, or something else. We reuse competition_not_supported
+  // as the conservative degradation but must NOT assert why.
+  for (const emptyBody of [{ data: [] }, { data: null }, { data: {} }]) {
+    await withToken(FAKE_TOKEN, async () => {
+      const client = createSportmonksClient({ transport: async () => res(200, emptyBody) });
+      await assert.rejects(() => client.getSeasonWithStages(25539), (err) => {
+        assert.equal(err.reliabilityState, "competition_not_supported");
+        assert.match(err.message, /no usable data/i, "message must describe the observation, not a cause");
+        assert.ok(!/subscription|plan|cover/i.test(err.message), "must not claim a coverage cause without provider evidence");
+        return true;
+      });
     });
-  });
+  }
+});
+
+test("CLIENT 2c: the source no longer claims empty data proves coverage", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "providers", "sportmonksClient.js"), "utf8");
+  assert.ok(!/subscribed-but-empty/.test(src));
+  assert.ok(/deliberately NOT/i.test(src), "must document that the cause is not asserted");
 });
 
 // ==== 3. 429 ===============================================================

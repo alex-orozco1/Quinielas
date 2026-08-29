@@ -30,6 +30,11 @@ const { ProviderError } = require("./theSportsDbAdapter");
 const BASE_URL = "https://api.sportmonks.com/v3/football";
 const REQUEST_TIMEOUT_MS = 8000;
 
+// The relations the Adapter needs. Named here so the Client and its tests
+// cannot drift apart silently, and so a change is one edit at the boundary.
+const INCLUDE_SEASON_STAGES = "stages";
+const INCLUDE_STAGE_FIXTURES = "fixtures.participants";
+
 function getApiToken() {
   const token = process.env.SPORTMONKS_API_TOKEN;
   if (!token) {
@@ -50,9 +55,24 @@ function createSportmonksClient({ transport, timeoutMs } = {}) {
   const doFetch = transport || ((...args) => fetch(...args));
   const timeout = Number.isFinite(timeoutMs) ? timeoutMs : REQUEST_TIMEOUT_MS;
 
-  async function request(path, { params } = {}) {
+  // SINGLE contract for query parameters: everything goes through `params`.
+  // The previous version accepted `{ include: ... }` at the top level and
+  // silently dropped it, so getSeasonWithStages/getStageFixtures were issuing
+  // requests WITHOUT the includes they exist to fetch. Any unknown top-level
+  // option is now rejected loudly rather than ignored.
+  async function request(path, options = {}) {
+    const { params, ...unknown } = options;
+    const unknownKeys = Object.keys(unknown);
+    if (unknownKeys.length) {
+      throw new ProviderError(
+        "provider_invalid_response",
+        `SportmonksClient.request received unsupported option(s): ${unknownKeys.join(", ")} — query parameters must be passed inside \`params\``,
+        { provider: "sportmonks", path }
+      );
+    }
     const token = getApiToken(); // throws provider_auth_error if absent
     const url = new URL(BASE_URL + path);
+    // null/undefined are SKIPPED, never stringified into "null"/"undefined".
     for (const [k, v] of Object.entries(params || {})) {
       if (v != null) url.searchParams.set(k, String(v));
     }
@@ -84,14 +104,16 @@ function createSportmonksClient({ transport, timeoutMs } = {}) {
       throw new ProviderError("provider_auth_error", "Sportmonks rejected the API token", { ...safeMeta, status });
     }
     if (status === 403) {
-      // Sportmonks uses 403 both for a rejected token and for a resource
-      // outside the current plan. We have NO verified sample of a 403 body
-      // from this provider, so we do not guess which one it is -- exactly the
-      // precedent AUTO-004 set for TheSportsDB's 429/quota ambiguity. It maps
-      // to provider_auth_error, the safer of the two (it never tells an admin
-      // "this competition isn't supported" when the real problem is a bad
-      // token). If a distinguishable body is ever captured, branch here.
-      throw new ProviderError("provider_auth_error", "Sportmonks denied access (token or plan coverage)", { ...safeMeta, status });
+      // Sportmonks v3 documents 401 and 403 as DIFFERENT conditions: 401 is an
+      // unauthenticated request, 403 is a feed/resource the current plan does
+      // not include. Reporting a coverage 403 as provider_auth_error was
+      // wrong: it tells an admin their token is broken when the real problem
+      // is that a league is not in the subscription -- which will happen
+      // routinely as QRACKS adds competitions. Mapped to the existing
+      // competition_not_supported state (AUTO-004 taxonomy, reused rather
+      // than extended: it already carries exactly the meaning "we cannot get
+      // this competition from the provider" and needs no new state).
+      throw new ProviderError("competition_not_supported", "Sportmonks plan does not grant access to this resource", { ...safeMeta, status });
     }
     if (status === 429) {
       throw new ProviderError("provider_rate_limited", "Sportmonks rate limit hit", { ...safeMeta, status });
@@ -115,32 +137,40 @@ function createSportmonksClient({ transport, timeoutMs } = {}) {
     return body;
   }
 
-  // A subscribed-but-empty result is a real, distinct situation: the plan
-  // simply doesn't cover this competition/season. That maps to the EXISTING
-  // competition_not_supported state rather than a new "coverage" one.
-  async function getSeasonWithStages(seasonId) {
-    const body = await request(`/seasons/${encodeURIComponent(seasonId)}`, { include: "stages" });
-    const data = body.data;
-    if (!data || (Array.isArray(data) && data.length === 0)) {
-      throw new ProviderError("competition_not_supported", "Sportmonks returned no data for this season", {
-        provider: "sportmonks", path: `/seasons/${seasonId}`,
-      });
+  // "no usable data returned" — deliberately NOT "the plan does not cover this
+  // competition". A 200 with an empty/absent data payload can mean a
+  // nonexistent resource, a wrong season/stage id, a genuinely empty result,
+  // coverage, or something else entirely, and we have no provider signal that
+  // distinguishes them. competition_not_supported is reused as the
+  // conservative degradation because it already exists in the AUTO-004
+  // taxonomy and reads correctly to an admin ("we couldn't get this
+  // competition's data"), but the CAUSE is explicitly not claimed here.
+  function assertUsableData(data, path) {
+    const empty = data == null || (Array.isArray(data) && data.length === 0)
+      || (typeof data === "object" && !Array.isArray(data) && Object.keys(data).length === 0);
+    if (empty) {
+      throw new ProviderError(
+        "competition_not_supported",
+        "Sportmonks returned no usable data for this resource",
+        { provider: "sportmonks", path }
+      );
     }
     return data;
   }
 
+  async function getSeasonWithStages(seasonId) {
+    const path = `/seasons/${encodeURIComponent(seasonId)}`;
+    const body = await request(path, { params: { include: INCLUDE_SEASON_STAGES } });
+    return assertUsableData(body.data, path);
+  }
+
   async function getStageFixtures(stageId) {
-    const body = await request(`/stages/${encodeURIComponent(stageId)}`, { include: "fixtures.participants" });
-    const data = body.data;
-    if (!data || (Array.isArray(data) && data.length === 0)) {
-      throw new ProviderError("competition_not_supported", "Sportmonks returned no data for this stage", {
-        provider: "sportmonks", path: `/stages/${stageId}`,
-      });
-    }
-    return data;
+    const path = `/stages/${encodeURIComponent(stageId)}`;
+    const body = await request(path, { params: { include: INCLUDE_STAGE_FIXTURES } });
+    return assertUsableData(body.data, path);
   }
 
   return { request, getSeasonWithStages, getStageFixtures };
 }
 
-module.exports = { createSportmonksClient, BASE_URL, REQUEST_TIMEOUT_MS };
+module.exports = { createSportmonksClient, BASE_URL, REQUEST_TIMEOUT_MS, INCLUDE_SEASON_STAGES, INCLUDE_STAGE_FIXTURES };
