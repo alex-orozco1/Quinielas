@@ -50,6 +50,79 @@ function derivePhaseName(stageName, config) {
   return parts.slice(1).join(" ");
 }
 
+// ---- Duplicate policy at the Adapter/Domain frontier ----------------------
+//
+// A stable domain id is NOT enough on its own: two provider records sharing an
+// id previously produced TWO domain entities with the SAME id, pushing the
+// problem onto product code. The frontier now resolves it, explicitly:
+//
+//   identical duplicates  -> ONE entity, counted as a duplicate
+//   conflicting duplicates -> NO entity at all, counted as a conflict
+//
+// Conflicts drop BOTH records deliberately. Keeping either would be a silent
+// first-wins/last-wins, and when two records contradict each other about the
+// same identity there is no evidence for choosing one. Dropping and reporting
+// is fail-safe and observable — the same posture as skippedFixtures and as
+// AUTO-004's "observe, never silently swallow".
+//
+// Under NO circumstance may the returned collection contain two entities with
+// the same domain id.
+
+function normalizeForCompare(v) {
+  if (v == null) return null;
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+// Fields that make two records with the same id genuinely contradictory.
+// Chosen because each one changes what the event IS, not merely how it is
+// described: which stage/round/tie it belongs to, which leg, when it is
+// played, and who plays it.
+const EVENT_CONFLICT_FIELDS = ["stage_id", "round_id", "aggregate_id", "leg", "starting_at"];
+const STAGE_CONFLICT_FIELDS = ["name", "sort_order", "starting_at", "ending_at", "finished", "is_current"];
+
+function participantSignature(fx) {
+  const parts = Array.isArray(fx && fx.participants) ? fx.participants : [];
+  return parts
+    .map((p) => `${p && p.id}|${p && p.meta && p.meta.location}`)
+    .sort()
+    .join(",");
+}
+
+function eventSignature(fx) {
+  return JSON.stringify([...EVENT_CONFLICT_FIELDS.map((f) => normalizeForCompare(fx[f])), participantSignature(fx)]);
+}
+
+function stageSignature(st) {
+  return JSON.stringify(STAGE_CONFLICT_FIELDS.map((f) => normalizeForCompare(st[f])));
+}
+
+// Groups records by their provider id and applies the policy above.
+// Returns { unique, duplicates, conflicts } where `conflicts` is the list of
+// provider ids that were dropped for contradicting themselves.
+function dedupeByProviderId(records, signatureOf) {
+  const groups = new Map();
+  for (const rec of records) {
+    const key = String(rec.id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(rec);
+  }
+  const unique = [];
+  const conflicts = [];
+  let duplicates = 0;
+  for (const [key, group] of groups) {
+    if (group.length === 1) { unique.push(group[0]); continue; }
+    const signatures = new Set(group.map(signatureOf));
+    if (signatures.size === 1) {
+      unique.push(group[0]);          // identical: keep one
+      duplicates += group.length - 1; // and report the rest
+    } else {
+      conflicts.push(key);            // contradictory: keep NONE
+    }
+  }
+  return { unique, duplicates, conflicts };
+}
+
 function toCompetition(rawLeague) {
   return domain.makeCompetition({
     provider: KEY,
@@ -66,7 +139,10 @@ function toCompetitionInstances({ season, stages, competitionId, providerCompeti
   const config = getCompetitionConfig(providerCompetitionId);
   // Same rule as toStages: an unusable stage never contributes to instance
   // grouping or to the instance's date span.
-  const list = (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id));
+  const list = dedupeByProviderId(
+    (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id)),
+    stageSignature
+  ).unique;
   const byKey = new Map();
   for (const st of list) {
     const key = deriveInstanceKey(st && st.name, config);
@@ -116,7 +192,10 @@ function toStages({ stages, instances, providerCompetitionId }) {
   // minting one anyway would make every malformed stage collide. Skipped
   // rather than fabricated -- and never silently: skippedStages is reported
   // by the payload normalizers below.
-  const list = (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id));
+  const list = dedupeByProviderId(
+    (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id)),
+    stageSignature
+  ).unique;
   const instanceByKey = new Map((instances || []).map((i) => [i.instanceKey, i.id]));
   return list.map((st) => {
     const key = deriveInstanceKey(st && st.name, config);
@@ -156,7 +235,10 @@ function mapParticipants(fixture) {
 // identity in stage_id + leg ("1/2" / "2/2"). The mapper must therefore treat
 // round_id and aggregate_id as genuinely optional and must NOT synthesise them.
 function toEvents({ fixtures, stages }) {
-  const list = (Array.isArray(fixtures) ? fixtures : []).filter((fx) => fx && domain.isUsableProviderId(fx.id));
+  const list = dedupeByProviderId(
+    (Array.isArray(fixtures) ? fixtures : []).filter((fx) => fx && domain.isUsableProviderId(fx.id)),
+    eventSignature
+  ).unique;
   const stageById = new Map((stages || []).map((s) => [s.providerStageId, s]));
   return list.map((fx) => {
     const st = fx.stage_id != null ? stageById.get(String(fx.stage_id)) : null;
@@ -188,24 +270,53 @@ function toEvents({ fixtures, stages }) {
 // instead of silently producing fewer entities than the provider sent.
 
 function fromSeasonPayload(seasonData, { competitionId, providerCompetitionId }) {
-  const data = seasonData && typeof seasonData === "object" ? seasonData : {};
+  const data = seasonData && typeof seasonData === "object" && !Array.isArray(seasonData) ? seasonData : {};
+
+  // SEASON ID TRUST. A CompetitionInstance built from a Sportmonks payload is
+  // provider-backed BY DEFINITION -- callers read providerSeasonId as "this is
+  // really season N over there". If season.id is missing/invalid we cannot
+  // honour that, and falling back to instanceKey alone would mint an entity
+  // that LOOKS provider-backed while being anchored to nothing. Refusing is
+  // fail-safe: the caller sees a real error instead of a plausible-looking
+  // fiction, and no season id is ever invented.
+  if (!domain.isUsableProviderId(data.id)) {
+    throw new Error(
+      "fromSeasonPayload: Sportmonks season payload has no usable `id` — refusing to build a CompetitionInstance that would appear provider-backed without a real season"
+    );
+  }
+
   const rawStages = Array.isArray(data.stages) ? data.stages : [];
-  const usable = rawStages.filter((st) => st && domain.isUsableProviderId(st.id));
+  const wellFormed = rawStages.filter((st) => st && domain.isUsableProviderId(st.id));
+  const skippedStages = rawStages.length - wellFormed.length;
+  const { unique, duplicates, conflicts } = dedupeByProviderId(wellFormed, stageSignature);
+
   const season = {
     id: data.id, name: data.name,
     finished: data.finished, starting_at: data.starting_at, ending_at: data.ending_at,
   };
-  const instances = toCompetitionInstances({ season, stages: usable, competitionId, providerCompetitionId });
-  const stages = toStages({ stages: usable, instances, providerCompetitionId });
-  return { season, instances, stages, skippedStages: rawStages.length - usable.length };
+  const instances = toCompetitionInstances({ season, stages: unique, competitionId, providerCompetitionId });
+  const stages = toStages({ stages: unique, instances, providerCompetitionId });
+  return {
+    season, instances, stages,
+    skippedStages,
+    duplicateStages: duplicates,
+    conflictingStages: conflicts,
+  };
 }
 
 function fromStagePayload(stageData, { stages }) {
-  const data = stageData && typeof stageData === "object" ? stageData : {};
+  const data = stageData && typeof stageData === "object" && !Array.isArray(stageData) ? stageData : {};
   const rawFixtures = Array.isArray(data.fixtures) ? data.fixtures : [];
-  const usable = rawFixtures.filter((fx) => fx && domain.isUsableProviderId(fx.id));
-  const events = toEvents({ fixtures: usable, stages });
-  return { events, skippedFixtures: rawFixtures.length - usable.length };
+  const wellFormed = rawFixtures.filter((fx) => fx && domain.isUsableProviderId(fx.id));
+  const skippedFixtures = rawFixtures.length - wellFormed.length;
+  const { unique, duplicates, conflicts } = dedupeByProviderId(wellFormed, eventSignature);
+  const events = toEvents({ fixtures: unique, stages });
+  return {
+    events,
+    skippedFixtures,
+    duplicateFixtures: duplicates,
+    conflictingFixtures: conflicts,
+  };
 }
 
 module.exports = {

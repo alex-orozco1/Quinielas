@@ -26,21 +26,56 @@ const SPORT_FOOTBALL = "football";
 // Stable and deterministic: the same provider payload always yields the same
 // domain id, which is what makes sync idempotent without needing a database
 // lookup. Never derived from array position, date, or import order.
-function domainId(provider, kind, ...parts) {
-  if (!provider) throw new Error("domainId: provider is required");
-  const tail = parts.map((p) => (p == null ? "_" : String(p)));
-  return [provider, kind, ...tail].join(":");
+// Every component is percent-encoded BEFORE being joined, so the ":" that
+// separates components can never occur inside one. Without this the id was
+// not injective over its components:
+//   ("123:A", "B")  and  ("123", "A:B")
+// both flattened to "sportmonks:instance:123:A:B" — two different provider
+// identities colliding on one domain id. encodeURIComponent was chosen over a
+// bespoke escaping scheme because it is standard, auditable, deterministic,
+// and escapes ":" (to %3A) while leaving ordinary ids byte-identical, so
+// "sportmonks:event:19609341" is unchanged.
+//
+// An ABSENT component encodes as the empty string. That is unambiguous
+// because a PRESENT component can never be empty: isUsableProviderId rejects
+// empty and whitespace-only values before we get here.
+function encodeIdComponent(value) {
+  if (value == null) return "";
+  return encodeURIComponent(String(value));
 }
 
-// A provider id is usable only if it is a non-empty scalar. Found during
-// adversarial self-QA: `providerEventId == null` let the empty string through,
-// producing ids like "sportmonks:event:" -- superficially valid, and worse,
-// every malformed record would collide on the SAME id. Objects/arrays would
-// stringify to "[object Object]" and collide identically. Rejected outright.
+function domainId(provider, kind, ...parts) {
+  if (!provider) throw new Error("domainId: provider is required");
+  return [encodeIdComponent(provider), encodeIdComponent(kind), ...parts.map(encodeIdComponent)].join(":");
+}
+
+// What may serve as a provider id.
+//
+// ACCEPTED
+//   - finite numbers ........ 123, 0, -5   (normalized via String())
+//   - non-empty strings ..... "123", "abc"
+//
+// REJECTED, and why each one matters
+//   - null / undefined ...... absent identity
+//   - "" and "   " .......... would make every malformed record collide on
+//                             one id, and would be indistinguishable from the
+//                             "absent component" encoding above
+//   - NaN / Infinity ........ String() yields "NaN"/"Infinity"; every NaN id
+//                             would collide, and no provider ever issues one
+//   - true / false .......... "true"/"false" are not identities; accepting
+//                             them silently converts a boolean field read by
+//                             mistake into a plausible-looking id
+//   - objects / arrays ...... stringify to "[object Object]" / "" / "a,b",
+//                             so all of them collide
+//   - symbols / functions ... String() throws or yields non-identity text
+//
+// Numeric 123 and string "123" deliberately normalize to the SAME identity.
+// "0123" and 123 deliberately do NOT: they are different provider strings and
+// pretending otherwise would merge two real records.
 function isUsableProviderId(value) {
-  if (value == null) return false;
-  if (typeof value === "object") return false;
-  return String(value).trim() !== "";
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.trim() !== "";
+  return false;
 }
 
 // ---- Competition ----------------------------------------------------------
@@ -190,6 +225,7 @@ module.exports = {
   SPORT_FOOTBALL,
   domainId,
   isUsableProviderId,
+  encodeIdComponent,
   makeCompetition,
   makeCompetitionInstance,
   makeStage,
