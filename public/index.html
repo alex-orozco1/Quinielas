@@ -4314,6 +4314,21 @@
         </table>
       </div>
     `;
+    // Scroll the newly-rendered detail into view, offset by the REAL sticky
+    // header height (same measured-live approach as openRoundEditor) so
+    // "Ver detalle" doesn't leave the top of the detail hidden under
+    // .qz-header. detail.innerHTML above is synchronous, so the layout is
+    // already up to date here -- no arbitrary delay or extra frame needed.
+    // Re-measures on every call, so repeated clicks and switching between
+    // jornadas each land correctly instead of relying on stale values from a
+    // previous open.
+    const scrollTarget = detail.firstElementChild || detail;
+    const headerEl = document.querySelector("#quiniela-root .qz-header");
+    const headerHeight = headerEl ? headerEl.getBoundingClientRect().height : 0;
+    const BREATHING_ROOM_PX = 12;
+    const targetTop = scrollTarget.getBoundingClientRect().top + window.scrollY - headerHeight - BREATHING_ROOM_PX;
+    const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: Math.max(0, targetTop), behavior: reducedMotion ? "auto" : "smooth" });
   }
 
   // ---------- ADMIN ----------

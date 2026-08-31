@@ -50,6 +50,45 @@ function derivePhaseName(stageName, config) {
   return parts.slice(1).join(" ");
 }
 
+// ---- Sportmonks status mapping ---------------------------------------------
+//
+// Sportmonks' own fixture-state reference (docs.sportmonks.com/v3/definitions/
+// states -- GET /v3/football/states, GET /v3/football/states/{ID}). Every
+// state_id below is one Sportmonks documents; anything not listed here
+// (including 14/17/19/26 and any future code) deliberately falls through to
+// "unknown" rather than being guessed at -- this file's existing rule against
+// inferring meaning from unverified numeric codes.
+const SPORTMONKS_STATE_TO_STATUS = new Map([
+  [1, "scheduled"], [13, "scheduled"], [16, "scheduled"],
+  [2, "live"], [3, "live"], [4, "live"], [6, "live"], [9, "live"], [21, "live"], [22, "live"], [25, "live"],
+  [5, "finished"], [7, "finished"], [8, "finished"],
+  [10, "postponed"], [11, "postponed"], [15, "postponed"], [18, "postponed"],
+  [12, "cancelled"], [20, "cancelled"],
+]);
+
+// Sportmonks always sends state_id as a JSON number; Number(...) tolerates a
+// numeric string too without accepting non-numeric garbage ("NS", "", null).
+function normalizeSportmonksStatus(stateId) {
+  const n = Number(stateId);
+  if (stateId == null || stateId === "" || !Number.isInteger(n)) return "unknown";
+  return SPORTMONKS_STATE_TO_STATUS.get(n) || "unknown";
+}
+
+// ---- Sportmonks leg parsing -------------------------------------------------
+//
+// The ONLY place that knows Sportmonks encodes a two-legged tie as "N/M".
+// Parses into the QRACKS-owned { number, total } shape and lets
+// domain.normalizeLeg() be the single authority on whether the result is
+// legal -- malformed strings, "0/2", "3/2" (number > total), and anything
+// that isn't exactly two positive integers separated by "/" all become null.
+const LEG_RAW_PATTERN = /^(\d+)\/(\d+)$/;
+function parseSportmonksLeg(raw) {
+  if (typeof raw !== "string") return null;
+  const m = LEG_RAW_PATTERN.exec(raw.trim());
+  if (!m) return null;
+  return domain.normalizeLeg({ number: Number(m[1]), total: Number(m[2]) });
+}
+
 // ---- Duplicate policy at the Adapter/Domain frontier ----------------------
 //
 // A stable domain id is NOT enough on its own: two provider records sharing an
@@ -76,9 +115,13 @@ function normalizeForCompare(v) {
 
 // Fields that make two records with the same id genuinely contradictory.
 // Chosen because each one changes what the event IS, not merely how it is
-// described: which stage/round/tie it belongs to, which leg, when it is
-// played, and who plays it.
-const EVENT_CONFLICT_FIELDS = ["stage_id", "round_id", "aggregate_id", "leg", "starting_at"];
+// described: which stage/round/tie it belongs to, when it is played, and
+// who plays it. `leg` and `state_id` are deliberately NOT in this raw list:
+// they are compared via their NORMALIZED QRACKS semantics below, so two raw
+// codes that mean the same thing (e.g. two state_ids that both normalize to
+// "finished") are a duplicate, not a manufactured conflict -- while two
+// records whose normalized status or leg genuinely differ still conflict.
+const EVENT_CONFLICT_FIELDS = ["stage_id", "round_id", "aggregate_id", "starting_at"];
 const STAGE_CONFLICT_FIELDS = ["name", "sort_order", "starting_at", "ending_at", "finished", "is_current"];
 
 function participantSignature(fx) {
@@ -89,8 +132,21 @@ function participantSignature(fx) {
     .join(",");
 }
 
+// The leg dimension of the signature, in normalized form: two equal-but-
+// differently-spelled raw values collapse to the same signature entry, and
+// two genuinely different legs (e.g. "1/2" vs "2/2") never do.
+function legSignatureOf(fx) {
+  const leg = parseSportmonksLeg(fx.leg);
+  return leg ? `${leg.number}/${leg.total}` : null;
+}
+
 function eventSignature(fx) {
-  return JSON.stringify([...EVENT_CONFLICT_FIELDS.map((f) => normalizeForCompare(fx[f])), participantSignature(fx)]);
+  return JSON.stringify([
+    ...EVENT_CONFLICT_FIELDS.map((f) => normalizeForCompare(fx[f])),
+    legSignatureOf(fx),
+    normalizeSportmonksStatus(fx.state_id),
+    participantSignature(fx),
+  ]);
 }
 
 function stageSignature(st) {
@@ -235,15 +291,14 @@ function mapParticipants(fixture) {
 // identity in stage_id + leg ("1/2" / "2/2"). The mapper must therefore treat
 // round_id and aggregate_id as genuinely optional and must NOT synthesise them.
 //
-// STATUS: fx.state_id is Sportmonks' own numeric fixture-state code (e.g. 1,
-// 5, 22). There is no QRACKS-verified state_id -> {scheduled, live, finished,
-// postponed, cancelled} reference table yet, and per this file's own rule
-// (nothing infers meaning from numeric codes without evidence from a
-// provider that models them), one is not invented here. The raw code is kept
-// only in providerRaw for diagnostics; domain.makeEvent()'s
-// normalizeEventStatus() rejects it as functional semantics, so every
-// Sportmonks event reports status "unknown" until a verified mapping lands.
-// This is the safe degradation DATA-003 requires, not a regression.
+// STATUS: fx.state_id is mapped through normalizeSportmonksStatus() (Sportmonks'
+// own documented states reference, see the mapping table above) into the
+// QRACKS-owned vocabulary; an unrecognized or missing code safely degrades to
+// "unknown" rather than being guessed at. LEG: fx.leg's raw "N/M" string is
+// parsed by parseSportmonksLeg() into the QRACKS-owned { number, total }
+// shape; malformed input safely degrades to null. Both raw values are kept
+// in providerRaw for diagnostics only -- neither escapes into Event.status /
+// Event.leg unnormalized.
 function toEvents({ fixtures, stages }) {
   const list = dedupeByProviderId(
     (Array.isArray(fixtures) ? fixtures : []).filter((fx) => fx && domain.isUsableProviderId(fx.id)),
@@ -258,10 +313,10 @@ function toEvents({ fixtures, stages }) {
       instanceId: st ? st.instanceId : null,
       stageId: st ? st.id : null,
       providerRoundId: fx.round_id == null ? null : fx.round_id,
-      leg: fx.leg == null ? null : fx.leg,
+      leg: parseSportmonksLeg(fx.leg),
       aggregateKey: fx.aggregate_id == null ? null : fx.aggregate_id,
       startsAt: fx.starting_at || null,
-      status: fx.state_id != null ? String(fx.state_id) : "unknown",
+      status: normalizeSportmonksStatus(fx.state_id),
       competitors: mapParticipants(fx),
       score: null,
       providerRaw: {
@@ -350,4 +405,6 @@ module.exports = {
   // exported for tests
   deriveInstanceKey,
   derivePhaseName,
+  normalizeSportmonksStatus,
+  parseSportmonksLeg,
 };

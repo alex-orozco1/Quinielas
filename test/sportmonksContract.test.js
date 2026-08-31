@@ -174,7 +174,8 @@ test("CONTRACT fixtures path: the REAL Final (19609341 / 19609342) round-trips C
       assert.equal(e.providerRoundId, null, "round_id genuinely null");
       assert.equal(e.aggregateKey, null, "aggregate_id genuinely null");
     });
-    assert.deepEqual(events.map((e) => e.leg).sort(), ["1/2", "2/2"]);
+    const legs = events.map((e) => e.leg).sort((a, b) => a.number - b.number);
+    assert.deepEqual(legs, [{ number: 1, total: 2 }, { number: 2, total: 2 }]);
     assert.equal(events[0].stageId, events[1].stageId, "same stage");
     assert.equal(events[0].instanceId, events[1].instanceId, "same CompetitionInstance");
     const apertura = instances.find((i) => i.instanceKey === "Apertura");
@@ -189,7 +190,7 @@ test("CONTRACT fixtures path: participants map to home/away without inventing ro
     const comp = sportmonks.toCompetition({ id: LIGA_MX });
     const { stages } = sportmonks.fromSeasonPayload(seasonData, { competitionId: comp.id, providerCompetitionId: LIGA_MX });
     const { events } = sportmonks.fromStagePayload(await c.getStageFixtures(77479151), { stages });
-    const leg1 = events.find((e) => e.leg === "1/2");
+    const leg1 = events.find((e) => e.leg && e.leg.number === 1 && e.leg.total === 2);
     assert.deepEqual(leg1.competitors.map((x) => [x.role, x.name]), [["home", "Tigres UANL"], ["away", "Toluca"]]);
   });
 });

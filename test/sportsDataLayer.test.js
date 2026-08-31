@@ -179,7 +179,8 @@ test("EVIDENCE 4: the real Apertura Final normalizes with round_id null, aggrega
     assert.equal(e.aggregateKey, null, "aggregate_id is genuinely null and must not be invented");
     assert.ok(e.stageId, "identity comes from the stage instead");
   });
-  assert.deepEqual(events.map((e) => e.leg).sort(), ["1/2", "2/2"]);
+  const legs = events.map((e) => e.leg).sort((a, b) => a.number - b.number);
+  assert.deepEqual(legs, [{ number: 1, total: 2 }, { number: 2, total: 2 }]);
 });
 
 test("EVIDENCE 4: both Final legs resolve to the SAME stage and the SAME CompetitionInstance", () => {

@@ -210,13 +210,35 @@ function normalizeEventStatus(value) {
   return EVENT_STATUS_MEMBERSHIP.has(value) ? value : "unknown";
 }
 
+// ---- Event leg --------------------------------------------------------
+// A two-legged tie's leg, QRACKS-owned: { number, total }. The domain never
+// knows a provider's raw encoding ("1/2", "2/2") -- an adapter must parse its
+// own format into this shape (or into null, when parsing fails) BEFORE
+// calling makeEvent(). normalizeLeg() is the one place that decides whether
+// an already-structured value is a legal leg, so a malformed or mutated
+// object degrades to null instead of producing a nonsensical Event.
+//
+// Both fields must be positive integers with number <= total: "0/2", "3/2",
+// non-integers, and anything not shaped like { number, total } are all
+// invalid. The returned object is freshly built and frozen on every call, so
+// no two Events -- and no Event and its caller's original input -- can ever
+// share a mutable reference to it.
+function normalizeLeg(leg) {
+  if (leg == null || typeof leg !== "object" || Array.isArray(leg)) return null;
+  const { number, total } = leg;
+  if (!Number.isInteger(number) || !Number.isInteger(total)) return null;
+  if (number <= 0 || total <= 0 || number > total) return null;
+  return Object.freeze({ number, total });
+}
+
 // ---- Event ----------------------------------------------------------------
 // One fixture/match/bout. This is the only entity Competition Sync consumes.
 //
 // providerRoundId, stageId, leg and aggregateKey are ALL optional by design,
 // confirmed against real Sportmonks data: the Apertura Final fixtures come
 // back with round_id = null and aggregate_id = null, carrying their identity
-// entirely in stage_id + leg ("1/2", "2/2").
+// entirely in stage_id + leg (QRACKS-owned { number, total }, parsed by the
+// adapter from the provider's own "1/2" / "2/2" encoding).
 function makeEvent({
   provider, providerEventId, instanceId, stageId,
   providerRoundId, leg, aggregateKey,
@@ -234,8 +256,9 @@ function makeEvent({
     // The provider's own round label, when it has one. String, never Number:
     // "Final" is a legal value for some providers. null is legal too.
     providerRoundId: providerRoundId == null || providerRoundId === "" ? null : String(providerRoundId),
-    // Two-legged ties: "1/2", "2/2". null when the provider doesn't model it.
-    leg: leg == null || leg === "" ? null : String(leg),
+    // QRACKS-owned { number, total } value object. null when the provider
+    // doesn't model legs, or when the input didn't parse to a legal leg.
+    leg: normalizeLeg(leg),
     // Groups the legs of one tie together, when the provider supplies it.
     aggregateKey: aggregateKey == null ? null : String(aggregateKey),
     startsAt: startsAt || null,
@@ -261,4 +284,5 @@ module.exports = {
   makeEvent,
   EVENT_STATUSES,
   normalizeEventStatus,
+  normalizeLeg,
 };
