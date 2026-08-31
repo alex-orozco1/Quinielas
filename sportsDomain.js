@@ -182,6 +182,34 @@ function makeCompetitor({ role, providerCompetitorId, name }) {
   });
 }
 
+// ---- Event status -----------------------------------------------------
+// The closed, QRACKS-owned vocabulary for Event.status. This is the frontier
+// rule from the top of this file applied to status specifically: a provider
+// value is either translated into one of these six words or it becomes
+// "unknown" -- it never passes through verbatim.
+//
+// Object.freeze(new Set(...)) looks like it makes a status allowlist
+// immutable and does NOT: freeze only locks a Set's OWN properties, never
+// its inherited add/delete/clear methods, so `frozenSet.add("5")` still
+// silently succeeds. A frozen ARRAY is genuinely immutable (its elements are
+// plain own properties, which freeze does lock), so that is what gets
+// exported for callers that need to enumerate or validate against the
+// vocabulary. The Set below exists only for fast membership testing and is
+// never exported, so there is nothing external code could reach to mutate.
+const EVENT_STATUSES = Object.freeze([
+  "scheduled", "live", "finished", "postponed", "cancelled", "unknown",
+]);
+const EVENT_STATUS_MEMBERSHIP = new Set(EVENT_STATUSES);
+
+// The single point of enforcement: called from makeEvent() so every Event,
+// from every adapter, gets the same treatment -- an adapter cannot forget to
+// normalize because it never gets the choice. Anything not already one of
+// the six words above (a Sportmonks numeric state_id, a stale provider code,
+// a typo) degrades to "unknown" rather than being accepted verbatim.
+function normalizeEventStatus(value) {
+  return EVENT_STATUS_MEMBERSHIP.has(value) ? value : "unknown";
+}
+
 // ---- Event ----------------------------------------------------------------
 // One fixture/match/bout. This is the only entity Competition Sync consumes.
 //
@@ -211,7 +239,7 @@ function makeEvent({
     // Groups the legs of one tie together, when the provider supplies it.
     aggregateKey: aggregateKey == null ? null : String(aggregateKey),
     startsAt: startsAt || null,
-    status: status || "unknown",
+    status: normalizeEventStatus(status),
     competitors: Object.freeze((competitors || []).map(makeCompetitor)),
     score: score || null,
     // Raw provider payload fragment, preserved for audit/debug ONLY.
@@ -231,4 +259,6 @@ module.exports = {
   makeStage,
   makeCompetitor,
   makeEvent,
+  EVENT_STATUSES,
+  normalizeEventStatus,
 };

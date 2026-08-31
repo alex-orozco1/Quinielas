@@ -7,7 +7,7 @@
 // SPORTMONKS_API_TOKEN is read exclusively server-side from the environment by
 // the client layer -- never here, never in fixtures, never logged.
 
-const { CAPABILITIES } = require("./providerContract");
+const { CAPABILITIES, immutableCapabilitySet } = require("./providerContract");
 const domain = require("../sportsDomain");
 const { STRATEGIES, STAGE_NAME_SEPARATOR, getCompetitionConfig } = require("./sportmonksCompetitionConfig");
 
@@ -234,6 +234,16 @@ function mapParticipants(fixture) {
 // come back with round_id = null and aggregate_id = null, and carry their
 // identity in stage_id + leg ("1/2" / "2/2"). The mapper must therefore treat
 // round_id and aggregate_id as genuinely optional and must NOT synthesise them.
+//
+// STATUS: fx.state_id is Sportmonks' own numeric fixture-state code (e.g. 1,
+// 5, 22). There is no QRACKS-verified state_id -> {scheduled, live, finished,
+// postponed, cancelled} reference table yet, and per this file's own rule
+// (nothing infers meaning from numeric codes without evidence from a
+// provider that models them), one is not invented here. The raw code is kept
+// only in providerRaw for diagnostics; domain.makeEvent()'s
+// normalizeEventStatus() rejects it as functional semantics, so every
+// Sportmonks event reports status "unknown" until a verified mapping lands.
+// This is the safe degradation DATA-003 requires, not a regression.
 function toEvents({ fixtures, stages }) {
   const list = dedupeByProviderId(
     (Array.isArray(fixtures) ? fixtures : []).filter((fx) => fx && domain.isUsableProviderId(fx.id)),
@@ -254,7 +264,10 @@ function toEvents({ fixtures, stages }) {
       status: fx.state_id != null ? String(fx.state_id) : "unknown",
       competitors: mapParticipants(fx),
       score: null,
-      providerRaw: { stage_id: fx.stage_id ?? null, round_id: fx.round_id ?? null, leg: fx.leg ?? null },
+      providerRaw: {
+        stage_id: fx.stage_id ?? null, round_id: fx.round_id ?? null, leg: fx.leg ?? null,
+        state_id: fx.state_id ?? null,
+      },
     });
   });
 }
@@ -323,7 +336,7 @@ module.exports = {
   key: KEY,
   fromSeasonPayload,
   fromStagePayload,
-  capabilities: new Set([
+  capabilities: immutableCapabilitySet([
     CAPABILITIES.STAGES,
     CAPABILITIES.FINISHED_SIGNAL,
     CAPABILITIES.LEGS,

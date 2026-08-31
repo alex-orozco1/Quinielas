@@ -62,4 +62,34 @@ function hasCapability(adapter, capability) {
   return !!(adapter && adapter.capabilities instanceof Set && adapter.capabilities.has(capability));
 }
 
-module.exports = { CAPABILITIES, assertImplementsContract, hasCapability };
+// A capabilities Set that is genuinely immutable, unlike
+// Object.freeze(new Set(...)) -- freeze only locks a Set's OWN properties,
+// never its inherited add/delete/clear methods, so a frozen Set stays fully
+// mutable through its own API. A consumer able to call
+// adapter.capabilities.add(...) could make hasCapability() lie about what a
+// provider actually supports, which is exactly the kind of externally
+// triggerable change in Sports Domain semantics DATA-003 exists to prevent.
+//
+// A Proxy is the correct fix: it intercepts add/delete/clear before they
+// reach the underlying Set, so a mutation attempt throws instead of
+// silently changing what hasCapability() reports. `instanceof Set` and
+// `.has()` keep working exactly as assertImplementsContract() and
+// hasCapability() require, because the Proxy's default traps forward
+// everything else straight to the wrapped Set.
+function immutableCapabilitySet(values) {
+  const set = new Set(values);
+  const blockedMethods = new Set(["add", "delete", "clear"]);
+  return new Proxy(set, {
+    get(target, prop, receiver) {
+      if (blockedMethods.has(prop)) {
+        return () => {
+          throw new TypeError(`capabilities is immutable: cannot call .${String(prop)}()`);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+module.exports = { CAPABILITIES, assertImplementsContract, hasCapability, immutableCapabilitySet };

@@ -13,7 +13,7 @@
 // (the DATA-003 correction), the adapter reports the gap truthfully and lets
 // callers decide, via hasCapability(), what they may rely on.
 
-const { CAPABILITIES } = require("./providerContract");
+const { immutableCapabilitySet } = require("./providerContract");
 const domain = require("../sportsDomain");
 
 const KEY = "thesportsdb";
@@ -75,8 +75,11 @@ function toEvents({ events, instances }) {
 module.exports = {
   key: KEY,
   // Intentionally empty: this provider supports none of these. Callers must
-  // check rather than assume.
-  capabilities: new Set(),
+  // check rather than assume. Immutable so an external caller cannot .add()
+  // a capability this provider does not really have -- see
+  // providerContract.immutableCapabilitySet for why a plain frozen Set is
+  // not enough.
+  capabilities: immutableCapabilitySet([]),
   toCompetition,
   toCompetitionInstances,
   toStages,
