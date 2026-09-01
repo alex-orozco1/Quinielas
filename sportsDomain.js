@@ -52,8 +52,8 @@ function domainId(provider, kind, ...parts) {
 // What may serve as a provider id.
 //
 // ACCEPTED
-//   - finite numbers ........ 123, 0, -5   (normalized via String())
-//   - non-empty strings ..... "123", "abc"
+//   - safe integers ......... 123, 0, -5   (normalized via String())
+//   - non-empty strings ..... "123", "abc", "9007199254740993"
 //
 // REJECTED, and why each one matters
 //   - null / undefined ...... absent identity
@@ -62,6 +62,14 @@ function domainId(provider, kind, ...parts) {
 //                             "absent component" encoding above
 //   - NaN / Infinity ........ String() yields "NaN"/"Infinity"; every NaN id
 //                             would collide, and no provider ever issues one
+//   - a finite but UNSAFE number (beyond Number.MAX_SAFE_INTEGER) ... it may
+//                             already be a rounded, imprecise value by the
+//                             time it reaches this function, and two
+//                             genuinely different huge provider ids can round
+//                             to the SAME double -- accepting it risks
+//                             minting one domain id for two different real
+//                             records. A provider id that large must be
+//                             passed as a STRING (see below), never a number.
 //   - true / false .......... "true"/"false" are not identities; accepting
 //                             them silently converts a boolean field read by
 //                             mistake into a plausible-looking id
@@ -71,9 +79,12 @@ function domainId(provider, kind, ...parts) {
 //
 // Numeric 123 and string "123" deliberately normalize to the SAME identity.
 // "0123" and 123 deliberately do NOT: they are different provider strings and
-// pretending otherwise would merge two real records.
+// pretending otherwise would merge two real records. A string is NEVER
+// routed through Number() here, so an exact huge digit string like
+// "9007199254740993" keeps its exact value -- precision loss is only a risk
+// for the number branch, which is why that branch alone needs isSafeInteger.
 function isUsableProviderId(value) {
-  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "number") return Number.isSafeInteger(value);
   if (typeof value === "string") return value.trim() !== "";
   return false;
 }

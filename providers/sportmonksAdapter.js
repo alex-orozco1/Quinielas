@@ -131,12 +131,25 @@ function normalizeForCompare(v) {
 const EVENT_CONFLICT_FIELDS = ["stage_id", "round_id", "aggregate_id", "starting_at"];
 const STAGE_CONFLICT_FIELDS = ["name", "sort_order", "starting_at", "ending_at", "finished", "is_current"];
 
+// Signs the NORMALIZED QRACKS semantics of each participant, not the raw
+// provider fields. Reuses mapParticipants() + domain.makeCompetitor() --
+// the exact same functions toEvents() uses to build the real Event -- so
+// there is exactly one rule for "what a participant means", never two
+// parallel ones that can drift apart. This is what makes
+// providerCompetitorId: true vs false (both -> null) or
+// meta.location: "left" vs "right" (both -> role: null) collapse to the
+// same signature entry instead of manufacturing a conflict over raw
+// differences that produce an IDENTICAL Domain Competitor. name is
+// deliberately excluded: it is cosmetic, never material to identity.
 function participantSignature(fx) {
-  const parts = Array.isArray(fx && fx.participants) ? fx.participants : [];
-  return parts
-    .map((p) => `${p && p.id}|${p && p.meta && p.meta.location}`)
-    .sort()
-    .join(",");
+  return JSON.stringify(
+    mapParticipants(fx)
+      .map((p) => {
+        const c = domain.makeCompetitor(p);
+        return `${c.providerCompetitorId}|${c.role}`;
+      })
+      .sort()
+  );
 }
 
 // The leg dimension of the signature, in normalized form: two equal-but-

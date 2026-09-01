@@ -12,6 +12,12 @@ const ADAPTERS = new Map();
 
 function register(adapter) {
   assertImplementsContract(adapter);
+  // A second adapter silently overwriting the first under the same key would
+  // let a misconfiguration replace a real provider with no signal at all --
+  // exactly the kind of silent failure this registry exists to prevent.
+  if (ADAPTERS.has(adapter.key)) {
+    throw new Error(`Duplicate sports data provider key: "${adapter.key}" is already registered`);
+  }
   ADAPTERS.set(adapter.key, adapter);
   return adapter;
 }

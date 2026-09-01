@@ -64,14 +64,29 @@ const CAPABILITIES = Object.freeze({
 // Fetching is deliberately NOT part of this contract: the mappers are pure so
 // they can be tested against recorded payloads with no network, per DATA-003's
 // explicit "NO uses una API real en tests".
+const VALID_CAPABILITY_VALUES = new Set(Object.values(CAPABILITIES));
+
 function assertImplementsContract(adapter) {
   const required = ["key", "capabilities", "toCompetition", "toCompetitionInstances", "toStages", "toEvents"];
   const missing = required.filter((k) => adapter == null || adapter[k] == null);
   if (missing.length) {
     throw new Error(`Adapter does not implement SportsProvider contract, missing: ${missing.join(", ")}`);
   }
-  if (!Array.isArray(adapter.capabilities)) {
+  const caps = adapter.capabilities;
+  // Array.isArray alone isn't the contract: a mutable array is exactly the
+  // hole this frontier exists to close, so a declaration that isn't actually
+  // frozen is rejected just as hard as one that isn't an array at all.
+  if (!Array.isArray(caps) || !Object.isFrozen(caps)) {
     throw new Error("Adapter.capabilities must be a frozen array of CAPABILITIES values");
+  }
+  const invalid = caps.filter((c) => !VALID_CAPABILITY_VALUES.has(c));
+  if (invalid.length) {
+    throw new Error(`Adapter.capabilities contains values outside the CAPABILITIES vocabulary: ${invalid.join(", ")}`);
+  }
+  // A capability declaration is a canonical, unambiguous set -- listing one
+  // twice has no meaning and would only ever be an authoring mistake.
+  if (new Set(caps).size !== caps.length) {
+    throw new Error("Adapter.capabilities must not contain duplicate values");
   }
   return true;
 }

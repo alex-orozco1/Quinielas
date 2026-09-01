@@ -50,10 +50,16 @@ function toStages() {
 }
 
 // Accepts events already normalised by sportsDataProvider.normalizeEvent(),
-// so the existing pipeline is reused rather than duplicated.
+// so the existing pipeline is reused rather than duplicated. Still filters
+// for a well-formed, usable id first: a single null/undefined/malformed
+// record in the array must be skipped, never crash or abort every other
+// record in the same batch (the same fail-safe posture Sportmonks' own
+// toEvents takes for its fixtures array).
 function toEvents({ events, instances }) {
   const instanceId = instances && instances[0] ? instances[0].id : null;
-  return (events || []).map((ev) => domain.makeEvent({
+  const wellFormed = (Array.isArray(events) ? events : [])
+    .filter((ev) => ev && domain.isUsableProviderId(ev.externalEventId));
+  return wellFormed.map((ev) => domain.makeEvent({
     provider: KEY,
     providerEventId: ev.externalEventId,
     instanceId,

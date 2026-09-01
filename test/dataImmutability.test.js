@@ -15,6 +15,7 @@ const domain = require("../sportsDomain");
 const { CAPABILITIES, hasCapability, assertImplementsContract } = require("../providers/providerContract");
 const sportmonks = require("../providers/sportmonksAdapter");
 const thesportsdb = require("../providers/theSportsDbDomainAdapter");
+const providerRegistry = require("../providers/providerRegistry");
 
 // ==== EVENT_STATUSES / normalizeEventStatus ================================
 
@@ -254,6 +255,19 @@ test("SCORE-3: two Events built from the same mutable input object never share a
   assert.equal(b.score.home, 2, "mutating one Event's score must never affect another's");
 });
 
+test("MALFORMED-PAYLOAD (final closure audit): TheSportsDB toEvents() skips null/undefined/malformed records instead of crashing the whole batch", () => {
+  const instances = [{ id: "thesportsdb:instance:2025" }];
+  assert.doesNotThrow(() => thesportsdb.toEvents({ events: null, instances }));
+  assert.doesNotThrow(() => thesportsdb.toEvents({ events: undefined, instances }));
+  assert.deepEqual(thesportsdb.toEvents({ events: [], instances }), []);
+  const events = thesportsdb.toEvents({
+    events: [null, undefined, {}, { externalEventId: "" }, { externalEventId: "1", status: "finished", participants: [] }],
+    instances,
+  });
+  assert.equal(events.length, 1, "only the one well-formed record should survive");
+  assert.equal(events[0].providerEventId, "1");
+});
+
 test("SCORE-4: TheSportsDB's { home, away } shape still works end to end", () => {
   const [event] = thesportsdb.toEvents({
     events: [{ externalEventId: "1", status: "finished", score: { home: 3, away: 0 }, participants: [] }],
@@ -340,10 +354,220 @@ test("DEDUPE-NORM-3: genuinely different normalized status (not just raw code) i
   assert.equal(r.duplicateFixtures, 0);
 });
 
+test("DEDUPE-NORM-3b: three IDENTICAL raw duplicates collapse to one Event and report 2 duplicates", () => {
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [baseFx(), baseFx(), baseFx()] }, { stages: [] });
+  assert.equal(r.events.length, 1);
+  assert.equal(r.duplicateFixtures, 2);
+  assert.deepEqual(r.conflictingFixtures, []);
+});
+
 test("DEDUPE-NORM-4: A+A+B on normalized status is a conflict, never majority-wins", () => {
   const r = sportmonks.fromStagePayload({ id: 1, fixtures: [
     baseFx({ state_id: 5 }), baseFx({ state_id: 5 }), baseFx({ state_id: 2 }),
   ] }, { stages: [] });
   assert.equal(r.events.length, 0, "2-against-1 must still conflict, never pick the majority");
   assert.deepEqual(r.conflictingFixtures, ["500"]);
+});
+
+// ==== Provider identity: safe-integer precision (final closure audit) ======
+// isUsableProviderId's number branch used Number.isFinite, which accepts a
+// finite-but-UNSAFE number. Two genuinely different huge provider ids can
+// round to the SAME double once they cross Number.MAX_SAFE_INTEGER, so
+// accepting one as "usable" risked minting one domain id for two different
+// real records. A provider id that large must arrive as a string, which is
+// never routed through Number() and so never loses precision.
+
+test("PROVIDER-ID: numeric ids must be safe integers; a finite-but-unsafe number is rejected", () => {
+  const max = Number.MAX_SAFE_INTEGER;
+  assert.equal(domain.isUsableProviderId(max), true);
+  assert.equal(domain.isUsableProviderId(max + 1), false, "finite but no longer a safe integer");
+  assert.equal(domain.isUsableProviderId(max + 2), false);
+  assert.equal(domain.isUsableProviderId(0), true);
+  assert.equal(domain.isUsableProviderId(-5), true, "the existing negative-id policy is preserved");
+});
+
+test("PROVIDER-ID: a huge id passed as an EXACT string never loses precision, unlike the equivalent number", () => {
+  const hugeString = "9007199254740993"; // 2^53 + 1 -- not representable exactly as a double
+  assert.equal(domain.isUsableProviderId(hugeString), true);
+  const c = domain.makeCompetition({ provider: "p", providerCompetitionId: hugeString });
+  assert.equal(c.providerCompetitionId, hugeString, "the exact digit string must survive untouched");
+});
+
+test("PROVIDER-ID: the full accepted/rejected matrix from the closure spec", () => {
+  const accepted = [0, 123, -5, Number.MAX_SAFE_INTEGER, "0123", "9007199254740993", "abc"];
+  const rejected = [
+    null, undefined, "", "   ", NaN, Infinity, -Infinity, true, false, {}, [],
+    () => {}, Symbol("x"), Number.MAX_SAFE_INTEGER + 1,
+  ];
+  accepted.forEach((v) => assert.equal(domain.isUsableProviderId(v), true, `must accept ${String(v)}`));
+  rejected.forEach((v) => assert.equal(domain.isUsableProviderId(v), false, `must reject ${String(v)}`));
+});
+
+// ==== Capabilities contract hardening (final closure audit) ================
+// assertImplementsContract previously only checked Array.isArray. A mutable
+// (unfrozen) array, an array containing a value outside the CAPABILITIES
+// vocabulary, or one with a duplicate all passed silently -- none of those
+// are a canonical, unambiguous capability declaration.
+
+function fakeAdapter(capabilities) {
+  return { key: "fake", capabilities, toCompetition() {}, toCompetitionInstances() {}, toStages() {}, toEvents() {} };
+}
+
+test("CONTRACT: a mutable (non-frozen) capabilities array fails the contract", () => {
+  assert.throws(() => assertImplementsContract(fakeAdapter(["stages"])), /frozen array/);
+});
+
+test("CONTRACT: a value outside the CAPABILITIES vocabulary fails the contract", () => {
+  assert.throws(() => assertImplementsContract(fakeAdapter(Object.freeze(["made_up_capability"]))), /outside the CAPABILITIES vocabulary/);
+});
+
+test("CONTRACT: duplicate capability values fail the contract", () => {
+  assert.throws(() => assertImplementsContract(fakeAdapter(Object.freeze(["stages", "stages"]))), /duplicate/);
+});
+
+test("CONTRACT: an empty frozen array and a valid frozen array both pass", () => {
+  assert.equal(assertImplementsContract(fakeAdapter(Object.freeze([]))), true);
+  assert.equal(assertImplementsContract(fakeAdapter(Object.freeze([CAPABILITIES.STAGES]))), true);
+});
+
+test("CONTRACT: both real, registered adapters satisfy the hardened contract", () => {
+  assert.equal(assertImplementsContract(sportmonks), true);
+  assert.equal(assertImplementsContract(thesportsdb), true);
+});
+
+// ==== Provider registry: duplicate key protection (final closure audit) ====
+// register() overwrote ADAPTERS.set(adapter.key, ...) silently on a repeat
+// key -- a misconfigured second adapter under the same key would replace the
+// first with no signal at all, the opposite of "fail loudly" this registry
+// otherwise practices (resolveProvider throws on an UNKNOWN key already).
+
+test("REGISTRY: registering a second adapter under an already-used key throws instead of silently replacing it", () => {
+  const a = fakeAdapter(Object.freeze([]));
+  a.key = "test-only-duplicate-key";
+  const b = fakeAdapter(Object.freeze([]));
+  b.key = "test-only-duplicate-key";
+  providerRegistry.register(a);
+  assert.throws(() => providerRegistry.register(b), /Duplicate sports data provider key/);
+  assert.equal(providerRegistry.resolveProvider("test-only-duplicate-key"), a, "the original registration must be untouched");
+});
+
+test("REGISTRY: both real providers are registered", () => {
+  // Not a strict-equality check on the full list: the duplicate-key test
+  // above deliberately registers its own throwaway key into this same
+  // process-wide registry, so other keys may legitimately be present too.
+  const providers = providerRegistry.listProviders();
+  assert.ok(providers.includes("sportmonks"));
+  assert.ok(providers.includes("thesportsdb"));
+});
+
+// ==== Participant signature: normalized semantics (final closure audit) ====
+// participantSignature used to sign RAW p.id / p.meta.location directly,
+// bypassing the same normalization mapParticipants()/makeCompetitor() apply
+// when actually building the Event. Two raw participant records that
+// normalize to the IDENTICAL Domain Competitor (e.g. providerCompetitorId
+// true vs false, both -> null; meta.location "left" vs "right", both ->
+// role: null) were therefore compared as if they were materially different,
+// manufacturing a conflict the Domain would never actually see.
+
+const partFx = (participants, over = {}) => ({
+  id: 700, stage_id: 1, round_id: null, aggregate_id: null, leg: null,
+  starting_at: "2025-12-12", state_id: 1, participants, ...over,
+});
+
+test("DEDUPE-PARTICIPANT-1: raw ids that both normalize to providerCompetitorId:null are a duplicate, not a conflict", () => {
+  const a = partFx([{ id: true, meta: { location: "home" } }]);
+  const b = partFx([{ id: false, meta: { location: "home" } }]);
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [a, b] }, { stages: [] });
+  assert.equal(r.events.length, 1);
+  assert.equal(r.duplicateFixtures, 1);
+  assert.deepEqual(r.conflictingFixtures, []);
+  assert.equal(r.events[0].competitors[0].providerCompetitorId, null);
+});
+
+test("DEDUPE-PARTICIPANT-2: raw roles that both normalize to role:null are a duplicate, not a conflict", () => {
+  const a = partFx([{ id: 1, meta: { location: "left" } }]);
+  const b = partFx([{ id: 1, meta: { location: "right" } }]);
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [a, b] }, { stages: [] });
+  assert.equal(r.events.length, 1);
+  assert.equal(r.duplicateFixtures, 1);
+  assert.deepEqual(r.conflictingFixtures, []);
+  assert.equal(r.events[0].competitors[0].role, null);
+});
+
+test("DEDUPE-PARTICIPANT-3: home vs away for the SAME competitor id is still a real, material conflict", () => {
+  const a = partFx([{ id: 1, meta: { location: "home" } }]);
+  const b = partFx([{ id: 1, meta: { location: "away" } }]);
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [a, b] }, { stages: [] });
+  assert.equal(r.events.length, 0);
+  assert.deepEqual(r.conflictingFixtures, ["700"]);
+});
+
+test("DEDUPE-PARTICIPANT-4: genuinely different usable competitor ids are still a real conflict", () => {
+  const a = partFx([{ id: 1, meta: { location: "home" } }]);
+  const b = partFx([{ id: 2, meta: { location: "home" } }]);
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [a, b] }, { stages: [] });
+  assert.equal(r.events.length, 0);
+  assert.deepEqual(r.conflictingFixtures, ["700"]);
+});
+
+test("DEDUPE-PARTICIPANT-5: participant order never fabricates a conflict when roles/ids match", () => {
+  const a = partFx([{ id: 1, meta: { location: "home" } }, { id: 2, meta: { location: "away" } }]);
+  const b = partFx([{ id: 2, meta: { location: "away" } }, { id: 1, meta: { location: "home" } }]);
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [a, b] }, { stages: [] });
+  assert.equal(r.events.length, 1);
+  assert.equal(r.duplicateFixtures, 1);
+});
+
+test("DEDUPE-PARTICIPANT-6: cosmetic name differences never fabricate a conflict", () => {
+  const a = partFx([{ id: 1, name: "Club América", meta: { location: "home" } }]);
+  const b = partFx([{ id: 1, name: "America", meta: { location: "home" } }]);
+  const r = sportmonks.fromStagePayload({ id: 1, fixtures: [a, b] }, { stages: [] });
+  assert.equal(r.events.length, 1);
+  assert.equal(r.duplicateFixtures, 1);
+});
+
+// ==== Generative/matrix testing (§20): raw equivalence classes =============
+
+test("MATRIX: every pair of raw state_ids in the SAME normalized-status group is a duplicate; every cross-group pair is a conflict", () => {
+  const groups = {
+    scheduled: [1, 13, 16], live: [2, 3, 4, 6, 9, 21, 22, 25],
+    finished: [5, 7, 8], postponed: [10, 11, 15, 18], cancelled: [12, 20],
+  };
+  const allIds = Object.values(groups).flat();
+  for (const idA of allIds) {
+    for (const idB of allIds) {
+      const r = sportmonks.fromStagePayload(
+        { id: 1, fixtures: [baseFx({ state_id: idA }), baseFx({ state_id: idB })] }, { stages: [] }
+      );
+      const sameGroup = Object.values(groups).some((g) => g.includes(idA) && g.includes(idB));
+      if (sameGroup) {
+        assert.equal(r.events.length, 1, `state_id ${idA} vs ${idB} (same group) must be a duplicate`);
+      } else {
+        assert.equal(r.events.length, 0, `state_id ${idA} vs ${idB} (different group) must be a conflict`);
+      }
+    }
+  }
+});
+
+test("MATRIX: raw participant fields that normalize to the same Competitor never conflict; changing role or id always does", () => {
+  const idEquivalents = [true, false, {}, [], NaN, Infinity]; // all -> providerCompetitorId: null
+  const roleEquivalents = ["left", "right", "referee", undefined]; // all -> role: null
+  for (const idA of idEquivalents) {
+    for (const idB of idEquivalents) {
+      const r = sportmonks.fromStagePayload({ id: 1, fixtures: [
+        partFx([{ id: idA, meta: { location: "home" } }]),
+        partFx([{ id: idB, meta: { location: "home" } }]),
+      ] }, { stages: [] });
+      assert.equal(r.events.length, 1, `id ${JSON.stringify(idA)} vs ${JSON.stringify(idB)} must be a duplicate`);
+    }
+  }
+  for (const roleA of roleEquivalents) {
+    for (const roleB of roleEquivalents) {
+      const r = sportmonks.fromStagePayload({ id: 1, fixtures: [
+        partFx([{ id: 1, meta: { location: roleA } }]),
+        partFx([{ id: 1, meta: { location: roleB } }]),
+      ] }, { stages: [] });
+      assert.equal(r.events.length, 1, `role ${JSON.stringify(roleA)} vs ${JSON.stringify(roleB)} must be a duplicate`);
+    }
+  }
 });
