@@ -364,11 +364,21 @@ test("commercial_config is classified as a platform-tier key", () => {
 });
 
 test("a commercial_config write is validated with isCommercialConfigValid BEFORE being persisted, versioned and stamped", () => {
-  const idx = serverSrc.indexOf('if (req.params.key === "commercial_config") {');
-  const body = serverSrc.slice(idx, idx + 900);
-  assert.ok(body.includes("isCommercialConfigValid(value)"));
-  assert.ok(body.includes("res.status(400)"));
-  assert.ok(body.includes('updatedBy: "platform"'));
+  // MON-001F moved the persist step into a locked transaction, so validation
+  // and stamping no longer sit in one contiguous block. The invariant is
+  // unchanged and is asserted here by ORDER instead of by proximity: reject
+  // an invalid config before any row is touched, and stamp the write inside
+  // the transaction that persists it.
+  const platformBranch = serverSrc.indexOf('if (info.kind === "platform") {', serverSrc.indexOf('app.post("/api/kv/:key"'));
+  const body = serverSrc.slice(platformBranch, serverSrc.indexOf('} else if (info.kind === "quiniela-meta") {', platformBranch));
+  const validateIdx = body.indexOf("isCommercialConfigValid(value)");
+  const connectIdx = body.indexOf("await pool.connect()");
+  const stampIdx = body.indexOf('updatedBy: "platform"');
+  assert.ok(validateIdx !== -1, "must still validate the incoming config");
+  assert.ok(body.includes("res.status(400)"), "must still reject an invalid one with 400");
+  assert.ok(stampIdx !== -1, "must still stamp updatedBy");
+  assert.ok(validateIdx < connectIdx, "validation happens before the row is opened for writing");
+  assert.ok(connectIdx < stampIdx, "stamping happens inside the transaction that persists it");
 });
 
 test("ensureTable() seeds commercial_config and runs the grandfathering migration idempotently", () => {

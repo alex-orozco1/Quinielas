@@ -1160,9 +1160,37 @@
       return r.found ? r.value : { quinielas: [] };
     }catch(e){ console.error("getPlatformIndex failed", e); return { quinielas: [] }; }
   }
+  // MON-001F: the panel loads these rows once and every later edit re-sends
+  // that same snapshot, so the server now rejects a write whose `version` is
+  // no longer current (409 stale_version) instead of silently overwriting
+  // whatever changed in between. Recovery is always the same and never a
+  // blind retry of the stale snapshot: say what happened, then re-render the
+  // dashboard, which re-reads everything from the server.
+  // The flag lets a caller skip its own generic "no se pudo guardar" toast
+  // when this already explained the real reason.
+  let platformStaleHandled = false;
+  async function savePlatformRow(key, value){
+    platformStaleHandled = false;
+    try{
+      const r = await kvSetWithError(key, value, { platform: platformPasswordCache });
+      if(r.ok){
+        // The panel keeps this object in memory and edits it again (each
+        // checkbox toggle re-sends it), so it has to carry forward the
+        // version the server just wrote — otherwise the very next edit would
+        // look stale and 409 for no real reason.
+        if(value && typeof value === "object" && Number.isSafeInteger(r.version)) value.version = r.version;
+        return true;
+      }
+      if(r.error === "stale_version"){
+        platformStaleHandled = true;
+        toast(ERROR_MESSAGES.stale_version);
+        renderPlatformDashboard();
+      }
+      return false;
+    }catch(e){ console.error("savePlatformRow failed", key, e); return false; }
+  }
   async function setPlatformIndex(idx){
-    try{ return await kvSet(PLATFORM_INDEX_KEY, idx, { platform: platformPasswordCache }); }
-    catch(e){ console.error("setPlatformIndex failed", e); return false; }
+    return savePlatformRow(PLATFORM_INDEX_KEY, idx);
   }
   async function getPlatformSettings(){
     const defaults = { jornadaLimit: 5, pricePerParticipant: 10, depositInfo: "" };
@@ -1172,8 +1200,7 @@
     }catch(e){ console.error("getPlatformSettings failed", e); return defaults; }
   }
   async function setPlatformSettings(s){
-    try{ return await kvSet(PLATFORM_SETTINGS_KEY, s, { platform: platformPasswordCache }); }
-    catch(e){ console.error("setPlatformSettings failed", e); return false; }
+    return savePlatformRow(PLATFORM_SETTINGS_KEY, s);
   }
   const PLATFORM_PAYMENTLOG_KEY = "platform_payment_log";
   async function getPlatformPaymentLog(){
@@ -1184,8 +1211,7 @@
     }catch(e){ console.error("getPlatformPaymentLog failed", e); return { payments: [] }; }
   }
   async function setPlatformPaymentLog(log){
-    try{ return await kvSet(PLATFORM_PAYMENTLOG_KEY, log, { platform: platformPasswordCache }); }
-    catch(e){ console.error("setPlatformPaymentLog failed", e); return false; }
+    return savePlatformRow(PLATFORM_PAYMENTLOG_KEY, log);
   }
   // Sprint 14.4 — resumen agregado del funnel de activación para el panel de
   // plataforma. Cualquier falla (analytics caído, red, etc.) devuelve una
@@ -1273,6 +1299,7 @@
     unauthorized: "No pudimos confirmar quién eres. Vuelve a intentar o cambia de usuario desde tu nombre, arriba.",
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     wrong_current_pin: "Ese PIN no es correcto.",
+    stale_version: "La información cambió mientras estabas editando. Actualizamos los datos; intenta de nuevo.",
     invalid_params: "Falta información, o algo no tiene el formato correcto.",
     invalid_metaKey: "Falta información, o algo no tiene el formato correcto.",
     slug_taken: "Ese link ya lo está usando otra quiniela.",
@@ -1374,7 +1401,7 @@
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ value })
       });
-      if(res.ok) return { ok: true };
+      if(res.ok) return { ok: true, ...(await res.json().catch(() => ({}))) };
       const data = await res.json().catch(() => ({}));
       // MON-001A: pass through any extra structured fields the server sent
       // (limitType/plan/limit for a plan-limit rejection today; harmless
@@ -6724,12 +6751,18 @@
     document.getElementById("qz-p-save").addEventListener("click", async () => {
       const newPass = document.getElementById("qz-p-newpass").value.trim();
       const newSettings = {
+        // MON-001F: carry the version this panel actually read, so the server
+        // can reject the save if someone else changed settings meanwhile.
+        version: settings.version,
         jornadaLimit: Number(document.getElementById("qz-p-threshold").value) || settings.jornadaLimit,
         pricePerParticipant: Number(document.getElementById("qz-p-price").value) || settings.pricePerParticipant,
         depositInfo: document.getElementById("qz-p-deposit").value
       };
       if(newPass) newSettings.dashboardPassword = newPass;
       const ok = await setPlatformSettings(newSettings);
+      // On a 409 the helper already explained why and re-rendered — don't
+      // stack a second, vaguer toast on top of it.
+      if(platformStaleHandled) return;
       toast(ok ? "✅ Listo, la configuración quedó guardada." : "No se pudo guardar, intenta de nuevo");
       renderPlatformDashboard();
     });
@@ -6766,7 +6799,14 @@
           const entry = idx.quinielas.find(q => q.slug === slug);
           if(entry && newName) entry.name = newName;
           if(entry) entry.customJornadaLimit = thresholdRaw === "" ? null : Number(thresholdRaw);
-          await setPlatformIndex(idx);
+          const idxOk = await setPlatformIndex(idx);
+          // A 409 here means someone else changed the registry while this
+          // edit form was open: the helper already said so and re-rendered,
+          // so don't claim success on top of it.
+          if(!idxOk){
+            if(!platformStaleHandled) throw new Error("no se pudo guardar");
+            return;
+          }
           toast("✅ Listo, la quiniela quedó actualizada.");
           renderPlatformDashboard._editingSlug = null;
           renderPlatformDashboard();
@@ -6813,7 +6853,7 @@
           rowData.exempt = checkbox.checked;
           tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
           toast(checkbox.checked ? "Marcada como exenta ⭐" : "Ya no está exenta");
-        } else {
+        } else if(!platformStaleHandled) {
           checkbox.checked = !checkbox.checked;
           toast("No se pudo guardar, intenta de nuevo");
         }
@@ -6842,7 +6882,7 @@
             });
             await setPlatformPaymentLog(paymentLog);
           }
-        } else {
+        } else if(!platformStaleHandled) {
           checkbox.checked = !checkbox.checked;
           toast("No se pudo guardar, intenta de nuevo");
         }

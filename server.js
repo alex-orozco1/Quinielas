@@ -17,6 +17,9 @@ const {
   buildFreeEntitlement, buildGrandfatheredEntitlement,
   checkParticipantCapacity, checkLifecycleRoundConsumption,
 } = require("./planLimits");
+const {
+  readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
+} = require("./platformState");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
@@ -865,28 +868,56 @@ app.post("/api/submit-bet-answer", async (req, res) => {
       if (!m) return res.status(400).json({ error: "invalid_metaKey" });
       slug = m[1];
     }
-    const value = await getRow(metaKey);
-    if (!value) return res.status(404).json({ error: "not_found" });
-    const participant = (value.participants || []).find((p) => p.id === participantId);
-    if (!participant) return res.status(404).json({ error: "participant_not_found" });
-    if (!isAuthenticatedAsParticipantReq(req, slug, participant)) {
-      return res.status(403).json({ error: "unauthorized" });
-    }
-    const bet = (value.customBets || []).find((b) => b.id === betId && b.scope === "temporada");
-    if (!bet) return res.status(404).json({ error: "bet_not_found" });
-    // Same lock rule the UI already shows (bet closes when its linked round's
-    // deadline passes) — enforced here too, not just hidden in the frontend.
-    if (bet.closesAtRound) {
-      const closingRound = (value.rounds || []).find((r) => r.number === bet.closesAtRound);
-      if (closingRound && Date.now() > new Date(closingRound.deadline).getTime()) {
-        return res.status(403).json({ error: "bet_locked" });
+    // MON-001F: this used to read the meta unlocked, mutate it, and write the
+    // WHOLE document back. Because it writes the whole document, it could
+    // revert ANY concurrent change to that quiniela — published results, a new
+    // round, a participant — including changes made by the routes that do take
+    // the lock, which made their locking incomplete. Same transaction + lock
+    // protocol as the picks branch of /api/kv now: everything below reads from
+    // the state observed AFTER the lock.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const value = await getRowLocked(metaKey, client);
+      if (!value) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "not_found" });
       }
+      const participant = (value.participants || []).find((p) => p.id === participantId);
+      if (!participant) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "participant_not_found" });
+      }
+      if (!isAuthenticatedAsParticipantReq(req, slug, participant)) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "unauthorized" });
+      }
+      const bet = (value.customBets || []).find((b) => b.id === betId && b.scope === "temporada");
+      if (!bet) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "bet_not_found" });
+      }
+      // Same lock rule the UI already shows (bet closes when its linked round's
+      // deadline passes) — enforced here too, not just hidden in the frontend.
+      if (bet.closesAtRound) {
+        const closingRound = (value.rounds || []).find((r) => r.number === bet.closesAtRound);
+        if (closingRound && Date.now() > new Date(closingRound.deadline).getTime()) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "bet_locked" });
+        }
+      }
+      if (!participant.customBetAnswers) participant.customBetAnswers = {};
+      const prevCorrect = participant.customBetAnswers[betId] ? participant.customBetAnswers[betId].correct : null;
+      participant.customBetAnswers[betId] = { guess: cleanGuess, correct: prevCorrect };
+      await putRow(metaKey, value, client);
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-    if (!participant.customBetAnswers) participant.customBetAnswers = {};
-    const prevCorrect = participant.customBetAnswers[betId] ? participant.customBetAnswers[betId].correct : null;
-    participant.customBetAnswers[betId] = { guess: cleanGuess, correct: prevCorrect };
-    await putRow(metaKey, value);
-    res.json({ ok: true });
   } catch (err) {
     console.error("submit-bet-answer failed", err);
     res.status(500).json({ error: "server_error" });
@@ -914,9 +945,12 @@ app.post("/api/kv/:key", async (req, res) => {
       if (!verifyPassword(providedPlatformAuth, platformHash)) {
         return res.status(403).json({ error: "unauthorized" });
       }
-      if (req.params.key === "platform_settings") {
-        const oldValue = await getRow(req.params.key);
-        finalValue = mergeProtectedPlatformFields(oldValue, value);
+      // Every platform row is a JSON OBJECT. Enforced explicitly because the
+      // version stamp below spreads the value: handed an array or a
+      // primitive it would silently produce a differently-shaped row
+      // ({"0":…,"1":…}) instead of refusing malformed input.
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return res.status(400).json({ error: "invalid_value" });
       }
       if (req.params.key === "commercial_config") {
         // MON-001B: this write becomes the new live SSOT for every future
@@ -928,13 +962,59 @@ app.post("/api/kv/:key", async (req, res) => {
         if (!isCommercialConfigValid(value)) {
           return res.status(400).json({ error: "invalid_commercial_config" });
         }
-        const oldConfig = await getRow(req.params.key);
-        finalValue = {
-          ...value,
-          version: (oldConfig && Number.isFinite(oldConfig.version) ? oldConfig.version : 0) + 1,
-          updatedAt: new Date().toISOString(),
-          updatedBy: "platform",
-        };
+      }
+      // MON-001F: a version that is PRESENT but not a safe non-negative
+      // integer ("3", 1.5, NaN, -1) is rejected outright rather than being
+      // coerced or ignored — silently treating it as "no expectation" would
+      // be a way to opt out of the freshness check by sending garbage.
+      const expectedVersion = readExpectedVersion(value);
+      if (!expectedVersion.ok) {
+        return res.status(400).json({ error: "invalid_version" });
+      }
+
+      // MON-001F: platform state used to be written as a BLIND full-document
+      // overwrite from an unlocked read — the lost-update this fix exists to
+      // close. Now every platform write is one transaction that locks the row
+      // first, checks the client is writing from the version it actually read,
+      // and only then persists. Exactly ONE row is locked here, so this path
+      // cannot participate in a lock-order cycle with the two-row transactions
+      // elsewhere (platform_index then meta).
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const current = await getRowLocked(req.params.key, client);
+        const storedVersion = readStoredVersion(current);
+        if (!isFreshWrite(storedVersion, expectedVersion.expected)) {
+          await client.query("ROLLBACK");
+          // 409, never a silent overwrite: the caller reloads and retries on
+          // top of the state that actually won.
+          return res.status(409).json({ error: "stale_version", currentVersion: storedVersion });
+        }
+
+        if (req.params.key === "platform_settings") {
+          // Protected fields are carried over from the LOCKED read, not from
+          // an unlocked one — otherwise a concurrent password rotation could
+          // be reverted by a settings save that simply didn't include it.
+          finalValue = mergeProtectedPlatformFields(current, value);
+        } else if (req.params.key === "commercial_config") {
+          finalValue = { ...value, updatedAt: new Date().toISOString(), updatedBy: "platform" };
+        } else if (req.params.key === "platform_index") {
+          // Field-level merge onto the current row. Locking alone would only
+          // serialize two blind overwrites; this is what actually preserves
+          // the concurrent server-side changes (new quinielas, entitlements,
+          // lifecycle budget) an admin's snapshot cannot know about.
+          finalValue = mergePlatformIndex(current, value);
+        }
+        finalValue = stampVersion(finalValue, storedVersion);
+
+        await putRow(req.params.key, finalValue, client);
+        await client.query("COMMIT");
+        return res.json({ key: req.params.key, ok: true, version: finalValue.version });
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
       }
     } else if (info.kind === "quiniela-meta") {
       // MON-001B: converted from an unlocked read-then-write (MON-001A's
@@ -1146,12 +1226,15 @@ app.post("/api/kv/:key", async (req, res) => {
       }
     }
 
-    // Only "platform" kind reaches here now -- "quiniela-meta" and "picks"
-    // are both fully self-contained above (their own transaction, their
-    // own commit/return) since MON-001B, so this tail no longer needs to
-    // special-case quiniela-meta at all.
-    await putRow(req.params.key, finalValue);
-    res.json({ key: req.params.key, ok: true });
+    // Unreachable by construction: classifyKey only yields platform /
+    // quiniela-meta / picks / other, "other" was rejected at the top, and all
+    // three remaining branches are now fully self-contained (own transaction,
+    // own commit, own return) -- "platform" became so in MON-001F, which is
+    // what removed the last unlocked blind write in this handler. Kept as an
+    // explicit refusal so a future branch that forgets to return can never
+    // silently fall through to an untransactional write again.
+    console.error("kv POST reached the unreachable tail for key", req.params.key);
+    return res.status(500).json({ error: "server_error" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server_error" });
@@ -1249,17 +1332,39 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
-    const value = await getRow(metaKey);
-    if (!value) return res.status(404).json({ error: "not_found" });
-    const participant = (value.participants || []).find((p) => p.id === participantId);
-    if (!participant) return res.status(404).json({ error: "participant_not_found" });
-    if (participant.pin && !verifyPassword(currentPin, participant.pin)) {
-      return res.status(403).json({ error: "wrong_current_pin" });
+    // MON-001F: same lock-bypass fix as submit-bet-answer — an unlocked
+    // read-modify-write of the whole meta document could revert concurrent
+    // changes to rounds, results, participants or settings. The current-PIN
+    // check now also runs against the state observed AFTER the lock, so it
+    // can't validate against a PIN that another request already replaced.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const value = await getRowLocked(metaKey, client);
+      if (!value) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "not_found" });
+      }
+      const participant = (value.participants || []).find((p) => p.id === participantId);
+      if (!participant) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "participant_not_found" });
+      }
+      if (participant.pin && !verifyPassword(currentPin, participant.pin)) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "wrong_current_pin" });
+      }
+      participant.pin = hashPassword(newPin);
+      await putRow(metaKey, value, client);
+      await client.query("COMMIT");
+      issueSessionCookie(res, slug, participant);
+      res.json({ ok: true });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-    participant.pin = hashPassword(newPin);
-    await putRow(metaKey, value);
-    issueSessionCookie(res, slug, participant);
-    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server_error" });
