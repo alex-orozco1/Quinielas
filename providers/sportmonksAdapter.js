@@ -7,7 +7,7 @@
 // SPORTMONKS_API_TOKEN is read exclusively server-side from the environment by
 // the client layer -- never here, never in fixtures, never logged.
 
-const { CAPABILITIES, immutableCapabilitySet } = require("./providerContract");
+const { CAPABILITIES } = require("./providerContract");
 const domain = require("../sportsDomain");
 const { STRATEGIES, STAGE_NAME_SEPARATOR, getCompetitionConfig } = require("./sportmonksCompetitionConfig");
 
@@ -66,12 +66,19 @@ const SPORTMONKS_STATE_TO_STATUS = new Map([
   [12, "cancelled"], [20, "cancelled"],
 ]);
 
-// Sportmonks always sends state_id as a JSON number; Number(...) tolerates a
-// numeric string too without accepting non-numeric garbage ("NS", "", null).
+// Sportmonks always sends state_id as a JSON number, and ONLY a real number
+// is accepted -- Number(stateId) coercion was tried and rejected: it lets
+// true, [1], and " 1 " all become 1 and silently gain the semantics of
+// state_id 1 ("scheduled"), which is exactly a provider-specific-looking
+// value acquiring QRACKS meaning through JavaScript type coercion rather
+// than genuine provider evidence. typeof + Number.isSafeInteger rejects
+// every non-number type outright (no numeric-string compatibility: there is
+// no real Sportmonks payload shape that needs it) and rejects NaN/Infinity/
+// non-integers/unsafe-magnitude numbers that Number.isInteger alone would
+// have let through.
 function normalizeSportmonksStatus(stateId) {
-  const n = Number(stateId);
-  if (stateId == null || stateId === "" || !Number.isInteger(n)) return "unknown";
-  return SPORTMONKS_STATE_TO_STATUS.get(n) || "unknown";
+  if (typeof stateId !== "number" || !Number.isSafeInteger(stateId)) return "unknown";
+  return SPORTMONKS_STATE_TO_STATUS.get(stateId) || "unknown";
 }
 
 // ---- Sportmonks leg parsing -------------------------------------------------
@@ -391,7 +398,7 @@ module.exports = {
   key: KEY,
   fromSeasonPayload,
   fromStagePayload,
-  capabilities: immutableCapabilitySet([
+  capabilities: Object.freeze([
     CAPABILITIES.STAGES,
     CAPABILITIES.FINISHED_SIGNAL,
     CAPABILITIES.LEGS,

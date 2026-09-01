@@ -12,7 +12,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const domain = require("../sportsDomain");
-const { CAPABILITIES, hasCapability, immutableCapabilitySet } = require("../providers/providerContract");
+const { CAPABILITIES, hasCapability, assertImplementsContract } = require("../providers/providerContract");
 const sportmonks = require("../providers/sportmonksAdapter");
 const thesportsdb = require("../providers/theSportsDbDomainAdapter");
 
@@ -87,35 +87,79 @@ test("SPORTMONKS STATUS: every documented state_id maps to the approved QRACKS s
   }
 });
 
-// ==== capabilities Set immutability =========================================
+test("SPORTMONKS STATUS: type coercion cannot manufacture a fake state_id (adversarial QA correction)", () => {
+  // Number(true) === 1, Number([1]) === 1, Number(" 1 ") === 1, Number("1e0") === 1,
+  // Number("01") === 1 -- none of these are a real Sportmonks state_id, and none
+  // may gain the functional semantics of state_id 1 ("scheduled") through
+  // JavaScript coercion. Only an actual `number` type is accepted.
+  for (const v of [true, false, [1], ["1"], {}, "1e0", " 1 ", "01", NaN, Infinity, -Infinity, 1.5]) {
+    assert.equal(sportmonks.normalizeSportmonksStatus(v), "unknown", `must reject ${JSON.stringify(v)} (${typeof v})`);
+  }
+  // Real, official numeric state IDs must keep working.
+  assert.equal(sportmonks.normalizeSportmonksStatus(1), "scheduled");
+  assert.equal(sportmonks.normalizeSportmonksStatus(5), "finished");
+});
 
-test("IMMUTABILITY-7: Sportmonks capabilities.add() throws and does not grant a fake capability", () => {
-  assert.throws(() => sportmonks.capabilities.add(CAPABILITIES.MULTI_INSTANCE_SEASONS), TypeError);
-  assert.throws(() => sportmonks.capabilities.add("made_up_capability"), TypeError);
+// ==== capabilities: frozen array, not a mutable-Set-behind-a-Proxy =========
+//
+// A prior iteration wrapped a Set in a Proxy that blocked add/delete/clear.
+// That looked safe but wasn't: Set.prototype.forEach(cb) invokes
+// cb(value, value, S) with S being whatever `this` forEach actually ran on.
+// Since every forwarded method had to be bound to the REAL backing Set
+// (built-in Set methods require a genuine internal Set slot -- they throw
+// "incompatible receiver" on a bare Proxy), forEach's third argument leaked
+// that real, unprotected Set -- fully mutable, Proxy bypassed entirely. The
+// design was replaced with a frozen plain array: Object.freeze() genuinely
+// blocks push/pop/splice/index-reassignment on an array, so even Array.
+// prototype.forEach's third argument (the array itself) is harmless.
+
+test("CAPABILITIES-1: capabilities is a frozen array, not a Set -- there is no add/delete/clear to intercept in the first place", () => {
+  assert.ok(Array.isArray(sportmonks.capabilities));
+  assert.ok(Object.isFrozen(sportmonks.capabilities));
+  assert.ok(Array.isArray(thesportsdb.capabilities));
+  assert.ok(Object.isFrozen(thesportsdb.capabilities));
+});
+
+test("CAPABILITIES-2: mutation attempts on Sportmonks capabilities never grant or remove a real capability", () => {
+  const before = sportmonks.capabilities.slice();
+  try { sportmonks.capabilities.push("made_up_capability"); } catch (_e) { /* strict mode: expected */ }
+  try { sportmonks.capabilities[0] = "made_up_capability"; } catch (_e) { /* strict mode: expected */ }
+  try { sportmonks.capabilities.length = 0; } catch (_e) { /* strict mode: expected */ }
+  assert.deepEqual(sportmonks.capabilities.slice(), before, "array contents must be unchanged");
   assert.equal(hasCapability(sportmonks, "made_up_capability"), false);
+  assert.equal(hasCapability(sportmonks, CAPABILITIES.LEGS), true, "a real capability must still be reported");
 });
 
-test("IMMUTABILITY-8: Sportmonks capabilities.delete()/.clear() throw and never remove a real capability", () => {
-  assert.throws(() => sportmonks.capabilities.delete(CAPABILITIES.LEGS), TypeError);
-  assert.throws(() => sportmonks.capabilities.clear(), TypeError);
-  assert.equal(hasCapability(sportmonks, CAPABILITIES.LEGS), true);
-  assert.equal(hasCapability(sportmonks, CAPABILITIES.STAGES), true);
-  assert.equal(hasCapability(sportmonks, CAPABILITIES.FINISHED_SIGNAL), true);
-  assert.equal(hasCapability(sportmonks, CAPABILITIES.AGGREGATES), true);
-});
-
-test("TheSportsDB capabilities.add() throws and cannot make an unsupported capability look supported", () => {
-  assert.throws(() => thesportsdb.capabilities.add(CAPABILITIES.STAGES), TypeError);
+test("CAPABILITIES-3: TheSportsDB's empty capabilities cannot be made to look like it supports anything", () => {
+  try { thesportsdb.capabilities.push(CAPABILITIES.STAGES); } catch (_e) { /* strict mode: expected */ }
+  assert.equal(thesportsdb.capabilities.length, 0);
   Object.values(CAPABILITIES).forEach((c) => assert.equal(hasCapability(thesportsdb, c), false));
 });
 
-test("immutableCapabilitySet still behaves as a real Set for legitimate reads", () => {
-  const s = immutableCapabilitySet(["a", "b"]);
-  assert.ok(s instanceof Set);
-  assert.equal(s.has("a"), true);
-  assert.equal(s.has("z"), false);
-  assert.equal(s.size, 2);
-  assert.deepEqual([...s].sort(), ["a", "b"]);
+test("CAPABILITIES-4 (adversarial QA correction): the forEach-third-argument attack that broke the previous Proxy design cannot recover a mutable backing collection", () => {
+  let leaked;
+  sportmonks.capabilities.forEach((_v, _k, arr) => { leaked = arr; });
+  // Even a successful leak is harmless here: `leaked` is the SAME frozen
+  // array `sportmonks.capabilities` already is, not a hidden unprotected one.
+  assert.equal(leaked, sportmonks.capabilities);
+  assert.ok(Object.isFrozen(leaked));
+  try { leaked.push("made_up_capability"); } catch (_e) { /* strict mode: expected */ }
+  assert.equal(hasCapability(sportmonks, "made_up_capability"), false);
+});
+
+test("CAPABILITIES-5: spreading/destructuring/iterating capabilities never exposes a mutable handle back to the real collection", () => {
+  const spread = [...sportmonks.capabilities];
+  spread.push("made_up_capability"); // a plain new array: mutating it is expected and harmless
+  assert.equal(hasCapability(sportmonks, "made_up_capability"), false);
+  assert.ok(Object.isFrozen(sportmonks.capabilities), "the original must remain untouched and frozen");
+});
+
+test("assertImplementsContract requires capabilities to be an array, and rejects a bare mutable Set", () => {
+  const fakeAdapter = {
+    key: "fake", capabilities: new Set(["x"]),
+    toCompetition() {}, toCompetitionInstances() {}, toStages() {}, toEvents() {},
+  };
+  assert.throws(() => assertImplementsContract(fakeAdapter), /frozen array/);
 });
 
 // ==== leg value semantics ====================================================
@@ -133,6 +177,20 @@ test("LEG: normalizeLeg accepts only positive integers with number <= total, fro
   ]) {
     assert.equal(domain.normalizeLeg(bad), null, `expected null for ${JSON.stringify(bad)}`);
   }
+});
+
+test("LEG-SAFE-INTEGER (adversarial QA correction): a corrupted/absurd raw leg cannot round into a DIFFERENT, seemingly-legal leg", () => {
+  // 9007199254740993 = 2^53 + 1 rounds via Number() to 2^53 (9007199254740992),
+  // a DIFFERENT integer that Number.isInteger alone would still have accepted.
+  assert.equal(sportmonks.parseSportmonksLeg("9007199254740993/9007199254740994"), null);
+  assert.equal(sportmonks.parseSportmonksLeg("999999999999999999999/999999999999999999999"), null);
+  assert.equal(domain.normalizeLeg({ number: 9007199254740993, total: 9007199254740994 }), null);
+  // Number.MAX_SAFE_INTEGER itself is still a legal safe integer.
+  const max = Number.MAX_SAFE_INTEGER;
+  assert.deepEqual(domain.normalizeLeg({ number: max, total: max }), { number: max, total: max });
+  // One past it is not.
+  assert.equal(domain.normalizeLeg({ number: max + 1, total: max + 1 }), null);
+  assert.equal(domain.normalizeLeg({ number: max + 2, total: max + 2 }), null); // beyond double precision entirely
 });
 
 test("LEG: parseSportmonksLeg parses the documented raw formats and rejects malformed ones", () => {
@@ -164,6 +222,88 @@ test("IMMUTABILITY-10: two Events built from equal leg values never share a muta
   a.leg && Object.isFrozen(a.leg); // sanity: both independently frozen
   try { a.leg.number = 99; } catch (_e) { /* strict mode: expected */ }
   assert.equal(b.leg.number, 1, "mutating one Event's leg must never affect another's");
+});
+
+// ==== Event.score value semantics (adversarial QA correction) ==============
+// Object.freeze(Event) is shallow: it does nothing to a plain object nested
+// inside it. score was passed through as `score || null` with no copy, so a
+// caller retaining the original { home, away } object -- or reading
+// event.score itself -- could mutate a final score after the Event was
+// created. normalizeScore() now shallow-copies and freezes it.
+
+test("SCORE-1: mutating the source object after makeEvent() does not change Event.score", () => {
+  const scoreInput = { home: 2, away: 1 };
+  const event = domain.makeEvent({ provider: "thesportsdb", providerEventId: 1, score: scoreInput });
+  scoreInput.home = 99;
+  assert.deepEqual(event.score, { home: 2, away: 1 });
+});
+
+test("SCORE-2: mutating event.score itself does not change its values", () => {
+  const event = domain.makeEvent({ provider: "thesportsdb", providerEventId: 1, score: { home: 2, away: 1 } });
+  assert.ok(Object.isFrozen(event.score), "Event.score must be frozen");
+  try { event.score.home = 99; } catch (_e) { /* strict mode: expected */ }
+  assert.equal(event.score.home, 2, "mutating Event.score's own object must never change it");
+});
+
+test("SCORE-3: two Events built from the same mutable input object never share a score reference", () => {
+  const scoreInput = { home: 2, away: 1 };
+  const a = domain.makeEvent({ provider: "thesportsdb", providerEventId: 1, score: scoreInput });
+  const b = domain.makeEvent({ provider: "thesportsdb", providerEventId: 2, score: scoreInput });
+  assert.notEqual(a.score, b.score, "each Event must get its own frozen score object");
+  try { a.score.home = 77; } catch (_e) { /* strict mode: expected */ }
+  assert.equal(b.score.home, 2, "mutating one Event's score must never affect another's");
+});
+
+test("SCORE-4: TheSportsDB's { home, away } shape still works end to end", () => {
+  const [event] = thesportsdb.toEvents({
+    events: [{ externalEventId: "1", status: "finished", score: { home: 3, away: 0 }, participants: [] }],
+    instances: [{ id: "thesportsdb:instance:2025" }],
+  });
+  assert.deepEqual(event.score, { home: 3, away: 0 });
+  assert.ok(Object.isFrozen(event.score));
+});
+
+test("SCORE-5: non-object / null score degrades to null rather than passing through unprotected", () => {
+  for (const bad of [null, undefined, "2-1", 5, ["2", "1"]]) {
+    const event = domain.makeEvent({ provider: "thesportsdb", providerEventId: 1, score: bad });
+    assert.equal(event.score, null, `expected null score for ${JSON.stringify(bad)}`);
+  }
+});
+
+// ==== Competitor identity/role audit (adversarial QA correction) ===========
+// providerCompetitorId used String(x) directly, so {} / [] / true / NaN /
+// Infinity became the plausible-looking identities "[object Object]" / "" /
+// "true" / "NaN" / "Infinity" instead of degrading to null. role accepted
+// any truthy value verbatim, which would let an adapter's bug (or a future
+// provider) leak provider-specific semantics into role the same way raw
+// state_id used to leak into status.
+
+test("COMPETITOR-ID: malformed provider ids degrade to null, never a plausible-looking fabricated identity", () => {
+  for (const bad of [{}, [], true, false, NaN, Infinity, -Infinity, "", "   "]) {
+    const c = domain.makeCompetitor({ role: "home", providerCompetitorId: bad, name: "X" });
+    assert.equal(c.providerCompetitorId, null, `expected null for ${JSON.stringify(bad)}`);
+  }
+  // Missing id legitimately degrades to null -- never fabricated.
+  assert.equal(domain.makeCompetitor({ role: null, providerCompetitorId: null, name: "X" }).providerCompetitorId, null);
+  // Real ids still work, and 123 / "123" still collapse to the same identity
+  // (consistent with isUsableProviderId's existing numeric/string contract).
+  assert.equal(domain.makeCompetitor({ providerCompetitorId: 123 }).providerCompetitorId, "123");
+  assert.equal(domain.makeCompetitor({ providerCompetitorId: "123" }).providerCompetitorId, "123");
+});
+
+test("COMPETITOR-ROLE: only home/away are accepted; anything else -- including a future/raw provider value -- degrades to null", () => {
+  assert.equal(domain.makeCompetitor({ role: "home" }).role, "home");
+  assert.equal(domain.makeCompetitor({ role: "away" }).role, "away");
+  for (const bad of [null, undefined, "H", "referee", "HOME", 1, {}, []]) {
+    assert.equal(domain.makeCompetitor({ role: bad }).role, null, `expected null for ${JSON.stringify(bad)}`);
+  }
+});
+
+test("COMPETITOR-ROLE: a competitor legitimately without home/away (future sport) is not blocked -- null stays a first-class value", () => {
+  const driver = domain.makeCompetitor({ role: null, providerCompetitorId: 44, name: "Driver 44" });
+  assert.equal(driver.role, null);
+  assert.equal(driver.providerCompetitorId, "44");
+  assert.equal(driver.name, "Driver 44");
 });
 
 // ==== dedupe compares NORMALIZED QRACKS semantics, not raw provider codes ===

@@ -37,11 +37,29 @@ const CAPABILITIES = Object.freeze({
 // class so adapters stay trivially testable as pure mappers.
 //
 //   key           string  — stable provider key, used in every domain id
-//   capabilities  Set     — from CAPABILITIES above
+//   capabilities  Array   — a frozen array of values from CAPABILITIES above
 //   toCompetition(raw)        -> domain Competition
 //   toCompetitionInstances(raw) -> domain CompetitionInstance[]
 //   toStages(raw, ctx)        -> domain Stage[]
 //   toEvents(raw, ctx)        -> domain Event[]
+//
+// capabilities is a frozen ARRAY, not a Set. It was a Set wrapped in a Proxy
+// that blocked add/delete/clear, which fixed the direct mutation hole
+// (Object.freeze(new Set(...)) does NOT work: freeze only locks a Set's OWN
+// properties, never its inherited add/delete/clear methods) but reopened an
+// equivalent one: Set.prototype.forEach(cb) invokes cb(value, value, S) with
+// S bound to whatever `this` forEach was actually called on. Binding every
+// forwarded method to the wrapped target (needed for methods like .has() to
+// work at all, since built-in Set methods require a real internal Set slot)
+// meant forEach handed callbacks the REAL, unprotected backing Set as its
+// third argument -- fully mutable, Proxy bypassed entirely:
+//   adapter.capabilities.forEach((_v, _k, realSet) => realSet.add("fake"));
+// A frozen plain array has no such hole: Object.freeze() on an array
+// genuinely blocks push/pop/splice/index-reassignment (its elements are
+// ordinary own properties, unlike a Set's internal slot data), and even
+// Array.prototype.forEach's third argument (the array itself) is harmless
+// because that array is frozen too. Simpler and strictly safer than the
+// Proxy, so the Proxy approach is not kept for either adapter.
 //
 // Fetching is deliberately NOT part of this contract: the mappers are pure so
 // they can be tested against recorded payloads with no network, per DATA-003's
@@ -52,44 +70,14 @@ function assertImplementsContract(adapter) {
   if (missing.length) {
     throw new Error(`Adapter does not implement SportsProvider contract, missing: ${missing.join(", ")}`);
   }
-  if (!(adapter.capabilities instanceof Set)) {
-    throw new Error("Adapter.capabilities must be a Set of CAPABILITIES values");
+  if (!Array.isArray(adapter.capabilities)) {
+    throw new Error("Adapter.capabilities must be a frozen array of CAPABILITIES values");
   }
   return true;
 }
 
 function hasCapability(adapter, capability) {
-  return !!(adapter && adapter.capabilities instanceof Set && adapter.capabilities.has(capability));
+  return !!(adapter && Array.isArray(adapter.capabilities) && adapter.capabilities.includes(capability));
 }
 
-// A capabilities Set that is genuinely immutable, unlike
-// Object.freeze(new Set(...)) -- freeze only locks a Set's OWN properties,
-// never its inherited add/delete/clear methods, so a frozen Set stays fully
-// mutable through its own API. A consumer able to call
-// adapter.capabilities.add(...) could make hasCapability() lie about what a
-// provider actually supports, which is exactly the kind of externally
-// triggerable change in Sports Domain semantics DATA-003 exists to prevent.
-//
-// A Proxy is the correct fix: it intercepts add/delete/clear before they
-// reach the underlying Set, so a mutation attempt throws instead of
-// silently changing what hasCapability() reports. `instanceof Set` and
-// `.has()` keep working exactly as assertImplementsContract() and
-// hasCapability() require, because the Proxy's default traps forward
-// everything else straight to the wrapped Set.
-function immutableCapabilitySet(values) {
-  const set = new Set(values);
-  const blockedMethods = new Set(["add", "delete", "clear"]);
-  return new Proxy(set, {
-    get(target, prop, receiver) {
-      if (blockedMethods.has(prop)) {
-        return () => {
-          throw new TypeError(`capabilities is immutable: cannot call .${String(prop)}()`);
-        };
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-module.exports = { CAPABILITIES, assertImplementsContract, hasCapability, immutableCapabilitySet };
+module.exports = { CAPABILITIES, assertImplementsContract, hasCapability };

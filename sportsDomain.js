@@ -174,10 +174,29 @@ function makeStage({
 // ---- Competitor -----------------------------------------------------------
 // Deliberately "competitor", not "team": the same shape has to hold for a
 // driver or a fighter later.
+//
+// The closed, QRACKS-owned vocabulary for role, same pattern as
+// normalizeEventStatus: only "home"/"away" are real functional semantics
+// today, and anything else -- a raw provider-specific value an adapter
+// forgot to translate, or simply a future sport this domain doesn't model
+// yet -- degrades to null rather than being accepted verbatim. null stays
+// legal and is NOT "unknown": a driver or a fighter genuinely has no
+// home/away, and this must not block that.
+const COMPETITOR_ROLES = Object.freeze(["home", "away"]);
+const COMPETITOR_ROLE_MEMBERSHIP = new Set(COMPETITOR_ROLES);
+function normalizeCompetitorRole(role) {
+  return COMPETITOR_ROLE_MEMBERSHIP.has(role) ? role : null;
+}
+
 function makeCompetitor({ role, providerCompetitorId, name }) {
   return Object.freeze({
-    role: role || null,
-    providerCompetitorId: providerCompetitorId == null ? null : String(providerCompetitorId),
+    role: normalizeCompetitorRole(role),
+    // isUsableProviderId, not a bare null-check: {} / [] / true / NaN /
+    // Infinity must never become the identity strings "[object Object]" /
+    // "" / "true" / "NaN" / "Infinity", which could collide across
+    // competitors or look like a legitimate id. A competitor legitimately
+    // missing an id degrades to null -- never fabricated.
+    providerCompetitorId: isUsableProviderId(providerCompetitorId) ? String(providerCompetitorId) : null,
     name: name || null,
   });
 }
@@ -218,17 +237,39 @@ function normalizeEventStatus(value) {
 // an already-structured value is a legal leg, so a malformed or mutated
 // object degrades to null instead of producing a nonsensical Event.
 //
-// Both fields must be positive integers with number <= total: "0/2", "3/2",
-// non-integers, and anything not shaped like { number, total } are all
-// invalid. The returned object is freshly built and frozen on every call, so
-// no two Events -- and no Event and its caller's original input -- can ever
-// share a mutable reference to it.
+// Both fields must be positive SAFE integers with number <= total: "0/2",
+// "3/2", non-integers, and anything not shaped like { number, total } are
+// all invalid. Number.isSafeInteger, not Number.isInteger: a raw value like
+// "9007199254740993" (2^53+1) parses via Number() to 9007199254740992,
+// silently rounded to a DIFFERENT integer that Number.isInteger still
+// accepts -- a corrupted/absurd input must never round into looking like a
+// legitimate, different leg. isSafeInteger rejects it (and any digit string
+// whose true magnitude exceeds Number.MAX_SAFE_INTEGER always rounds to a
+// value >= 2^53, so this check catches every such case, not just this one).
+// The returned object is freshly built and frozen on every call, so no two
+// Events -- and no Event and its caller's original input -- can ever share
+// a mutable reference to it.
 function normalizeLeg(leg) {
   if (leg == null || typeof leg !== "object" || Array.isArray(leg)) return null;
   const { number, total } = leg;
-  if (!Number.isInteger(number) || !Number.isInteger(total)) return null;
+  if (!Number.isSafeInteger(number) || !Number.isSafeInteger(total)) return null;
   if (number <= 0 || total <= 0 || number > total) return null;
   return Object.freeze({ number, total });
+}
+
+// ---- Event score ------------------------------------------------------
+// score is currently always a flat { home, away } (numbers only, no nested
+// data -- see sportsDataProvider.normalizeEvent()), or null. A shallow
+// copy + freeze is the correct minimal protection for that shape: without
+// it, Object.freeze(Event) is shallow and does nothing to a score object
+// nested inside it, so a caller retaining the original input object (or
+// reading event.score itself) could mutate scores after the fact --
+// exactly the kind of externally-triggerable change in Sports Domain
+// semantics DATA-003 exists to prevent. Not a general/deep-freeze solution:
+// if a future provider nests data inside score, this must be revisited.
+function normalizeScore(score) {
+  if (score == null || typeof score !== "object" || Array.isArray(score)) return null;
+  return Object.freeze({ ...score });
 }
 
 // ---- Event ----------------------------------------------------------------
@@ -264,7 +305,7 @@ function makeEvent({
     startsAt: startsAt || null,
     status: normalizeEventStatus(status),
     competitors: Object.freeze((competitors || []).map(makeCompetitor)),
-    score: score || null,
+    score: normalizeScore(score),
     // Raw provider payload fragment, preserved for audit/debug ONLY.
     // Explicitly never read by product code -- that is the whole point of
     // this boundary.
@@ -285,4 +326,7 @@ module.exports = {
   EVENT_STATUSES,
   normalizeEventStatus,
   normalizeLeg,
+  normalizeScore,
+  COMPETITOR_ROLES,
+  normalizeCompetitorRole,
 };
