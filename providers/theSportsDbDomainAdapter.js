@@ -17,7 +17,12 @@ const domain = require("../sportsDomain");
 
 const KEY = "thesportsdb";
 
-function toCompetition(raw) {
+function toCompetition(rawLeague) {
+  // `|| {}` so a null/undefined/primitive record fails as a DOMAIN error
+  // ("a usable providerCompetitionId is required") rather than as a raw
+  // TypeError from property access. These mappers are exported and can be
+  // called directly, not only through the payload entry points.
+  const raw = rawLeague && typeof rawLeague === "object" ? rawLeague : {};
   return domain.makeCompetition({
     provider: KEY,
     providerCompetitionId: raw.externalLeagueId != null ? raw.externalLeagueId : raw.idLeague,
@@ -30,7 +35,7 @@ function toCompetition(raw) {
 // honestly support. For Liga MX that means Apertura and Clausura share a
 // single instance -- a known, documented limitation of the provider, surfaced
 // through the absent MULTI_INSTANCE_SEASONS capability rather than hidden.
-function toCompetitionInstances({ season, competitionId }) {
+function toCompetitionInstances({ season, competitionId } = {}) {
   return [domain.makeCompetitionInstance({
     provider: KEY,
     competitionId,
@@ -49,16 +54,36 @@ function toStages() {
   return [];
 }
 
+// Every COLLECTION is shape-checked with Array.isArray and every ELEMENT is
+// checked before it is read. `x || []` is not enough: {}, "garbage", true and
+// 5 are all truthy and have no .map, so they threw and took the whole batch
+// down with them. Likewise a null/undefined element threw on property access.
+// A malformed record is skipped; it never crashes, never aborts the other
+// records in the same batch, and never invents a competitor that the provider
+// did not actually describe.
+function mapParticipants(ev) {
+  const parts = Array.isArray(ev && ev.participants) ? ev.participants : [];
+  return parts
+    // A non-object element (null, undefined, true, "garbage", 5) carries no
+    // readable identity or role at all -- keeping it would fabricate a
+    // phantom all-null competitor the provider never sent. An EMPTY OBJECT
+    // is different: it is a real record with no usable fields, so it
+    // degrades to an all-null Competitor rather than disappearing.
+    .filter((p) => p && typeof p === "object")
+    .map((p) => ({ role: p.role, providerCompetitorId: p.externalId, name: p.name }));
+}
+
 // Accepts events already normalised by sportsDataProvider.normalizeEvent(),
 // so the existing pipeline is reused rather than duplicated. Still filters
 // for a well-formed, usable id first: a single null/undefined/malformed
 // record in the array must be skipped, never crash or abort every other
 // record in the same batch (the same fail-safe posture Sportmonks' own
 // toEvents takes for its fixtures array).
-function toEvents({ events, instances }) {
-  const instanceId = instances && instances[0] ? instances[0].id : null;
+function toEvents({ events, instances } = {}) {
+  const instanceList = Array.isArray(instances) ? instances : [];
+  const instanceId = instanceList[0] && instanceList[0].id ? instanceList[0].id : null;
   const wellFormed = (Array.isArray(events) ? events : [])
-    .filter((ev) => ev && domain.isUsableProviderId(ev.externalEventId));
+    .filter((ev) => ev && typeof ev === "object" && domain.isUsableProviderId(ev.externalEventId));
   return wellFormed.map((ev) => domain.makeEvent({
     provider: KEY,
     providerEventId: ev.externalEventId,
@@ -69,9 +94,7 @@ function toEvents({ events, instances }) {
     aggregateKey: null, // not modelled by this provider
     startsAt: ev.dateTime || null,
     status: ev.status || "unknown",
-    competitors: (ev.participants || []).map((p) => ({
-      role: p.role, providerCompetitorId: p.externalId, name: p.name,
-    })),
+    competitors: mapParticipants(ev),
     score: ev.score || null,
     providerRaw: { round: ev.round ?? null },
   }));

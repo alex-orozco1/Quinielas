@@ -200,10 +200,16 @@ function dedupeByProviderId(records, signatureOf) {
 }
 
 function toCompetition(rawLeague) {
+  // `|| {}` so a null/undefined/primitive record fails as a DOMAIN error
+  // ("a usable providerCompetitionId is required") rather than as a raw
+  // TypeError from property access -- symmetric with the TheSportsDB adapter.
+  // These mappers are exported and can be called directly, not only through
+  // the payload entry points.
+  const raw = rawLeague && typeof rawLeague === "object" ? rawLeague : {};
   return domain.makeCompetition({
     provider: KEY,
-    providerCompetitionId: rawLeague.id,
-    name: rawLeague.name || null,
+    providerCompetitionId: raw.id,
+    name: raw.name || null,
     sportKey: domain.SPORT_FOOTBALL,
   });
 }
@@ -211,7 +217,7 @@ function toCompetition(rawLeague) {
 // Builds one CompetitionInstance per distinct instanceKey found across the
 // season's stages. A season whose stages share no prefix yields exactly one
 // instance -- the normal case -- so this is safe for every league.
-function toCompetitionInstances({ season, stages, competitionId, providerCompetitionId }) {
+function toCompetitionInstances({ season, stages, competitionId, providerCompetitionId } = {}) {
   const config = getCompetitionConfig(providerCompetitionId);
   // Same rule as toStages: an unusable stage never contributes to instance
   // grouping or to the instance's date span.
@@ -262,7 +268,7 @@ function toCompetitionInstances({ season, stages, competitionId, providerCompeti
   return instances;
 }
 
-function toStages({ stages, instances, providerCompetitionId }) {
+function toStages({ stages, instances, providerCompetitionId } = {}) {
   const config = getCompetitionConfig(providerCompetitionId);
   // A stage with no usable id cannot be given a stable domain identity, and
   // minting one anyway would make every malformed stage collide. Skipped
@@ -272,7 +278,14 @@ function toStages({ stages, instances, providerCompetitionId }) {
     (Array.isArray(stages) ? stages : []).filter((st) => st && domain.isUsableProviderId(st.id)),
     stageSignature
   ).unique;
-  const instanceByKey = new Map((instances || []).map((i) => [i.instanceKey, i.id]));
+  // Array.isArray + element check, not `instances || []`: a truthy non-array
+  // has no .map and a null element has no .instanceKey -- either one threw
+  // and took the whole stage batch with it.
+  const instanceByKey = new Map(
+    (Array.isArray(instances) ? instances : [])
+      .filter((i) => i && typeof i === "object")
+      .map((i) => [i.instanceKey, i.id])
+  );
   return list.map((st) => {
     const key = deriveInstanceKey(st && st.name, config);
     return domain.makeStage({
@@ -294,16 +307,24 @@ function toStages({ stages, instances, providerCompetitionId }) {
   });
 }
 
+// Symmetric with theSportsDbDomainAdapter.mapParticipants: the COLLECTION is
+// shape-checked (a truthy non-array like {} or "garbage" is not iterable) and
+// each ELEMENT must be a real object. A non-object element carries no
+// readable identity or role, so keeping it would fabricate a phantom all-null
+// competitor the provider never sent; an EMPTY OBJECT is a real record with
+// no usable fields and still degrades to an all-null Competitor.
 function mapParticipants(fixture) {
-  const parts = Array.isArray(fixture.participants) ? fixture.participants : [];
-  return parts.map((p) => {
-    const loc = p && p.meta && p.meta.location;
-    return {
-      role: loc === "home" ? "home" : loc === "away" ? "away" : null,
-      providerCompetitorId: p && p.id,
-      name: (p && p.name) || null,
-    };
-  });
+  const parts = Array.isArray(fixture && fixture.participants) ? fixture.participants : [];
+  return parts
+    .filter((p) => p && typeof p === "object")
+    .map((p) => {
+      const loc = p.meta && p.meta.location;
+      return {
+        role: loc === "home" ? "home" : loc === "away" ? "away" : null,
+        providerCompetitorId: p.id,
+        name: p.name || null,
+      };
+    });
 }
 
 // Confirmed against the real Apertura Final (stage_id 77479151): both fixtures
@@ -319,12 +340,18 @@ function mapParticipants(fixture) {
 // shape; malformed input safely degrades to null. Both raw values are kept
 // in providerRaw for diagnostics only -- neither escapes into Event.status /
 // Event.leg unnormalized.
-function toEvents({ fixtures, stages }) {
+function toEvents({ fixtures, stages } = {}) {
   const list = dedupeByProviderId(
     (Array.isArray(fixtures) ? fixtures : []).filter((fx) => fx && domain.isUsableProviderId(fx.id)),
     eventSignature
   ).unique;
-  const stageById = new Map((stages || []).map((s) => [s.providerStageId, s]));
+  // Same shape discipline as toStages(): a truthy non-array `stages` or a
+  // null element must not crash the fixture batch.
+  const stageById = new Map(
+    (Array.isArray(stages) ? stages : [])
+      .filter((s) => s && typeof s === "object")
+      .map((s) => [s.providerStageId, s])
+  );
   return list.map((fx) => {
     const st = fx.stage_id != null ? stageById.get(String(fx.stage_id)) : null;
     return domain.makeEvent({
@@ -357,7 +384,7 @@ function toEvents({ fixtures, stages }) {
 // Both report what they skipped, so a malformed payload degrades visibly
 // instead of silently producing fewer entities than the provider sent.
 
-function fromSeasonPayload(seasonData, { competitionId, providerCompetitionId }) {
+function fromSeasonPayload(seasonData, { competitionId, providerCompetitionId } = {}) {
   const data = seasonData && typeof seasonData === "object" && !Array.isArray(seasonData) ? seasonData : {};
 
   // SEASON ID TRUST. A CompetitionInstance built from a Sportmonks payload is
@@ -392,7 +419,7 @@ function fromSeasonPayload(seasonData, { competitionId, providerCompetitionId })
   };
 }
 
-function fromStagePayload(stageData, { stages }) {
+function fromStagePayload(stageData, { stages } = {}) {
   const data = stageData && typeof stageData === "object" && !Array.isArray(stageData) ? stageData : {};
   const rawFixtures = Array.isArray(data.fixtures) ? data.fixtures : [];
   const wellFormed = rawFixtures.filter((fx) => fx && domain.isUsableProviderId(fx.id));

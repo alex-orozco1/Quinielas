@@ -435,6 +435,78 @@ test("CONTRACT: both real, registered adapters satisfy the hardened contract", (
   assert.equal(assertImplementsContract(thesportsdb), true);
 });
 
+// ==== hasCapability cannot grant an invented capability (closure corr. 2) ==
+// hasCapability() only checked "is it in the declared array", so ANY object
+// could mint semantics for a value that is not part of the QRACKS vocabulary
+// at all: hasCapability({capabilities:["made_up"]}, "made_up") returned true.
+// The requested capability is now validated against CAPABILITIES itself,
+// which is the guarantee this helper can make unilaterally regardless of what
+// an unregistered, hand-built object claims to declare.
+
+test("HASCAPABILITY: an invented capability is never granted, even when the object declares it", () => {
+  const liar = { key: "liar", capabilities: Object.freeze(["made_up_capability"]) };
+  assert.equal(hasCapability(liar, "made_up_capability"), false);
+  assert.equal(hasCapability(liar, "stages"), false, "and it still does not get a real one it never declared");
+});
+
+test("HASCAPABILITY: a real capability is granted only when the adapter actually declares it", () => {
+  assert.equal(hasCapability(sportmonks, CAPABILITIES.STAGES), true, "real + declared");
+  assert.equal(hasCapability(thesportsdb, CAPABILITIES.STAGES), false, "real + undeclared");
+});
+
+test("HASCAPABILITY: a malformed request or adapter is always false, never a throw", () => {
+  for (const bad of [null, undefined, "", "   ", "nope", 5, {}, [], true]) {
+    assert.equal(hasCapability(sportmonks, bad), false, `requested ${JSON.stringify(bad)}`);
+  }
+  for (const bad of [null, undefined, {}, "garbage", 5, true, { capabilities: "stages" }, { capabilities: null }]) {
+    assert.equal(hasCapability(bad, CAPABILITIES.STAGES), false, `adapter ${JSON.stringify(bad)}`);
+  }
+});
+
+// ==== adapter.key must be a real, non-empty, unpadded string ===============
+// assertImplementsContract only checked PRESENCE, so key: {} / [] / true /
+// 123 / "" / "   " all passed -- and key is used verbatim in every domain id
+// the adapter mints ("[object Object]:event:1", "true:event:1", ":event:1").
+
+test("CONTRACT-KEY: a non-string or empty/whitespace key fails the contract", () => {
+  for (const key of [{}, [], true, false, 123, 0, "", "   ", null, undefined, () => {}]) {
+    assert.throws(
+      () => assertImplementsContract({ key, capabilities: Object.freeze([]), toCompetition() {}, toCompetitionInstances() {}, toStages() {}, toEvents() {} }),
+      /Adapter\.key must be a non-empty string|missing: key/,
+      `key ${JSON.stringify(key)} must be rejected`
+    );
+  }
+});
+
+test("CONTRACT-KEY: a padded key is REJECTED, not silently trimmed", () => {
+  // Silent trimming would make " sportmonks" and "sportmonks" look like the
+  // same declaration while resolving as two different registry entries.
+  const padded = fakeAdapter(Object.freeze([]));
+  padded.key = "  sportmonks  ";
+  assert.throws(() => assertImplementsContract(padded), /non-empty string/);
+});
+
+test("CONTRACT-KEY: a clean key passes and the real adapters' keys are valid", () => {
+  const ok = { key: "clean-key", capabilities: Object.freeze([]), toCompetition() {}, toCompetitionInstances() {}, toStages() {}, toEvents() {} };
+  assert.equal(assertImplementsContract(ok), true);
+  assert.equal(sportmonks.key, "sportmonks");
+  assert.equal(thesportsdb.key, "thesportsdb");
+  [sportmonks.key, thesportsdb.key].forEach((k) => {
+    assert.equal(typeof k, "string");
+    assert.equal(k, k.trim());
+    assert.notEqual(k, "");
+  });
+});
+
+test("REGISTRY: an adapter with a malformed key is never registered", () => {
+  for (const key of [{}, true, 123, "", "  padded  "]) {
+    assert.throws(() => providerRegistry.register({
+      key, capabilities: Object.freeze([]), toCompetition() {}, toCompetitionInstances() {}, toStages() {}, toEvents() {},
+    }));
+    assert.throws(() => providerRegistry.resolveProvider(key), /Unknown sports data provider/);
+  }
+});
+
 // ==== Provider registry: duplicate key protection (final closure audit) ====
 // register() overwrote ADAPTERS.set(adapter.key, ...) silently on a repeat
 // key -- a misconfigured second adapter under the same key would replace the

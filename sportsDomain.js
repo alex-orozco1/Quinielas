@@ -199,7 +199,14 @@ function normalizeCompetitorRole(role) {
   return COMPETITOR_ROLE_MEMBERSHIP.has(role) ? role : null;
 }
 
-function makeCompetitor({ role, providerCompetitorId, name }) {
+// Total by construction: every field is optional and degrades to null, so a
+// missing or malformed record must produce an all-null Competitor rather
+// than a destructuring TypeError. Deciding whether such a record belongs in
+// an Event's competitor LIST at all is a separate, list-level question,
+// answered by makeEvent() and the adapters' own participant mappers.
+function makeCompetitor(competitor) {
+  const { role, providerCompetitorId, name } =
+    competitor && typeof competitor === "object" ? competitor : {};
   return Object.freeze({
     role: normalizeCompetitorRole(role),
     // isUsableProviderId, not a bare null-check: {} / [] / true / NaN /
@@ -315,12 +322,24 @@ function makeEvent({
     aggregateKey: aggregateKey == null ? null : String(aggregateKey),
     startsAt: startsAt || null,
     status: normalizeEventStatus(status),
-    competitors: Object.freeze((competitors || []).map(makeCompetitor)),
+    // Array.isArray, not `competitors || []`: {}, "garbage", true and 5 are
+    // all truthy with no .map, and threw. Non-object ELEMENTS are dropped
+    // rather than kept -- a null carries no identity and no role, so turning
+    // it into an all-null Competitor would invent a participant the provider
+    // never described.
+    competitors: Object.freeze(
+      (Array.isArray(competitors) ? competitors : [])
+        .filter((c) => c && typeof c === "object")
+        .map((c) => makeCompetitor(c))
+    ),
     score: normalizeScore(score),
     // Raw provider payload fragment, preserved for audit/debug ONLY.
     // Explicitly never read by product code -- that is the whole point of
-    // this boundary.
-    providerRaw: providerRaw ? Object.freeze({ ...providerRaw }) : null,
+    // this boundary. Shape-checked so a truthy non-object can't be spread
+    // into nonsense ({..."ab"} would store {0:"a",1:"b"}).
+    providerRaw: providerRaw && typeof providerRaw === "object" && !Array.isArray(providerRaw)
+      ? Object.freeze({ ...providerRaw })
+      : null,
   });
 }
 

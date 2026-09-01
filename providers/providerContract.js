@@ -72,6 +72,16 @@ function assertImplementsContract(adapter) {
   if (missing.length) {
     throw new Error(`Adapter does not implement SportsProvider contract, missing: ${missing.join(", ")}`);
   }
+  // `key` is documented as a string and is used verbatim in EVERY domain id
+  // this adapter mints, so it has to actually be one. Presence alone let
+  // {}, [], true, 123, "" and "   " through -- ids built from those would be
+  // "[object Object]:event:1", "true:event:1", ":event:1" and so on.
+  // Leading/trailing whitespace is REJECTED rather than silently trimmed: two
+  // adapters registering "sportmonks" and " sportmonks" must not both appear
+  // valid and identical-looking while resolving as different providers.
+  if (typeof adapter.key !== "string" || adapter.key.trim() === "" || adapter.key !== adapter.key.trim()) {
+    throw new Error("Adapter.key must be a non-empty string without leading or trailing whitespace");
+  }
   const caps = adapter.capabilities;
   // Array.isArray alone isn't the contract: a mutable array is exactly the
   // hole this frontier exists to close, so a declaration that isn't actually
@@ -91,7 +101,26 @@ function assertImplementsContract(adapter) {
   return true;
 }
 
+// Grants a capability only when BOTH sides are legitimate:
+//
+//   1. the REQUESTED capability is part of the QRACKS-owned vocabulary. This
+//      is the guarantee hasCapability() can make unilaterally, and it is the
+//      one that matters: an invented capability can never be granted, no
+//      matter what an object claims to declare. Without it,
+//      hasCapability({capabilities:["made_up"]}, "made_up") returned true,
+//      which is exactly the "capability lie" this contract exists to prevent.
+//   2. the adapter actually DECLARES it in a capabilities array.
+//
+// PRECONDITION for (2), stated explicitly: hasCapability does NOT re-run the
+// full contract (frozen / canonical / no duplicates) on every call. That is
+// enforced once, by assertImplementsContract(), which providerRegistry
+// runs on every register() -- so any adapter product code obtains through
+// resolveProvider() has already been validated. Passing a hand-built object
+// straight to hasCapability() bypasses that check by construction; the
+// vocabulary gate in (1) is what keeps even that path from inventing
+// semantics. Product code must obtain adapters from the registry.
 function hasCapability(adapter, capability) {
+  if (!VALID_CAPABILITY_VALUES.has(capability)) return false;
   return !!(adapter && Array.isArray(adapter.capabilities) && adapter.capabilities.includes(capability));
 }
 
