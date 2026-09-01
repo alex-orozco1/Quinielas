@@ -1213,6 +1213,40 @@
   async function setPlatformPaymentLog(log){
     return savePlatformRow(PLATFORM_PAYMENTLOG_KEY, log);
   }
+
+  // MON-001F.2 — operaciones Admin que tocan más de una fila.
+  // Se mandan como INTENCIÓN (los campos que cambian), no como el documento
+  // completo que el panel trae en memoria: el servidor las aplica sobre el
+  // estado actual dentro de una sola transacción, así que no existe snapshot
+  // obsoleto que rechazar y no pueden quedar a medias.
+  function newPaymentId(){
+    if(window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, "");
+    return "pay" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+  }
+  async function platformPost(path, body){
+    try{
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Qracks-Platform-Auth": platformPasswordCache || "" },
+        credentials: "same-origin",
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if(res.ok) return { ok: true, ...data };
+      return { ok: false, ...data, error: data.error || ("http_" + res.status) };
+    }catch(e){
+      console.error("platformPost failed", path, e);
+      return { ok: false, error: "network_error" };
+    }
+  }
+  // El paymentId hace que un reintento tras una respuesta perdida registre el
+  // MISMO pago, en vez de cobrar dos veces.
+  function markQuinielaPaid(slug, paid, paymentId){
+    return platformPost("/api/platform/quinielas/" + encodeURIComponent(slug) + "/paid", { paid, paymentId });
+  }
+  function saveQuinielaSettings(slug, changes){
+    return platformPost("/api/platform/quinielas/" + encodeURIComponent(slug) + "/settings", changes);
+  }
   // Sprint 14.4 — resumen agregado del funnel de activación para el panel de
   // plataforma. Cualquier falla (analytics caído, red, etc.) devuelve una
   // estructura vacía en vez de propagar el error, para que el resto del
@@ -6789,24 +6823,17 @@
         const thresholdRaw = document.getElementById("qz-edit-threshold").value.trim();
         saveEditBtn.disabled = true;
         try{
-          const r = await kvGet(metaKeyFor(slug));
-          if(!r.found) throw new Error("no se encontró la quiniela");
-          const tenantMeta = r.value;
-          if(newName) tenantMeta.groupName = newName;
-          if(newPass) tenantMeta.settings.ownerPassword = newPass;
-          const ok = await kvSet(metaKeyFor(slug), tenantMeta, { platform: platformPasswordCache });
-          if(!ok) throw new Error("no se pudo guardar");
-          const entry = idx.quinielas.find(q => q.slug === slug);
-          if(entry && newName) entry.name = newName;
-          if(entry) entry.customJornadaLimit = thresholdRaw === "" ? null : Number(thresholdRaw);
-          const idxOk = await setPlatformIndex(idx);
-          // A 409 here means someone else changed the registry while this
-          // edit form was open: the helper already said so and re-rendered,
-          // so don't claim success on top of it.
-          if(!idxOk){
-            if(!platformStaleHandled) throw new Error("no se pudo guardar");
-            return;
-          }
+          // MON-001F.2: esto eran DOS escrituras independientes (meta primero,
+          // índice después). Si la segunda perdía una carrera de versión, el
+          // nombre y la contraseña ya habían cambiado en meta mientras el
+          // índice se quedaba atrás — nombre divergente y límite perdido. Ahora
+          // es una sola operación atómica: los tres cambios aterrizan juntos o
+          // no aterriza ninguno.
+          const changes = { customJornadaLimit: thresholdRaw === "" ? null : Number(thresholdRaw) };
+          if(newName) changes.name = newName;
+          if(newPass) changes.ownerPassword = newPass;
+          const r = await saveQuinielaSettings(slug, changes);
+          if(!r.ok) throw new Error(ERROR_MESSAGES[r.error] || "no se pudo guardar");
           toast("✅ Listo, la quiniela quedó actualizada.");
           renderPlatformDashboard._editingSlug = null;
           renderPlatformDashboard();
@@ -6867,24 +6894,26 @@
         const entry = idx.quinielas.find(q => q.slug === slug);
         if(!entry) return;
         const rowData = rows.find(r => r.slug === slug);
-        entry.paid = checkbox.checked;
-        const ok = await setPlatformIndex(idx);
-        if(ok){
-          rowData.paid = checkbox.checked;
+        // MON-001F.2: marking as paid used to be TWO independent whole-document
+        // writes (index, then payment log). If the second one lost a version
+        // race, the quiniela ended up billed with no record of the payment and
+        // nobody noticed, because the result wasn't checked. It is now one
+        // atomic server-side operation, and the id makes a retry after a lost
+        // response record the same payment instead of a second one.
+        const wantPaid = checkbox.checked;
+        const paymentId = checkbox.dataset.paymentId || (checkbox.dataset.paymentId = newPaymentId());
+        const r = await markQuinielaPaid(slug, wantPaid, paymentId);
+        if(r.ok){
+          if(wantPaid) delete checkbox.dataset.paymentId; // next toggle is a new payment intent
+          entry.paid = wantPaid;
+          if(Number.isSafeInteger(r.indexVersion)) idx.version = r.indexVersion;
+          rowData.paid = wantPaid;
           tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
-          toast(checkbox.checked ? "Marcada como pagada ✅" : "Ya no está marcada como pagada");
-          if(checkbox.checked){
-            const paymentLog = await getPlatformPaymentLog();
-            paymentLog.payments.push({
-              slug, name: entry.name,
-              amount: settings.pricePerParticipant * (rowData.count || 0),
-              date: new Date().toISOString()
-            });
-            await setPlatformPaymentLog(paymentLog);
-          }
-        } else if(!platformStaleHandled) {
+          toast(wantPaid ? "Marcada como pagada ✅" : "Ya no está marcada como pagada");
+        } else {
           checkbox.checked = !checkbox.checked;
-          toast("No se pudo guardar, intenta de nuevo");
+          toast(ERROR_MESSAGES[r.error] || "No se pudo guardar, intenta de nuevo");
+          renderPlatformDashboard();
         }
       });
     });

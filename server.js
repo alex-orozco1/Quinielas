@@ -19,6 +19,7 @@ const {
 } = require("./planLimits");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
+  applyPaidToggle, applyQuinielaSettings,
 } = require("./platformState");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
@@ -1751,6 +1752,155 @@ app.post("/api/delete-quiniela", async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("delete-quiniela failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------- platform admin operations that span more than one row ----------
+//
+// MON-001F.2. These exist because the dashboard used to perform multi-row
+// admin actions as a SEQUENCE of independent whole-document writes, which
+// meant a conflict partway through left the rows disagreeing with each other:
+//
+//   marking as paid   ->  platform_index.paid=true committed, then the
+//                         payment-log append 409s and is silently dropped:
+//                         a quiniela billed with no record of the payment
+//   editing a quiniela ->  meta (name + owner password) committed, then the
+//                         platform_index write 409s: name diverges between
+//                         meta and index, and the jornada limit is lost
+//
+// Both are now single transactions driven by the admin's INTENT (the fields
+// actually being changed) rather than by a whole document the browser has
+// been holding since the page loaded. There is no stale snapshot to reject,
+// so these cannot 409 at all — they read the current rows under lock and
+// apply the change to them.
+//
+// LOCK ORDER, followed by every multi-row transaction in this file:
+//   platform_index  ->  quiniela meta  ->  platform_payment_log
+// Taking them in one consistent order is what keeps these from deadlocking
+// against create-quiniela, the quiniela-meta branch of /api/kv and sync.
+
+// The payment record's id comes from the client so that a retry after a lost
+// response is recognisable as the SAME payment rather than a second one.
+function isUsablePaymentId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value);
+}
+
+// Marking a quiniela as paid/unpaid, together with its payment-log entry, as
+// ONE atomic operation. Amount and name are computed from the locked server
+// state, never taken from the request: this row is a money record, and the
+// browser's copy of the participant count or the price can be stale.
+app.post("/api/platform/quinielas/:slug/paid", async (req, res) => {
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  const { paid, paymentId } = req.body || {};
+  if (typeof paid !== "boolean") return res.status(400).json({ error: "invalid_params" });
+  // A payment record is only written when marking as PAID, and only with a
+  // usable idempotency key.
+  if (paid && !isUsablePaymentId(paymentId)) return res.status(400).json({ error: "invalid_payment_id" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const idx = await getRowLocked("platform_index", client);
+    const entry = idx && Array.isArray(idx.quinielas)
+      ? idx.quinielas.find((q) => q.slug === req.params.slug)
+      : null;
+    if (!entry) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    // The payment log is only read (and locked) when there is a record to
+    // write. Price comes from settings read inside this transaction but NOT
+    // locked: a concurrent price edit is not a correctness problem for
+    // recording this payment, and locking it would serialize every payment
+    // against every settings save.
+    const paymentLog = paid ? ((await getRowLocked("platform_payment_log", client)) || { payments: [] }) : null;
+    const settings = paid ? ((await getRow("platform_settings", client)) || {}) : null;
+
+    const result = applyPaidToggle({
+      index: idx, paymentLog, settings, slug: req.params.slug, paid, paymentId,
+    });
+    if (!result.ok) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: result.error });
+    }
+    if (result.paymentLog) await putRow("platform_payment_log", result.paymentLog, client);
+    // `paid` is an admin-owned field, so this write participates in the same
+    // version protocol as the dashboard's own edits: bumping here is what
+    // makes a stale generic /api/kv write 409 instead of reverting it.
+    await putRow("platform_index", result.index, client);
+    await client.query("COMMIT");
+    res.json({ ok: true, paid, recorded: result.recorded, indexVersion: result.index.version });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("platform paid toggle failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// Editing a quiniela from the platform dashboard: display name, owner
+// password and the per-quiniela jornada limit, applied to meta AND
+// platform_index together or not at all.
+app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  const body = req.body || {};
+  const wantsName = typeof body.name === "string" && body.name.trim() !== "";
+  const wantsPassword = typeof body.ownerPassword === "string" && body.ownerPassword.trim() !== "";
+  const hasLimit = Object.prototype.hasOwnProperty.call(body, "customJornadaLimit");
+  const limit = body.customJornadaLimit;
+  if (hasLimit && limit !== null && !(Number.isSafeInteger(limit) && limit >= 1)) {
+    return res.status(400).json({ error: "invalid_params" });
+  }
+  if (!wantsName && !wantsPassword && !hasLimit) return res.status(400).json({ error: "invalid_params" });
+
+  const metaKey = `quiniela:${req.params.slug}:meta`;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Lock order: platform_index first, then the meta row — the same order
+    // create-quiniela and the quiniela-meta branch already use.
+    const idx = await getRowLocked("platform_index", client);
+    const entry = idx && Array.isArray(idx.quinielas)
+      ? idx.quinielas.find((q) => q.slug === req.params.slug)
+      : null;
+    const meta = await getRowLocked(metaKey, client);
+    if (!entry || !meta) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    const result = applyQuinielaSettings({
+      index: idx, meta, slug: req.params.slug,
+      name: wantsName ? body.name.trim().slice(0, 120) : null,
+      hashedOwnerPassword: wantsPassword ? hashPassword(body.ownerPassword.trim()) : null,
+      customJornadaLimit: hasLimit ? (limit === null ? null : limit) : undefined,
+    });
+    if (!result.ok) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: result.error });
+    }
+    // Both rows in the SAME transaction: either all three changes land or none
+    // of them does.
+    await putRow(metaKey, result.meta, client);
+    await putRow("platform_index", result.index, client);
+    await client.query("COMMIT");
+    res.json({ ok: true, indexVersion: result.index.version });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("platform quiniela settings failed", err);
     res.status(500).json({ error: "server_error" });
   } finally {
     client.release();

@@ -20,7 +20,8 @@ const path = require("node:path");
 
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion,
-  mergePlatformIndex, ADMIN_EDITABLE_INDEX_FIELDS, SERVER_OWNED_INDEX_FIELDS,
+  mergePlatformIndex, applyPaidToggle, applyQuinielaSettings,
+  ADMIN_EDITABLE_INDEX_FIELDS, SERVER_OWNED_INDEX_FIELDS,
 } = require("../platformState");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -359,6 +360,271 @@ test("FRONTEND: the 409 copy is user-facing and recoverable", () => {
   const indexHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
   assert.ok(indexHtml.includes("stale_version: \"La información cambió mientras estabas editando."),
     "el admin debe ver una explicación clara, no un código técnico");
+});
+
+// ==== MON-001F.2 — product-flow: marking a quiniela as paid ===============
+//
+// The earlier suite proved the PRIMITIVE was safe and then recovered by hand.
+// The real dashboard never did that recovery: it wrote the index, then wrote
+// the payment log as a separate whole-document write, and ignored the result.
+// These drive the shipped applyPaidToggle/applyQuinielaSettings logic through
+// the same transactional store, as one atomic operation per admin action.
+
+async function markPaid(store, slug, paid, paymentId, { settings = { pricePerParticipant: 10 } } = {}) {
+  // Mirrors the endpoint: lock platform_index, then platform_payment_log.
+  return store.transaction("platform_index", async ({ current: index, write: writeIndex }) =>
+    store.transaction("platform_payment_log", async ({ current: paymentLog, write: writeLog }) => {
+      const r = applyPaidToggle({ index, paymentLog, settings, slug, paid, paymentId });
+      if (!r.ok) return { status: 404, error: r.error };
+      if (r.paymentLog) writeLog(r.paymentLog);
+      writeIndex(r.index);
+      return { status: 200, recorded: r.recorded, indexVersion: r.index.version };
+    }));
+}
+
+const paidStore = () => createStore({
+  platform_index: { version: 1, quinielas: [
+    { slug: "alpha", name: "Alpha", paid: false, participantCount: 4 },
+    { slug: "beta", name: "Beta", paid: false, participantCount: 7 },
+  ] },
+  platform_payment_log: { version: 1, payments: [] },
+});
+
+test("PAID FLOW: two admins marking DIFFERENT quinielas as paid -> both paid, both payments recorded exactly once", async () => {
+  const store = paidStore();
+  const [a, b] = await Promise.all([
+    markPaid(store, "alpha", true, "pay-alpha-0001"),
+    markPaid(store, "beta", true, "pay-beta-0001"),
+  ]);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+
+  const idx = store.raw("platform_index");
+  assert.equal(idx.quinielas.find((q) => q.slug === "alpha").paid, true);
+  assert.equal(idx.quinielas.find((q) => q.slug === "beta").paid, true);
+
+  const payments = store.raw("platform_payment_log").payments;
+  assert.equal(payments.length, 2, "ningún pago se perdió");
+  assert.deepEqual(payments.map((p) => p.slug).sort(), ["alpha", "beta"]);
+  // Amounts come from the locked server state, not from the browser.
+  assert.equal(payments.find((p) => p.slug === "alpha").amount, 40);
+  assert.equal(payments.find((p) => p.slug === "beta").amount, 70);
+});
+
+test("PAID FLOW: a retry after a lost response records the SAME payment once, never twice", async () => {
+  const store = paidStore();
+  const first = await markPaid(store, "alpha", true, "pay-alpha-0001");
+  assert.equal(first.recorded, true);
+  // The response never reached the browser; the admin clicks again and the
+  // client reuses the id it already generated for this intent.
+  const retry = await markPaid(store, "alpha", true, "pay-alpha-0001");
+  assert.equal(retry.status, 200);
+  assert.equal(retry.recorded, false, "el reintento no registra un segundo pago");
+  assert.equal(store.raw("platform_payment_log").payments.length, 1);
+});
+
+test("PAID FLOW: two tabs marking the SAME quiniela paid record one payment, not two", async () => {
+  const store = paidStore();
+  await Promise.all([
+    markPaid(store, "alpha", true, "pay-alpha-0001"),
+    markPaid(store, "alpha", true, "pay-alpha-0001"),
+  ]);
+  assert.equal(store.raw("platform_payment_log").payments.length, 1);
+  assert.equal(store.raw("platform_index").quinielas[0].paid, true);
+});
+
+test("PAID FLOW: paid=true and its payment record are always coherent -- never one without the other", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "pay-alpha-0001");
+  const idx = store.raw("platform_index");
+  const payments = store.raw("platform_payment_log").payments;
+  const paidSlugs = idx.quinielas.filter((q) => q.paid).map((q) => q.slug);
+  const loggedSlugs = [...new Set(payments.map((p) => p.slug))];
+  assert.deepEqual(paidSlugs, loggedSlugs, "cada quiniela pagada tiene su registro y viceversa");
+});
+
+test("PAID FLOW: un-marking as paid never deletes the historical payment record", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "pay-alpha-0001");
+  const un = await markPaid(store, "alpha", false, null);
+  assert.equal(un.status, 200);
+  assert.equal(store.raw("platform_index").quinielas[0].paid, false);
+  assert.equal(store.raw("platform_payment_log").payments.length, 1, "el pago ocurrió: borrarlo sería reescribir la historia");
+});
+
+test("PAID FLOW: marking an unknown quiniela is refused and writes nothing", async () => {
+  const store = paidStore();
+  const before = store.raw("platform_index");
+  const r = await markPaid(store, "ghost", true, "pay-ghost-0001");
+  assert.equal(r.status, 404);
+  assert.deepEqual(store.raw("platform_index"), before);
+  assert.equal(store.raw("platform_payment_log").payments.length, 0);
+});
+
+test("PAID FLOW: the toggle bumps the index version, so a stale generic write can no longer revert it", async () => {
+  const store = paidStore();
+  const stalePanel = store.raw("platform_index"); // version 1
+  await markPaid(store, "alpha", true, "pay-alpha-0001"); // -> version 2
+
+  // The panel still believes alpha is unpaid and tries a generic index write.
+  stalePanel.quinielas[0].exempt = true;
+  const res = await indexWrite(store, stalePanel);
+  assert.equal(res.status, 409, "debe rechazarse en vez de revertir paid=true");
+  assert.equal(store.raw("platform_index").quinielas[0].paid, true);
+});
+
+// ==== MON-001F.2 — product-flow: editing a quiniela (meta + index) =========
+
+async function saveSettings(store, slug, changes) {
+  // Mirrors the endpoint's lock order: platform_index, then the meta row.
+  const metaKey = `quiniela:${slug}:meta`;
+  return store.transaction("platform_index", async ({ current: index, write: writeIndex }) =>
+    store.transaction(metaKey, async ({ current: meta, write: writeMeta }) => {
+      const r = applyQuinielaSettings({ index, meta, slug, ...changes });
+      if (!r.ok) return { status: 404, error: r.error };
+      writeMeta(r.meta);
+      writeIndex(r.index);
+      return { status: 200, indexVersion: r.index.version };
+    }));
+}
+
+const editStore = () => createStore({
+  platform_index: { version: 1, quinielas: [{ slug: "alpha", name: "Alpha", customJornadaLimit: null, paid: false }] },
+  "quiniela:alpha:meta": { groupName: "Alpha", settings: { ownerPassword: "hash-old" }, rounds: [] },
+});
+
+test("EDIT FLOW: the audited T0/T1/T2 -> all three changes land coherently", async () => {
+  const store = editStore();
+  // T1 — another valid operation advances platform_index while the edit form
+  // is open (a new quiniela is registered).
+  await store.transaction("platform_index", async ({ current, write }) => {
+    current.quinielas.push({ slug: "beta", name: "Beta", paid: false });
+    write(current);
+  });
+
+  // T2 — the admin saves name + password + limit.
+  const r = await saveSettings(store, "alpha", { name: "Alpha Renombrada", hashedOwnerPassword: "hash-new", customJornadaLimit: 9 });
+  assert.equal(r.status, 200);
+
+  const idx = store.raw("platform_index");
+  const meta = store.raw("quiniela:alpha:meta");
+  const entry = idx.quinielas.find((q) => q.slug === "alpha");
+  assert.equal(entry.name, "Alpha Renombrada");
+  assert.equal(meta.groupName, "Alpha Renombrada", "el nombre no puede divergir entre meta e índice");
+  assert.equal(meta.settings.ownerPassword, "hash-new");
+  assert.equal(entry.customJornadaLimit, 9);
+  assert.ok(idx.quinielas.some((q) => q.slug === "beta"), "y la operación concurrente sobrevive");
+});
+
+test("EDIT FLOW: a refused edit leaves NOTHING partially applied", async () => {
+  const store = editStore();
+  const idxBefore = store.raw("platform_index");
+  const metaBefore = store.raw("quiniela:alpha:meta");
+
+  const r = await saveSettings(store, "ghost", { name: "X", hashedOwnerPassword: "hash-new", customJornadaLimit: 3 });
+  assert.equal(r.status, 404);
+  assert.deepEqual(store.raw("platform_index"), idxBefore);
+  assert.deepEqual(store.raw("quiniela:alpha:meta"), metaBefore);
+});
+
+test("EDIT FLOW: the forbidden outcomes from the ticket are unreachable", async () => {
+  const store = editStore();
+  await saveSettings(store, "alpha", { name: "Nuevo", hashedOwnerPassword: "hash-new", customJornadaLimit: 4 });
+  const meta = store.raw("quiniela:alpha:meta");
+  const entry = store.raw("platform_index").quinielas[0];
+  // prohibido: password actualizado pero index no
+  assert.ok(meta.settings.ownerPassword === "hash-new" && entry.customJornadaLimit === 4);
+  // prohibido: name divergente meta vs index
+  assert.equal(meta.groupName, entry.name);
+  // prohibido: customJornadaLimit perdido mientras otros cambios aterrizan
+  assert.equal(entry.customJornadaLimit, 4);
+});
+
+test("EDIT FLOW: a partial intent only changes what it names, and still atomically", async () => {
+  const store = editStore();
+  await saveSettings(store, "alpha", { name: null, hashedOwnerPassword: null, customJornadaLimit: 6 });
+  const meta = store.raw("quiniela:alpha:meta");
+  const entry = store.raw("platform_index").quinielas[0];
+  assert.equal(entry.customJornadaLimit, 6);
+  assert.equal(meta.groupName, "Alpha", "sin nombre en la intención, el nombre no cambia");
+  assert.equal(meta.settings.ownerPassword, "hash-old", "sin contraseña en la intención, no se toca");
+});
+
+test("EDIT FLOW: editing bumps the index version, so a stale generic write cannot revert the rename", async () => {
+  const store = editStore();
+  const stalePanel = store.raw("platform_index");
+  await saveSettings(store, "alpha", { name: "Nuevo", customJornadaLimit: 2 });
+  stalePanel.quinielas[0].exempt = true; // panel still on version 1
+  assert.equal((await indexWrite(store, stalePanel)).status, 409);
+  assert.equal(store.raw("platform_index").quinielas[0].name, "Nuevo");
+});
+
+// ==== the "version counts admin edits only" premise, demonstrated ==========
+
+test("PREMISE: no server-side writer mutates an admin-owned field on an EXISTING entry", () => {
+  // The decision that server writers don't bump the version is only safe while
+  // this holds. Asserted against the real source rather than by inspection.
+  const adminOwned = ["name", "paid", "exempt", "customJornadaLimit"];
+  const assignments = serverSrc.match(/\b(?:entry|q|target)\.(name|paid|exempt|customJornadaLimit)\s*=[^=]/g) || [];
+  assert.deepEqual(assignments, [], `un writer del servidor asigna un campo admin-owned: ${assignments.join(", ")}`);
+
+  // The only places those fields appear on a write path are entry CREATION
+  // (push) and entry REMOVAL (filter) — membership, which mergePlatformIndex
+  // always takes from the locked row, so neither can be lost or resurrected.
+  adminOwned.forEach((field) => {
+    const inPush = new RegExp(`quinielas\\.push\\([\\s\\S]{0,400}?${field}`).test(serverSrc);
+    const inMerge = serverSrc.includes("mergePlatformIndex");
+    assert.ok(inPush || inMerge, `${field} debe estar cubierto por creación o por el merge`);
+  });
+});
+
+test("PREMISE: the two multi-row admin endpoints DO bump the version, because they edit admin-owned fields", () => {
+  for (const marker of ['app.post("/api/platform/quinielas/:slug/paid"', 'app.post("/api/platform/quinielas/:slug/settings"']) {
+    const slice = blockFrom(serverSrc, marker);
+    assert.ok(slice.includes("putRow(\"platform_index\", result.index, client)"), `${marker}: debe escribir el índice`);
+    assert.ok(slice.includes('await client.query("BEGIN")'), `${marker}: transacción`);
+    assert.ok(slice.includes('getRowLocked("platform_index", client)'), `${marker}: lock del índice`);
+    assert.ok(slice.includes('await client.query("COMMIT")'), `${marker}: commit`);
+    assert.ok(slice.includes('await client.query("ROLLBACK").catch(() => {})'), `${marker}: rollback ante error`);
+    assert.ok(slice.includes("client.release()"), `${marker}: libera conexión`);
+    assert.ok(slice.includes("verifyPassword(providedPlatformAuth, platformHash)"), `${marker}: exige auth de plataforma`);
+  }
+  // stampVersion lives inside the shared logic both endpoints delegate to.
+  const src = fs.readFileSync(path.join(__dirname, "..", "platformState.js"), "utf8");
+  const paid = src.slice(src.indexOf("function applyPaidToggle"), src.indexOf("function applyQuinielaSettings"));
+  assert.ok(paid.includes("stampVersion("), "applyPaidToggle debe avanzar la versión");
+  assert.ok(src.slice(src.indexOf("function applyQuinielaSettings")).includes("stampVersion("), "applyQuinielaSettings debe avanzar la versión");
+});
+
+test("SERVER: the paid endpoint locks platform_index BEFORE platform_payment_log", () => {
+  const slice = blockFrom(serverSrc, 'app.post("/api/platform/quinielas/:slug/paid"');
+  const idxIdx = slice.indexOf('getRowLocked("platform_index", client)');
+  const logIdx = slice.indexOf('getRowLocked("platform_payment_log", client)');
+  assert.ok(idxIdx !== -1 && logIdx !== -1);
+  assert.ok(idxIdx < logIdx, "orden de locks consistente: índice primero");
+});
+
+test("SERVER: the settings endpoint locks platform_index BEFORE the meta row", () => {
+  const slice = blockFrom(serverSrc, 'app.post("/api/platform/quinielas/:slug/settings"');
+  const idxIdx = slice.indexOf('getRowLocked("platform_index", client)');
+  const metaIdx = slice.indexOf("getRowLocked(metaKey, client)");
+  assert.ok(idxIdx !== -1 && metaIdx !== -1);
+  assert.ok(idxIdx < metaIdx, "mismo orden que create-quiniela y la rama quiniela-meta");
+});
+
+test("FRONTEND: the dashboard uses the atomic endpoints and checks their result", () => {
+  const indexHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  assert.ok(indexHtml.includes("markQuinielaPaid("), "el toggle de pago debe usar el endpoint atómico");
+  assert.ok(indexHtml.includes("saveQuinielaSettings("), "la edición debe usar el endpoint atómico");
+  // El bug era exactamente este: no comprobar el retorno del append.
+  assert.ok(!/await setPlatformPaymentLog\(paymentLog\);/.test(indexHtml),
+    "el append del payment log por documento completo ya no debe existir en el flujo de pago");
+  // Anclar en el HANDLER, no en el markup de la plantilla.
+  const handlerStart = indexHtml.indexOf('root.querySelectorAll("[data-paid-toggle]")');
+  assert.ok(handlerStart !== -1, "debe existir el handler del toggle de pago");
+  const handler = indexHtml.slice(handlerStart, handlerStart + 1800);
+  assert.ok(handler.includes("if(r.ok)"), "el caller debe comprobar el resultado");
+  assert.ok(handler.includes("paymentId"), "y mandar un id idempotente");
 });
 
 // ==== interleaving: writes actually serialize ==============================
