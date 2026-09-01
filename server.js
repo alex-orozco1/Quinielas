@@ -11,6 +11,12 @@ const { Pool } = require("pg");
 const sportsDataProvider = require("./sportsDataProvider");
 const { ProviderError } = require("./providers/theSportsDbAdapter");
 const { nextSportsDataHealth, DEFAULT_SPORTS_DATA_HEALTH } = require("./sportsDataHealth");
+const {
+  DEFAULT_COMMERCIAL_CONFIG, isCommercialConfigValid, computeCompetitionIdentity,
+  evaluateCompetitionBinding,
+  buildFreeEntitlement, buildGrandfatheredEntitlement,
+  checkParticipantCapacity, checkLifecycleRoundConsumption,
+} = require("./planLimits");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
@@ -262,6 +268,56 @@ async function ensureTable() {
     CREATE INDEX IF NOT EXISTS idx_analytics_events_event_name_created
     ON analytics_events (event_name, created_at);
   `);
+
+  // MON-001B: commercial_config — the dynamic, server-side SSOT for
+  // pricing/limits. Seeded once from the code-level defaults; every read
+  // after this happens against this row, never against the constants in
+  // planLimits.js directly, so Panel Plataforma editing this row is a
+  // real, immediate, no-deploy change everywhere that reads it.
+  await pool.query(
+    `INSERT INTO kv (key, value, updated_at) VALUES ('commercial_config', $1::jsonb, now())
+     ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify(DEFAULT_COMMERCIAL_CONFIG)]
+  );
+
+  // MON-001B: grandfathering migration. Idempotent, safe to run on every
+  // boot (which it does — this whole function runs at startup): any
+  // platform_index entry that doesn't yet have an `entitlement` gets one
+  // stamped, explicitly marking it as pre-existing/grandfathered rather
+  // than leaving it silently un-enforceable (MON-001A's mistake — missing
+  // data must never mean "unlimited" as an accident of absence). A
+  // pre-existing `exempt:true` flag is preserved as the REASON for the
+  // grandfathered entitlement (still auditable — visible in the
+  // entitlement itself, not lost), rather than continuing to be its own
+  // separate silent bypass mechanism going forward. This makes "missing
+  // entitlement" structurally impossible by the time any request can be
+  // handled, which is what lets enforcement fail CLOSED (see
+  // planLimits.js) without being able to break a real, already-existing
+  // quiniela that simply hasn't been touched by this migration in a
+  // given deploy cycle — it always has by the time this function returns.
+  const idxRow = await pool.query("SELECT value FROM kv WHERE key = 'platform_index'");
+  const idx = idxRow.rows[0] ? idxRow.rows[0].value : { quinielas: [] };
+  let migrated = false;
+  (idx.quinielas || []).forEach((entry) => {
+    if (!entry.entitlement) {
+      entry.entitlement = buildGrandfatheredEntitlement(new Date().toISOString(), {
+        reason: entry.exempt
+          ? "Migrated from legacy exempt:true flag."
+          : "Existed before commercial enforcement shipped — preserved as-is.",
+      });
+      entry.entitlementHistory = [{ action: "grant", entitlement: entry.entitlement, at: entry.entitlement.grantedAt }];
+      entry.lifecycleRoundsConsumed = 0;
+      entry.lifecycleConsumedRoundIds = [];
+      migrated = true;
+    }
+  });
+  if (migrated) {
+    await pool.query(
+      "UPDATE kv SET value = $1::jsonb, updated_at = now() WHERE key = 'platform_index'",
+      [JSON.stringify(idx)]
+    );
+    console.error(`MON-001B grandfathering migration: stamped entitlement on ${idx.quinielas.filter((q) => q.entitlement && q.entitlement.source === "grandfather_migration").length} platform_index entries`);
+  }
 }
 
 async function getRow(key, client) {
@@ -318,7 +374,7 @@ function rateLimit(name) {
 // Only these exact keys/patterns are recognized. Anything else is rejected —
 // the generic store/read/delete endpoints are for QRACKS's own data shapes,
 // not an arbitrary key-value bucket anyone can stash unrelated things in.
-const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log"]);
+const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config"]);
 
 function classifyKey(key) {
   if (PLATFORM_KEYS.has(key)) return { kind: "platform" };
@@ -683,29 +739,6 @@ async function getPlatformHash() {
   return platValue && platValue.dashboardPassword ? platValue.dashboardPassword : process.env.PLATFORM_PASSWORD;
 }
 
-// Keeps the platform dashboard's participant/round counts fresh WITHOUT it
-// ever having to download each quiniela's full meta — this is the write side
-// of that: whenever a quiniela's own meta is saved, its two counts get synced
-// onto its platform_index entry. Best-effort and never awaited by the caller
-// (a stale dashboard number for a moment is a fine tradeoff for never slowing
-// down someone's own save); skips the write entirely if nothing changed.
-async function updatePlatformIndexCounts(slug, meta) {
-  try {
-    const newCount = Array.isArray(meta.participants) ? meta.participants.length : 0;
-    const newRounds = Array.isArray(meta.rounds) ? meta.rounds.length : 0;
-    const idx = await getRow("platform_index");
-    if (!idx || !Array.isArray(idx.quinielas)) return;
-    const entry = idx.quinielas.find((q) => q.slug === slug);
-    if (!entry) return;
-    if (entry.participantCount === newCount && entry.roundCount === newRounds) return;
-    entry.participantCount = newCount;
-    entry.roundCount = newRounds;
-    await putRow("platform_index", idx);
-  } catch (err) {
-    console.error("updatePlatformIndexCounts failed", err);
-  }
-}
-
 // ---------- generic KV endpoints (QRACKS's own key shapes only) ----------
 
 app.get("/api/kv/:key", async (req, res) => {
@@ -872,10 +905,11 @@ app.post("/api/kv/:key", async (req, res) => {
     let finalValue = value;
 
     if (info.kind === "platform") {
-      // All three platform-level keys validate against the SAME current password
-      // (platform_settings' own hash, or the bootstrap env var if that doesn't
-      // exist yet) — never against a per-key field, so changing the password
-      // once in the dashboard immediately applies everywhere, consistently.
+      // All four platform-level keys validate against the SAME current
+      // password (platform_settings' own hash, or the bootstrap env var if
+      // that doesn't exist yet) — never against a per-key field, so
+      // changing the password once in the dashboard immediately applies
+      // everywhere, consistently.
       const platformHash = await getPlatformHash();
       if (!verifyPassword(providedPlatformAuth, platformHash)) {
         return res.status(403).json({ error: "unauthorized" });
@@ -884,19 +918,193 @@ app.post("/api/kv/:key", async (req, res) => {
         const oldValue = await getRow(req.params.key);
         finalValue = mergeProtectedPlatformFields(oldValue, value);
       }
-    } else if (info.kind === "quiniela-meta") {
-      const oldValue = await getRow(info.metaKey);
-      if (!oldValue) {
-        // Brand-new quinielas are only ever created through POST /api/create-quiniela,
-        // which handles the meta + platform_index registration together, atomically.
-        return res.status(403).json({ error: "use_create_endpoint" });
+      if (req.params.key === "commercial_config") {
+        // MON-001B: this write becomes the new live SSOT for every future
+        // enforcement decision and every UX surface that shows pricing/
+        // limits — reject anything that violates the basic invariants
+        // (free <= plus, all limits >= 1, price >= 0) BEFORE it's ever
+        // persisted, since a corrupt row here would corrupt every
+        // enforcement decision made against it afterward.
+        if (!isCommercialConfigValid(value)) {
+          return res.status(400).json({ error: "invalid_commercial_config" });
+        }
+        const oldConfig = await getRow(req.params.key);
+        finalValue = {
+          ...value,
+          version: (oldConfig && Number.isFinite(oldConfig.version) ? oldConfig.version : 0) + 1,
+          updatedAt: new Date().toISOString(),
+          updatedBy: "platform",
+        };
       }
-      const platformHash = await getPlatformHash();
-      const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, info.slug);
-      if (!authTier) return res.status(403).json({ error: "unauthorized" });
-      finalValue = mergeProtectedMetaFields(oldValue, value, authTier);
-      const roundsCheck = validateRoundsIntegrity(finalValue, oldValue);
-      if (!roundsCheck.ok) return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
+    } else if (info.kind === "quiniela-meta") {
+      // MON-001B: converted from an unlocked read-then-write (MON-001A's
+      // real bug — two concurrent requests could both read the same
+      // stale counts and both pass a capacity check that should only
+      // have let ONE of them through) into a self-contained transaction,
+      // matching the exact pattern the "picks" branch below already
+      // established (SEC-001). Lock ORDER is always platform_index
+      // first, then this quiniela's own meta row, second — followed
+      // consistently everywhere two rows need locking together (see
+      // self-register below), specifically to avoid a deadlock between
+      // two transactions that might otherwise lock the same two rows in
+      // opposite orders.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const platformIdx = await getRowLocked("platform_index", client);
+        const oldValue = await getRowLocked(info.metaKey, client);
+        if (!oldValue) {
+          await client.query("ROLLBACK");
+          // Brand-new quinielas are only ever created through POST
+          // /api/create-quiniela, which handles the meta + platform_index
+          // registration together, atomically.
+          return res.status(403).json({ error: "use_create_endpoint" });
+        }
+        const platformHash = await getPlatformHash();
+        const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, info.slug);
+        if (!authTier) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "unauthorized" });
+        }
+        const mergedValue = mergeProtectedMetaFields(oldValue, value, authTier);
+        const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
+        if (!roundsCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
+        }
+
+        // MON-001B: real, atomic, server-side enforcement of the actual
+        // approved commercial model (see planLimits.js) — fixes both
+        // MON-001's original P0 (no backend enforcement existed at all)
+        // and MON-001A's own bugs (wrong numbers, a FREE_TRIAL that was
+        // never approved, non-atomic checks, and fail-OPEN behavior on
+        // unknown data). The entitlement is read fresh from
+        // platform_index under lock here — never trusted from the
+        // request body, which the quiniela owner controls.
+        const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+          ? platformIdx.quinielas.find((q) => q.slug === info.slug)
+          : null;
+        if (info.slug) {
+          // MON-001C fix #1: a real per-slug quiniela MUST have a
+          // platform_index entry — created atomically alongside its meta
+          // by POST /api/create-quiniela. If it's missing here, that's a
+          // genuine data-integrity problem, not a legitimate state
+          // (unlike the legacy single-tenant quiniela_meta_v1 key, which
+          // has no slug at all and predates per-quiniela plans entirely —
+          // see the `else` of this `if (info.slug)` for that case, which
+          // intentionally skips entitlement enforcement). Silently
+          // falling through to an unenforced write here — MON-001B's own
+          // residual bug — would let a quiniela with a corrupted/missing
+          // platform_index registration add unlimited rounds/participants.
+          // Fail closed instead.
+          if (!entry) {
+            console.error("quiniela-meta write blocked: no platform_index entry found for a per-slug quiniela", { slug: info.slug });
+            await client.query("ROLLBACK");
+            return res.status(402).json({ error: "entitlement_unavailable" });
+          }
+          if (!entry.entitlement) {
+            // Should be structurally impossible (ensureTable()'s
+            // grandfathering migration runs at every boot), but if it
+            // somehow still happens, fail CLOSED (deny new capacity)
+            // rather than silently allowing it, and make it loud.
+            console.error("quiniela-meta write blocked: no entitlement on platform_index entry", { slug: info.slug });
+            await client.query("ROLLBACK");
+            return res.status(402).json({ error: "entitlement_unavailable" });
+          }
+
+          // MON-001C FIX 4: league/season change policy. Selecting a
+          // league for the FIRST time (previously unset) is always
+          // allowed — that's the legitimate "sin liga -> con liga"
+          // transition, and it adopts the tournament's identity from this
+          // point on without refunding/resetting any manual lifecycle
+          // already consumed. CHANGING an already-selected league/season
+          // (or clearing it back to none) once the quiniela is already
+          // operating within a commercial cycle — defined durably as
+          // "has ever consumed manual lifecycle OR already has a
+          // competitionIdentity on its entitlement" — is blocked for a
+          // normal owner/admin edit, specifically to prevent
+          // "Apertura -> change league -> Clausura -> change league ->
+          // Premier" from extending a single quiniela/Plus purchase
+          // across multiple real tournaments. A platform-authenticated
+          // write (support/correction) is exempt from this restriction.
+          const oldLeagueId = oldValue.settings && oldValue.settings.sportsdbLeagueId;
+          const oldSeason = oldValue.settings && oldValue.settings.sportsdbSeason;
+          const newLeagueId = mergedValue.settings && mergedValue.settings.sportsdbLeagueId;
+          const newSeason = mergedValue.settings && mergedValue.settings.sportsdbSeason;
+          const leagueOrSeasonChanged = (oldLeagueId || null) !== (newLeagueId || null) || (oldSeason || null) !== (newSeason || null);
+          const wasAlreadyOperating = !!(entry.entitlement.competitionIdentity) ||
+            (Number.isFinite(entry.lifecycleRoundsConsumed) && entry.lifecycleRoundsConsumed > 0);
+          if (leagueOrSeasonChanged && oldLeagueId && wasAlreadyOperating && authTier !== "platform") {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "league_change_blocked" });
+          }
+          // Selecting a league for the first time (oldLeagueId was empty)
+          // adopts its identity right now, on the entitlement itself —
+          // never left null just because the quiniela didn't have one at
+          // creation time (that was MON-001C's other fix, for
+          // create-quiniela's own path).
+          if (newLeagueId && !entry.entitlement.competitionIdentity) {
+            entry.entitlement.competitionIdentity = computeCompetitionIdentity(mergedValue.settings);
+          }
+
+          const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+          const oldParticipantCount = (oldValue.participants || []).length;
+          const newParticipantCount = (mergedValue.participants || []).length;
+          if (newParticipantCount > oldParticipantCount) {
+            const check = checkParticipantCapacity(entry.entitlement, commercialConfig, oldParticipantCount, newParticipantCount - oldParticipantCount);
+            if (!check.allowed) {
+              await client.query("ROLLBACK");
+              return res.status(402).json({ error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit });
+            }
+          }
+          // Durable lifecycle: count only round IDs that (a) are
+          // published in this write AND (b) have never been counted
+          // before, per platform_index's own persisted ID list — NOT
+          // meta.rounds.length or a published-count comparison. Deleting
+          // a round never removes its ID from this list, so it can never
+          // return consumed lifecycle budget; re-publishing a
+          // previously-unpublished round with the SAME id (there's no
+          // "unpublish" action in the product today, but this is
+          // correct regardless) is also never double-counted, since the
+          // id simply stays in the list once added.
+          const consumedIds = new Set(entry.lifecycleConsumedRoundIds || []);
+          const newlyConsumedIds = (mergedValue.rounds || [])
+            .filter((r) => r.published !== false && !consumedIds.has(r.id))
+            .map((r) => r.id);
+          if (newlyConsumedIds.length > 0) {
+            const currentConsumed = Number.isFinite(entry.lifecycleRoundsConsumed) ? entry.lifecycleRoundsConsumed : consumedIds.size;
+            const check = checkLifecycleRoundConsumption(entry.entitlement, commercialConfig, currentConsumed, newlyConsumedIds.length);
+            if (!check.allowed) {
+              await client.query("ROLLBACK");
+              return res.status(402).json({ error: check.reason, limitType: "rounds", plan: check.plan, limit: check.limit });
+            }
+          }
+
+          // All checks passed — persist the durable lifecycle counters
+          // (and the existing display-only participantCount/roundCount
+          // cache) in the SAME transaction as the meta write itself, so
+          // they can never drift apart under concurrency.
+          entry.lifecycleConsumedRoundIds = [...consumedIds, ...newlyConsumedIds];
+          entry.lifecycleRoundsConsumed = entry.lifecycleConsumedRoundIds.length;
+          entry.participantCount = newParticipantCount;
+          entry.roundCount = (mergedValue.rounds || []).length;
+          await putRow("platform_index", platformIdx, client);
+        }
+        // else: info.slug is undefined -- the legacy single-tenant
+        // quiniela_meta_v1 key, which predates per-quiniela plans and
+        // platform_index entirely. No entitlement concept applies to it,
+        // consistent with grandfathering's own spirit -- there is nothing
+        // to enforce here, by design, not by omission.
+
+        await putRow(info.metaKey, mergedValue, client);
+        await client.query("COMMIT");
+        return res.json({ key: req.params.key, ok: true });
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
     } else if (info.kind === "picks") {
       // SEC-001 — Atomic Round Lock: previously, reading the meta (to check the
       // deadline) and writing the picks were two separate, unlocked operations,
@@ -938,10 +1146,11 @@ app.post("/api/kv/:key", async (req, res) => {
       }
     }
 
+    // Only "platform" kind reaches here now -- "quiniela-meta" and "picks"
+    // are both fully self-contained above (their own transaction, their
+    // own commit/return) since MON-001B, so this tail no longer needs to
+    // special-case quiniela-meta at all.
     await putRow(req.params.key, finalValue);
-    if (info.kind === "quiniela-meta" && info.slug) {
-      updatePlatformIndexCounts(info.slug, finalValue); // not awaited on purpose
-    }
     res.json({ key: req.params.key, ok: true });
   } catch (err) {
     console.error(err);
@@ -1100,29 +1309,102 @@ app.post("/api/clear-session", async (req, res) => {
 });
 
 app.post("/api/self-register", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { metaKey, name, pin, slug } = req.body || {};
     const cleanName = String(name || "").trim();
     if (!metaKey || !cleanName || !/^\d{4}$/.test(String(pin || ""))) {
+      // MON-001C fix #2: removed the manual client.release() that used to
+      // live here — this `return` is still inside the outer try block, so
+      // the `finally` at the bottom of this handler ALREADY runs on this
+      // path too. Releasing here AND in finally was a real double-release
+      // bug (releasing an already-released pg client back to the pool
+      // twice). ONE release strategy now: finally, exclusively, on every
+      // path out of this function.
       return res.status(400).json({ error: "invalid_params" });
     }
-    const value = await getRow(metaKey);
-    if (!value) return res.status(404).json({ error: "not_found" });
+    // MON-001B: converted from an unlocked read-then-write (the same real
+    // race MON-001A left open: two people registering at the exact same
+    // moment could both read "9 participants" and both get accepted,
+    // landing at 11 on a 10-person plan) into a locked transaction — same
+    // lock ORDER as the generic quiniela-meta write path above
+    // (platform_index first, then this quiniela's own meta row), so the
+    // two paths can never deadlock against each other.
+    await client.query("BEGIN");
+    const metaKeyMatch = String(metaKey).match(/^quiniela:([a-z0-9-]{1,60}):meta$/);
+    const derivedSlug = metaKeyMatch ? metaKeyMatch[1] : null;
+    const platformIdx = derivedSlug ? await getRowLocked("platform_index", client) : null;
+    const value = await getRowLocked(metaKey, client);
+    if (!value) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
     if (!Array.isArray(value.participants)) value.participants = [];
     if (value.participants.some((p) => p.name.toLowerCase() === cleanName.toLowerCase())) {
+      await client.query("ROLLBACK");
       return res.status(409).json({ error: "name_taken" });
+    }
+    // Slug is derived from metaKey itself (the same pattern classifyKey()
+    // already uses) rather than trusted from the request body's separate
+    // `slug` field, so this can never be pointed at a different
+    // quiniela's entitlement than the one actually being written to.
+    const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+      ? platformIdx.quinielas.find((q) => q.slug === derivedSlug)
+      : null;
+    if (derivedSlug) {
+      // MON-001C fix #1: same residual bypass as the generic write path
+      // above — a real per-slug quiniela (derivedSlug present) with no
+      // matching platform_index entry is a genuine data-integrity
+      // problem, not a legitimate state to silently skip enforcement for.
+      // Only the legacy single-tenant key (derivedSlug null) intentionally
+      // has no entitlement concept at all.
+      if (!entry) {
+        console.error("self-register blocked: no platform_index entry found for a per-slug quiniela", { slug: derivedSlug });
+        await client.query("ROLLBACK");
+        return res.status(402).json({ error: "entitlement_unavailable" });
+      }
+      if (!entry.entitlement) {
+        console.error("self-register blocked: no entitlement on platform_index entry", { slug: derivedSlug });
+        await client.query("ROLLBACK");
+        return res.status(402).json({ error: "entitlement_unavailable" });
+      }
+      const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+      const check = checkParticipantCapacity(entry.entitlement, commercialConfig, value.participants.length, 1);
+      if (!check.allowed) {
+        await client.query("ROLLBACK");
+        return res.status(402).json({ error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit });
+      }
     }
     const newParticipant = {
       id: "p_" + crypto.randomBytes(9).toString("hex"),
       name: cleanName, isAdmin: false, paid: false, pin: hashPassword(pin)
     };
     value.participants.push(newParticipant);
-    await putRow(metaKey, value);
-    issueSessionCookie(res, slug, newParticipant);
+    if (entry) {
+      entry.participantCount = value.participants.length;
+      await putRow("platform_index", platformIdx, client);
+    }
+    await putRow(metaKey, value, client);
+    await client.query("COMMIT");
+    // MON-001C fix #3: the session cookie's quiniela identity must be the
+    // SERVER-DERIVED, validated derivedSlug — never the client-supplied
+    // `slug` field from the request body. Before this fix, a request
+    // could send metaKey pointing at quiniela A (whose capacity was
+    // actually checked and whose participant was actually written) but a
+    // DIFFERENT `slug` field for quiniela B, and the session cookie would
+    // have been scoped to B — a real identity-confusion bug, not just a
+    // theoretical one. derivedSlug is null only for the legacy
+    // single-tenant key, where the cookie's own scoping has always been
+    // slug-less by design; issueSessionCookie handles that null the same
+    // way it always has.
+    issueSessionCookie(res, derivedSlug, newParticipant);
     res.json({ ok: true, participant: { id: newParticipant.id, name: newParticipant.name, isAdmin: false, paid: false, hasPin: true } });
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
     console.error(err);
     res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
   }
 });
 
@@ -1231,12 +1513,31 @@ app.post("/api/create-quiniela", async (req, res) => {
       throw insertErr;
     }
 
-    // Note: exempt is intentionally never settable here — only the platform
-    // dashboard (with the platform password) can grant that.
+    // Note: manual grants/overrides are intentionally never settable here —
+    // only the platform dashboard (with the platform password) can grant
+    // those (see the entitlement model in planLimits.js). MON-001B: every
+    // new quiniela starts on an explicit FREE entitlement — no trial, no
+    // time component, and (per MON-001C) FREE never snapshots its limits;
+    // it always tracks whatever commercial_config says FREE means at
+    // enforcement time. MON-001C fix: if a league was already selected at
+    // creation, competitionIdentity is computed and stored on the
+    // entitlement right here — a quiniela created WITH a league must never
+    // silently start out as competitionIdentity:null (which would make it
+    // behave as manual 7/18 lifecycle by mistake, exactly the bug this
+    // ticket flagged).
+    const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+    const entitlement = buildFreeEntitlement(commercialConfig);
+    if (cleanLeagueId) {
+      entitlement.competitionIdentity = computeCompetitionIdentity(meta.settings);
+    }
     idx.quinielas.push({
       slug: cleanSlug, name: cleanGroupName, creatorName: cleanCreatorName,
       contact: cleanContact, createdAt: new Date().toISOString(),
-      participantCount: 1, roundCount: 0
+      participantCount: 1, roundCount: 0,
+      entitlement,
+      entitlementHistory: [{ action: "grant", entitlement, at: entitlement.grantedAt }],
+      lifecycleRoundsConsumed: 0,
+      lifecycleConsumedRoundIds: [],
     });
     await putRow("platform_index", idx, client);
 
@@ -1582,6 +1883,13 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // MON-001D: platform_index is locked FIRST, before this quiniela's own
+    // meta row — the SAME order already used by POST /api/kv/:key's
+    // quiniela-meta branch and POST /api/self-register (MON-001B/C).
+    // Before this ticket, sync-competition locked only metaKey; adding the
+    // entitlement read in the opposite order would have introduced a real
+    // deadlock risk against those two paths.
+    const platformIdx = await getRowLocked("platform_index", client);
     const meta = await getRowLocked(metaKey, client);
     if (!meta) {
       await client.query("ROLLBACK");
@@ -1602,6 +1910,48 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       console.log("sync-competition: no league configured", { slug });
       await client.query("ROLLBACK");
       return res.json({ ok: true, reliabilityState: "competition_not_supported", createdRounds: 0, createdMatches: 0, skippedEvents: 0, eventsFetched: 0, distinctProviderRounds: 0 });
+    }
+
+    // MON-001D: competition binding enforcement — the real backend guard
+    // that stops one quiniela (and one Plus purchase) from being reused
+    // for a second tournament. The requested identity is derived from the
+    // league+season THIS request would import, and compared against the
+    // identity the quiniela's entitlement is bound to (platform_index,
+    // platform-tier — not owner-writable). A mismatch is refused before
+    // the provider is even called, so no data is fetched, imported, or
+    // partially written for the wrong tournament.
+    const requestedIdentity = computeCompetitionIdentity({ sportsdbLeagueId: externalLeagueId, sportsdbSeason: season });
+    const bindingEntry = platformIdx && Array.isArray(platformIdx.quinielas)
+      ? platformIdx.quinielas.find((q) => q.slug === slug)
+      : null;
+    if (bindingEntry) {
+      const binding = evaluateCompetitionBinding(bindingEntry.entitlement, requestedIdentity);
+      if (binding.violation) {
+        await client.query("ROLLBACK");
+        console.error("sync-competition blocked by competition binding", {
+          slug, requestedIdentity, boundIdentity: binding.boundIdentity, reason: binding.reason,
+        });
+        return res.status(402).json({
+          error: binding.reason,
+          boundIdentity: binding.boundIdentity || null,
+          requestedIdentity: requestedIdentity || null,
+          createdRounds: 0, createdMatches: 0, skippedEvents: 0,
+        });
+      }
+      // Not yet bound (a quiniela created without a league that has just
+      // selected one, or one created before this ticket): adopt this
+      // tournament now, forward-looking. Any manual rounds already played
+      // keep their consumed lifecycle — adoption never refunds, resets, or
+      // deletes anything (MON-001D §8).
+      if (binding.adopt) {
+        bindingEntry.entitlement.competitionIdentity = binding.identity;
+        bindingEntry.entitlementHistory = bindingEntry.entitlementHistory || [];
+        bindingEntry.entitlementHistory.push({
+          action: "competition_bound", at: new Date().toISOString(),
+          competitionIdentity: binding.identity, source: "sync_competition",
+        });
+        await putRow("platform_index", platformIdx, client);
+      }
     }
 
     let events;
@@ -1634,6 +1984,13 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     const newRounds = plannedRounds.map((r) => ({
       id: "r_" + crypto.randomBytes(5).toString("hex"),
       ...r,
+      // MON-001D: record which tournament each imported round belongs to.
+      // Purely additive and audit-oriented -- enforcement itself is the
+      // binding check above, never this field (which lives in
+      // owner-writable meta and therefore can never be trusted as an
+      // authority). It makes "are these rounds all from one tournament?"
+      // answerable after the fact without re-querying the provider.
+      competitionIdentity: requestedIdentity,
       matches: r.matches.map((m) => ({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...m })),
     }));
 

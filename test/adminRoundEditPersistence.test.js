@@ -79,7 +79,11 @@ test("on failure, the form re-renders (fresh button, draft rebuilt from the rest
 test("failure shows a real, humanized error message, not a generic hardcoded string", () => {
   const failIdx = editHandler.indexOf("} else {");
   const failSlice = editHandler.slice(failIdx, failIdx + 900);
-  assert.ok(failSlice.includes("toast(humanizeError(result.error));"), "must surface the actual error via the existing humanizeError() pattern");
+  // MON-001A: upgraded to planLimitMessage(), which itself falls back to
+  // humanizeError() for any non-plan-limit error -- still a real,
+  // humanized message, never a generic hardcoded string, just able to
+  // additionally show the precise plan-limit copy when that's the reason.
+  assert.ok(failSlice.includes("toast(planLimitMessage(result));"), "must surface the actual error via planLimitMessage(), which itself wraps humanizeError()");
   assert.ok(!failSlice.includes('"No se pudo guardar, intenta otra vez"'), "the old generic hardcoded message must be gone");
 });
 
