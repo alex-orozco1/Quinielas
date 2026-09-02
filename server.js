@@ -1829,15 +1829,23 @@ app.post("/api/platform/quinielas/:slug/paid", async (req, res) => {
     });
     if (!result.ok) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ error: result.error });
+      // payment_id_conflict is a caller error (an id replayed across
+      // quinielas, or after an un-mark), not a missing quiniela.
+      const status = result.error === "not_found" ? 404 : 409;
+      return res.status(status).json({ error: result.error });
     }
     if (result.paymentLog) await putRow("platform_payment_log", result.paymentLog, client);
-    // `paid` is an admin-owned field, so this write participates in the same
-    // version protocol as the dashboard's own edits: bumping here is what
+    // A no-op (already in the requested state) writes NOTHING — not even a
+    // version bump — so a second, late tab cannot disturb the row at all.
+    // `paid` is an admin-owned field, so a real change participates in the
+    // same version protocol as the dashboard's own edits: bumping is what
     // makes a stale generic /api/kv write 409 instead of reverting it.
-    await putRow("platform_index", result.index, client);
+    if (result.index) await putRow("platform_index", result.index, client);
     await client.query("COMMIT");
-    res.json({ ok: true, paid, recorded: result.recorded, indexVersion: result.index.version });
+    res.json({
+      ok: true, paid, recorded: result.recorded, transitioned: result.transitioned,
+      indexVersion: result.index ? result.index.version : readStoredVersion(idx),
+    });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("platform paid toggle failed", err);

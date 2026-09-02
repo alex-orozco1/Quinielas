@@ -371,14 +371,18 @@ test("FRONTEND: the 409 copy is user-facing and recoverable", () => {
 // the same transactional store, as one atomic operation per admin action.
 
 async function markPaid(store, slug, paid, paymentId, { settings = { pricePerParticipant: 10 } } = {}) {
-  // Mirrors the endpoint: lock platform_index, then platform_payment_log.
+  // Mirrors the endpoint: lock platform_index, then platform_payment_log,
+  // write only what the decision says to write.
   return store.transaction("platform_index", async ({ current: index, write: writeIndex }) =>
     store.transaction("platform_payment_log", async ({ current: paymentLog, write: writeLog }) => {
       const r = applyPaidToggle({ index, paymentLog, settings, slug, paid, paymentId });
-      if (!r.ok) return { status: 404, error: r.error };
+      if (!r.ok) return { status: r.error === "not_found" ? 404 : 409, error: r.error };
       if (r.paymentLog) writeLog(r.paymentLog);
-      writeIndex(r.index);
-      return { status: 200, recorded: r.recorded, indexVersion: r.index.version };
+      if (r.index) writeIndex(r.index);
+      return {
+        status: 200, recorded: r.recorded, transitioned: r.transitioned,
+        indexVersion: r.index ? r.index.version : readStoredVersion(index),
+      };
     }));
 }
 
@@ -423,14 +427,121 @@ test("PAID FLOW: a retry after a lost response records the SAME payment once, ne
   assert.equal(store.raw("platform_payment_log").payments.length, 1);
 });
 
-test("PAID FLOW: two tabs marking the SAME quiniela paid record one payment, not two", async () => {
+test("PAID FLOW: TWO TABS with DIFFERENT ids on the same quiniela record exactly ONE payment", async () => {
+  // The real dashboard behaviour: each tab has its own DOM and generates its
+  // own paymentId. The previous version of this test reused ONE id, so it was
+  // really testing a retry — and the two-tab case it claimed to cover was
+  // actually broken: both requests recorded a payment for a single
+  // unpaid->paid transition.
   const store = paidStore();
-  await Promise.all([
-    markPaid(store, "alpha", true, "pay-alpha-0001"),
-    markPaid(store, "alpha", true, "pay-alpha-0001"),
+  const [a, b] = await Promise.all([
+    markPaid(store, "alpha", true, "id-from-tab-A"),
+    markPaid(store, "alpha", true, "id-from-tab-B"),
   ]);
-  assert.equal(store.raw("platform_payment_log").payments.length, 1);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  const payments = store.raw("platform_payment_log").payments;
+  assert.equal(payments.length, 1, "una sola transición unpaid->paid = un solo pago");
   assert.equal(store.raw("platform_index").quinielas[0].paid, true);
+  // Exactly one of them performed the transition; the other was a no-op.
+  assert.deepEqual([a.transitioned, b.transitioned].sort(), [false, true]);
+});
+
+test("PAID FLOW: three or more simultaneous requests on the same quiniela still record ONE payment", async () => {
+  const store = paidStore();
+  const results = await Promise.all([
+    markPaid(store, "alpha", true, "id-1"),
+    markPaid(store, "alpha", true, "id-2"),
+    markPaid(store, "alpha", true, "id-3"),
+    markPaid(store, "alpha", true, "id-4"),
+  ]);
+  assert.ok(results.every((r) => r.status === 200));
+  assert.equal(store.raw("platform_payment_log").payments.length, 1);
+  assert.equal(results.filter((r) => r.transitioned).length, 1, "solo una fue la transición real");
+});
+
+test("PAID FLOW: a no-op writes nothing at all -- not even a version bump", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-first");
+  const afterFirst = store.raw("platform_index");
+  const logAfterFirst = store.raw("platform_payment_log");
+  const late = await markPaid(store, "alpha", true, "id-from-a-late-tab");
+  assert.equal(late.status, 200);
+  assert.equal(late.transitioned, false);
+  assert.deepEqual(store.raw("platform_index"), afterFirst, "una tab tardía no puede tocar la fila");
+  assert.deepEqual(store.raw("platform_payment_log"), logAfterFirst);
+});
+
+test("PAID FLOW: the SAME id reused for a DIFFERENT quiniela is refused, never paid-without-record", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "shared-id");
+  const r = await markPaid(store, "beta", true, "shared-id");
+  assert.equal(r.status, 409);
+  assert.equal(r.error, "payment_id_conflict");
+  const idx = store.raw("platform_index");
+  assert.equal(idx.quinielas.find((q) => q.slug === "beta").paid, false, "beta NO puede quedar pagada sin su registro");
+  assert.equal(store.raw("platform_payment_log").payments.filter((p) => p.slug === "beta").length, 0);
+});
+
+test("PAID FLOW: replaying an old id after un-marking is refused instead of silently skipping the record", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-original");
+  await markPaid(store, "alpha", false, null);
+  const replay = await markPaid(store, "alpha", true, "id-original");
+  assert.equal(replay.status, 409, "reusar el id de un pago ya registrado se rechaza");
+  assert.equal(store.raw("platform_index").quinielas[0].paid, false, "y no deja el flag adelantado al registro");
+});
+
+test("PAID FLOW: false->true->false->true is a genuinely NEW event and records a second payment", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-first");
+  await markPaid(store, "alpha", false, null);
+  const second = await markPaid(store, "alpha", true, "id-second");
+  assert.equal(second.status, 200);
+  assert.equal(second.recorded, true);
+  const payments = store.raw("platform_payment_log").payments;
+  assert.equal(payments.length, 2, "dos transiciones reales = dos eventos históricos");
+  assert.deepEqual(payments.map((p) => p.id), ["id-first", "id-second"]);
+  assert.equal(store.raw("platform_index").quinielas[0].paid, true);
+});
+
+test("PAID FLOW: false->true->true records exactly one payment", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-first");
+  await markPaid(store, "alpha", true, "id-second");
+  assert.equal(store.raw("platform_payment_log").payments.length, 1);
+});
+
+test("PAID FLOW: false->true->false keeps exactly one historical record", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-first");
+  await markPaid(store, "alpha", false, null);
+  assert.equal(store.raw("platform_payment_log").payments.length, 1, "la historia se conserva");
+  assert.equal(store.raw("platform_index").quinielas[0].paid, false);
+});
+
+test("PAID FLOW: un-marking twice is a no-op and never touches the log", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-first");
+  await markPaid(store, "alpha", false, null);
+  const before = store.raw("platform_index");
+  const again = await markPaid(store, "alpha", false, null);
+  assert.equal(again.transitioned, false);
+  assert.deepEqual(store.raw("platform_index"), before);
+  assert.equal(store.raw("platform_payment_log").payments.length, 1);
+});
+
+test("PAID FLOW: a malformed / legacy payment log without ids never blocks a new record", async () => {
+  // Records written before this feature existed have no id at all.
+  const store = createStore({
+    platform_index: { version: 1, quinielas: [{ slug: "alpha", name: "Alpha", paid: false, participantCount: 4 }] },
+    platform_payment_log: { version: 1, payments: [{ slug: "alpha", amount: 40 }, null, "garbage", { id: null }] },
+  });
+  const r = await markPaid(store, "alpha", true, "id-new");
+  assert.equal(r.status, 200);
+  assert.equal(r.recorded, true);
+  const added = store.raw("platform_payment_log").payments.filter((p) => p && p.id === "id-new");
+  assert.equal(added.length, 1);
 });
 
 test("PAID FLOW: paid=true and its payment record are always coherent -- never one without the other", async () => {
@@ -471,6 +582,47 @@ test("PAID FLOW: the toggle bumps the index version, so a stale generic write ca
   const res = await indexWrite(store, stalePanel);
   assert.equal(res.status, 409, "debe rechazarse en vez de revertir paid=true");
   assert.equal(store.raw("platform_index").quinielas[0].paid, true);
+});
+
+test("PAID FLOW: a concurrent mark and un-mark leave a coherent state, whatever order they land in", async () => {
+  const store = paidStore();
+  await markPaid(store, "alpha", true, "id-initial"); // 1 record, paid=true
+  const [a, b] = await Promise.all([
+    markPaid(store, "alpha", false, null),
+    markPaid(store, "alpha", true, "id-second"),
+  ]);
+  assert.ok([a, b].every((r) => r.status === 200));
+
+  const payments = store.raw("platform_payment_log").payments;
+  const finalPaid = store.raw("platform_index").quinielas[0].paid;
+  // The invariant does not depend on which order the lock granted: the log
+  // holds exactly one record per false->true transition that actually landed.
+  const transitionsToPaid = 1 + [a, b].filter((r) => r.transitioned && r.recorded).length;
+  assert.equal(payments.length, transitionsToPaid, "un registro por transición real, ni más ni menos");
+  // And a paid=true final state always has at least one record behind it.
+  if (finalPaid) assert.ok(payments.length >= 1);
+});
+
+test("PAID FLOW: marking paid concurrently with a settings edit keeps BOTH changes", async () => {
+  const store = createStore({
+    platform_index: { version: 1, quinielas: [{ slug: "alpha", name: "Alpha", paid: false, participantCount: 4, customJornadaLimit: null }] },
+    platform_payment_log: { version: 1, payments: [] },
+    "quiniela:alpha:meta": { groupName: "Alpha", settings: { ownerPassword: "hash-old" } },
+  });
+  // Both take platform_index first, so they serialize instead of deadlocking.
+  const [paidRes, editRes] = await Promise.all([
+    markPaid(store, "alpha", true, "id-pay"),
+    saveSettings(store, "alpha", { name: "Alpha Renombrada", customJornadaLimit: 8 }),
+  ]);
+  assert.equal(paidRes.status, 200);
+  assert.equal(editRes.status, 200);
+
+  const entry = store.raw("platform_index").quinielas[0];
+  assert.equal(entry.paid, true, "el pago sobrevive a la edición concurrente");
+  assert.equal(entry.name, "Alpha Renombrada", "y la edición sobrevive al pago");
+  assert.equal(entry.customJornadaLimit, 8);
+  assert.equal(store.raw("quiniela:alpha:meta").groupName, "Alpha Renombrada");
+  assert.equal(store.raw("platform_payment_log").payments.length, 1);
 });
 
 // ==== MON-001F.2 — product-flow: editing a quiniela (meta + index) =========
@@ -610,6 +762,35 @@ test("SERVER: the settings endpoint locks platform_index BEFORE the meta row", (
   const metaIdx = slice.indexOf("getRowLocked(metaKey, client)");
   assert.ok(idxIdx !== -1 && metaIdx !== -1);
   assert.ok(idxIdx < metaIdx, "mismo orden que create-quiniela y la rama quiniela-meta");
+});
+
+test("FRONTEND: both payment-id generators produce ids the server accepts", () => {
+  // The server enforces /^[A-Za-z0-9_-]{8,64}$/. Both branches of
+  // newPaymentId() must satisfy it, including the fallback used when
+  // crypto.randomUUID is unavailable.
+  const serverPattern = /^[A-Za-z0-9_-]{8,64}$/;
+  const fromUuid = "3f2b8c1d4e5a6b7c8d9e0f1a2b3c4d5e"; // randomUUID() with dashes removed
+  assert.match(fromUuid, serverPattern);
+  const fallback = "pay" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+  assert.match(fallback, serverPattern, `el fallback sin crypto.randomUUID produjo: ${fallback}`);
+
+  // And the shipped generator really is those two branches.
+  const indexHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const gen = indexHtml.slice(indexHtml.indexOf("function newPaymentId()"), indexHtml.indexOf("function newPaymentId()") + 400);
+  assert.ok(gen.includes("crypto.randomUUID"), "debe preferir randomUUID");
+  assert.ok(gen.includes("Math.random"), "y tener fallback cuando no existe");
+});
+
+test("FRONTEND: a burned payment id is discarded so the next attempt can't repeat the same conflict", () => {
+  const indexHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const handlerStart = indexHtml.indexOf('root.querySelectorAll("[data-paid-toggle]")');
+  const handler = indexHtml.slice(handlerStart, handlerStart + 2200);
+  assert.ok(handler.includes('r.error === "payment_id_conflict"'), "debe reconocer el conflicto");
+  assert.ok(/payment_id_conflict"\) delete checkbox\.dataset\.paymentId/.test(handler),
+    "y descartar el id quemado");
+  // El id SÍ debe sobrevivir a un fallo de red, que es el caso de retry.
+  assert.ok(/if\(wantPaid\) delete checkbox\.dataset\.paymentId/.test(handler),
+    "tras un éxito, la siguiente marcación es una intención nueva");
 });
 
 test("FRONTEND: the dashboard uses the atomic endpoints and checks their result", () => {

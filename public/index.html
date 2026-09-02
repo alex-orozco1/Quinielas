@@ -1334,6 +1334,7 @@
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     wrong_current_pin: "Ese PIN no es correcto.",
     stale_version: "La información cambió mientras estabas editando. Actualizamos los datos; intenta de nuevo.",
+    payment_id_conflict: "Ese registro de pago ya existe. Actualizamos los datos; vuelve a intentarlo.",
     invalid_params: "Falta información, o algo no tiene el formato correcto.",
     invalid_metaKey: "Falta información, o algo no tiene el formato correcto.",
     slug_taken: "Ese link ya lo está usando otra quiniela.",
@@ -6911,6 +6912,10 @@
           tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
           toast(wantPaid ? "Marcada como pagada ✅" : "Ya no está marcada como pagada");
         } else {
+          // El id ya no sirve para un intento nuevo: el servidor lo rechazó
+          // justamente porque el log ya lo conoce. Descartarlo evita que el
+          // siguiente clic repita el mismo conflicto para siempre.
+          if(r.error === "payment_id_conflict") delete checkbox.dataset.paymentId;
           checkbox.checked = !checkbox.checked;
           toast(ERROR_MESSAGES[r.error] || "No se pudo guardar, intenta de nuevo");
           renderPlatformDashboard();

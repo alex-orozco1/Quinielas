@@ -152,46 +152,79 @@ function findEntry(index, slug) {
 
 // Marking paid/unpaid together with the payment-log entry.
 //
+// WHAT MAKES A PAYMENT EVENT (MON-001F.3). The first version keyed
+// idempotency on the paymentId ALONE, which was wrong: an id is a token the
+// browser makes up, and two dashboard tabs each make up their own. Two tabs
+// both showing alpha as unpaid, both clicking "pagada", produced TWO payment
+// records for ONE unpaid->paid transition — the lock serialized them but
+// both were "valid" under that rule. Worse, an id already used for another
+// quiniela made this one look already-recorded, so it could land paid=true
+// with no record of its own.
+//
+// The source of truth is now the TRANSITION, read from the locked index:
+//
+//   wasPaid  wantPaid   meaning
+//   false -> true       a real payment event: record exactly one
+//   true  -> true       no-op: already paid, whoever asked is late, not new
+//   true  -> false      state change only: the payment still happened
+//   false -> false      no-op
+//
+// A retry after a lost response therefore needs no special case: by the time
+// it arrives the transition has landed, so it reads as true->true and records
+// nothing. And a genuinely new event after an explicit un-mark reads as
+// false->true again, which is correct — that IS a second payment.
+//
+// The paymentId is kept as a second, narrower guard: reaching the
+// false->true branch with an id the log already knows means either a
+// cross-quiniela collision or an id replayed after an un-mark. Both are
+// caller bugs, and both are REFUSED rather than half-applied, so paid=true
+// can never land without its own record.
+//
 // The amount is computed from the state passed in (read under lock), never
 // from the request: this is a money record and the browser's copy of the
-// participant count or the price can be stale. Idempotent by payment id, so
-// a retry after a lost response records nothing new rather than billing the
-// group twice.
+// participant count or the price can be stale.
 function applyPaidToggle({ index, paymentLog, settings, slug, paid, paymentId, now }) {
   const entry = findEntry(index, slug);
   if (!entry) return { ok: false, error: "not_found" };
 
-  const nextIndex = JSON.parse(JSON.stringify(index));
-  findEntry(nextIndex, slug).paid = paid;
+  const wasPaid = !!entry.paid;
+  const wantPaid = !!paid;
 
-  if (!paid) {
-    // Un-marking never touches the log: the payment did happen, and deleting
-    // its record would be rewriting history rather than correcting state.
-    return { ok: true, index: stampVersion(nextIndex, readStoredVersion(index)), paymentLog: null, recorded: false };
+  // No state change and no new event: write nothing at all, so a late second
+  // tab can't even bump the version. `index: null` means "nothing to write".
+  if (wasPaid === wantPaid) {
+    return { ok: true, index: null, paymentLog: null, recorded: false, transitioned: false };
   }
 
+  const nextIndex = JSON.parse(JSON.stringify(index));
+  findEntry(nextIndex, slug).paid = wantPaid;
+  const stampedIndex = stampVersion(nextIndex, readStoredVersion(index));
+
+  if (!wantPaid) {
+    // true -> false. The payment did happen; deleting its record would be
+    // rewriting history rather than correcting state.
+    return { ok: true, index: stampedIndex, paymentLog: null, recorded: false, transitioned: true };
+  }
+
+  // false -> true: the one case that creates a payment record.
   const log = paymentLog && typeof paymentLog === "object" ? paymentLog : { payments: [] };
   const payments = Array.isArray(log.payments) ? log.payments.slice() : [];
-  const already = payments.some((p) => p && p.id === paymentId);
-  let recorded = false;
-  if (!already) {
-    const price = settings && Number.isFinite(settings.pricePerParticipant) ? settings.pricePerParticipant : 10;
-    const count = Number.isFinite(entry.participantCount) ? entry.participantCount : 0;
-    payments.push({
-      id: paymentId,
-      slug: entry.slug,
-      name: entry.name || "",
-      amount: price * count,
-      date: now || new Date().toISOString(),
-    });
-    recorded = true;
+  if (payments.some((p) => p && p.id != null && p.id === paymentId)) {
+    // Refuse outright: writing the flag while skipping the record is exactly
+    // the incoherence this endpoint exists to prevent.
+    return { ok: false, error: "payment_id_conflict" };
   }
-  return {
-    ok: true,
-    index: stampVersion(nextIndex, readStoredVersion(index)),
-    paymentLog: { ...log, payments },
-    recorded,
-  };
+
+  const price = settings && Number.isFinite(settings.pricePerParticipant) ? settings.pricePerParticipant : 10;
+  const count = Number.isFinite(entry.participantCount) ? entry.participantCount : 0;
+  payments.push({
+    id: paymentId,
+    slug: entry.slug,
+    name: entry.name || "",
+    amount: price * count,
+    date: now || new Date().toISOString(),
+  });
+  return { ok: true, index: stampedIndex, paymentLog: { ...log, payments }, recorded: true, transitioned: true };
 }
 
 // Renaming / re-securing / re-limiting a quiniela: meta and platform_index
