@@ -1400,6 +1400,7 @@
     competition_identity_unavailable: "No pudimos identificar la competencia de esta quiniela. Revisa la liga y la temporada en Ajustes.",
     league_change_blocked: "Ya no puedes cambiar la liga: esta quiniela ya empezó a jugar.",
     invalid_grant_id: "No se pudo registrar el cambio de plan. Vuelve a intentarlo.",
+    grant_id_conflict: "Ese registro de cobro ya existe para otra quiniela. Actualizamos los datos; vuelve a intentarlo.",
     invalid_limits: "Esos límites no son válidos.",
     invalid_plan: "Ese plan no existe.",
     reason_required: "Escribe el motivo del ajuste manual.",
@@ -1516,15 +1517,21 @@
       const result = await kvSetWithError(currentMetaKey(), meta, creds);
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
+        adoptParticipantRevs(result.participantRevs);
         // Any successful meta write can move the plan numbers (a participant
         // added or removed, a round published), so the cached plan is dropped
         // rather than left to go quietly stale behind the status line.
         invalidatePlan();
-        // The server kept people this tab had never seen. Saying so, and
-        // reloading, is the honest move: the alternative is a screen that
-        // silently disagrees with the data.
-        if(result.participantsRestored > 0){
-          toast(`Se agregaron ${result.participantsRestored} participante${result.participantsRestored === 1 ? "" : "s"} mientras editabas — ya están en la lista.`);
+        // Two things the server may have had to do on this tab's behalf, both
+        // said out loud rather than absorbed silently: it kept people this tab
+        // had never seen, and it kept field values this tab was behind on.
+        // Either way the screen is now behind the data, so it reloads.
+        const restored = result.participantsRestored || 0;
+        const refreshed = result.participantsRefreshed || 0;
+        if(restored > 0 || refreshed > 0){
+          toast(restored > 0
+            ? `Se agregaron ${restored} participante${restored === 1 ? "" : "s"} mientras editabas — ya están en la lista.`
+            : "Alguien más actualizó datos de participantes mientras editabas — se conservaron sus cambios.");
           // Mutated in place, so every screen holding this same object sees
           // the corrected list without a reference swap.
           const fresh = await getMeta({ owner: adminOrOwnerCred() });
@@ -1664,12 +1671,28 @@
       return await res.json();
     }catch(e){ console.error("verifyParticipantPin failed", e); return { ok: false }; }
   }
+  // MON-002B QA fix: every participant carries a server-computed `rev`, and a
+  // write is only allowed to change a participant's fields when it echoes the
+  // rev that participant currently has. So after ANY successful write, this
+  // tab has to adopt the revs the server just produced — otherwise its own
+  // next save would be judged stale against the very state it just created,
+  // and its edits would be ignored.
+  function adoptParticipantRevs(revs){
+    if(!revs || typeof revs !== "object" || !meta || !Array.isArray(meta.participants)) return;
+    meta.participants.forEach(p => {
+      if(p && p.id != null && Number.isSafeInteger(revs[p.id])) p.rev = revs[p.id];
+    });
+  }
   async function apiSetPin(participantId, currentPin, newPin){
     try{
       const res = await fetch("/api/set-pin", {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
         body: JSON.stringify({ metaKey: currentMetaKey(), participantId, currentPin, newPin, slug: SLUG || "_root" })
       });
+      if(res.ok){
+        const data = await res.json().catch(() => ({}));
+        adoptParticipantRevs(data.participantRevs);
+      }
       return res.ok;
     }catch(e){ console.error("apiSetPin failed", e); return false; }
   }
@@ -1748,6 +1771,10 @@
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ metaKey: currentMetaKey(), participantId, betId, guess })
       });
+      if(res.ok){
+        const data = await res.json().catch(() => ({}));
+        adoptParticipantRevs(data.participantRevs);
+      }
       return res.ok;
     }catch(e){ console.error("apiSubmitBetAnswer failed", e); return false; }
   }

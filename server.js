@@ -24,7 +24,7 @@ const {
   applyEntitlementGrant, applyQuinielaSettings,
 } = require("./platformState");
 const {
-  readParticipantsRevision, mergeParticipants, stampParticipantsRevision,
+  readParticipantsRevision, readParticipantRev, mergeParticipants, stampMetaRevisions,
 } = require("./metaParticipants");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
@@ -498,6 +498,16 @@ function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, 
   return null;
 }
 
+// { participantId: rev } — small enough to hand back on every write (a
+// quiniela tops out at 50 people) and it saves the browser a refetch.
+function participantRevMap(doc) {
+  const out = {};
+  (Array.isArray(doc && doc.participants) ? doc.participants : []).forEach((p) => {
+    if (p && p.id != null) out[p.id] = readParticipantRev(p);
+  });
+  return out;
+}
+
 function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   const merged = JSON.parse(JSON.stringify(newValue));
   const oldSettings = (oldValue && oldValue.settings) || null;
@@ -578,8 +588,9 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   // taken from the request — the incoming one was only ever a claim about
   // what the writer had seen. Nothing about the merge itself is persisted.
   return {
-    value: stampParticipantsRevision(merged, oldValue),
+    value: stampMetaRevisions(merged, oldValue),
     participantsRestored: participantMerge.restored,
+    participantsRefreshed: participantMerge.refreshed,
   };
 }
 
@@ -942,12 +953,16 @@ app.post("/api/submit-bet-answer", async (req, res) => {
           return res.status(403).json({ error: "bet_locked" });
         }
       }
+      // Same reason as set-pin: this changes one participant's fields, so it
+      // has to advance that participant's revision.
+      const beforeAnswer = JSON.parse(JSON.stringify(value));
       if (!participant.customBetAnswers) participant.customBetAnswers = {};
       const prevCorrect = participant.customBetAnswers[betId] ? participant.customBetAnswers[betId].correct : null;
       participant.customBetAnswers[betId] = { guess: cleanGuess, correct: prevCorrect };
-      await putRow(metaKey, value, client);
+      const storedAfterAnswer = stampMetaRevisions(value, beforeAnswer);
+      await putRow(metaKey, storedAfterAnswer, client);
       await client.query("COMMIT");
-      res.json({ ok: true });
+      res.json({ ok: true, participantRevs: participantRevMap(storedAfterAnswer) });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;
@@ -1235,6 +1250,14 @@ app.post("/api/kv/:key", async (req, res) => {
           key: req.params.key, ok: true,
           participantsRevision: readParticipantsRevision(mergedValue),
           participantsRestored: metaMerge.participantsRestored,
+          // Fields this write claimed for people it had not seen the current
+          // state of. The stored values won; saying so is what keeps this
+          // from being a silent loss.
+          participantsRefreshed: metaMerge.participantsRefreshed,
+          // The revs this write produced, so the tab that made it stays
+          // current for its OWN next save instead of being judged stale
+          // against the very state it just created.
+          participantRevs: participantRevMap(mergedValue),
         });
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
@@ -1411,11 +1434,17 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(403).json({ error: "wrong_current_pin" });
       }
+      // MON-002B QA fix: the snapshot is taken BEFORE the change so the
+      // revision stamp can see it. Without advancing this participant's rev,
+      // an Admin tab loaded before the reset would still look fresh, and its
+      // next ordinary save would write the OLD pin straight back over it.
+      const beforePinChange = JSON.parse(JSON.stringify(value));
       participant.pin = hashPassword(newPin);
-      await putRow(metaKey, value, client);
+      const storedAfterPin = stampMetaRevisions(value, beforePinChange);
+      await putRow(metaKey, storedAfterPin, client);
       await client.query("COMMIT");
       issueSessionCookie(res, slug, participant);
-      res.json({ ok: true });
+      res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;
@@ -1557,7 +1586,8 @@ app.post("/api/self-register", async (req, res) => {
       entry.participantCount = value.participants.length;
       await putRow("platform_index", platformIdx, client);
     }
-    await putRow(metaKey, stampParticipantsRevision(value, beforeRegistration), client);
+    const storedAfterRegistration = stampMetaRevisions(value, beforeRegistration);
+    await putRow(metaKey, storedAfterRegistration, client);
     await client.query("COMMIT");
     // MON-001C fix #3: the session cookie's quiniela identity must be the
     // SERVER-DERIVED, validated derivedSlug — never the client-supplied
@@ -2002,7 +2032,10 @@ app.post("/api/platform/quinielas/:slug/entitlement", async (req, res) => {
     });
     if (!result.ok) {
       await client.query("ROLLBACK");
-      return res.status(result.error === "not_found" ? 404 : 400).json({ error: result.error });
+      // grant_id_conflict is a caller error (an id replayed for a DIFFERENT
+      // quiniela), not a missing quiniela and not a malformed request.
+      const status = result.error === "not_found" ? 404 : (result.error === "grant_id_conflict" ? 409 : 400);
+      return res.status(status).json({ error: result.error });
     }
     // A replayed grantId applies nothing and writes nothing — not even a
     // version bump — so a retry can never disturb the row it already changed.

@@ -203,7 +203,7 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   // payment record on top of the first.
   const history = Array.isArray(entry.entitlementHistory) ? entry.entitlementHistory : [];
   if (grantId != null && history.some((h) => h && h.grantId != null && h.grantId === grantId)) {
-    return { ok: true, index: null, paymentLog: null, applied: false, recorded: false };
+    return { ok: true, index: null, paymentLog: null, applied: false, recorded: false, reason: "replayed_grant_id" };
   }
 
   const at = now || new Date().toISOString();
@@ -212,6 +212,48 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   // anything the caller sent.
   const currentIdentity = entry.entitlement && entry.entitlement.competitionIdentity;
   if (currentIdentity && !granted.competitionIdentity) granted.competitionIdentity = currentIdentity;
+
+  // ---- one purchase per quiniela per tournament (MON-002B QA fix) --------
+  //
+  // Keying idempotency on the grant id ALONE was wrong, and wrong in exactly
+  // the way MON-001F.3 had already found for the old payment toggle: an id is
+  // a token the browser makes up, and two dashboard tabs each make up their
+  // own. Two operators — or one operator with two tabs — both looking at a
+  // FREE quiniela and both clicking "Activar Plus" produced TWO grants and
+  // TWO payment records for ONE purchase. The lock serialised them; it did
+  // not make the second one wrong under the rule as written.
+  //
+  // The source of truth is the TRANSITION, read from the locked row, not the
+  // token:
+  //
+  //   FREE (or any non-PLUS) -> PLUS, this scope    a real purchase: one
+  //                                                 grant, one payment
+  //   PLUS -> PLUS, same scope                      no-op: already bought.
+  //                                                 No re-snapshot, so a
+  //                                                 later price change can
+  //                                                 never rewrite what was
+  //                                                 paid for, and no second
+  //                                                 charge
+  //   FREE -> FREE                                  no-op: nothing to undo
+  //
+  // "Same scope" is the tournament the entitlement is bound to. Today a
+  // grant always carries the current binding over, so the scope is identical
+  // by construction and PLUS -> PLUS is always a no-op. RENEWAL — buying the
+  // next tournament — is deliberately NOT invented here: it is MON-002C's,
+  // and this comparison is written out in full so that ticket has the right
+  // shape to change rather than a hidden assumption to discover.
+  //
+  // The one way back to a second purchase is explicit: an operator revokes to
+  // FREE and grants again. That is a correction or a re-sale someone chose,
+  // recorded in the history, not a double charge nobody asked for.
+  const currentPlan = entry.entitlement && !entry.entitlement.revoked ? entry.entitlement.plan : null;
+  const sameScope = (currentIdentity || null) === (granted.competitionIdentity || null);
+  if (currentPlan === granted.plan && sameScope && granted.plan !== "MANUAL_GRANT") {
+    // MANUAL_GRANT is excluded on purpose: re-issuing one is how an operator
+    // ADJUSTS the numbers on an override, and it never records money, so it
+    // cannot reintroduce a double charge.
+    return { ok: true, index: null, paymentLog: null, applied: false, recorded: false, reason: "already_on_plan" };
+  }
 
   const nextIndex = JSON.parse(JSON.stringify(index));
   const nextEntry = findEntry(nextIndex, slug);
@@ -233,6 +275,15 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   }
   const log = paymentLog && typeof paymentLog === "object" ? paymentLog : { payments: [] };
   const payments = Array.isArray(log.payments) ? log.payments.slice() : [];
+  // The transition rule above already stops one quiniela being charged twice.
+  // This is the other half, kept from MON-001F.3: an id REUSED ACROSS
+  // quinielas would put two different payments in the log under the same id,
+  // which is not a double charge but does destroy the log's ability to
+  // identify a payment. Refused rather than half-applied, so a plan can never
+  // land without a record of its own.
+  if (payments.some((p) => p && p.id != null && p.id === grantId)) {
+    return { ok: false, error: "grant_id_conflict" };
+  }
   payments.push({
     id: grantId, slug: entry.slug, name: entry.name || "",
     amount: granted.pricePaidMXN, plan: "PLUS", date: at,

@@ -509,12 +509,15 @@ test("GRANT: a replayed id writes NOTHING -- not even a version bump", async () 
   assert.equal(JSON.stringify(store.raw("platform_payment_log")), logAfterFirst, "log untouched");
 });
 
-test("GRANT: two tabs with DIFFERENT ids on the same quiniela both apply -- and both are recorded", async () => {
-  // Deliberately NOT deduplicated: unlike a payment toggle, re-granting is a
-  // real operator action (a renewal, or a re-snapshot after a price change),
-  // so it must be visible in the history and in the money, not silently
-  // swallowed. What idempotency protects against is a RETRY, which carries
-  // the same id.
+test("GRANT: two tabs with DIFFERENT ids on the same quiniela produce exactly ONE purchase", async () => {
+  // THIS TEST USED TO ASSERT THE OPPOSITE, and it was wrong. The first
+  // version of this ticket keyed idempotency on the grant id alone and
+  // justified two grants as "a renewal" -- but renewal is MON-002C's to
+  // define, and Plus is one payment per quiniela per tournament. An id is a
+  // token the browser makes up and each tab makes up its own, so two
+  // operators (or one with two tabs) clicking "Activar Plus" on the same FREE
+  // quiniela were charging it twice. The transition, read from the locked
+  // row, is what decides.
   const store = grantStore();
   const [a, b] = await Promise.all([
     grant(store, "alpha", { plan: "PLUS", grantId: "grant-tab-a-0001" }),
@@ -522,9 +525,88 @@ test("GRANT: two tabs with DIFFERENT ids on the same quiniela both apply -- and 
   ]);
   assert.equal(a.status, 200);
   assert.equal(b.status, 200);
-  assert.equal(paymentsOf(store).length, 2);
-  assert.equal(entryOf(store, "alpha").entitlementHistory.length, 2, "both are auditable");
+  assert.equal([a, b].filter((r) => r.applied).length, 1, "exactly one of the two tabs applies");
+  assert.equal([a, b].filter((r) => r.recorded).length, 1, "and exactly one payment is recorded");
+  assert.equal(paymentsOf(store).length, 1);
+  assert.equal(entryOf(store, "alpha").entitlementHistory.length, 1, "one purchase event, not two");
   assert.equal(entryOf(store, "alpha").entitlement.plan, "PLUS");
+});
+
+test("GRANT: PLUS -> PLUS in the same scope is a no-op that writes NOTHING", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-first-00001" });
+  const indexAfter = JSON.stringify(store.raw("platform_index"));
+  const logAfter = JSON.stringify(store.raw("platform_payment_log"));
+
+  const again = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-second-0001" });
+  assert.equal(again.status, 200);
+  assert.equal(again.applied, false);
+  assert.equal(again.recorded, false);
+  assert.equal(JSON.stringify(store.raw("platform_index")), indexAfter, "not even a version bump");
+  assert.equal(JSON.stringify(store.raw("platform_payment_log")), logAfter);
+});
+
+test("GRANT: a price change after the purchase never re-snapshots and never charges again", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-price-00001" });
+  const bought = JSON.parse(JSON.stringify(entryOf(store, "alpha").entitlement));
+  assert.equal(bought.pricePaidMXN, 199);
+
+  // The operator raises the price, then a second "Activar Plus" intent
+  // arrives for the same quiniela.
+  const dearer = { ...DEFAULT_COMMERCIAL_CONFIG, version: 2, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: 299 } };
+  const after = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-price-00002" }, { cfg: dearer });
+  assert.equal(after.applied, false, "no second purchase");
+  assert.deepEqual(entryOf(store, "alpha").entitlement, bought, "and the snapshot is untouched -- still 199");
+  assert.equal(paymentsOf(store).filter((p) => p.slug === "alpha").length, 1);
+});
+
+test("GRANT: FREE -> FREE is a no-op too", async () => {
+  const store = grantStore();
+  const before = JSON.stringify(store.raw("platform_index"));
+  const r = await grant(store, "alpha", { plan: "FREE", grantId: "grant-freefree-01", reason: "nada" });
+  assert.equal(r.applied, false);
+  assert.equal(JSON.stringify(store.raw("platform_index")), before);
+});
+
+test("GRANT: revoking to FREE and granting again IS a second, deliberate purchase", async () => {
+  // The one way back to charging twice, and it takes two explicit operator
+  // decisions, both recorded.
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-cycle-00001" });
+  await grant(store, "alpha", { plan: "FREE", grantId: "grant-cycle-00002", reason: "reembolso" });
+  const resold = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-cycle-00003" });
+  assert.equal(resold.applied, true);
+  assert.equal(resold.recorded, true);
+  assert.equal(paymentsOf(store).length, 2);
+  assert.equal(entryOf(store, "alpha").entitlementHistory.length, 3, "every decision is auditable");
+});
+
+test("GRANT: a MANUAL_GRANT may be re-issued to adjust its numbers, and still records no money", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "MANUAL_GRANT", grantId: "grant-adj-0000001", participantLimit: 25, manualRoundLimit: 12, reason: "soporte" });
+  const adjusted = await grant(store, "alpha", { plan: "MANUAL_GRANT", grantId: "grant-adj-0000002", participantLimit: 40, manualRoundLimit: 20, reason: "ampliación" });
+  assert.equal(adjusted.applied, true, "a manual override is the one plan that may be re-issued");
+  assert.equal(entryOf(store, "alpha").entitlement.participantLimit, 40);
+  assert.equal(paymentsOf(store).length, 0, "and it still cannot introduce a charge");
+});
+
+test("GRANT: an upgrade from MANUAL_GRANT or GRANDFATHERED to PLUS is a real purchase", async () => {
+  for (const start of ["MANUAL_GRANT", "GRANDFATHERED"]) {
+    const store = grantStore();
+    if (start === "MANUAL_GRANT") {
+      await grant(store, "alpha", { plan: "MANUAL_GRANT", grantId: "grant-start-000001", participantLimit: 15, manualRoundLimit: 8, reason: "prueba" });
+    } else {
+      await store.transaction("platform_index", async ({ current, write }) => {
+        current.quinielas[0].entitlement = buildGrandfatheredEntitlement("2026-01-01T00:00:00.000Z");
+        write(current);
+      });
+    }
+    const r = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-upto-0000001" });
+    assert.equal(r.applied, true, `${start} -> PLUS must apply`);
+    assert.equal(r.recorded, true, `${start} -> PLUS is a purchase`);
+    assert.equal(paymentsOf(store).length, 1);
+  }
 });
 
 test("GRANT: five simultaneous retries of the SAME grant produce exactly one grant and one payment", async () => {
@@ -1015,7 +1097,11 @@ test("SERVER: submit-bet-answer and set-pin read under the lock and write with t
     const slice = handlerSlice(marker);
     assert.ok(slice.includes('await client.query("BEGIN")'), `${marker}: must open a transaction`);
     assert.ok(slice.includes("await getRowLocked(metaKey, client)"), `${marker}: must read the meta under FOR UPDATE`);
-    assert.ok(slice.includes("await putRow(metaKey, value, client)"), `${marker}: must write with the same client`);
+    // MON-002B QA fix: both handlers now stamp participant revisions before
+    // writing, so the value is no longer the bare `value` — but it is still
+    // the same transactional client, which is what this guards.
+    assert.ok(/await putRow\(metaKey, stored\w+, client\)/.test(slice), `${marker}: must write with the same client`);
+    assert.ok(slice.includes("stampMetaRevisions("), `${marker}: a single-participant change must advance that participant's revision`);
     assert.ok(slice.includes('await client.query("COMMIT")'), `${marker}: must commit`);
     assert.ok(slice.includes('await client.query("ROLLBACK").catch(() => {})'), `${marker}: must roll back on error`);
     assert.ok(slice.includes("client.release()"), `${marker}: must release the connection`);
@@ -1059,4 +1145,46 @@ test("PLATFORM_STATE: the admin-editable allowlist stays narrow and disjoint fro
   assert.deepEqual([...ADMIN_EDITABLE_INDEX_FIELDS].sort(), ["name"]);
   const overlap = ADMIN_EDITABLE_INDEX_FIELDS.filter((f) => SERVER_OWNED_INDEX_FIELDS.includes(f));
   assert.deepEqual(overlap, [], "a field can never be both admin-editable and server-owned");
+});
+
+test("GRANT: an id reused for a DIFFERENT quiniela is refused, never recorded twice under one id", async () => {
+  // The transition rule stops one quiniela being charged twice. This is the
+  // other half, kept from MON-001F.3: two different payments sharing an id
+  // would not be a double charge, but the log would no longer be able to say
+  // which payment is which.
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-shared-0001" });
+  const r = await grant(store, "beta", { plan: "PLUS", grantId: "grant-shared-0001" });
+  assert.equal(r.status, 400);
+  assert.equal(r.error, "grant_id_conflict");
+  assert.equal(entryOf(store, "beta").entitlement.plan, "FREE", "and beta is NOT left on a plan with no record");
+  assert.equal(paymentsOf(store).length, 1);
+});
+
+test("GRANT: a mark and a revoke landing concurrently never produce more than one payment", async () => {
+  for (const order of [0, 1]) {
+    const store = grantStore();
+    const ops = [
+      () => grant(store, "alpha", { plan: "PLUS", grantId: "grant-order-00001" }),
+      () => grant(store, "alpha", { plan: "FREE", grantId: "grant-order-00002", reason: "cruce" }),
+    ];
+    await Promise.all(order === 0 ? [ops[0](), ops[1]()] : [ops[1](), ops[0]()]);
+    assert.ok(paymentsOf(store).length <= 1, `orden ${order}: a lo más un pago`);
+    const entry = entryOf(store, "alpha");
+    // Whatever the order, the row is coherent: PLUS implies a payment exists.
+    if (entry.entitlement.plan === "PLUS") assert.equal(paymentsOf(store).length, 1);
+  }
+});
+
+test("GRANT: the rev/version guards are concurrency controls, not authorisation", () => {
+  // Stated so nobody later mistakes them for a security boundary: only an
+  // owner, the platform password, or an admin's PIN can write a meta row at
+  // all (resolveMetaAuthTier), and only the platform password can grant.
+  // Forging a revision therefore lets an already-authorised writer do what
+  // they were already allowed to do — it cannot escalate anything.
+  const tier = blockFrom(serverSrc, "function resolveMetaAuthTier(");
+  assert.ok(tier.includes('return "owner"') && tier.includes('return "platform"') && tier.includes('return "admin-pin"'));
+  assert.ok(tier.trimEnd().endsWith("return null;\n}"), "anyone else gets no tier at all");
+  const granting = blockFrom(serverSrc, 'app.post("/api/platform/quinielas/:slug/entitlement"');
+  assert.ok(granting.includes("verifyPassword(providedPlatformAuth, platformHash)"));
 });

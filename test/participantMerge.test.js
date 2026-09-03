@@ -23,7 +23,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { readParticipantsRevision, mergeParticipants, stampParticipantsRevision } = require("../metaParticipants");
+const {
+  readParticipantsRevision, readParticipantRev, mergeParticipants,
+  stampParticipantsRevision, stampMetaRevisions, claimsConflict,
+} = require("../metaParticipants");
 const { DEFAULT_COMMERCIAL_CONFIG, buildFreeEntitlement, buildPlusEntitlement, checkParticipantCapacity } = require("../planLimits");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
@@ -57,7 +60,21 @@ function createMetaStore(meta) {
 async function metaWrite(store, incoming, { entitlement, config = DEFAULT_COMMERCIAL_CONFIG } = {}) {
   return store.transaction(async ({ current, write }) => {
     const merge = mergeParticipants(current, incoming);
-    const merged = { ...incoming, participants: merge.participants };
+    // Mirrors mergeProtectedMetaFields: the API never sends `pin` to a
+    // browser, so a client echo arrives without it and the server restores it
+    // from the stored row. A harness that skipped this would be testing a
+    // payload no client can produce, and would see phantom field changes on
+    // every write.
+    const storedById = new Map((current.participants || []).map((p) => [String(p.id), p]));
+    const merged = {
+      ...incoming,
+      participants: merge.participants.map((p) => {
+        if (!p || p.id == null) return p;
+        const stored = storedById.get(String(p.id));
+        if (!("pin" in p) && stored && "pin" in stored) return { ...p, pin: stored.pin };
+        return p;
+      }),
+    };
 
     const oldCount = (current.participants || []).length;
     const newCount = merged.participants.length;
@@ -67,12 +84,13 @@ async function metaWrite(store, incoming, { entitlement, config = DEFAULT_COMMER
         return { status: 402, error: check.reason, limit: check.limit };
       }
     }
-    const stored = stampParticipantsRevision(merged, current);
+    const stored = stampMetaRevisions(merged, current);
     write(stored);
     return {
       status: 200,
       participantsRevision: readParticipantsRevision(stored),
       participantsRestored: merge.restored,
+      participantsRefreshed: merge.refreshed,
     };
   });
 }
@@ -86,10 +104,49 @@ async function selfRegister(store, name, { entitlement, config = DEFAULT_COMMERC
     const before = { participants: current.participants, participantsRevision: readParticipantsRevision(current) };
     const added = { id: "p_" + name.toLowerCase(), name, isAdmin: false, paid: false, pin: "hash:" + name };
     current.participants = current.participants.concat([added]);
-    write(stampParticipantsRevision(current, before));
+    write(stampMetaRevisions(current, before));
     return { status: 200, participant: added };
   });
 }
+
+// Mirrors POST /api/set-pin: a single-participant change, under lock, that
+// must advance that participant's own revision.
+async function resetPin(store, id, pin) {
+  return store.transaction(async ({ current, write }) => {
+    const before = JSON.parse(JSON.stringify(current));
+    const p = current.participants.find((x) => x.id === id);
+    if (!p) return { status: 404 };
+    p.pin = "hash:" + pin;
+    write(stampMetaRevisions(current, before));
+    return { status: 200 };
+  });
+}
+
+// Mirrors POST /api/submit-bet-answer, for the same reason.
+async function answerBet(store, id, betId, guess) {
+  return store.transaction(async ({ current, write }) => {
+    const before = JSON.parse(JSON.stringify(current));
+    const p = current.participants.find((x) => x.id === id);
+    if (!p) return { status: 404 };
+    if (!p.customBetAnswers) p.customBetAnswers = {};
+    p.customBetAnswers[betId] = { guess, correct: null };
+    write(stampMetaRevisions(current, before));
+    return { status: 200 };
+  });
+}
+
+// What the browser actually posts back: the API never sends `pin`, it sends
+// the boolean `hasPin`. Using the raw stored objects in these tests would
+// quietly test a payload no client can produce.
+function asClientSees(meta) {
+  const copy = JSON.parse(JSON.stringify(meta));
+  copy.participants = copy.participants.map((p) => {
+    const { pin, ...rest } = p;
+    return { ...rest, hasPin: !!pin };
+  });
+  return copy;
+}
+const find = (m, id) => m.participants.find((p) => p.id === id);
 
 const person = (id, over = {}) => ({ id, name: id.toUpperCase(), isAdmin: false, paid: false, pin: "hash:" + id, ...over });
 
@@ -321,13 +378,16 @@ test("REVISION: a legacy meta with no revision at all still writes, and starts t
   assert.equal(store.raw().participantsRevision, 1);
 });
 
-test("REVISION: the browser adopts the server's value, so its own next save is not judged stale", () => {
+test("REVISION: the browser adopts the server's values, so its own next save is not judged stale", () => {
   const i = indexSrc.indexOf("async function setMetaWithError(meta, opts)");
   assert.ok(i !== -1);
-  const body = indexSrc.slice(i, i + 1600);
+  const body = indexSrc.slice(i, i + 2200);
   assert.ok(body.includes("meta.participantsRevision = result.participantsRevision"),
     "without this, a tab's own successful save would leave it holding the previous revision");
-  assert.ok(body.includes("result.participantsRestored > 0"), "and it must react when entries were kept for it");
+  assert.ok(body.includes("adoptParticipantRevs(result.participantRevs)"),
+    "and the same for each participant's own rev, or consecutive edits from one tab would be refused");
+  assert.ok(body.includes("result.participantsRestored") && body.includes("result.participantsRefreshed"),
+    "and it must react when entries were kept for it, or field values were");
   // setMeta() must route through the same place, or the boolean-returning
   // call sites would silently skip the adoption.
   const setMetaIdx = indexSrc.indexOf("async function setMeta(meta, opts)");
@@ -391,4 +451,223 @@ test("a duplicate id already sitting in the STORED row is collapsed, not propaga
   const stored = { participantsRevision: 1, participants: [person("a"), person("a", { name: "Copia" }), person("b")] };
   const merged = mergeParticipants(stored, { participantsRevision: 1, participants: [person("a"), person("b")] });
   assert.deepEqual(merged.participants.map((p) => p.id), ["a", "b"]);
+});
+
+// ==== the SECOND lost update: participant FIELDS ==========================
+//
+// participantsRevision guards who is in the quiniela. It says nothing about
+// what each person IS, and the first version of this file took the incoming
+// participant object whole whenever the id matched. So a tab that was stale
+// about a PERSON could revert them while doing something else entirely.
+
+test("FIELDS 1: a stale generic save cannot undo a PIN reset", async () => {
+  const store = createMetaStore(metaWith(4));
+  const staleTab = asClientSees(store.raw());          // T0 — old PIN on screen
+
+  await resetPin(store, "p1", "9999");                 // T1 — Beto resets his PIN
+
+  staleTab.rounds.push({ id: "r1", number: 1, published: true });  // T2 — publish a round
+  const res = await metaWrite(store, staleTab, { entitlement: FREE });
+  assert.equal(res.status, 200);
+
+  assert.equal(find(store.raw(), "p1").pin, "hash:9999", "the new PIN survives");
+  assert.equal(store.raw().rounds.length, 1, "and the round the tab actually wanted still lands");
+});
+
+test("FIELDS 2: a stale generic save cannot undo a rename", async () => {
+  const store = createMetaStore(metaWith(4));
+  const staleTab = asClientSees(store.raw());
+
+  // Another tab renames P1.
+  const fresh = asClientSees(store.raw());
+  find(fresh, "p1").name = "Renombrado por B";
+  await metaWrite(store, fresh, { entitlement: FREE });
+
+  staleTab.groupName = "Otro nombre de grupo";
+  const res = await metaWrite(store, staleTab, { entitlement: FREE });
+  assert.equal(find(store.raw(), "p1").name, "Renombrado por B", "the rename survives");
+  assert.equal(store.raw().groupName, "Otro nombre de grupo", "and the stale tab's own edit applies");
+  assert.equal(res.participantsRefreshed, 1, "and the tab is told it was behind");
+});
+
+test("FIELDS 3: a stale generic save cannot undo an admin role change", async () => {
+  const store = createMetaStore(metaWith(4));
+  const staleTab = asClientSees(store.raw());
+
+  const fresh = asClientSees(store.raw());
+  find(fresh, "p1").isAdmin = true;                    // P1 is promoted
+  await metaWrite(store, fresh, { entitlement: FREE });
+
+  staleTab.rounds.push({ id: "r1", number: 1, published: true });
+  await metaWrite(store, staleTab, { entitlement: FREE });
+  assert.equal(find(store.raw(), "p1").isAdmin, true, "the promotion survives");
+});
+
+test("FIELDS 4: a stale generic save cannot undo a payment flag or a penalty ledger entry", async () => {
+  const store = createMetaStore(metaWith(4));
+  const staleTab = asClientSees(store.raw());
+
+  const fresh = asClientSees(store.raw());
+  find(fresh, "p2").paid = true;
+  find(fresh, "p2").paidAt = "2026-09-03T00:00:00.000Z";
+  find(fresh, "p1").penalizedRounds = { r1: 1 };       // the Payment Penalty ledger
+  await metaWrite(store, fresh, { entitlement: FREE });
+
+  staleTab.settings.pointsPerCorrectPick = 2;
+  await metaWrite(store, staleTab, { entitlement: FREE });
+  assert.equal(find(store.raw(), "p2").paid, true, "the payment flag survives");
+  assert.equal(find(store.raw(), "p2").paidAt, "2026-09-03T00:00:00.000Z");
+  assert.deepEqual(find(store.raw(), "p1").penalizedRounds, { r1: 1 }, "and so does the penalty ledger");
+  assert.equal(store.raw().settings.pointsPerCorrectPick, 2, "the stale tab's own edit still applies");
+});
+
+test("FIELDS 5: an explicit PIN reset from a FRESH tab does apply", async () => {
+  const store = createMetaStore(metaWith(3));
+  const r = await resetPin(store, "p1", "1111");
+  assert.equal(r.status, 200);
+  assert.equal(find(store.raw(), "p1").pin, "hash:1111");
+  // ...and through the generic path too, which is how the Admin screen does it
+  const fresh = asClientSees(store.raw());
+  find(fresh, "p1").hasPin = false;                    // "reset PIN" clears it
+  const res = await metaWrite(store, fresh, { entitlement: FREE });
+  assert.equal(res.status, 200);
+  assert.equal(res.participantsRefreshed, 0, "a fresh writer is never in conflict");
+});
+
+test("FIELDS 6: an explicit rename from a FRESH tab does apply", async () => {
+  const store = createMetaStore(metaWith(3));
+  const fresh = asClientSees(store.raw());
+  find(fresh, "p1").name = "Nombre Nuevo";
+  const res = await metaWrite(store, fresh, { entitlement: FREE });
+  assert.equal(res.status, 200);
+  assert.equal(find(store.raw(), "p1").name, "Nombre Nuevo");
+  assert.equal(res.participantsRefreshed, 0);
+});
+
+test("FIELDS 7: two tabs editing the SAME field — the second is refused and TOLD, never silently lost", async () => {
+  const store = createMetaStore(metaWith(3));
+  const tabA = asClientSees(store.raw());
+  const tabB = asClientSees(store.raw());
+
+  find(tabA, "p1").name = "Nombre de A";
+  const resA = await metaWrite(store, tabA, { entitlement: FREE });
+  assert.equal(resA.participantsRefreshed, 0, "the first writer wins cleanly");
+
+  find(tabB, "p1").name = "Nombre de B";
+  const resB = await metaWrite(store, tabB, { entitlement: FREE });
+  assert.equal(find(store.raw(), "p1").name, "Nombre de A", "the winner's value stands");
+  assert.equal(resB.participantsRefreshed, 1, "and the loser is told, rather than believing it won");
+
+  // Recovery: reload and the same edit succeeds.
+  const reloaded = asClientSees(store.raw());
+  find(reloaded, "p1").name = "Nombre de B";
+  const retry = await metaWrite(store, reloaded, { entitlement: FREE });
+  assert.equal(retry.participantsRefreshed, 0);
+  assert.equal(find(store.raw(), "p1").name, "Nombre de B");
+});
+
+test("FIELDS 8: stale membership AND a stale field edit still cannot delete a concurrent registration", async () => {
+  const store = createMetaStore(metaWith(4));
+  const staleTab = asClientSees(store.raw());
+
+  await selfRegister(store, "nuevo", { entitlement: FREE });   // membership moves
+  await resetPin(store, "p1", "7777");                          // and a field moves
+
+  find(staleTab, "p1").name = "Intento obsoleto";
+  const res = await metaWrite(store, staleTab, { entitlement: FREE });
+  assert.equal(res.status, 200);
+  const final = store.raw();
+  assert.ok(final.participants.some((p) => p.id === "p_nuevo"), "the registration survives");
+  assert.equal(find(final, "p1").pin, "hash:7777", "so does the PIN");
+  assert.equal(find(final, "p1").name, "P1", "and the stale rename is refused");
+  assert.equal(res.participantsRestored, 1);
+  assert.equal(res.participantsRefreshed, 1);
+});
+
+test("FIELDS 12: publishing a round, moving a deadline or saving results never touches a participant", async () => {
+  const store = createMetaStore(metaWith(4));
+  const before = JSON.parse(JSON.stringify(store.raw().participants));
+
+  const tab = asClientSees(store.raw());
+  tab.rounds.push({ id: "r1", number: 1, published: true, deadline: "2026-10-01T00:00:00.000Z", results: {}, matches: [] });
+  await metaWrite(store, tab, { entitlement: FREE });
+
+  const tab2 = asClientSees(store.raw());
+  tab2.rounds[0].deadline = "2026-10-02T00:00:00.000Z";
+  tab2.rounds[0].results = { m1: "L" };
+  tab2.rounds[0].resultsPublished = true;
+  tab2.groupName = "Renombrada";
+  await metaWrite(store, tab2, { entitlement: FREE });
+
+  // Compared on the fields that actually mean something, named explicitly
+  // rather than by whole-object equality: a client echo also carries the
+  // transport-only `hasPin` boolean the API sends in place of the hash, and
+  // that landing in the row is pre-existing behaviour, not a mutation of
+  // anything a person would recognise.
+  const MEANINGFUL = ["name", "isAdmin", "paid", "paidAt", "pin", "customBetAnswers", "penalizedRounds"];
+  const shape = (p) => JSON.stringify(MEANINGFUL.map((k) => [k, p[k] === undefined ? null : p[k]]));
+  const after = store.raw().participants;
+  assert.deepEqual(after.map(shape), before.map(shape), "no participant field changed");
+  after.forEach((p) => assert.equal(readParticipantRev(p), 0, "and no revision moved, because nothing changed"));
+  assert.equal(store.raw().rounds[0].resultsPublished, true, "while the round work landed");
+});
+
+// ==== the revision protocol for fields ====================================
+
+test("FIELD REVISION: only the server computes it, and a forged rev buys nothing", async () => {
+  const store = createMetaStore(metaWith(3));
+  await resetPin(store, "p1", "5555");
+  const forged = asClientSees(store.raw());
+  find(forged, "p1").rev = 999999;                 // claim to be current
+  find(forged, "p1").name = "Robado";
+  const res = await metaWrite(store, forged, { entitlement: FREE });
+  assert.equal(find(store.raw(), "p1").name, "P1", "a claimed rev that does not match is still stale");
+  assert.equal(res.participantsRefreshed, 1);
+});
+
+test("FIELD REVISION: it advances only for the participant that actually changed", async () => {
+  const store = createMetaStore(metaWith(4));
+  const fresh = asClientSees(store.raw());
+  find(fresh, "p1").name = "Solo este";
+  await metaWrite(store, fresh, { entitlement: FREE });
+  const after = store.raw();
+  assert.equal(readParticipantRev(find(after, "p1")), 1, "the edited one moves");
+  assert.equal(readParticipantRev(find(after, "p2")), 0, "the others do not");
+  assert.equal(readParticipantRev(find(after, "admin")), 0);
+});
+
+test("FIELD REVISION: a client echo that omits `pin` is not treated as a claim about it", async () => {
+  // The API sends hasPin, never the hash. If the absence of `pin` counted as
+  // a claim, every stale comparison would report a conflict that isn't one.
+  const stored = { id: "b", name: "Beto", paid: false, pin: "hash:secreto", rev: 3 };
+  assert.equal(claimsConflict({ id: "b", name: "Beto", paid: false, hasPin: true, rev: 0 }, stored), false);
+  assert.equal(claimsConflict({ id: "b", name: "Otro", paid: false, hasPin: true, rev: 0 }, stored), true);
+  assert.equal(claimsConflict({ id: "b", name: "Beto", paid: true, hasPin: true, rev: 0 }, stored), true);
+});
+
+test("FIELD REVISION: key order never counts as a change", () => {
+  // Postgres jsonb normalises key order; a browser echo does not. Comparing
+  // raw JSON would report changes that are not changes.
+  const a = { id: "x", name: "N", customBetAnswers: { b2: { correct: null, guess: "g" }, b1: { guess: "h", correct: true } } };
+  const b = { id: "x", customBetAnswers: { b1: { correct: true, guess: "h" }, b2: { guess: "g", correct: null } }, name: "N" };
+  assert.equal(claimsConflict(a, b), false);
+  assert.equal(claimsConflict({ ...a, name: "Otro" }, b), true);
+});
+
+test("FIELD REVISION: a bet answer and a PIN reset each advance only their own participant", async () => {
+  const store = createMetaStore(metaWith(4));
+  await answerBet(store, "p2", "bet1", "Chivas");
+  await resetPin(store, "p1", "2222");
+  const after = store.raw();
+  assert.equal(readParticipantRev(find(after, "p1")), 1);
+  assert.equal(readParticipantRev(find(after, "p2")), 1);
+  assert.equal(readParticipantRev(find(after, "p3")), 0);
+
+  // And a tab loaded before both cannot revert either one.
+  const stale = asClientSees(metaWith(4));
+  stale.participantsRevision = readParticipantsRevision(after);
+  await metaWrite(store, stale, { entitlement: FREE });
+  const final = store.raw();
+  assert.equal(find(final, "p1").pin, "hash:2222");
+  assert.deepEqual(find(final, "p2").customBetAnswers, { bet1: { guess: "Chivas", correct: null } });
 });
