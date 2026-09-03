@@ -6,3 +6,6 @@ exports/
 
 # SQL dumps
 *.sql
+
+# Dependencies
+node_modules/

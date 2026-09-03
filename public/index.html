@@ -1192,12 +1192,32 @@
   async function setPlatformIndex(idx){
     return savePlatformRow(PLATFORM_INDEX_KEY, idx);
   }
+  // MON-002B: read WITH the platform password. The unauthenticated read used
+  // to work because the server handed this row to anyone who asked, minus
+  // only the password — which meant depositInfo (bank, CLABE, account
+  // holder) went out with it. The public projection is empty now, so the
+  // dashboard has to identify itself, which it always should have.
+  //
+  // jornadaLimit / pricePerParticipant / depositInfo are gone with the rest
+  // of the legacy cobro model: the real numbers live in commercial_config.
   async function getPlatformSettings(){
-    const defaults = { jornadaLimit: 5, pricePerParticipant: 10, depositInfo: "" };
     try{
-      const r = await kvGet(PLATFORM_SETTINGS_KEY);
-      return r.found ? { ...defaults, ...r.value } : defaults;
-    }catch(e){ console.error("getPlatformSettings failed", e); return defaults; }
+      const r = await kvGet(PLATFORM_SETTINGS_KEY, { platform: platformPasswordCache });
+      return r.found ? r.value : {};
+    }catch(e){ console.error("getPlatformSettings failed", e); return {}; }
+  }
+  const COMMERCIAL_CONFIG_KEY = "commercial_config";
+  // The live commercial SSOT: what Gratis and Plus mean, and what Plus costs.
+  // Every enforcement decision on the server reads this same row, so editing
+  // it here is a real change everywhere, with no deploy.
+  async function getCommercialConfig(){
+    try{
+      const r = await kvGet(COMMERCIAL_CONFIG_KEY, { platform: platformPasswordCache });
+      return r.found ? r.value : null;
+    }catch(e){ console.error("getCommercialConfig failed", e); return null; }
+  }
+  async function setCommercialConfig(cfg){
+    return savePlatformRow(COMMERCIAL_CONFIG_KEY, cfg);
   }
   async function setPlatformSettings(s){
     return savePlatformRow(PLATFORM_SETTINGS_KEY, s);
@@ -1219,9 +1239,9 @@
   // completo que el panel trae en memoria: el servidor las aplica sobre el
   // estado actual dentro de una sola transacción, así que no existe snapshot
   // obsoleto que rechazar y no pueden quedar a medias.
-  function newPaymentId(){
+  function newGrantId(){
     if(window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, "");
-    return "pay" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+    return "grant" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
   }
   async function platformPost(path, body){
     try{
@@ -1239,10 +1259,18 @@
       return { ok: false, error: "network_error" };
     }
   }
-  // El paymentId hace que un reintento tras una respuesta perdida registre el
-  // MISMO pago, en vez de cobrar dos veces.
-  function markQuinielaPaid(slug, paid, paymentId){
-    return platformPost("/api/platform/quinielas/" + encodeURIComponent(slug) + "/paid", { paid, paymentId });
+  // MON-002B. Reemplaza a markQuinielaPaid(): marcar "Pagado" registraba
+  // dinero pero no otorgaba nada, porque ninguna ruta de enforcement leía ese
+  // campo. Otorgar el plan y registrar el cobro son ahora UNA sola operación
+  // en el servidor, así que una quiniela no puede quedar cobrada sin plan ni
+  // con plan sin registro.
+  //
+  // El grantId hace que un reintento tras una respuesta perdida no vuelva a
+  // otorgar ni a cobrar: el servidor lo reconoce en el historial y no escribe
+  // nada. Para PLUS, los límites y el precio los pone el servidor desde
+  // commercial_config — el navegador nunca los manda.
+  function grantEntitlement(slug, payload){
+    return platformPost("/api/platform/quinielas/" + encodeURIComponent(slug) + "/entitlement", payload);
   }
   function saveQuinielaSettings(slug, changes){
     return platformPost("/api/platform/quinielas/" + encodeURIComponent(slug) + "/settings", changes);
@@ -1360,30 +1388,25 @@
     // the startup grandfathering migration, but the copy still needs to
     // exist rather than fall through to "undefined") — never blames the
     // admin, never mentions internal architecture.
-    entitlement_unavailable: "No pudimos confirmar el plan de esta quiniela en este momento. Intenta de nuevo en unos minutos; si sigue pasando, contacta al equipo de QRACKS."
+    entitlement_unavailable: "No pudimos confirmar el plan de esta quiniela en este momento. Intenta de nuevo en unos minutos; si sigue pasando, contacta al equipo de QRACKS.",
+    // MON-002B: these three existed in the backend with no copy at all, so
+    // they fell through to "No se pudo completar la acción" — and in the
+    // import flow they were being rendered as a SPORTS PROVIDER failure that
+    // ended with "puedes continuar manualmente", which was both wrong and,
+    // since manual rounds are exactly what a bound quiniela can still make,
+    // an instruction for getting around the block. None of these three ever
+    // suggests continuing manually.
+    competition_mismatch: "Esta quiniela ya está jugando otro torneo. Para empezar uno nuevo, crea una quiniela nueva.",
+    competition_identity_unavailable: "No pudimos identificar la competencia de esta quiniela. Revisa la liga y la temporada en Ajustes.",
+    league_change_blocked: "Ya no puedes cambiar la liga: esta quiniela ya empezó a jugar.",
+    invalid_grant_id: "No se pudo registrar el cambio de plan. Vuelve a intentarlo.",
+    invalid_limits: "Esos límites no son válidos.",
+    invalid_plan: "Ese plan no existe.",
+    reason_required: "Escribe el motivo del ajuste manual.",
+    invalid_commercial_config: "Revisa los números: Plus no puede quedar por debajo de Gratis, y ningún límite puede ser cero."
   };
   function humanizeError(code){
     return ERROR_MESSAGES[code] || "No se pudo completar la acción. Intenta de nuevo.";
-  }
-
-  // MON-001B: turns the server's structured plan-limit rejection
-  // ({error, limitType, plan, limit}) into a precise, friendly message —
-  // never the raw plan name/enum, always the real number so the admin
-  // knows exactly what they hit. Falls back to the generic
-  // ERROR_MESSAGES copy above if the response ever lacks the extra
-  // fields (e.g. an older cached client hitting a newer server, or any
-  // other unexpected shape) — never throws, never shows "undefined".
-  function planLimitMessage(errorBody){
-    if(!errorBody || !errorBody.limitType || !Number.isFinite(errorBody.limit)){
-      return humanizeError(errorBody && errorBody.error);
-    }
-    if(errorBody.limitType === "rounds"){
-      return `Esta quiniela ya llegó a su límite de ${errorBody.limit} jornada${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
-    }
-    if(errorBody.limitType === "participants"){
-      return `Esta quiniela ya llegó a su límite de ${errorBody.limit} participante${errorBody.limit === 1 ? "" : "s"}. Contacta al equipo de QRACKS para aumentar tu límite.`;
-    }
-    return humanizeError(errorBody.error);
   }
 
   // AUTO-004: groups the 9 possible reliabilityState values TheSportsDB
@@ -1477,18 +1500,39 @@
   function adminOrOwnerCred(){
     return ownerPasswordCache || ((currentUser && currentUser.isAdmin) ? currentUserPinCache : null);
   }
+  // MON-002B: every meta save routes through the same place so the server's
+  // participants revision is adopted after each write. Without that, this
+  // tab's own successful save would leave it holding the PREVIOUS revision
+  // and its next save would be judged stale — which would quietly turn
+  // legitimate removals into no-ops.
   async function setMeta(meta, opts){
-    try{
-      const ownerCred = (opts && opts.owner) || adminOrOwnerCred();
-      const creds = { owner: ownerCred, platform: platformPasswordCache };
-      return await kvSet(currentMetaKey(), meta, creds);
-    }catch(e){ console.error("save meta failed", e); return false; }
+    const result = await setMetaWithError(meta, opts);
+    return result.ok;
   }
   async function setMetaWithError(meta, opts){
     try{
       const ownerCred = (opts && opts.owner) || adminOrOwnerCred();
       const creds = { owner: ownerCred, platform: platformPasswordCache };
-      return await kvSetWithError(currentMetaKey(), meta, creds);
+      const result = await kvSetWithError(currentMetaKey(), meta, creds);
+      if(result.ok){
+        if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
+        // Any successful meta write can move the plan numbers (a participant
+        // added or removed, a round published), so the cached plan is dropped
+        // rather than left to go quietly stale behind the status line.
+        invalidatePlan();
+        // The server kept people this tab had never seen. Saying so, and
+        // reloading, is the honest move: the alternative is a screen that
+        // silently disagrees with the data.
+        if(result.participantsRestored > 0){
+          toast(`Se agregaron ${result.participantsRestored} participante${result.participantsRestored === 1 ? "" : "s"} mientras editabas — ya están en la lista.`);
+          // Mutated in place, so every screen holding this same object sees
+          // the corrected list without a reference swap.
+          const fresh = await getMeta({ owner: adminOrOwnerCred() });
+          if(fresh) Object.assign(meta, fresh);
+          invalidatePlan();
+        }
+      }
+      return result;
     }catch(e){ console.error("save meta failed", e); return { ok: false, error: "network_error" }; }
   }
   // Reads a participant's picks. Before that round's deadline, the server only
@@ -3137,13 +3181,17 @@
         // click re-fetches whatever object now lives in meta.rounds by id
         // (the freshly restored snapshot), so there's nothing stale left
         // for a subsequent retry to accidentally mutate.
-        // MON-001A note: with the currently chosen plan constants (FREE
-        // allows 5 published rounds), this specific screen's own publish
-        // (0 -> 1 published rounds) can never actually be blocked by the
-        // limit check -- wired here anyway for correctness/defense in
-        // depth, in case that constant ever changes.
-        errorEl.textContent = result.error === "plan_lifecycle_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
-        errorEl.style.display = "block";
+        // Wired for defence in depth: publishing the FIRST round of a brand
+        // new quiniela cannot hit the round budget today, but the budget is
+        // a config value that an operator can lower at any time.
+        if(result.error === "plan_lifecycle_limit_reached"){
+          errorEl.textContent = "";
+          errorEl.style.display = "none";
+          showPlanBlock(result);
+        } else {
+          errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+          errorEl.style.display = "block";
+        }
         cta.disabled = false;
         cta.textContent = "Publicar jornada";
       }
@@ -3201,8 +3249,14 @@
         renderAdminSetupInvite();
       } else {
         meta.rounds = meta.rounds.filter(r => r.id !== round.id);
-        errorEl.textContent = result.error === "plan_lifecycle_limit_reached" ? planLimitMessage(result) : "No pudimos publicar la jornada. Tus cambios siguen aquí.";
-        errorEl.style.display = "block";
+        if(result.error === "plan_lifecycle_limit_reached"){
+          errorEl.textContent = "";
+          errorEl.style.display = "none";
+          showPlanBlock(result);
+        } else {
+          errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
+          errorEl.style.display = "block";
+        }
         cta.disabled = false;
         cta.textContent = "Publicar jornada";
       }
@@ -3276,7 +3330,8 @@
         feedback.textContent = `✓ ${added.length} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
       }else{
         meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
-        feedback.textContent = planLimitMessage(result);
+        feedback.textContent = "";
+        showPlanBlock(result);
       }
     });
     document.getElementById("qz-setup-view-round").addEventListener("click", async () => {
@@ -3330,7 +3385,10 @@
         if(result.error === "name_taken"){
           toast("Ya existe alguien con ese nombre — búscalo en la lista de arriba.");
         }else if(result.error === "plan_participant_limit_reached"){
-          toast("Esta quiniela ya llegó al límite de participantes que puede aceptar por ahora. Avísale al organizador.");
+          // Participant-facing: no plan name, no limit, no price, no CTA.
+          // The server's own response for this path carries none of those
+          // either, so there is nothing here to leak by accident.
+          toast("Esta quiniela ya está llena. Avísale a quien la organiza.");
         }else{
           toast("No se pudo guardar, intenta de nuevo");
         }
@@ -4394,61 +4452,248 @@
   }
 
   // ---------- ADMIN ----------
-  // Returns null if this quiniela is fine (exempt, paid, or hasn't reached the free jornada limit yet),
-  // or {amount, depositInfo, jornadaLimit} if it owes money and new jornadas should be gated.
-  // The trigger is how many jornadas have been created; the amount owed is based on the
-  // CURRENT participant count, so growth after a previous payment still gets captured.
-  // If two callers ask "what's the payment status?" at nearly the same instant
-  // (which is exactly what happens when the Admin tab renders its banner and,
-  // in the same pass, Jornadas checks whether creation should be blocked),
-  // they share the same in-flight request instead of firing a second one.
-  // Cleared as soon as it resolves, so any later, genuinely separate call
-  // still gets fresh data.
-  let paymentStatusInFlight = null;
-  async function getPaymentStatus(){
+  // MON-002B: the plan a quiniela is actually on, straight from the server.
+  //
+  // What used to live here were the two legacy payment-status helpers: the
+  // old cobro model, which counted published rounds against
+  // platform_settings.jornadaLimit (5), quoted a price of
+  // pricePerParticipant x participants, and printed the platform's bank
+  // details. None of it matched what the server actually enforced (7 rounds,
+  // $199 flat) and none of it was enforced server-side at all -- the red
+  // "no puedes crear jornadas" card only hid a form. It is gone, together
+  // with the unauthenticated platform endpoint that fed it.
+  //
+  // Every number below is computed by the backend. This file deliberately
+  // does NOT know what Gratis means, what Plus costs, or when a round budget
+  // applies: two copies of that rule drifting apart is exactly how the
+  // product ended up showing one paywall and enforcing another.
+  let planState = null;
+  let planStateInFlight = null;
+  async function loadPlan(opts){
     if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
-    if(paymentStatusInFlight) return paymentStatusInFlight;
-    paymentStatusInFlight = (async () => {
+    if(!(opts && opts.force) && planState) return planState;
+    if(planStateInFlight) return planStateInFlight;
+    planStateInFlight = (async () => {
       try{
-        const res = await fetch("/api/payment-status/" + encodeURIComponent(SLUG));
+        const headers = {};
+        const cred = adminOrOwnerCred();
+        if(cred) headers["X-Qracks-Auth"] = cred;
+        const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/plan", {
+          headers, credentials: "same-origin"
+        });
         if(!res.ok) return null;
-        const entry = await res.json();
-        if(!entry.exists || entry.exempt || entry.paid) return null;
-        const jornadaLimit = (entry.customJornadaLimit !== null) ? entry.customJornadaLimit : entry.jornadaLimit;
-        // AUTO-001 HOTFIX (BUG 3): EXISTIR != ESTAR PUBLICADA. Importing a
-        // full calendar via Competition Sync used to count every imported-
-        // but-unpublished round against the free jornada limit, blocking a
-        // brand-new quiniela before the admin had published a single one.
-        // published === undefined (legacy rounds) still counts, same as before.
-        const roundCount = meta.rounds.filter(r => r.published !== false).length;
-        if(roundCount < jornadaLimit) return null;
-        const participantCount = meta.participants.length;
-        return {
-          amount: entry.pricePerParticipant * participantCount,
-          depositInfo: entry.depositInfo || "Contacta a quien administra la plataforma para los datos de depósito.",
-          jornadaLimit
-        };
-      }catch(e){ console.error("getPaymentStatus failed", e); return null; }
+        const data = await res.json();
+        planState = data && data.available ? data : null;
+        return planState;
+      }catch(e){ console.error("loadPlan failed", e); return null; }
     })();
-    try{
-      return await paymentStatusInFlight;
-    }finally{
-      paymentStatusInFlight = null;
-    }
+    try{ return await planStateInFlight; }
+    finally{ planStateInFlight = null; }
+  }
+  // Any write that consumes capacity can change these numbers, so the cached
+  // copy is dropped rather than left to go quietly out of date.
+  function invalidatePlan(){ planState = null; }
+
+  // Shown once per threshold per quiniela, and only to the Admin. "Once"
+  // survives a reload on purpose: re-arming the same warning every time the
+  // page loads is nagging, not informing.
+  function planWarningKey(kind){ return "qracks_plan_warn_" + kind + "_" + (SLUG || "root"); }
+  function planWarningSeen(kind){
+    try{ return window.localStorage.getItem(planWarningKey(kind)) === "1"; }
+    catch(e){ return false; }
+  }
+  function markPlanWarningSeen(kind){
+    try{ window.localStorage.setItem(planWarningKey(kind), "1"); }catch(e){}
   }
 
-  async function renderPaymentBanner(){
-    const banner = document.getElementById("qz-payment-banner");
-    if(!banner) return;
-    const status = await getPaymentStatus();
-    if(!status) return;
-    banner.innerHTML = `
-      <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
-        <div class="eyebrow" style="color:var(--gold-dim);">💰 Esta quiniela ya pasó las ${status.jornadaLimit} jornadas gratis</div>
-        <p style="margin:6px 0;">Para seguir usándola sin interrupciones, deposita <strong>$${status.amount} MXN</strong>:</p>
-        <p class="muted" style="white-space:pre-wrap;">${esc(status.depositInfo)}</p>
+  // The discreet always-on line: "Plan Gratis · 8 de 10 personas · 5 de 7
+  // jornadas". No colour, no button, no pressure -- it exists so the limit
+  // stops being a surprise, which is the whole complaint the hard block used
+  // to produce.
+  function planStatusHtml(plan){
+    if(!plan) return "";
+    const bits = [`Plan ${esc(plan.planLabel)}`];
+    if(plan.participants){
+      bits.push(`${plan.participants.used} de ${plan.participants.limit} persona${plan.participants.limit === 1 ? "" : "s"}`);
+    }
+    if(plan.rounds && plan.rounds.applies){
+      bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
+    }else if(plan.rounds && plan.competition && plan.competition.bound){
+      bits.push("torneo completo");
+    }
+    return `<p class="muted" id="qz-plan-status" style="margin:0 0 12px;">${bits.join(" · ")}</p>`;
+  }
+
+  // Fires at exactly one place left. Deliberately not a modal: the Admin is
+  // mid-task and nothing is blocked yet.
+  function planWarningHtml(plan){
+    if(!plan) return "";
+    const offer = plan.upgrade && plan.upgrade.available ? plan.upgrade : null;
+    const parts = [];
+    if(plan.participants && plan.participants.remaining === 1 && !planWarningSeen("people")){
+      parts.push({
+        kind: "people",
+        // On a plan with nothing above it the warning still fires — the
+        // Admin needs to know a lugar is left — but it never invents a tier
+        // to sell them.
+        text: offer
+          ? `Te queda 1 lugar en tu quiniela. Con Plus caben hasta ${offer.participantLimit} personas.`
+          : "Te queda 1 lugar en tu quiniela."
+      });
+    }
+    if(plan.rounds && plan.rounds.applies && plan.rounds.remaining === 1 && !planWarningSeen("rounds")){
+      parts.push({
+        kind: "rounds",
+        // Said BEFORE it matters, not after: the consumed count is durable
+        // on purpose, and finding that out by deleting a jornada and
+        // watching nothing come back is the worst moment to learn it.
+        text: "Te queda 1 jornada en tu plan. Ojo: borrar una jornada no te devuelve el espacio."
+      });
+    }
+    if(!parts.length) return "";
+    return parts.map(p => `
+      <div class="card" data-plan-warning="${p.kind}" style="border-color:var(--gold);background:#FFF9EC;">
+        <p style="margin:0 0 10px;">${esc(p.text)}</p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          ${offer ? `<button class="btn btn-gold btn-sm" data-plan-warning-cta="${p.kind}">Ver plan Plus</button>` : ``}
+          <button class="btn btn-ghost btn-sm" data-plan-warning-dismiss="${p.kind}">Entendido</button>
+        </div>
       </div>
-    `;
+    `).join("");
+  }
+
+  function wirePlanWarnings(scope){
+    if(!scope) return;
+    scope.querySelectorAll("[data-plan-warning-dismiss]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        markPlanWarningSeen(btn.dataset.planWarningDismiss);
+        const card = scope.querySelector(`[data-plan-warning="${btn.dataset.planWarningDismiss}"]`);
+        if(card) card.remove();
+      });
+    });
+    scope.querySelectorAll("[data-plan-warning-cta]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        markPlanWarningSeen(btn.dataset.planWarningCta);
+        showUpgradeSheet(planState && planState.upgrade, { reason: null });
+      });
+    });
+  }
+
+  // The hard paywall. Rendered ONLY from what the server just refused with —
+  // never from a limit this file worked out on its own. It answers, in
+  // order: what happened, what you can still do for free, what Plus gives,
+  // what it costs, and what it covers. One primary action, no countdown, no
+  // "solo quedan X", no three-column comparison.
+  function showUpgradeSheet(upgrade, ctx){
+    const c = ctx || {};
+    const offer = upgrade && upgrade.available ? upgrade : null;
+    const money = (n) => `$${Number(n).toLocaleString("es-MX")} MXN`;
+    const unlocks = offer
+      ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
+      : "";
+    // Honest about the mechanism. There is no checkout yet (that is MON-003),
+    // so the button must not look like one.
+    const howTo = offer
+      ? (offer.contact
+          ? `Escríbenos a ${offer.contact} y activamos Plus en esta quiniela.`
+          : "Escríbenos y activamos Plus en esta quiniela.")
+      : "";
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "qz-modal-overlay";
+      overlay.innerHTML = `
+        <div class="qz-modal-card" role="alertdialog" aria-modal="true" aria-label="${esc(c.headline || "Plan Plus")}">
+          <div class="qz-modal-title">${esc(c.headline || "Plan Plus")}</div>
+          <div class="qz-modal-message">
+            ${c.alternative ? `<p>${esc(c.alternative)}</p>` : ``}
+            ${offer ? `
+              <p>${esc(unlocks)}</p>
+              <p><strong>${esc(money(offer.priceMXN))}, un solo pago.</strong> ${esc(offer.scope || "")}</p>
+              <p class="muted">${esc(howTo)}</p>
+            ` : `
+              <p class="muted">${esc(c.noOffer || "Escríbenos para revisar las opciones de tu quiniela.")}</p>
+            `}
+          </div>
+          <div class="qz-modal-actions">
+            <button class="qz-modal-cancel" id="qz-upgrade-close">Cerrar</button>
+            ${offer ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      const focusTrap = attachModalFocusTrap(overlay);
+      const cleanup = (result) => {
+        document.removeEventListener("keydown", onKey);
+        focusTrap.release();
+        overlay.remove();
+        resolve(result);
+      };
+      const onKey = (e) => { if(e.key === "Escape") cleanup(false); };
+      document.addEventListener("keydown", onKey);
+      overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(false); });
+      overlay.querySelector("#qz-upgrade-close").addEventListener("click", () => cleanup(false));
+      const cta = overlay.querySelector("#qz-upgrade-cta");
+      if(cta){
+        cta.addEventListener("click", () => {
+          // `source` is a real column; a field the table has no room for
+          // would simply be dropped, which is not instrumentation.
+          trackEvent("upgrade_cta_clicked", { source: c.limitType ? "paywall_" + c.limitType : "paywall" });
+          cleanup(true);
+          // Deliberately not a fake checkout: it restates the real next step
+          // so the Admin leaves knowing exactly what happens now.
+          toast(howTo);
+        });
+        cta.focus();
+      } else {
+        overlay.querySelector("#qz-upgrade-close").focus();
+      }
+    });
+  }
+
+  // Turns the server's structured refusal into the paywall. Falls back to a
+  // plain message if a response ever arrives without the extra fields (an
+  // older cached client against a newer server, or any unexpected shape) —
+  // never throws, never shows "undefined".
+  function showPlanBlock(errorBody){
+    invalidatePlan();
+    const body = errorBody || {};
+    if(body.error === "plan_participant_limit_reached"){
+      return showUpgradeSheet(body.upgrade, {
+        limitType: "participants",
+        headline: Number.isFinite(body.limit)
+          ? `Tu quiniela llegó a ${body.limit} personas`
+          : "Tu quiniela ya está llena",
+        alternative: "Es el máximo de tu plan. Puedes quitar a alguien de la lista para hacer espacio.",
+        // Nothing above Plus exists, so this deliberately points at a
+        // conversation rather than at a tier that does not exist yet.
+        noOffer: "Si necesitas un grupo más grande, escríbenos.",
+      });
+    }
+    if(body.error === "plan_lifecycle_limit_reached"){
+      return showUpgradeSheet(body.upgrade, {
+        limitType: "rounds",
+        headline: Number.isFinite(body.limit)
+          ? `Llegaste a ${body.limit} jornada${body.limit === 1 ? "" : "s"}`
+          : "Llegaste al máximo de jornadas de tu plan",
+        alternative: "Es el máximo de tu plan. Tus jornadas, resultados y tabla siguen aquí y funcionando.",
+      });
+    }
+    toast(humanizeError(body.error));
+    return Promise.resolve(false);
+  }
+
+  // The plan line and any pending warning, drawn together at the top of
+  // Admin. Async and non-blocking: Admin renders immediately and this fills
+  // in, so a slow or failed plan read never holds up the screen.
+  async function renderPlanStrip(){
+    const strip = document.getElementById("qz-plan-strip");
+    if(!strip || ROUTE !== "quiniela" || !SLUG) return;
+    if(!(currentUser && currentUser.isAdmin)) return; // Admin-only, by design
+    const plan = await loadPlan();
+    const liveStrip = document.getElementById("qz-plan-strip");
+    if(!liveStrip || !plan) return;
+    liveStrip.innerHTML = planStatusHtml(plan) + planWarningHtml(plan);
+    wirePlanWarnings(liveStrip);
   }
 
   function renderAdmin(main){
@@ -4462,14 +4707,14 @@
     ];
     main.innerHTML = `
       ${screenHeaderHtml("admin", "Panel de administración")}
-      <div id="qz-payment-banner"></div>
+      <div id="qz-plan-strip"></div>
       <div class="qz-tabs" id="qz-admin-subtabs" style="margin-bottom:14px;">
         ${subtabs.map(t=>`<button class="qz-tab" style="color:${t.id===adminSubTab?'var(--pitch-dark)':'var(--ink-soft)'};border-bottom-color:${t.id===adminSubTab?'var(--gold)':'transparent'};" data-sub="${t.id}">${t.label}</button>`).join("")}
       </div>
       <div id="qz-admin-body"></div>
     `;
     wireScreenHeader(main, "admin");
-    if(ROUTE === "quiniela" && SLUG) renderPaymentBanner();
+    renderPlanStrip();
     root.querySelectorAll("[data-sub]").forEach(btn => {
       btn.addEventListener("click", () => {
         adminSubTab = btn.dataset.sub;
@@ -4732,6 +4977,35 @@
       }
       // "Compartir de todas formas" — falls through to the normal share below, unchanged.
     }
+    // MON-002B: sharing a full quiniela sends people to a screen that will
+    // reject them, so the Admin is told BEFORE the link reaches anyone —
+    // and then still allowed to share it, because a link that outlives the
+    // full state is a perfectly reasonable thing to send.
+    if(currentUser && currentUser.isAdmin){
+      const plan = await loadPlan();
+      if(plan && plan.participants && plan.participants.remaining === 0){
+        const wantsUpgrade = await qzConfirm(
+          "Quien abra el link no va a poder registrarse hasta que se libere un lugar.",
+          {
+            title: "Tu quiniela está llena",
+            confirmLabel: (plan.upgrade && plan.upgrade.available) ? "Ver plan Plus" : "Entendido",
+            cancelLabel: "Compartir de todos modos",
+            destructive: false
+          }
+        );
+        if(wantsUpgrade){
+          if(plan.upgrade && plan.upgrade.available){
+            await showUpgradeSheet(plan.upgrade, {
+              limitType: "participants",
+              headline: `Tu quiniela llegó a ${plan.participants.limit} personas`,
+              alternative: "Es el máximo de tu plan. Puedes quitar a alguien de la lista para hacer espacio.",
+              noOffer: "Si necesitas un grupo más grande, escríbenos."
+            });
+          }
+          return;
+        }
+      }
+    }
     const link = `${window.location.origin}${ROUTE === "root" ? "/" : "/q/" + esc(SLUG)}`;
     try{
       await navigator.clipboard.writeText(inviteMessage(link));
@@ -4964,9 +5238,6 @@
     const editingRound = editingId ? meta.rounds.find(r => r.id === editingId) : null;
     const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r=>r.number))+1 : 1;
 
-    // Only block creating brand-new rounds — editing/managing existing ones stays available.
-    const blockingStatus = !editingRound ? await getPaymentStatus() : null;
-
     let draft = renderAdminRondas._draft;
     if(!draft){
       draft = editingRound
@@ -4994,14 +5265,12 @@
       `;
     }
 
-    const createCardHtml = blockingStatus ? `
-      <div class="card" style="border-color:var(--red);">
-        <div class="eyebrow" style="color:var(--red);">🔒 No se pueden crear jornadas nuevas</div>
-        <p>Esta quiniela ya jugó sus ${blockingStatus.jornadaLimit} jornadas gratis y todavía no se registra el pago. Deposita <strong>$${blockingStatus.amount} MXN</strong>:</p>
-        <p class="muted" style="white-space:pre-wrap;">${esc(blockingStatus.depositInfo)}</p>
-        <p class="muted">En cuanto se confirme el pago, se vuelve a habilitar automáticamente. Mientras tanto puedes seguir usando todo lo demás (resultados, tabla, editar jornadas existentes).</p>
-      </div>
-    ` : `
+    // MON-002B: the form is always offered. The limit is the server's to
+    // enforce, and it does — hiding the form here only ever hid it from
+    // honest people, since the block was pure client-side decoration and a
+    // direct API call walked straight past it. When the server does refuse,
+    // the paywall is rendered from ITS answer (see showUpgradeSheet).
+    const createCardHtml = `
       <div class="card" id="qz-round-form">
         <div class="eyebrow">${editingRound ? `Editando jornada ${editingRound.number}` : `Crear jornada ${nextNumber}`}</div>
         ${editingRound && editingRound.resultsPublished ? `<p class="muted" style="color:var(--red);">Esta jornada ya tiene resultados publicados. Si cambias los equipos, los resultados guardados podrían dejar de tener sentido — revísalos después de guardar.</p>` : ``}
@@ -5077,6 +5346,12 @@
                   : "No encontramos un calendario disponible para esta competencia/temporada. Revisa la liga y temporada configuradas en Ajustes, o intenta de nuevo más tarde.");
             syncStatus.style.color = "var(--pitch-light)";
             if(data.createdRounds > 0) renderAdmin(document.getElementById("qz-main"));
+          } else if(res.status === 402){
+            // MON-002B: a competition/entitlement refusal is a commercial
+            // answer, not a provider outage. It gets its own copy and never
+            // points at the manual builder as a way around it.
+            syncStatus.textContent = humanizeError(data.error);
+            syncStatus.style.color = "var(--red)";
           } else {
             syncStatus.textContent = sportsDataFailureMessage(data.reliabilityState) + " O crea las jornadas manualmente.";
             syncStatus.style.color = "var(--gold-dim)";
@@ -5094,28 +5369,21 @@
         if(!round) return;
         btn.disabled = true;
         round.published = true;
-        const ok = await setMeta(meta);
-        if(ok){
+        // MON-002B: was setMeta()'s boolean, which turned a commercial
+        // rejection into "No se pudo publicar, intenta de nuevo" — a retry
+        // loop with no explanation and no way out.
+        const result = await setMetaWithError(meta);
+        if(result.ok){
           toast(`✅ Listo, la Jornada ${round.number} ya es visible para los participantes.`);
           renderAdmin(document.getElementById("qz-main"));
         }else{
           round.published = false; // roll back the in-memory flip on failure
-          toast("No se pudo publicar, intenta de nuevo");
+          if(result.error === "plan_lifecycle_limit_reached") showPlanBlock(result);
+          else toast(humanizeError(result.error));
           btn.disabled = false;
         }
       });
     });
-
-    if(blockingStatus){
-      // Only the "edit existing round" and "delete round" actions apply while blocked.
-      body.querySelectorAll("[data-edit-round]").forEach(btn => {
-        btn.addEventListener("click", () => openRoundEditor(body, btn.dataset.editRound));
-      });
-      body.querySelectorAll("[data-del-round]").forEach(btn => {
-        btn.addEventListener("click", () => deleteRoundWithRollback(btn, btn.dataset.delRound));
-      });
-      return;
-    }
 
     function wireRows(){
       document.querySelectorAll("#qz-match-rows [data-mid]").forEach(row => {
@@ -5211,7 +5479,7 @@
           // Force the form to rebuild from the restored round on the next
           // render, instead of showing the failed edit as if it had stuck.
           renderAdminRondas._draft = null;
-          toast(planLimitMessage(result));
+          showPlanBlock(result);
           renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
         }
         return;
@@ -5255,7 +5523,9 @@
         // deadline stay in the (still-open) form via renderAdminRondas._draft,
         // exactly like every other failure path in this same function.
         meta.rounds = meta.rounds.filter(r => r.id !== round.id);
-        toast(planLimitMessage(result));
+        // MON-002B: a real paywall, built from the server's own refusal,
+        // instead of a toast that named a number and offered no way forward.
+        showPlanBlock(result);
       }
     });
 
@@ -5834,6 +6104,12 @@
       <div class="card">
         <div class="eyebrow">Agregar varios de un jalón</div>
         <p class="muted" style="margin-top:-4px;">Pega una lista de nombres, uno por línea (o separados por comas).</p>
+        <!-- MON-002B: the remaining count is filled in from the server once
+             the plan loads. Pasting 5 names into 2 free spaces rejects all 5
+             (capacity is checked against the whole write, not name by name),
+             so saying how many fit BEFORE the paste is the difference
+             between a useful screen and a confusing rejection. -->
+        <p class="muted" id="qz-bulk-capacity" style="margin-top:-2px;"></p>
         <textarea id="qz-bulk-names" rows="4" style="width:100%;padding:9px 11px;border-radius:8px;border:1.5px solid var(--line);font-family:inherit;font-size:14px;" placeholder="Pablo&#10;Kevin&#10;Memo&#10;..."></textarea>
         <p class="muted" id="qz-bulk-status" style="min-height:16px;margin-top:6px;"></p>
         <button class="btn btn-gold" id="qz-bulk-add" style="margin-top:4px;">+ Agregar a todos</button>
@@ -5878,9 +6154,18 @@
       }else{
         meta.participants = snapshot;
         addBtn.disabled = false;
-        toast(planLimitMessage(result));
+        showPlanBlock(result);
       }
     });
+    (async () => {
+      const plan = await loadPlan();
+      const hint = document.getElementById("qz-bulk-capacity");
+      if(!hint || !plan || !plan.participants) return;
+      const left = plan.participants.remaining;
+      hint.textContent = left > 0
+        ? `Te quedan ${left} lugar${left === 1 ? "" : "es"} en tu plan ${plan.planLabel}.`
+        : `Tu quiniela está llena (${plan.participants.limit} de ${plan.participants.limit}).`;
+    })();
     document.getElementById("qz-bulk-add").addEventListener("click", async () => {
       const raw = document.getElementById("qz-bulk-names").value;
       const statusEl = document.getElementById("qz-bulk-status");
@@ -5904,8 +6189,8 @@
         // same error — a later render/action elsewhere in the app would
         // have seen phantom participants the server never actually has.
         meta.participants = snapshot;
-        statusEl.textContent = planLimitMessage(result);
-        statusEl.style.color = "var(--red)";
+        statusEl.textContent = "";
+        showPlanBlock(result);
         return;
       }
       toast(`✅ Listo, se agregaron ${added.length} participante${added.length===1?'':'s'}.`);
@@ -6575,15 +6860,16 @@
       return;
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
-    const [idx, settings, analytics, sportsHealth] = await Promise.all([getPlatformIndex(), getPlatformSettings(), getPlatformAnalytics(), getPlatformSportsHealth()]);
+    const [idx, settings, config, analytics, sportsHealth] = await Promise.all([
+      getPlatformIndex(), getPlatformSettings(), getCommercialConfig(), getPlatformAnalytics(), getPlatformSportsHealth()
+    ]);
     const rows = idx.quinielas.map(q => {
-      const effectiveJornadaLimit = (q.customJornadaLimit !== undefined && q.customJornadaLimit !== null) ? q.customJornadaLimit : settings.jornadaLimit;
       // Counts now live on the index entry itself (kept fresh whenever that
       // quiniela's own meta is saved) — no need to fetch each quiniela's full
       // meta just to read two numbers.
       const count = q.participantCount != null ? q.participantCount : null;
       const roundCount = q.roundCount != null ? q.roundCount : null;
-      return { ...q, exempt: !!q.exempt, paid: !!q.paid, count, roundCount, effectiveJornadaLimit, overThreshold: (roundCount || 0) >= effectiveJornadaLimit };
+      return { ...q, count, roundCount };
     });
 
     // Self-heal: a quiniela saved before this feature existed shows "?" the
@@ -6603,7 +6889,6 @@
           const realRounds = Array.isArray(fresh.value.rounds) ? fresh.value.rounds.length : 0;
           r.count = realCount;
           r.roundCount = realRounds;
-          r.overThreshold = realRounds >= r.effectiveJornadaLimit;
           const entry = idx.quinielas.find(q => q.slug === r.slug);
           if(entry){ entry.participantCount = realCount; entry.roundCount = realRounds; indexChanged = true; }
         }catch(e){ console.error("backfill de conteo falló para", r.slug, e); }
@@ -6654,12 +6939,27 @@
     const invitesSharedTotal = evTotal("invite_shared", "allTime");
     const standingsSharedTotal = evTotal("standings_shared", "allTime");
 
+    // MON-002B: the plan this quiniela is ACTUALLY on, read from the same
+    // entitlement enforcement reads. What was here before showed
+    // "Jornada N/5" and "Cobrar $10 x participantes" — a threshold and a
+    // price the server had not used since MON-001B — plus an "Exenta" badge
+    // for a flag that exempted nothing.
+    const PLAN_BADGE = { FREE: "badge", PLUS: "badge paid", GRANDFATHERED: "badge admin", MANUAL_GRANT: "badge admin" };
+    const PLAN_TEXT = { FREE: "Gratis", PLUS: "Plus", GRANDFATHERED: "Sin límite", MANUAL_GRANT: "Especial" };
+    function planOf(q){ return (q.entitlement && q.entitlement.plan) || null; }
     function statusBadge(q){
-      if(q.exempt) return `<span class="badge admin">⭐ Exenta — no se cobra</span>`;
-      if(q.roundCount === null) return `<span class="badge">— Sin datos todavía</span>`;
-      if(!q.overThreshold) return `<span class="badge paid">🟢 Jornada ${q.roundCount}/${q.effectiveJornadaLimit}</span>`;
-      if(q.paid) return `<span class="badge paid">✅ Pagado</span>`;
-      return `<span class="badge unpaid">🟡 Cobrar $${settings.pricePerParticipant * (q.count || 0)} MXN</span>`;
+      const plan = planOf(q);
+      if(!plan) return `<span class="badge unpaid">⚠️ Sin plan</span>`;
+      const badge = `<span class="${PLAN_BADGE[plan] || "badge"}">${esc(PLAN_TEXT[plan] || plan)}</span>`;
+      // A failed commercial_config read must not blank the whole table: the
+      // plan name is still true, only the numbers next to it are unknown.
+      if(!config || !config.free || !config.plus) return badge;
+      const limits = plan === "FREE"
+        ? { p: config.free.participantLimit, r: config.free.manualRoundLimit }
+        : { p: q.entitlement.participantLimit, r: q.entitlement.manualRoundLimit };
+      const bound = !!q.entitlement.competitionIdentity;
+      const rounds = (plan !== "FREE" && bound) ? "torneo completo" : `${q.lifecycleRoundsConsumed || 0}/${limits.r} jornadas`;
+      return badge + `<br><span class="muted" style="font-size:11.5px;">${q.count === null ? "?" : q.count}/${limits.p} personas · ${esc(rounds)}</span>`;
     }
 
     const editingSlug = renderPlatformDashboard._editingSlug || null;
@@ -6668,17 +6968,13 @@
       if(q.slug === editingSlug){
         return `
           <tr data-slug="${esc(q.slug)}">
-            <td colspan="7">
+            <td colspan="6">
               <div style="padding:10px 0;">
                 <div class="eyebrow">Editando: /q/${esc(q.slug)}</div>
+                <p class="muted" style="margin-top:-4px;">Para cambiar el plan o los límites de esta quiniela, usa "Activar Plus" o "Ajuste manual" en la tabla.</p>
                 <div class="row2">
                   <div class="field"><label>Nombre de la quiniela</label><input type="text" id="qz-edit-name" value="${esc(q.name)}"></div>
                   <div class="field"><label>Nueva contraseña de admin (opcional)</label><input type="text" id="qz-edit-pass" placeholder="Dejar en blanco para no cambiar"></div>
-                </div>
-                <div class="field">
-                  <label>A partir de qué jornada se cobra, para esta quiniela (opcional)</label>
-                  <input type="number" id="qz-edit-threshold" placeholder="Global: ${settings.jornadaLimit}" value="${q.customJornadaLimit !== undefined && q.customJornadaLimit !== null ? q.customJornadaLimit : ''}">
-                  <p class="muted" style="margin-top:4px;">Déjalo vacío para usar el límite global (${settings.jornadaLimit} jornadas gratis). Ponle un número para que esta quiniela en particular tenga su propio límite.</p>
                 </div>
                 <p class="muted">El link (/q/${esc(q.slug)}) no se puede cambiar aquí — crear un link nuevo requeriría una quiniela nueva.</p>
                 <div style="display:flex;gap:8px;">
@@ -6696,8 +6992,12 @@
           <td>${esc(q.creatorName)}<br><span class="muted">${esc(q.contact || "sin contacto")}</span></td>
           <td>${q.count === null ? "?" : q.count}</td>
           <td class="qz-status-cell">${statusBadge(q)}</td>
-          <td><input type="checkbox" data-exempt-toggle ${q.exempt ? "checked" : ""}></td>
-          <td><input type="checkbox" data-paid-toggle ${q.paid ? "checked" : ""}></td>
+          <td style="white-space:nowrap;">
+            ${planOf(q) === "FREE"
+              ? `<button class="btn btn-gold btn-sm" data-grant-plus="${esc(q.slug)}">Activar Plus</button>`
+              : `<button class="btn btn-ghost btn-sm" data-grant-free="${esc(q.slug)}">Volver a Gratis</button>`}
+            <button class="btn btn-ghost btn-sm" data-grant-manual="${esc(q.slug)}">Ajuste manual</button>
+          </td>
           <td style="white-space:nowrap;">
             <button class="btn btn-ghost btn-sm" data-view-slug="${esc(q.slug)}">👁 Ver</button>
             <button class="btn btn-ghost btn-sm" data-edit-slug="${esc(q.slug)}">Editar</button>
@@ -6757,50 +7057,81 @@
         </div>
         <div class="card" style="overflow-x:auto;padding:16px 12px;">
           <table class="qz-platform-table" style="min-width:800px;">
-            <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Estatus</th><th>Exenta</th><th>Pagado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Quiniela</th><th>Creador</th><th>Participantes</th><th>Plan</th><th>Cambiar plan</th><th>Acciones</th></tr></thead>
             <tbody>
-              ${rows.length ? rows.map(rowHtml).join("") : `<tr><td colspan="7" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
+              ${rows.length ? rows.map(rowHtml).join("") : `<tr><td colspan="6" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
             </tbody>
           </table>
-          <p class="muted" style="margin-top:8px;">"Exenta" = nunca se le cobra. "Pagado" = ya depositó por este periodo — quita la palomita cuando quieras volver a cobrarle (ej. después de que empiece un torneo nuevo).</p>
+          <p class="muted" style="margin-top:8px;">"Activar Plus" otorga el plan y registra el cobro en la misma operación. "Ajuste manual" es para casos especiales (soporte, pruebas, promociones) y pide un motivo, que queda en el historial.</p>
           <p class="muted" style="margin-top:2px;">👉 Desliza hacia los lados para ver toda la tabla en pantallas angostas.</p>
         </div>
         <div id="qz-inspect-panel"></div>
+        ${config ? `
         <div class="card">
-          <div class="eyebrow">Configuración de cobro</div>
+          <div class="eyebrow">Planes y precio</div>
+          <p class="muted" style="margin-top:-4px;">Estos son los números que el sistema aplica de verdad. Un cambio aquí afecta a todas las quinielas Gratis de inmediato; las que ya tienen Plus conservan lo que se les otorgó.</p>
           <div class="row2">
-            <div class="field"><label>Jornadas gratis antes de cobrar</label><input type="number" id="qz-p-threshold" value="${settings.jornadaLimit}"></div>
-            <div class="field"><label>Precio por participante (MXN)</label><input type="number" id="qz-p-price" value="${settings.pricePerParticipant}"></div>
+            <div class="field"><label>Gratis — personas</label><input type="number" id="qz-c-free-people" min="1" value="${config.free.participantLimit}"></div>
+            <div class="field"><label>Gratis — jornadas</label><input type="number" id="qz-c-free-rounds" min="1" value="${config.free.manualRoundLimit}"></div>
           </div>
+          <div class="row2">
+            <div class="field"><label>Plus — personas</label><input type="number" id="qz-c-plus-people" min="1" value="${config.plus.participantLimit}"></div>
+            <div class="field"><label>Plus — jornadas</label><input type="number" id="qz-c-plus-rounds" min="1" value="${config.plus.manualRoundLimit}"></div>
+          </div>
+          <div class="field"><label>Precio de Plus (MXN)</label><input type="number" id="qz-c-plus-price" min="0" value="${config.plus.priceMXN}"></div>
+          <div class="field">
+            <label>Cómo te contactan para activar Plus</label>
+            <input type="text" id="qz-c-contact" placeholder="Ej. hola@qracks.mx o WhatsApp 55 1234 5678" value="${esc(config.upgradeContact || "")}">
+            <p class="muted" style="margin-top:4px;">Es lo que se le muestra al organizador cuando toca "Pasar a Plus". Déjalo vacío y solo dirá "escríbenos".</p>
+          </div>
+          <button class="btn btn-primary" id="qz-c-save">Guardar planes</button>
+        </div>
+        ` : `
+        <div class="card"><div class="eyebrow">Planes y precio</div><p class="muted">No pudimos cargar la configuración comercial. Recarga la página.</p></div>
+        `}
+        <div class="card">
+          <div class="eyebrow">Acceso al panel</div>
           <div class="field"><label>Contraseña del panel</label><input type="text" id="qz-p-newpass" placeholder="Dejar en blanco para no cambiarla" value=""></div>
           <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos la contraseña actual aquí — solo escribe algo si quieres cambiarla.</p>
-          <div class="field">
-            <label>Datos para depositar</label>
-            <textarea id="qz-p-deposit" rows="3" style="width:100%;padding:9px 11px;border-radius:8px;border:1.5px solid var(--line);font-family:inherit;font-size:14px;" placeholder="Ej. Banco XYZ, CLABE 0123456789, a nombre de...">${esc(settings.depositInfo || "")}</textarea>
-            <p class="muted" style="margin-top:4px;">Esto se le muestra automáticamente al admin de cualquier quiniela que ya deba pagar.</p>
-          </div>
-          <button class="btn btn-primary" id="qz-p-save">Guardar configuración</button>
+          <button class="btn btn-primary" id="qz-p-save">Guardar contraseña</button>
         </div>
       </div>
     `;
     document.getElementById("qz-p-save").addEventListener("click", async () => {
       const newPass = document.getElementById("qz-p-newpass").value.trim();
-      const newSettings = {
-        // MON-001F: carry the version this panel actually read, so the server
-        // can reject the save if someone else changed settings meanwhile.
-        version: settings.version,
-        jornadaLimit: Number(document.getElementById("qz-p-threshold").value) || settings.jornadaLimit,
-        pricePerParticipant: Number(document.getElementById("qz-p-price").value) || settings.pricePerParticipant,
-        depositInfo: document.getElementById("qz-p-deposit").value
-      };
-      if(newPass) newSettings.dashboardPassword = newPass;
-      const ok = await setPlatformSettings(newSettings);
+      if(!newPass){ toast("Escribe la contraseña nueva."); return; }
+      // MON-001F: carry the version this panel actually read, so the server
+      // can reject the save if someone else changed settings meanwhile.
+      const ok = await setPlatformSettings({ ...settings, version: settings.version, dashboardPassword: newPass });
       // On a 409 the helper already explained why and re-rendered — don't
       // stack a second, vaguer toast on top of it.
       if(platformStaleHandled) return;
-      toast(ok ? "✅ Listo, la configuración quedó guardada." : "No se pudo guardar, intenta de nuevo");
+      if(ok) platformPasswordCache = newPass;
+      toast(ok ? "✅ Listo, la contraseña quedó guardada." : "No se pudo guardar, intenta de nuevo");
       renderPlatformDashboard();
     });
+
+    const commercialSaveBtn = document.getElementById("qz-c-save");
+    if(commercialSaveBtn){
+      commercialSaveBtn.addEventListener("click", async () => {
+        const num = (id) => Number(document.getElementById(id).value);
+        const next = {
+          // Same optimistic-version protocol as every other platform row: the
+          // panel states the version it read, the server decides. A 409 is
+          // recoverable and never a silent overwrite.
+          version: config.version,
+          free: { participantLimit: num("qz-c-free-people"), manualRoundLimit: num("qz-c-free-rounds") },
+          plus: { participantLimit: num("qz-c-plus-people"), manualRoundLimit: num("qz-c-plus-rounds"), priceMXN: num("qz-c-plus-price") },
+          upgradeContact: document.getElementById("qz-c-contact").value.trim()
+        };
+        commercialSaveBtn.disabled = true;
+        const ok = await setCommercialConfig(next);
+        commercialSaveBtn.disabled = false;
+        if(platformStaleHandled) return;
+        toast(ok ? "✅ Listo, los planes quedaron guardados." : ERROR_MESSAGES.invalid_commercial_config);
+        if(ok) renderPlatformDashboard();
+      });
+    }
 
     root.querySelectorAll("[data-edit-slug]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -6821,16 +7152,16 @@
         const slug = saveEditBtn.dataset.saveEdit;
         const newName = document.getElementById("qz-edit-name").value.trim();
         const newPass = document.getElementById("qz-edit-pass").value.trim();
-        const thresholdRaw = document.getElementById("qz-edit-threshold").value.trim();
+        if(!newName && !newPass){ toast("No cambiaste nada."); return; }
         saveEditBtn.disabled = true;
         try{
           // MON-001F.2: esto eran DOS escrituras independientes (meta primero,
           // índice después). Si la segunda perdía una carrera de versión, el
           // nombre y la contraseña ya habían cambiado en meta mientras el
-          // índice se quedaba atrás — nombre divergente y límite perdido. Ahora
-          // es una sola operación atómica: los tres cambios aterrizan juntos o
-          // no aterriza ninguno.
-          const changes = { customJornadaLimit: thresholdRaw === "" ? null : Number(thresholdRaw) };
+          // índice se quedaba atrás — nombre divergente. Ahora
+          // es una sola operación atómica: ambos cambios aterrizan juntos o no
+          // aterriza ninguno.
+          const changes = {};
           if(newName) changes.name = newName;
           if(newPass) changes.ownerPassword = newPass;
           const r = await saveQuinielaSettings(slug, changes);
@@ -6868,58 +7199,77 @@
         }
       });
     });
-    root.querySelectorAll("[data-exempt-toggle]").forEach(checkbox => {
-      checkbox.addEventListener("change", async () => {
-        const tr = checkbox.closest("tr");
-        const slug = tr.dataset.slug;
-        const entry = idx.quinielas.find(q => q.slug === slug);
-        if(!entry) return;
-        entry.exempt = checkbox.checked;
-        const ok = await setPlatformIndex(idx);
-        if(ok){
-          const rowData = rows.find(r => r.slug === slug);
-          rowData.exempt = checkbox.checked;
-          tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
-          toast(checkbox.checked ? "Marcada como exenta ⭐" : "Ya no está exenta");
-        } else if(!platformStaleHandled) {
-          checkbox.checked = !checkbox.checked;
-          toast("No se pudo guardar, intenta de nuevo");
-        }
+    // MON-002B: the two checkboxes that used to live here ("Exenta" and
+    // "Pagado") wrote fields no enforcement path ever read — ticking Exenta
+    // changed nothing about the limits a quiniela then hit, and ticking
+    // Pagado recorded money without granting anything. Both are replaced by
+    // one operation that actually changes what the quiniela is entitled to.
+    async function runGrant(btn, slug, payload, confirmOpts){
+      if(confirmOpts && !(await qzConfirm(confirmOpts.message, confirmOpts))) return;
+      btn.disabled = true;
+      // Held on the button, so a retry after a lost response reuses the SAME
+      // id — the server recognises it in the history and writes nothing,
+      // instead of granting twice and charging twice.
+      const grantId = btn.dataset.grantId || (btn.dataset.grantId = newGrantId());
+      const r = await grantEntitlement(slug, { ...payload, grantId });
+      if(r.ok){
+        toast(r.applied ? "✅ Listo, el plan quedó actualizado." : "Ese cambio ya estaba aplicado.");
+        renderPlatformDashboard();
+        return;
+      }
+      // The id is spent either way once the server has seen it; a fresh
+      // attempt deserves a fresh one rather than replaying a rejected call
+      // forever.
+      delete btn.dataset.grantId;
+      btn.disabled = false;
+      toast(ERROR_MESSAGES[r.error] || "No se pudo cambiar el plan, intenta de nuevo");
+    }
+
+    root.querySelectorAll("[data-grant-plus]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const slug = btn.dataset.grantPlus;
+        const price = config && config.plus ? config.plus.priceMXN : null;
+        runGrant(btn, slug, { plan: "PLUS" }, {
+          title: `¿Activar Plus en /q/${slug}?`,
+          message: price != null
+            ? `Se le otorga Plus y se registra el cobro de $${price} MXN.`
+            : "Se le otorga Plus y se registra el cobro.",
+          confirmLabel: "Activar Plus",
+          destructive: false
+        });
       });
     });
 
-    root.querySelectorAll("[data-paid-toggle]").forEach(checkbox => {
-      checkbox.addEventListener("change", async () => {
-        const tr = checkbox.closest("tr");
-        const slug = tr.dataset.slug;
-        const entry = idx.quinielas.find(q => q.slug === slug);
-        if(!entry) return;
-        const rowData = rows.find(r => r.slug === slug);
-        // MON-001F.2: marking as paid used to be TWO independent whole-document
-        // writes (index, then payment log). If the second one lost a version
-        // race, the quiniela ended up billed with no record of the payment and
-        // nobody noticed, because the result wasn't checked. It is now one
-        // atomic server-side operation, and the id makes a retry after a lost
-        // response record the same payment instead of a second one.
-        const wantPaid = checkbox.checked;
-        const paymentId = checkbox.dataset.paymentId || (checkbox.dataset.paymentId = newPaymentId());
-        const r = await markQuinielaPaid(slug, wantPaid, paymentId);
-        if(r.ok){
-          if(wantPaid) delete checkbox.dataset.paymentId; // next toggle is a new payment intent
-          entry.paid = wantPaid;
-          if(Number.isSafeInteger(r.indexVersion)) idx.version = r.indexVersion;
-          rowData.paid = wantPaid;
-          tr.querySelector(".qz-status-cell").innerHTML = statusBadge(rowData);
-          toast(wantPaid ? "Marcada como pagada ✅" : "Ya no está marcada como pagada");
-        } else {
-          // El id ya no sirve para un intento nuevo: el servidor lo rechazó
-          // justamente porque el log ya lo conoce. Descartarlo evita que el
-          // siguiente clic repita el mismo conflicto para siempre.
-          if(r.error === "payment_id_conflict") delete checkbox.dataset.paymentId;
-          checkbox.checked = !checkbox.checked;
-          toast(ERROR_MESSAGES[r.error] || "No se pudo guardar, intenta de nuevo");
-          renderPlatformDashboard();
-        }
+    root.querySelectorAll("[data-grant-free]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const slug = btn.dataset.grantFree;
+        runGrant(btn, slug, { plan: "FREE", reason: "Regresada a Gratis desde el panel." }, {
+          title: `¿Regresar /q/${slug} a Gratis?`,
+          message: "Vuelve a los límites del plan Gratis. El historial de lo que se le otorgó antes se conserva.",
+          confirmLabel: "Regresar a Gratis",
+          destructive: false
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-grant-manual]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const slug = btn.dataset.grantManual;
+        const peopleRaw = await qzPrompt("¿Cuántas personas puede tener?", { title: `Ajuste manual · /q/${slug}`, confirmLabel: "Continuar" });
+        if(peopleRaw === null) return;
+        const roundsRaw = await qzPrompt("¿Cuántas jornadas puede publicar?", { title: `Ajuste manual · /q/${slug}`, confirmLabel: "Continuar" });
+        if(roundsRaw === null) return;
+        const reason = await qzPrompt("¿Por qué? (queda en el historial)", { title: `Ajuste manual · /q/${slug}`, confirmLabel: "Aplicar" });
+        if(reason === null) return;
+        if(!reason.trim()){ toast(ERROR_MESSAGES.reason_required); return; }
+        // Sent as-is and validated server-side: the browser proposing a
+        // number is not the same as the server accepting it.
+        runGrant(btn, slug, {
+          plan: "MANUAL_GRANT",
+          participantLimit: Number(peopleRaw),
+          manualRoundLimit: Number(roundsRaw),
+          reason: reason.trim()
+        });
       });
     });
 

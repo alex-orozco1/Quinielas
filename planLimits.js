@@ -44,6 +44,12 @@ const DEFAULT_COMMERCIAL_CONFIG = Object.freeze({
   version: 1,
   updatedAt: null,
   updatedBy: "system_default",
+  // MON-002B: how an organizer actually reaches QRACKS to get Plus turned
+  // on. It lives in the config, not in the copy, because until MON-003 ships
+  // a real checkout this IS the mechanism, and the paywall must state it
+  // honestly rather than show a button that pretends to charge a card.
+  // Empty means the paywall falls back to a generic sentence.
+  upgradeContact: "",
   free: Object.freeze({ participantLimit: 10, manualRoundLimit: 7 }),
   plus: Object.freeze({ participantLimit: 50, manualRoundLimit: 18, priceMXN: 199 }),
 });
@@ -62,6 +68,9 @@ function isCommercialConfigValid(config) {
   if (!Number.isFinite(p.participantLimit) || p.participantLimit < f.participantLimit) return false;
   if (!Number.isFinite(p.manualRoundLimit) || p.manualRoundLimit < f.manualRoundLimit) return false;
   if (!Number.isFinite(p.priceMXN) || p.priceMXN < 0) return false;
+  if (config.upgradeContact !== undefined && config.upgradeContact !== null) {
+    if (typeof config.upgradeContact !== "string" || config.upgradeContact.length > 200) return false;
+  }
   return true;
 }
 
@@ -207,6 +216,19 @@ function isKnownPlan(plan) {
   return plan === "FREE" || plan === "PLUS" || plan === "GRANDFATHERED" || plan === "MANUAL_GRANT";
 }
 
+// MON-002B. FREE is the one plan whose round budget is NOT lifted by having
+// a tournament: it is a free product with a fixed allowance, and a league
+// selection must never quietly turn it into an unlimited one (that was the
+// commercial hole MON-002A found). Every other known plan was either paid
+// for, granted by an operator, or predates enforcement entirely, and all
+// three legitimately mean "this quiniela's tournament is covered".
+// Written as an explicit FREE test rather than a whitelist so an unknown
+// plan can never fall into the unlimited branch — isKnownPlan already
+// fails those closed before this is ever reached.
+function grantsFullCompetition(entitlement) {
+  return !!entitlement && entitlement.plan !== "FREE";
+}
+
 // MON-001C: the approved FREE-vs-PLUS split. FREE is a free product that
 // always tracks the CURRENT commercial_config — a platform-wide config
 // change (10 -> 12 participants) applies to every existing FREE quiniela
@@ -271,10 +293,20 @@ function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedC
   if (!entitlement || entitlement.revoked) {
     return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
   }
-  if (entitlement.competitionIdentity) {
-    // With a league selected, round-count lifecycle does not apply —
-    // tournament-end enforcement is the OPEN DECISION documented above,
-    // not implemented yet. Never block here in that case.
+  if (entitlement.competitionIdentity && grantsFullCompetition(entitlement)) {
+    // MON-002B: "Plus = 50 personas + torneo completo si existe". A paid/
+    // granted plan bound to a tournament gets that whole tournament, so a
+    // round count is not the thing being limited — the BINDING is (see
+    // evaluateCompetitionBinding: it can only ever play the one tournament
+    // it is bound to). FREE deliberately does NOT get this: a free quiniela
+    // may IMPORT a full calendar, but it still only gets to publish
+    // manualRoundLimit of those rounds, which is what makes "Gratis = 10
+    // personas + 7 jornadas" true whether or not a league was picked.
+    //
+    // Still open, and deliberately NOT decided here (MON-002C): what
+    // happens when that tournament ENDS — renewal, and whether
+    // leagueId:season is a precise enough tournament identity for split
+    // formats (see computeCompetitionIdentity's OPEN DECISION above).
     return { allowed: true };
   }
   const limits = resolveEnforcementLimits(entitlement, commercialConfig);
@@ -328,6 +360,111 @@ function evaluateCompetitionBinding(entitlement, requestedIdentity) {
   return { violation: true, reason: "competition_mismatch", boundIdentity: bound, requestedIdentity };
 }
 
+// ---- What the Admin is allowed to SEE (MON-002B) --------------------------
+//
+// The plan screen, the warnings and the hard paywall are all rendered from
+// this one object. It lives here, next to the rules it describes, so the
+// browser never has to know what FREE means, what PLUS costs, or when a
+// round limit applies — it only paints what it is handed. That is the whole
+// point: MON-002A found a frontend paywall that had drifted to a different
+// threshold AND a different price than the backend was actually enforcing,
+// because both sides owned a copy of the rule.
+
+const PLAN_LABELS = Object.freeze({
+  FREE: "Gratis",
+  PLUS: "Plus",
+  GRANDFATHERED: "Sin límite",
+  MANUAL_GRANT: "Especial",
+});
+
+// `available: false` carries no price and no capabilities at all — an offer
+// that cannot be taken must not leave numbers lying around for a screen to
+// render by accident.
+function buildUpgradeOffer(entitlement, commercialConfig) {
+  if (!entitlement || entitlement.plan !== "FREE") return { available: false };
+  const plus = commercialConfig && commercialConfig.plus;
+  if (!plus || !Number.isFinite(plus.priceMXN)
+    || !Number.isFinite(plus.participantLimit) || !Number.isFinite(plus.manualRoundLimit)) {
+    return { available: false };
+  }
+  return {
+    available: true,
+    priceMXN: plus.priceMXN,
+    participantLimit: plus.participantLimit,
+    roundLimit: plus.manualRoundLimit,
+    // Whatever the operator configured, or "" — the screen decides which
+    // sentence to write, but never invents a channel that does not exist.
+    contact: typeof commercialConfig.upgradeContact === "string" ? commercialConfig.upgradeContact : "",
+    // Scope is copy with a commercial promise in it, so it is written once,
+    // here, rather than in whichever screen happens to show the offer.
+    scope: entitlement.competitionIdentity
+      ? "Aplica a esta quiniela para el torneo que ya está jugando."
+      : "Aplica solo a esta quiniela.",
+  };
+}
+
+// The complete plan picture for one quiniela. `usage` is measured by the
+// caller from the rows it already read under lock (participants.length and
+// the durable lifecycle counter) — this function never guesses either.
+function summarizePlan(entitlement, commercialConfig, usage) {
+  const u = usage || {};
+  const participantsUsed = Number.isFinite(u.participantsUsed) ? u.participantsUsed : 0;
+  const roundsUsed = Number.isFinite(u.roundsUsed) ? u.roundsUsed : 0;
+  const limits = resolveEnforcementLimits(entitlement, commercialConfig);
+  const plan = entitlement && isKnownPlan(entitlement.plan) ? entitlement.plan : null;
+  const bound = !!(entitlement && entitlement.competitionIdentity);
+  // The round budget stops applying exactly where enforcement stops applying
+  // — same condition, one source (see checkLifecycleRoundConsumption).
+  const roundsApply = !(bound && grantsFullCompetition(entitlement));
+
+  // Fail-closed and SAY so, rather than inventing numbers to fill a screen.
+  if (!plan || !limits || (entitlement && entitlement.revoked)) {
+    return {
+      plan: plan,
+      planLabel: plan ? PLAN_LABELS[plan] : null,
+      available: false,
+      participants: null,
+      rounds: null,
+      competition: { bound, label: u.competitionLabel || null },
+      upgrade: { available: false },
+    };
+  }
+
+  const remaining = (limit, used) => Math.max(0, limit - used);
+  return {
+    plan,
+    planLabel: PLAN_LABELS[plan],
+    available: true,
+    participants: {
+      used: participantsUsed,
+      limit: limits.participantLimit,
+      remaining: remaining(limits.participantLimit, participantsUsed),
+    },
+    rounds: roundsApply
+      ? { used: roundsUsed, limit: limits.manualRoundLimit, remaining: remaining(limits.manualRoundLimit, roundsUsed), applies: true }
+      : { used: roundsUsed, limit: null, remaining: null, applies: false },
+    competition: { bound, label: u.competitionLabel || null },
+    upgrade: buildUpgradeOffer(entitlement, commercialConfig),
+  };
+}
+
+// ---- Operator grants (MON-002B) ------------------------------------------
+//
+// A PLUS grant takes its numbers and its price from commercial_config, never
+// from the request — that is what stops a crafted call from minting a
+// 500-participant "PLUS" for $0. A MANUAL_GRANT is the deliberate exception
+// (support, testing, promotions) and IS allowed to name its own numbers, so
+// those numbers are the ones that need validating: safe integers, at least
+// 1, and never above the grandfather ceiling this codebase already treats as
+// its explicit "as good as unlimited" number.
+function isValidManualGrantLimits(participantLimit, manualRoundLimit) {
+  const ok = (n) => Number.isSafeInteger(n) && n >= 1;
+  if (!ok(participantLimit) || !ok(manualRoundLimit)) return false;
+  if (participantLimit > GRANDFATHER_CEILING.participantLimit) return false;
+  if (manualRoundLimit > GRANDFATHER_CEILING.manualRoundLimit) return false;
+  return true;
+}
+
 module.exports = {
   DEFAULT_COMMERCIAL_CONFIG,
   GRANDFATHER_CEILING,
@@ -342,4 +479,9 @@ module.exports = {
   resolveEnforcementLimits,
   checkParticipantCapacity,
   checkLifecycleRoundConsumption,
+  grantsFullCompetition,
+  buildUpgradeOffer,
+  summarizePlan,
+  isValidManualGrantLimits,
+  PLAN_LABELS,
 };

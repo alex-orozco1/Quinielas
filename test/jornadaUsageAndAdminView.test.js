@@ -1,10 +1,13 @@
 // AUTO-001 HOTFIX — BUG 3 (jornada free-limit usage) and the Admin ->
 // Jornadas "sees everything" guarantee (BUG 1, admin-management-screen
-// side). getPaymentStatus() closes over SLUG/meta/fetch/ROUTE — too many
-// live dependencies to isolate-eval cleanly, so these are structural
-// checks against the real source (same precedent as prior QA-fix rounds),
-// plus a standalone re-derivation of the exact counting rule to prove the
-// numeric examples from the ticket.
+// side). These are structural checks against the real source (same
+// precedent as prior QA-fix rounds), plus a standalone re-derivation of the
+// exact counting rule to prove the numeric examples from the ticket.
+//
+// MON-002B moved the rule itself: "importing does not consume, publishing
+// does" used to be a browser-side count feeding a browser-side gate, and is
+// now the server's durable lifecycle counter. The structural check below
+// follows it there, which is the only place it can actually be enforced.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -15,18 +18,23 @@ const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.htm
 
 // ---- BUG 3: structural confirmation of the fix ----
 
-test("HOTFIX BUG 3: getPaymentStatus counts only published !== false rounds, not meta.rounds.length directly", () => {
-  const idx = indexSrc.indexOf("async function getPaymentStatus()");
-  assert.ok(idx !== -1);
-  const braceStart = indexSrc.indexOf("{", idx);
-  let depth = 0, i = braceStart;
-  for (; i < indexSrc.length; i++) {
-    if (indexSrc[i] === "{") depth++;
-    else if (indexSrc[i] === "}") { depth--; if (depth === 0) break; }
-  }
-  const body = indexSrc.slice(idx, i + 1);
-  assert.ok(body.includes("meta.rounds.filter(r => r.published !== false).length"), "roundCount must be computed from published rounds only, not meta.rounds.length");
-  assert.ok(!body.includes("const roundCount = meta.rounds.length;"), "the old unconditional count must be gone");
+const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+
+test("HOTFIX BUG 3 (MON-002B): the SERVER consumes lifecycle only for published rounds, never for imported-but-unpublished ones", () => {
+  assert.ok(
+    serverSrc.includes('.filter((r) => r.published !== false && !consumedIds.has(r.id))'),
+    "a round only consumes budget when it is published AND has never been counted before"
+  );
+  // The durable counter, not meta.rounds.length: deleting a round must never
+  // hand budget back, and importing a 17-round calendar must never spend it.
+  assert.ok(serverSrc.includes("entry.lifecycleConsumedRoundIds = [...consumedIds, ...newlyConsumedIds];"));
+  assert.ok(!serverSrc.includes("checkLifecycleRoundConsumption(entry.entitlement, commercialConfig, mergedValue.rounds.length"));
+});
+
+test("HOTFIX BUG 3 (MON-002B): the browser no longer counts rounds for any commercial decision of its own", () => {
+  assert.ok(!indexSrc.includes("getPaymentStatus("), "the browser-side usage count is gone");
+  assert.ok(!indexSrc.includes("meta.rounds.filter(r => r.published !== false).length"),
+    "no client-side published-round tally may drive a paywall any more");
 });
 
 // ---- BUG 3: the exact counting rule, re-derived and checked against the ticket's numeric examples ----

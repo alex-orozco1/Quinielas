@@ -506,10 +506,47 @@ test("CASE P: evaluateCompetitionBinding is pure and read-only -- a provider fai
 
 // ---- CASE E/F: a league-bound quiniela is NOT limited to 7/18 rounds ----
 
-test("CASE E: a FREE quiniela WITH a league is never accidentally capped at the manual 7-round limit", () => {
+// MON-002B REVERSED THIS CASE, deliberately and with a product decision
+// behind it. The rule used to be "a league lifts the round budget", full
+// stop, which meant a FREE quiniela became unlimited the moment its Admin
+// picked a league from a dropdown labelled "sirve para sugerir nombres de
+// equipos". The approved rule is now: "Gratis = 10 personas + 7 jornadas.
+// Plus = 50 personas + torneo completo si existe." A free quiniela may
+// import a whole calendar -- importing costs nothing -- but it still only
+// gets to PUBLISH its plan's rounds.
+test("MON-002B: a FREE quiniela WITH a league is still capped at the FREE round limit -- picking a league is not a way out of the free plan", () => {
   const ent = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
   ent.competitionIdentity = "thesportsdb:4350:2026-2027";
-  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 30, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 30, 1).allowed, false);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 30, 1).reason, "plan_lifecycle_limit_reached");
+  // and the boundary itself is unchanged by the league
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 6, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 7, 1).allowed, false);
+});
+
+test("MON-002B: with NO league, a FREE quiniela hits exactly the same limit -- the league changes nothing for FREE either way", () => {
+  const bare = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  const bound = buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG);
+  bound.competitionIdentity = "thesportsdb:4350:2026-2027";
+  for (const consumed of [0, 3, 6, 7, 8, 100]) {
+    assert.equal(
+      checkLifecycleRoundConsumption(bare, DEFAULT_COMMERCIAL_CONFIG, consumed, 1).allowed,
+      checkLifecycleRoundConsumption(bound, DEFAULT_COMMERCIAL_CONFIG, consumed, 1).allowed,
+      `FREE must behave identically at ${consumed} consumed, league or no league`
+    );
+  }
+});
+
+test("MON-002B: GRANDFATHERED and MANUAL_GRANT keep the whole tournament, like PLUS -- FREE is the only plan that does not", () => {
+  const gf = buildGrandfatheredEntitlement();
+  gf.competitionIdentity = "thesportsdb:4350:2026-2027";
+  assert.equal(checkLifecycleRoundConsumption(gf, DEFAULT_COMMERCIAL_CONFIG, 999, 1).allowed, true);
+  const manual = buildManualGrantEntitlement(undefined, { grantedBy: "platform:x", participantLimit: 20, manualRoundLimit: 5, reason: "soporte" });
+  manual.competitionIdentity = "thesportsdb:4350:2026-2027";
+  assert.equal(checkLifecycleRoundConsumption(manual, DEFAULT_COMMERCIAL_CONFIG, 999, 1).allowed, true);
+  // ...and without a tournament, a manual grant is held to its own number
+  const manualBare = buildManualGrantEntitlement(undefined, { grantedBy: "platform:x", participantLimit: 20, manualRoundLimit: 5, reason: "soporte" });
+  assert.equal(checkLifecycleRoundConsumption(manualBare, DEFAULT_COMMERCIAL_CONFIG, 5, 1).allowed, false);
 });
 
 test("CASE F: a PLUS quiniela WITH a league is never accidentally capped at the manual 18-round limit", () => {
@@ -580,10 +617,13 @@ test("MON-001D: the requested identity is derived server-side from the resolved 
 
 test("CASE Y: imported rounds carry competitionIdentity for auditability, but it lives in owner-writable meta and is explicitly NOT the enforcement authority", () => {
   const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
-  const body = serverSrc.slice(idx, idx + 6000);
+  // Window widened in MON-002B: the handler grew a fail-closed branch for a
+  // per-slug quiniela with no platform_index entry, which pushed the round
+  // stamping further down.
+  const body = serverSrc.slice(idx, idx + 8000);
   assert.ok(body.includes("competitionIdentity: requestedIdentity,"));
   // The enforcement path reads the ENTITLEMENT, never the round's own stamp.
-  assert.ok(body.includes("evaluateCompetitionBinding(bindingEntry.entitlement,"));
+  assert.ok(body.includes("evaluateCompetitionBinding(bindingEntry.entitlement"));
 });
 
 // ---- CASE P (adoption side): a provider failure must never leave a

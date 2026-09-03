@@ -60,9 +60,18 @@ test("the editor card element (#qz-round-form) is exactly where \"Editando jorna
   assert.ok(nearby.includes("Editando jornada ${editingRound.number}"), "the heading shown right after scrolling must reflect the round actually being edited");
 });
 
-test("both entry points for clicking \"Editar\" (blocked-payment branch and normal branch) reuse the same openRoundEditor helper", () => {
+test("clicking \"Editar\" wires through openRoundEditor, and no client-side paywall can gate it", () => {
+  // MON-002B: the second wiring existed only for the legacy blockingStatus
+  // early-return branch, which rendered a red "no puedes crear jornadas"
+  // card and re-wired Editar/Eliminar underneath it. That branch is gone.
   const occurrences = indexSrc.split('addEventListener("click", () => openRoundEditor(body, btn.dataset.editRound))').length - 1;
-  assert.equal(occurrences, 2, "both the blockingStatus early-return branch and the normal branch must wire Editar through the same helper, so the fix applies regardless of payment-block state");
+  assert.equal(occurrences, 1, "one entry point through the shared helper");
+  // The stronger guarantee that replaced it: editing an existing round can
+  // no longer be gated in the browser at all, because the gate does not
+  // exist. Enforcement is the server's, and it does not block edits.
+  assert.ok(!indexSrc.includes("blockingStatus"), "the client-side payment gate must be gone entirely");
+  assert.ok(!indexSrc.includes("getPaymentStatus("), "the legacy payment-status read must be gone entirely");
+  assert.ok(!indexSrc.includes("/api/payment-status"), "the legacy payment-status endpoint must not be called from anywhere");
 });
 
 test("\"Editar\" remains unconditionally visible for every round -- imported/unpublished, published, and legacy alike", () => {

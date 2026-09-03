@@ -169,9 +169,14 @@ test("CASE I: deleteRoundWithRollback disables the trigger button while the dele
   assert.ok(failSlice.includes("btn.disabled = false;"), "must re-enable the button on failure so the admin can retry -- a successful delete removes the row/re-renders instead, no re-enable needed there");
 });
 
-test("both 'Eliminar jornada' entry points (payment-blocked branch and normal branch) reuse the same deleteRoundWithRollback helper", () => {
+test("'Eliminar jornada' has exactly ONE wiring, through deleteRoundWithRollback", () => {
+  // MON-002B: there used to be two identical wirings because the screen had
+  // a second, payment-blocked rendering path that re-wired the few actions
+  // still allowed while blocked. That client-side gate is gone -- it was
+  // never enforced server-side, so it only hid the form from honest people
+  // -- and with it the duplicate wiring. One entry point now, same helper.
   const occurrences = indexSrc.split("deleteRoundWithRollback(btn, btn.dataset.delRound)").length - 1;
-  assert.equal(occurrences, 2, "both entry points must go through the same reliable helper, not duplicate the logic");
+  assert.equal(occurrences, 1, "one entry point, going through the shared helper rather than duplicating the logic");
 });
 
 test("deleteRoundWithRollback keeps the existing confirmation dialog copy unchanged", () => {

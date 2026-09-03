@@ -81,7 +81,22 @@ function stampVersion(doc, storedVersion) {
 // The ONLY fields an admin edits on an index entry, from the platform
 // dashboard. Everything else on the entry is server-owned and must survive a
 // stale admin snapshot untouched.
-const ADMIN_EDITABLE_INDEX_FIELDS = Object.freeze(["name", "paid", "exempt", "customJornadaLimit"]);
+// MON-002B: `paid`, `exempt` and `customJornadaLimit` were removed from this
+// list, and with them
+// the last way a browser could write either one. They belonged to the legacy
+// cobro model (a "jornadas gratis" threshold, a price of $10 x participants,
+// and a bank deposit), and MON-002A established that neither of them granted
+// any actual capacity — ticking "Exenta" changed nothing about the limits a
+// quiniela then hit. What replaces them is a real grant (see
+// applyEntitlementGrant below), which writes an entitlement the enforcement
+// code actually reads. Existing paid/exempt values are left untouched in the
+// stored rows: they are inert history now, not a live signal, and deleting
+// them would destroy the only record of what an operator once decided.
+// customJornadaLimit went the same way: it was the per-quiniela version of
+// the legacy "jornadas gratis" threshold and fed nothing but that same
+// client-side gate. Giving one quiniela a different round budget is now
+// expressed as a MANUAL_GRANT, which enforcement actually honours.
+const ADMIN_EDITABLE_INDEX_FIELDS = Object.freeze(["name"]);
 
 // Server-owned fields, listed for documentation and for the tests to assert
 // against: entitlement + entitlementHistory (what plan this quiniela has),
@@ -150,87 +165,85 @@ function findEntry(index, slug) {
   return entries.find((q) => q && q.slug === slug) || null;
 }
 
-// Marking paid/unpaid together with the payment-log entry.
+// ---- Operator grants (MON-002B) ------------------------------------------
 //
-// WHAT MAKES A PAYMENT EVENT (MON-001F.3). The first version keyed
-// idempotency on the paymentId ALONE, which was wrong: an id is a token the
-// browser makes up, and two dashboard tabs each make up their own. Two tabs
-// both showing alpha as unpaid, both clicking "pagada", produced TWO payment
-// records for ONE unpaid->paid transition — the lock serialized them but
-// both were "valid" under that rule. Worse, an id already used for another
-// quiniela made this one look already-recorded, so it could land paid=true
-// with no record of its own.
+// THE HOLE THIS CLOSES. MON-001 built a complete entitlement model — FREE,
+// PLUS, GRANDFATHERED, MANUAL_GRANT, with frozen snapshots and fail-closed
+// enforcement — and then nothing ever constructed a PLUS. buildPlusEntitlement
+// and buildManualGrantEntitlement existed, were unit-tested, and were never
+// imported by server.js, so in production a quiniela could only ever be FREE
+// or GRANDFATHERED. An organizer who hit the limit had no reachable action,
+// and neither did the operator: the dashboard's own "Pagado" and "Exenta"
+// toggles wrote fields that no enforcement path ever read.
 //
-// The source of truth is now the TRANSITION, read from the locked index:
+// A grant is the one operation that changes what a quiniela is entitled to,
+// so it is deliberately narrow:
 //
-//   wasPaid  wantPaid   meaning
-//   false -> true       a real payment event: record exactly one
-//   true  -> true       no-op: already paid, whoever asked is late, not new
-//   true  -> false      state change only: the payment still happened
-//   false -> false      no-op
+//   PLUS          numbers and price come from commercial_config, read under
+//                 the same transaction. NOTHING is taken from the caller.
+//   MANUAL_GRANT  the deliberate override (support, testing, promotions).
+//                 It may name its own limits, which is exactly why those
+//                 limits are validated before they get here.
+//   FREE          undoing a grant. Returns the quiniela to the live FREE
+//                 numbers rather than deleting its history.
 //
-// A retry after a lost response therefore needs no special case: by the time
-// it arrives the transition has landed, so it reads as true->true and records
-// nothing. And a genuinely new event after an explicit un-mark reads as
-// false->true again, which is correct — that IS a second payment.
-//
-// The paymentId is kept as a second, narrower guard: reaching the
-// false->true branch with an id the log already knows means either a
-// cross-quiniela collision or an id replayed after an un-mark. Both are
-// caller bugs, and both are REFUSED rather than half-applied, so paid=true
-// can never land without its own record.
-//
-// The amount is computed from the state passed in (read under lock), never
-// from the request: this is a money record and the browser's copy of the
-// participant count or the price can be stale.
-function applyPaidToggle({ index, paymentLog, settings, slug, paid, paymentId, now }) {
+// The tournament binding is CARRIED OVER, never reset. Dropping it while
+// granting would hand out a fresh, unbound quiniela on every grant — which
+// is the "one purchase, many tournaments" hole evaluateCompetitionBinding
+// exists to prevent.
+function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, grantedBy, reason, now }) {
   const entry = findEntry(index, slug);
   if (!entry) return { ok: false, error: "not_found" };
+  if (!entitlement || typeof entitlement !== "object") return { ok: false, error: "invalid_grant" };
 
-  const wasPaid = !!entry.paid;
-  const wantPaid = !!paid;
-
-  // No state change and no new event: write nothing at all, so a late second
-  // tab can't even bump the version. `index: null` means "nothing to write".
-  if (wasPaid === wantPaid) {
-    return { ok: true, index: null, paymentLog: null, recorded: false, transitioned: false };
+  // Idempotency is keyed on the grant id recorded in this quiniela's OWN
+  // history. A retried request (lost response, double click, two tabs)
+  // therefore lands as a no-op that writes nothing at all — not even a
+  // version bump — instead of stacking a second identical grant and a second
+  // payment record on top of the first.
+  const history = Array.isArray(entry.entitlementHistory) ? entry.entitlementHistory : [];
+  if (grantId != null && history.some((h) => h && h.grantId != null && h.grantId === grantId)) {
+    return { ok: true, index: null, paymentLog: null, applied: false, recorded: false };
   }
+
+  const at = now || new Date().toISOString();
+  const granted = { ...entitlement };
+  // Carried over from the CURRENT stored entitlement, under lock — not from
+  // anything the caller sent.
+  const currentIdentity = entry.entitlement && entry.entitlement.competitionIdentity;
+  if (currentIdentity && !granted.competitionIdentity) granted.competitionIdentity = currentIdentity;
 
   const nextIndex = JSON.parse(JSON.stringify(index));
-  findEntry(nextIndex, slug).paid = wantPaid;
+  const nextEntry = findEntry(nextIndex, slug);
+  nextEntry.entitlement = granted;
+  nextEntry.entitlementHistory = Array.isArray(nextEntry.entitlementHistory) ? nextEntry.entitlementHistory : [];
+  nextEntry.entitlementHistory.push({
+    action: "grant", at, grantId: grantId != null ? grantId : null,
+    grantedBy: grantedBy || granted.grantedBy || null,
+    reason: reason || granted.reason || null,
+    entitlement: granted,
+  });
   const stampedIndex = stampVersion(nextIndex, readStoredVersion(index));
 
-  if (!wantPaid) {
-    // true -> false. The payment did happen; deleting its record would be
-    // rewriting history rather than correcting state.
-    return { ok: true, index: stampedIndex, paymentLog: null, recorded: false, transitioned: true };
+  // Money is recorded only for a PLUS grant, and only for the amount that
+  // was actually snapshotted onto the entitlement — never a price the caller
+  // sent, and never the legacy "price x participants" arithmetic.
+  if (granted.plan !== "PLUS" || !Number.isFinite(granted.pricePaidMXN)) {
+    return { ok: true, index: stampedIndex, paymentLog: null, applied: true, recorded: false };
   }
-
-  // false -> true: the one case that creates a payment record.
   const log = paymentLog && typeof paymentLog === "object" ? paymentLog : { payments: [] };
   const payments = Array.isArray(log.payments) ? log.payments.slice() : [];
-  if (payments.some((p) => p && p.id != null && p.id === paymentId)) {
-    // Refuse outright: writing the flag while skipping the record is exactly
-    // the incoherence this endpoint exists to prevent.
-    return { ok: false, error: "payment_id_conflict" };
-  }
-
-  const price = settings && Number.isFinite(settings.pricePerParticipant) ? settings.pricePerParticipant : 10;
-  const count = Number.isFinite(entry.participantCount) ? entry.participantCount : 0;
   payments.push({
-    id: paymentId,
-    slug: entry.slug,
-    name: entry.name || "",
-    amount: price * count,
-    date: now || new Date().toISOString(),
+    id: grantId, slug: entry.slug, name: entry.name || "",
+    amount: granted.pricePaidMXN, plan: "PLUS", date: at,
   });
-  return { ok: true, index: stampedIndex, paymentLog: { ...log, payments }, recorded: true, transitioned: true };
+  return { ok: true, index: stampedIndex, paymentLog: { ...log, payments }, applied: true, recorded: true };
 }
 
-// Renaming / re-securing / re-limiting a quiniela: meta and platform_index
-// change together or not at all. The owner password arrives already hashed —
+// Renaming / re-securing a quiniela: meta and platform_index change together
+// or not at all. The owner password arrives already hashed —
 // hashing is server.js's job, this stays pure.
-function applyQuinielaSettings({ index, meta, slug, name, hashedOwnerPassword, customJornadaLimit }) {
+function applyQuinielaSettings({ index, meta, slug, name, hashedOwnerPassword }) {
   const entry = findEntry(index, slug);
   if (!entry || !meta || typeof meta !== "object") return { ok: false, error: "not_found" };
 
@@ -248,8 +261,6 @@ function applyQuinielaSettings({ index, meta, slug, name, hashedOwnerPassword, c
     if (!nextMeta.settings) nextMeta.settings = {};
     nextMeta.settings.ownerPassword = hashedOwnerPassword;
   }
-  if (customJornadaLimit !== undefined) nextEntry.customJornadaLimit = customJornadaLimit;
-
   return { ok: true, index: stampVersion(nextIndex, readStoredVersion(index)), meta: nextMeta };
 }
 
@@ -259,7 +270,7 @@ module.exports = {
   isFreshWrite,
   stampVersion,
   mergePlatformIndex,
-  applyPaidToggle,
+  applyEntitlementGrant,
   applyQuinielaSettings,
   ADMIN_EDITABLE_INDEX_FIELDS,
   SERVER_OWNED_INDEX_FIELDS,
