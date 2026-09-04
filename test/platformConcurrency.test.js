@@ -20,7 +20,7 @@ const path = require("node:path");
 
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion,
-  mergePlatformIndex, applyEntitlementGrant, applyQuinielaSettings,
+  mergePlatformIndex, applyEntitlementGrant, findPurchaseForScope, applyQuinielaSettings,
   ADMIN_EDITABLE_INDEX_FIELDS, SERVER_OWNED_INDEX_FIELDS,
 } = require("../platformState");
 const {
@@ -450,7 +450,7 @@ async function grant(store, slug, body, { cfg = DEFAULT_COMMERCIAL_CONFIG, now =
       if (r.paymentLog) writeLog(r.paymentLog);
       if (r.index) writeIndex(r.index);
       return {
-        status: 200, applied: r.applied, recorded: r.recorded,
+        status: 200, applied: r.applied, recorded: r.recorded, reason: r.reason || null,
         indexVersion: r.index ? r.index.version : readStoredVersion(index),
       };
     }));
@@ -569,17 +569,135 @@ test("GRANT: FREE -> FREE is a no-op too", async () => {
   assert.equal(JSON.stringify(store.raw("platform_index")), before);
 });
 
-test("GRANT: revoking to FREE and granting again IS a second, deliberate purchase", async () => {
-  // The one way back to charging twice, and it takes two explicit operator
-  // decisions, both recorded.
+test("PURCHASE HISTORY 2: revoking to FREE and granting PLUS again does NOT charge a second time", async () => {
+  // THIS TEST ALSO USED TO ASSERT THE OPPOSITE. The previous version read
+  // only the CURRENT entitlement, so PLUS -> FREE -> PLUS looked like a fresh
+  // FREE -> PLUS and charged again; the comment called it "a deliberate
+  // re-sale". An administrative revoke does not un-buy a tournament, and
+  // refunds and renewal do not exist yet to justify a second charge. The
+  // purchase history takes part in the decision now.
   const store = grantStore();
   await grant(store, "alpha", { plan: "PLUS", grantId: "grant-cycle-00001" });
-  await grant(store, "alpha", { plan: "FREE", grantId: "grant-cycle-00002", reason: "reembolso" });
-  const resold = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-cycle-00003" });
-  assert.equal(resold.applied, true);
-  assert.equal(resold.recorded, true);
-  assert.equal(paymentsOf(store).length, 2);
-  assert.equal(entryOf(store, "alpha").entitlementHistory.length, 3, "every decision is auditable");
+  await grant(store, "alpha", { plan: "FREE", grantId: "grant-cycle-00002", reason: "revoke por error" });
+  assert.equal(entryOf(store, "alpha").entitlement.plan, "FREE", "the revoke does change the current plan");
+
+  const back = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-cycle-00003" });
+  assert.equal(back.status, 200);
+  assert.equal(back.applied, true, "the coverage comes back");
+  assert.equal(back.recorded, false, "but nothing is charged");
+  assert.equal(back.reason, "reactivated_existing_purchase");
+  assert.equal(paymentsOf(store).length, 1, "still exactly one payment for this tournament");
+  assert.equal(entryOf(store, "alpha").entitlement.plan, "PLUS");
+});
+
+test("PURCHASE HISTORY 3: a price change between the revoke and the reactivation cannot fabricate a second purchase", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-repr-000001" });
+  const sold = JSON.parse(JSON.stringify(entryOf(store, "alpha").entitlement));
+  await grant(store, "alpha", { plan: "FREE", grantId: "grant-repr-000002", reason: "revoke" });
+
+  // Price up AND limits down, then reactivate.
+  const changed = { ...DEFAULT_COMMERCIAL_CONFIG, version: 5, plus: { participantLimit: 20, manualRoundLimit: 9, priceMXN: 299 } };
+  const back = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-repr-000003" }, { cfg: changed });
+  assert.equal(back.recorded, false);
+  const now = entryOf(store, "alpha").entitlement;
+  assert.equal(now.participantLimit, sold.participantLimit, "the restored coverage is the one that was sold");
+  assert.equal(now.manualRoundLimit, sold.manualRoundLimit);
+  assert.equal(now.pricePaidMXN, 199, "not re-snapshotted at the new price");
+  assert.equal(paymentsOf(store).length, 1);
+});
+
+test("PURCHASE HISTORY 4: revoke and reactivation are both auditable, and the purchase is marked as such", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-audit-00001", reason: "pago recibido" });
+  await grant(store, "alpha", { plan: "FREE", grantId: "grant-audit-00002", reason: "revoke por error" });
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-audit-00003", reason: "restaurar" });
+
+  const h = entryOf(store, "alpha").entitlementHistory;
+  assert.deepEqual(h.map((x) => x.action), ["grant", "revoke", "reactivate"], "the sequence reads on its own");
+  assert.equal(h[0].purchase, true, "only the first one is a purchase");
+  assert.equal(h[1].purchase, false);
+  assert.equal(h[2].purchase, undefined, "a reactivation records no money and claims no purchase");
+  h.forEach((x) => {
+    assert.ok(x.at, "every entry is timestamped");
+    assert.ok(x.grantId, "and carries the id that caused it");
+    assert.equal(x.grantedBy, "platform");
+  });
+  assert.equal(h[1].reason, "revoke por error");
+});
+
+test("PURCHASE HISTORY 9: a MANUAL_GRANT in between does not make the purchase disappear", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-mid-0000001" });
+  await grant(store, "alpha", { plan: "MANUAL_GRANT", grantId: "grant-mid-0000002", participantLimit: 30, manualRoundLimit: 15, reason: "soporte" });
+  assert.equal(entryOf(store, "alpha").entitlement.plan, "MANUAL_GRANT");
+
+  const back = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-mid-0000003" });
+  assert.equal(back.recorded, false, "the tournament was already bought, whatever happened in between");
+  assert.equal(back.reason, "reactivated_existing_purchase");
+  assert.equal(paymentsOf(store).length, 1);
+  assert.equal(entryOf(store, "alpha").entitlement.pricePaidMXN, 199);
+});
+
+test("PURCHASE HISTORY: a purchase in a DIFFERENT scope does not cover this one", async () => {
+  // The shape MON-002C will use. Today a grant always carries the current
+  // binding over, so scopes never differ on their own — this drives it
+  // directly to prove the question is asked per tournament, not per quiniela.
+  const store = grantStore();
+  await store.transaction("platform_index", async ({ current, write }) => {
+    current.quinielas[0].entitlement.competitionIdentity = "4350:2026-2027";
+    write(current);
+  });
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-scope-000001" });
+  assert.equal(paymentsOf(store).length, 1);
+  assert.equal(paymentsOf(store)[0].competitionIdentity, "4350:2026-2027", "the log says which tournament it bought");
+
+  const history = entryOf(store, "alpha").entitlementHistory;
+  assert.ok(findPurchaseForScope(history, "4350:2026-2027"), "covered for the tournament it paid for");
+  assert.equal(findPurchaseForScope(history, "4350:2027-2028"), null, "and NOT for a different one");
+  assert.equal(findPurchaseForScope(history, null), null);
+});
+
+test("PURCHASE HISTORY: a legacy row without the `purchase` marker still counts as bought", async () => {
+  // Rows written before the marker existed carry the price on the
+  // entitlement, which means the same thing. Missing it must not let a
+  // quiniela be charged a second time.
+  const store = createStore({
+    platform_index: { version: 1, quinielas: [{
+      slug: "old", name: "Old",
+      entitlement: buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG),
+      entitlementHistory: [{ action: "grant", at: "2026-01-01T00:00:00.000Z", grantId: "viejo-000001", entitlement: buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, "2026-01-01T00:00:00.000Z") }],
+    }] },
+    platform_payment_log: { version: 1, payments: [] },
+    "quiniela:old:meta": { groupName: "Old", settings: {}, rounds: [] },
+  });
+  const r = await grant(store, "old", { plan: "PLUS", grantId: "grant-legacy-00001" });
+  assert.equal(r.applied, true);
+  assert.equal(r.recorded, false, "already bought, even without the marker");
+  assert.equal(paymentsOf(store).length, 0);
+});
+
+test("PURCHASE HISTORY 10: entitlement and payment log never disagree, through any sequence", async () => {
+  const store = grantStore();
+  const sequence = [
+    { plan: "PLUS", grantId: "grant-seq-00000001" },
+    { plan: "PLUS", grantId: "grant-seq-00000002" },
+    { plan: "FREE", grantId: "grant-seq-00000003", reason: "r" },
+    { plan: "MANUAL_GRANT", grantId: "grant-seq-00000004", participantLimit: 30, manualRoundLimit: 9, reason: "s" },
+    { plan: "PLUS", grantId: "grant-seq-00000005" },
+    { plan: "FREE", grantId: "grant-seq-00000006", reason: "r2" },
+    { plan: "PLUS", grantId: "grant-seq-00000007" },
+    { plan: "PLUS", grantId: "grant-seq-00000007" },
+  ];
+  for (const step of sequence) await grant(store, "alpha", step);
+
+  const payments = paymentsOf(store).filter((p) => p.slug === "alpha");
+  assert.equal(payments.length, 1, "one tournament, one payment, whatever the operator did");
+  const history = entryOf(store, "alpha").entitlementHistory;
+  assert.equal(history.filter((h) => h.purchase === true).length, 1, "and exactly one purchase event");
+  assert.equal(entryOf(store, "alpha").entitlement.plan, "PLUS");
+  // The coverage in force is the one that was paid for.
+  assert.equal(entryOf(store, "alpha").entitlement.pricePaidMXN, payments[0].amount);
 });
 
 test("GRANT: a MANUAL_GRANT may be re-issued to adjust its numbers, and still records no money", async () => {
@@ -1187,4 +1305,46 @@ test("GRANT: the rev/version guards are concurrency controls, not authorisation"
   assert.ok(tier.trimEnd().endsWith("return null;\n}"), "anyone else gets no tier at all");
   const granting = blockFrom(serverSrc, 'app.post("/api/platform/quinielas/:slug/entitlement"');
   assert.ok(granting.includes("verifyPassword(providedPlatformAuth, platformHash)"));
+});
+
+test("PURCHASE HISTORY 11: the history is append-only and server-owned, so a purchase cannot be edited away", () => {
+  // The decision rests on the history, so it matters that nothing can remove
+  // an entry from it: it is in the server-owned list (a browser's snapshot
+  // never supplies it), and no code path anywhere assigns it a shorter array.
+  assert.ok(SERVER_OWNED_INDEX_FIELDS.includes("entitlementHistory"));
+  assert.ok(!ADMIN_EDITABLE_INDEX_FIELDS.includes("entitlementHistory"));
+  const state = fs.readFileSync(path.join(__dirname, "..", "platformState.js"), "utf8");
+  assert.ok(!/entitlementHistory\s*=\s*\[\]/.test(state.slice(state.indexOf("function applyEntitlementGrant"))),
+    "the grant path must never reset the history");
+  assert.ok(!/entitlementHistory\.(splice|shift|pop|filter)/.test(state), "and never shorten it");
+  assert.ok(!/entitlementHistory\.(splice|shift|pop|filter)/.test(serverSrc));
+});
+
+test("PURCHASE HISTORY: wiping the PAYMENT LOG does not re-enable a charge", async () => {
+  // The payment log is writable through the generic platform key, so it must
+  // not be the thing the economic decision depends on. It is the money
+  // record; the entitlement history is the authority.
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-wipe-00001" });
+  await grant(store, "alpha", { plan: "FREE", grantId: "grant-wipe-00002", reason: "revoke" });
+  store.seed("platform_payment_log", { version: 9, payments: [] });   // the log is emptied
+
+  const back = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-wipe-00003" });
+  assert.equal(back.recorded, false, "still no second charge");
+  assert.equal(back.reason, "reactivated_existing_purchase");
+  assert.equal(paymentsOf(store).length, 0, "and no payment is invented to replace the wiped one");
+});
+
+test("PURCHASE HISTORY: two concurrent reactivations restore once and charge nothing", async () => {
+  const store = grantStore();
+  await grant(store, "alpha", { plan: "PLUS", grantId: "grant-conc-00001" });
+  await grant(store, "alpha", { plan: "FREE", grantId: "grant-conc-00002", reason: "revoke" });
+  const [a, b] = await Promise.all([
+    grant(store, "alpha", { plan: "PLUS", grantId: "grant-conc-00003" }),
+    grant(store, "alpha", { plan: "PLUS", grantId: "grant-conc-00004" }),
+  ]);
+  assert.equal([a, b].filter((r) => r.applied).length, 1, "one reactivates, the other finds it already done");
+  assert.equal([a, b].filter((r) => r.recorded).length, 0);
+  assert.equal(paymentsOf(store).length, 1);
+  assert.equal(entryOf(store, "alpha").entitlement.plan, "PLUS");
 });

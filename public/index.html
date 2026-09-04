@@ -7240,7 +7240,14 @@
       const grantId = btn.dataset.grantId || (btn.dataset.grantId = newGrantId());
       const r = await grantEntitlement(slug, { ...payload, grantId });
       if(r.ok){
-        toast(r.applied ? "✅ Listo, el plan quedó actualizado." : "Ese cambio ya estaba aplicado.");
+        // Tres desenlaces distintos, tres mensajes distintos. El de
+        // reactivación importa: el operador tiene que saber que NO se volvió
+        // a cobrar, porque ese torneo ya estaba pagado.
+        toast(!r.applied
+          ? "Ese cambio ya estaba aplicado."
+          : (r.reason === "reactivated_existing_purchase"
+              ? "✅ Se restauró el Plus que ya estaba pagado para este torneo. No se cobró de nuevo."
+              : "✅ Listo, el plan quedó actualizado."));
         renderPlatformDashboard();
         return;
       }

@@ -2044,6 +2044,10 @@ app.post("/api/platform/quinielas/:slug/entitlement", async (req, res) => {
     await client.query("COMMIT");
     res.json({
       ok: true, plan, applied: result.applied, recorded: result.recorded,
+      // Tells the panel WHICH of the three outcomes happened — granted,
+      // already on the plan, or purchased coverage restored — so it can say
+      // something true instead of one message for all of them.
+      reason: result.reason || null,
       indexVersion: result.index ? result.index.version : readStoredVersion(idx),
     });
   } catch (err) {

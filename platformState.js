@@ -191,6 +191,31 @@ function findEntry(index, slug) {
 // granting would hand out a fresh, unbound quiniela on every grant — which
 // is the "one purchase, many tournaments" hole evaluateCompetitionBinding
 // exists to prevent.
+// The purchase history for one scope: the PLUS entitlement this quiniela was
+// actually sold for that tournament, or null.
+//
+// A revoke appends a FREE entry but never removes the PLUS one, and a
+// MANUAL_GRANT in between does not either — which is the point: the history is
+// append-only, so "was this scope ever bought" survives anything an operator
+// does to the CURRENT entitlement.
+//
+// `purchase: true` is stamped on entries this module records a payment for.
+// The pricePaidMXN fallback is for rows written before that marker existed;
+// both mean the same thing, and a PLUS entitlement carrying a price it was
+// sold at is exactly what a purchase is.
+function findPurchaseForScope(history, scope) {
+  const entries = Array.isArray(history) ? history : [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const h = entries[i];
+    const ent = h && h.entitlement;
+    if (!ent || ent.plan !== "PLUS") continue;
+    if (!(h.purchase === true || Number.isFinite(ent.pricePaidMXN))) continue;
+    if ((ent.competitionIdentity || null) !== (scope || null)) continue;
+    return ent;
+  }
+  return null;
+}
+
 function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, grantedBy, reason, now }) {
   const entry = findEntry(index, slug);
   if (!entry) return { ok: false, error: "not_found" };
@@ -243,11 +268,9 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   // and this comparison is written out in full so that ticket has the right
   // shape to change rather than a hidden assumption to discover.
   //
-  // The one way back to a second purchase is explicit: an operator revokes to
-  // FREE and grants again. That is a correction or a re-sale someone chose,
-  // recorded in the history, not a double charge nobody asked for.
   const currentPlan = entry.entitlement && !entry.entitlement.revoked ? entry.entitlement.plan : null;
-  const sameScope = (currentIdentity || null) === (granted.competitionIdentity || null);
+  const scope = granted.competitionIdentity || null;
+  const sameScope = (currentIdentity || null) === scope;
   if (currentPlan === granted.plan && sameScope && granted.plan !== "MANUAL_GRANT") {
     // MANUAL_GRANT is excluded on purpose: re-issuing one is how an operator
     // ADJUSTS the numbers on an override, and it never records money, so it
@@ -255,14 +278,72 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
     return { ok: true, index: null, paymentLog: null, applied: false, recorded: false, reason: "already_on_plan" };
   }
 
+  // ---- a revoke does not un-buy the tournament (MON-002B QA fix 2) -------
+  //
+  // The rule above reads only the CURRENT entitlement, and that left one way
+  // back to charging twice for the same tournament:
+  //
+  //   FREE -> PLUS     a purchase, recorded
+  //   PLUS -> FREE     an administrative revoke
+  //   FREE -> PLUS     ...which looks like a fresh purchase, and charged again
+  //
+  // The first version of this called that "a deliberate re-sale". It is not:
+  // Plus is one payment per quiniela per tournament, and an operator undoing
+  // a mistake does not erase the economic fact that this scope was already
+  // paid for. Refunds, credits and renewal are MON-003's and MON-002C's, and
+  // none of them exist yet to justify a second charge.
+  //
+  // So the PURCHASE HISTORY takes part in the decision, not just the current
+  // entitlement. Granting PLUS to a scope that has already been bought is a
+  // REACTIVATION: the coverage that was purchased is restored exactly as it
+  // was sold — the original snapshot, with its original numbers and its
+  // original price — and NO new payment is recorded.
+  //
+  // Restoring rather than refusing is the simpler and kinder of the two
+  // options: an operator who revoked by accident wants the coverage back,
+  // and there is no other action in the product that would give it to them.
+  // Rebuilding the entitlement from today's config instead of restoring the
+  // stored one would also let a price or limit change between the revoke and
+  // the reactivation quietly alter what someone already paid for.
+  //
+  // A genuinely NEW tournament is not assumed here: it would be a different
+  // scope, findPurchaseForScope would find nothing, and it would be a real
+  // purchase. Which identity counts as a new tournament is MON-002C's to
+  // decide — this only has to ask the question in the right shape.
+  if (granted.plan === "PLUS") {
+    const purchase = findPurchaseForScope(history, scope);
+    if (purchase) {
+      const restored = { ...purchase, revoked: false };
+      const nextIdx = JSON.parse(JSON.stringify(index));
+      const nextEnt = findEntry(nextIdx, slug);
+      nextEnt.entitlement = restored;
+      nextEnt.entitlementHistory = Array.isArray(nextEnt.entitlementHistory) ? nextEnt.entitlementHistory : [];
+      nextEnt.entitlementHistory.push({
+        action: "reactivate", at, grantId: grantId != null ? grantId : null,
+        grantedBy: grantedBy || "platform",
+        reason: reason || "Se restauró la cobertura Plus ya pagada para este torneo.",
+        entitlement: restored,
+      });
+      return {
+        ok: true, index: stampVersion(nextIdx, readStoredVersion(index)), paymentLog: null,
+        applied: true, recorded: false, reason: "reactivated_existing_purchase",
+      };
+    }
+  }
+
   const nextIndex = JSON.parse(JSON.stringify(index));
   const nextEntry = findEntry(nextIndex, slug);
   nextEntry.entitlement = granted;
   nextEntry.entitlementHistory = Array.isArray(nextEntry.entitlementHistory) ? nextEntry.entitlementHistory : [];
+  // Named so an auditor can read the sequence without inferring it from the
+  // entitlement's own fields.
+  const isRevoke = granted.plan === "FREE" && granted.source === "platform_revoke";
+  const willRecordPayment = granted.plan === "PLUS" && Number.isFinite(granted.pricePaidMXN);
   nextEntry.entitlementHistory.push({
-    action: "grant", at, grantId: grantId != null ? grantId : null,
+    action: isRevoke ? "revoke" : "grant", at, grantId: grantId != null ? grantId : null,
     grantedBy: grantedBy || granted.grantedBy || null,
     reason: reason || granted.reason || null,
+    purchase: willRecordPayment,
     entitlement: granted,
   });
   const stampedIndex = stampVersion(nextIndex, readStoredVersion(index));
@@ -287,6 +368,9 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   payments.push({
     id: grantId, slug: entry.slug, name: entry.name || "",
     amount: granted.pricePaidMXN, plan: "PLUS", date: at,
+    // Which tournament this bought, so the log can be audited on its own
+    // without joining back to the index.
+    competitionIdentity: granted.competitionIdentity || null,
   });
   return { ok: true, index: stampedIndex, paymentLog: { ...log, payments }, applied: true, recorded: true };
 }
@@ -322,6 +406,7 @@ module.exports = {
   stampVersion,
   mergePlatformIndex,
   applyEntitlementGrant,
+  findPurchaseForScope,
   applyQuinielaSettings,
   ADMIN_EDITABLE_INDEX_FIELDS,
   SERVER_OWNED_INDEX_FIELDS,
