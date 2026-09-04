@@ -15,12 +15,17 @@ const {
   DEFAULT_COMMERCIAL_CONFIG, isCommercialConfigValid, computeCompetitionIdentity,
   evaluateCompetitionBinding,
   buildFreeEntitlement, buildGrandfatheredEntitlement,
+  buildPlusEntitlement, buildManualGrantEntitlement,
   checkParticipantCapacity, checkLifecycleRoundConsumption,
+  summarizePlan, buildUpgradeOffer, isValidManualGrantLimits,
 } = require("./planLimits");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
-  applyPaidToggle, applyQuinielaSettings,
+  applyEntitlementGrant, applyQuinielaSettings,
 } = require("./platformState");
+const {
+  readParticipantsRevision, readParticipantRev, mergeParticipants, stampMetaRevisions,
+} = require("./metaParticipants");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
@@ -454,8 +459,18 @@ function requestSelfParticipantId(req, slug, value) {
   const found = value.participants.find((p) => isAuthenticatedAsParticipantReq(req, slug, p));
   return found ? found.id : null;
 }
-function stripPlatformSecrets(value) {
+// MON-002B: a whitelist, not a blacklist. This used to return the whole row
+// minus the password, to anybody, with no authentication — which meant
+// depositInfo went out too: the platform's own bank, CLABE and account
+// holder, readable by anyone who asked, with the slugs to ask about
+// available from the public platform_index projection right next door.
+// Nothing in platform_settings is public any more, so the public shape is
+// empty and stays empty as fields are added; the dashboard reads the real
+// row with the platform password, as it should always have.
+function stripPlatformSecrets(value, isPlatformAuthed) {
+  if (!isPlatformAuthed) return {};
   const clone = JSON.parse(JSON.stringify(value));
+  // The password hash never leaves the server, authenticated or not.
   if ("dashboardPassword" in clone) delete clone.dashboardPassword;
   return clone;
 }
@@ -483,6 +498,16 @@ function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, 
   return null;
 }
 
+// { participantId: rev } — small enough to hand back on every write (a
+// quiniela tops out at 50 people) and it saves the browser a refetch.
+function participantRevMap(doc) {
+  const out = {};
+  (Array.isArray(doc && doc.participants) ? doc.participants : []).forEach((p) => {
+    if (p && p.id != null) out[p.id] = readParticipantRev(p);
+  });
+  return out;
+}
+
 function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   const merged = JSON.parse(JSON.stringify(newValue));
   const oldSettings = (oldValue && oldValue.settings) || null;
@@ -508,6 +533,16 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   } else if (!isHashed(incomingPw)) {
     merged.settings.ownerPassword = hashPassword(incomingPw);
   }
+
+  // MON-002B: the participant LIST no longer comes from the request as-is.
+  // mergeParticipants() decides membership against the row that is actually
+  // stored (read under lock by the caller), so a writer working from a stale
+  // snapshot can no longer delete someone who registered in the meantime —
+  // see metaParticipants.js for the reproduction. Per-participant field
+  // protection below is unchanged and still applies to whatever survives
+  // that merge.
+  const participantMerge = mergeParticipants(oldValue, merged);
+  merged.participants = participantMerge.participants;
 
   const oldParticipants = (oldValue && Array.isArray(oldValue.participants)) ? oldValue.participants : [];
   const oldById = {};
@@ -547,7 +582,16 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
       }
     });
   }
-  return merged;
+  // Returns the value to store PLUS what the merge had to do, so the caller
+  // can tell the Admin their tab was behind instead of quietly disagreeing
+  // with them. The stored revision is computed from the merge result, never
+  // taken from the request — the incoming one was only ever a claim about
+  // what the writer had seen. Nothing about the merge itself is persisted.
+  return {
+    value: stampMetaRevisions(merged, oldValue),
+    participantsRestored: participantMerge.restored,
+    participantsRefreshed: participantMerge.refreshed,
+  };
 }
 
 function mergeProtectedPlatformFields(oldValue, newValue) {
@@ -760,7 +804,9 @@ app.get("/api/kv/:key", async (req, res) => {
       value = stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId);
     } else if (info.kind === "platform") {
       if (req.params.key === "platform_settings") {
-        value = stripPlatformSecrets(value);
+        const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+        const platformHash = await getPlatformHash();
+        value = stripPlatformSecrets(value, verifyPassword(providedPlatformAuth, platformHash));
       } else if (req.params.key === "platform_index") {
         const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
         const platformHash = await getPlatformHash();
@@ -907,12 +953,16 @@ app.post("/api/submit-bet-answer", async (req, res) => {
           return res.status(403).json({ error: "bet_locked" });
         }
       }
+      // Same reason as set-pin: this changes one participant's fields, so it
+      // has to advance that participant's revision.
+      const beforeAnswer = JSON.parse(JSON.stringify(value));
       if (!participant.customBetAnswers) participant.customBetAnswers = {};
       const prevCorrect = participant.customBetAnswers[betId] ? participant.customBetAnswers[betId].correct : null;
       participant.customBetAnswers[betId] = { guess: cleanGuess, correct: prevCorrect };
-      await putRow(metaKey, value, client);
+      const storedAfterAnswer = stampMetaRevisions(value, beforeAnswer);
+      await putRow(metaKey, storedAfterAnswer, client);
       await client.query("COMMIT");
-      res.json({ ok: true });
+      res.json({ ok: true, participantRevs: participantRevMap(storedAfterAnswer) });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;
@@ -1047,7 +1097,8 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(403).json({ error: "unauthorized" });
         }
-        const mergedValue = mergeProtectedMetaFields(oldValue, value, authTier);
+        const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier);
+        const mergedValue = metaMerge.value;
         const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
         if (!roundsCheck.ok) {
           await client.query("ROLLBACK");
@@ -1135,7 +1186,15 @@ app.post("/api/kv/:key", async (req, res) => {
             const check = checkParticipantCapacity(entry.entitlement, commercialConfig, oldParticipantCount, newParticipantCount - oldParticipantCount);
             if (!check.allowed) {
               await client.query("ROLLBACK");
-              return res.status(402).json({ error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit });
+              // MON-002B: the rejection carries everything the paywall needs
+              // to render itself — what was hit, and what Plus would give
+              // instead. Without it the browser would have to fetch the plan
+              // separately, which is both a second round trip and a window in
+              // which the two answers can disagree.
+              return res.status(402).json({
+                error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit,
+                upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig),
+              });
             }
           }
           // Durable lifecycle: count only round IDs that (a) are
@@ -1157,7 +1216,10 @@ app.post("/api/kv/:key", async (req, res) => {
             const check = checkLifecycleRoundConsumption(entry.entitlement, commercialConfig, currentConsumed, newlyConsumedIds.length);
             if (!check.allowed) {
               await client.query("ROLLBACK");
-              return res.status(402).json({ error: check.reason, limitType: "rounds", plan: check.plan, limit: check.limit });
+              return res.status(402).json({
+                error: check.reason, limitType: "rounds", plan: check.plan, limit: check.limit,
+                upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig),
+              });
             }
           }
 
@@ -1179,7 +1241,24 @@ app.post("/api/kv/:key", async (req, res) => {
 
         await putRow(info.metaKey, mergedValue, client);
         await client.query("COMMIT");
-        return res.json({ key: req.params.key, ok: true });
+        // participantsRevision goes back so the browser's copy stays current
+        // and its NEXT write is judged fresh; participantsRestored tells it
+        // that entries it did not know about were kept, which is its cue to
+        // reload rather than keep editing a list it has already been shown to
+        // be behind on.
+        return res.json({
+          key: req.params.key, ok: true,
+          participantsRevision: readParticipantsRevision(mergedValue),
+          participantsRestored: metaMerge.participantsRestored,
+          // Fields this write claimed for people it had not seen the current
+          // state of. The stored values won; saying so is what keeps this
+          // from being a silent loss.
+          participantsRefreshed: metaMerge.participantsRefreshed,
+          // The revs this write produced, so the tab that made it stays
+          // current for its OWN next save instead of being judged stale
+          // against the very state it just created.
+          participantRevs: participantRevMap(mergedValue),
+        });
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
         throw err;
@@ -1355,11 +1434,17 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(403).json({ error: "wrong_current_pin" });
       }
+      // MON-002B QA fix: the snapshot is taken BEFORE the change so the
+      // revision stamp can see it. Without advancing this participant's rev,
+      // an Admin tab loaded before the reset would still look fresh, and its
+      // next ordinary save would write the OLD pin straight back over it.
+      const beforePinChange = JSON.parse(JSON.stringify(value));
       participant.pin = hashPassword(newPin);
-      await putRow(metaKey, value, client);
+      const storedAfterPin = stampMetaRevisions(value, beforePinChange);
+      await putRow(metaKey, storedAfterPin, client);
       await client.query("COMMIT");
       issueSessionCookie(res, slug, participant);
-      res.json({ ok: true });
+      res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;
@@ -1478,19 +1563,31 @@ app.post("/api/self-register", async (req, res) => {
       const check = checkParticipantCapacity(entry.entitlement, commercialConfig, value.participants.length, 1);
       if (!check.allowed) {
         await client.query("ROLLBACK");
-        return res.status(402).json({ error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit });
+        // MON-002B: deliberately the BARE code, with no plan name, no limit
+        // and no upgrade block. This endpoint answers a participant, and
+        // whether the organizer should pay QRACKS is not a participant's
+        // business — they are told the quiniela is full and to talk to the
+        // organizer, which is all they can act on. Every other capacity
+        // rejection in this file is Admin-facing and does carry the details.
+        return res.status(402).json({ error: check.reason });
       }
     }
     const newParticipant = {
       id: "p_" + crypto.randomBytes(9).toString("hex"),
       name: cleanName, isAdmin: false, paid: false, pin: hashPassword(pin)
     };
-    value.participants.push(newParticipant);
+    // MON-002B: this write CHANGES the membership, so it advances the
+    // revision — which is precisely what later marks an Admin tab loaded
+    // before this moment as stale, so that tab's next save keeps this person
+    // instead of overwriting them away (see metaParticipants.js).
+    const beforeRegistration = { participants: value.participants, participantsRevision: readParticipantsRevision(value) };
+    value.participants = value.participants.concat([newParticipant]);
     if (entry) {
       entry.participantCount = value.participants.length;
       await putRow("platform_index", platformIdx, client);
     }
-    await putRow(metaKey, value, client);
+    const storedAfterRegistration = stampMetaRevisions(value, beforeRegistration);
+    await putRow(metaKey, storedAfterRegistration, client);
     await client.query("COMMIT");
     // MON-001C fix #3: the session cookie's quiniela identity must be the
     // SERVER-DERIVED, validated derivedSlug — never the client-supplied
@@ -1514,30 +1611,71 @@ app.post("/api/self-register", async (req, res) => {
   }
 });
 
-// A quiniela's own payment status (used to show/hide the "you owe a payment"
-// banner) needs a few platform_index/platform_settings fields, but the admin
-// asking shouldn't need the platform password just to see their own status.
-// This hands back only the one quiniela's own fields — nothing about anyone
-// else's contact info, exemptions, or overrides.
-app.get("/api/payment-status/:slug", async (req, res) => {
+// ---------- the plan a quiniela is actually on (MON-002B) ----------
+//
+// The one place the Admin's own screens read their plan from. Before this
+// endpoint existed there was NO way for an organizer to see what plan they
+// were on, how much of it they had used, or what upgrading would give them —
+// the entire commercial model was invisible until it rejected an action, and
+// the only thing that had ever been visible was a legacy banner quoting a
+// different threshold and a different price than the server enforced.
+//
+// Backend is the single source of truth here, deliberately: the response is
+// shaped so the browser can render the plan line, the warnings and the
+// paywall WITHOUT knowing what FREE means, what PLUS costs, or when a round
+// budget applies. Duplicating any of that in the client is exactly how the
+// two paywalls drifted apart in the first place.
+//
+// It replaces GET /api/payment-status/:slug, which is gone: that endpoint
+// served the legacy "N jornadas gratis, then deposit $10 x participants"
+// model, needed no authentication at all, and handed anyone who asked the
+// platform's own bank details along with it.
+app.get("/api/quinielas/:slug/plan", async (req, res) => {
   try {
+    const slug = req.params.slug;
+    const meta = await getRow(`quiniela:${slug}:meta`);
+    if (!meta) return res.status(404).json({ error: "not_found" });
+
+    // Admin/owner only. A participant has no business seeing what the
+    // organizer pays QRACKS, and this is the response that carries the price.
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+    if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+
     const idx = await getRow("platform_index");
     const entry = idx && Array.isArray(idx.quinielas)
-      ? idx.quinielas.find((q) => q.slug === req.params.slug)
+      ? idx.quinielas.find((q) => q.slug === slug)
       : null;
-    if (!entry) return res.json({ exists: false });
-    const settings = (await getRow("platform_settings")) || {};
+    if (!entry || !entry.entitlement) {
+      // Same fail-closed answer the write paths give, rather than inventing
+      // a plan to fill the screen with.
+      return res.status(200).json({ available: false, error: "entitlement_unavailable" });
+    }
+
+    const commercialConfig = (await getRow("commercial_config")) || DEFAULT_COMMERCIAL_CONFIG;
+    const participantsUsed = Array.isArray(meta.participants) ? meta.participants.length : 0;
+    // The DURABLE counter, the same number enforcement compares against —
+    // never meta.rounds.length, which deleting a round would reduce.
+    const roundsUsed = Number.isFinite(entry.lifecycleRoundsConsumed)
+      ? entry.lifecycleRoundsConsumed
+      : (Array.isArray(entry.lifecycleConsumedRoundIds) ? entry.lifecycleConsumedRoundIds.length : 0);
+
+    const summary = summarizePlan(entry.entitlement, commercialConfig, { participantsUsed, roundsUsed });
+    // The league's display NAME lives in the browser's own picker list and is
+    // not a commercial rule, so it is not duplicated here; what the server
+    // does own — which tournament this quiniela is bound to — is returned as
+    // the identity itself plus a label that reads correctly on its own.
+    const season = meta.settings && meta.settings.sportsdbSeason;
     res.json({
-      exists: true,
-      exempt: !!entry.exempt,
-      paid: !!entry.paid,
-      customJornadaLimit: entry.customJornadaLimit != null ? entry.customJornadaLimit : null,
-      jornadaLimit: settings.jornadaLimit != null ? settings.jornadaLimit : 5,
-      pricePerParticipant: settings.pricePerParticipant != null ? settings.pricePerParticipant : 10,
-      depositInfo: settings.depositInfo || ""
+      ...summary,
+      competition: {
+        ...summary.competition,
+        leagueId: (meta.settings && meta.settings.sportsdbLeagueId) || null,
+        season: season || null,
+        label: summary.competition.bound && season ? `Temporada ${season}` : null,
+      },
     });
   } catch (err) {
-    console.error(err);
+    console.error("plan read failed", err);
     res.status(500).json({ error: "server_error" });
   }
 });
@@ -1660,9 +1798,7 @@ app.post("/api/create-quiniela", async (req, res) => {
 
 // Moving a quiniela from the shared root link to its own /q/:slug — also one
 // transaction, also never sends the password hash or anyone's PIN to the
-// browser. Exempt:true here is fine (unlike create-quiniela): this is
-// re-registering a quiniela the caller already proved they own, not letting
-// the public grant themselves an exemption.
+// browser.
 app.post("/api/migrate-quiniela", async (req, res) => {
   const { toSlug } = req.body || {};
   const fromKey = "quiniela_meta_v1";
@@ -1698,10 +1834,31 @@ app.post("/api/migrate-quiniela", async (req, res) => {
     }
 
     const creator = (meta.participants || []).find((p) => p.isAdmin) || (meta.participants || [])[0] || {};
+    // MON-002B: this used to push an entry with no entitlement and no
+    // lifecycle counters at all, which broke in both directions. Until the
+    // next restart every write to the migrated quiniela failed closed with
+    // entitlement_unavailable; at that restart the grandfathering migration
+    // stamped it GRANDFATHERED, which is a 100,000/100,000 ceiling — so a
+    // move to a personal link quietly turned into unlimited-forever.
+    //
+    // It is grandfathered explicitly instead: this quiniela really does
+    // predate commercial enforcement (it is the legacy single-tenant row,
+    // which never had a plan), so it keeps exactly the experience it already
+    // had — but as a recorded, auditable decision made here, not as an
+    // accident of a missing field. The old exempt:true flag is preserved as
+    // the stated reason rather than as a separate silent bypass.
+    const migratedEntitlement = buildGrandfatheredEntitlement(new Date().toISOString(), {
+      source: "migrate_quiniela",
+      reason: "Movida desde el link raíz — ya existía antes del cobro por plan.",
+    });
     idx.quinielas.push({
       slug: cleanSlug, name: meta.groupName, creatorName: creator.name || "",
-      createdAt: new Date().toISOString(), exempt: true,
-      participantCount: (meta.participants || []).length, roundCount: (meta.rounds || []).length
+      createdAt: new Date().toISOString(),
+      participantCount: (meta.participants || []).length, roundCount: (meta.rounds || []).length,
+      entitlement: migratedEntitlement,
+      entitlementHistory: [{ action: "grant", entitlement: migratedEntitlement, at: migratedEntitlement.grantedAt }],
+      lifecycleRoundsConsumed: 0,
+      lifecycleConsumedRoundIds: [],
     });
     await putRow("platform_index", idx, client);
 
@@ -1784,25 +1941,48 @@ app.post("/api/delete-quiniela", async (req, res) => {
 
 // The payment record's id comes from the client so that a retry after a lost
 // response is recognisable as the SAME payment rather than a second one.
-function isUsablePaymentId(value) {
+// An operator-supplied id used to make a grant retry-safe. Same shape rule
+// the payment log already used, so ids stay greppable across both.
+function isUsableGrantId(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value);
 }
 
-// Marking a quiniela as paid/unpaid, together with its payment-log entry, as
-// ONE atomic operation. Amount and name are computed from the locked server
-// state, never taken from the request: this row is a money record, and the
-// browser's copy of the participant count or the price can be stale.
-app.post("/api/platform/quinielas/:slug/paid", async (req, res) => {
+// ---------- granting a plan (MON-002B) ----------
+//
+// The operation MON-001 was missing entirely. Before this, PLUS existed only
+// as a builder function and a unit test: nothing in the running server ever
+// created one, so a quiniela could be FREE or GRANDFATHERED and nothing else,
+// and an organizer who hit a limit had no reachable path forward. The
+// dashboard's "Pagado" and "Exenta" toggles wrote fields that no enforcement
+// code read — they looked like an unlock and were not one.
+//
+// This replaces POST /api/platform/quinielas/:slug/paid. Recording money and
+// granting the plan were two separate acts there, and only one of them did
+// anything; they are one act now, in one transaction, so a quiniela can never
+// again be billed without being upgraded or upgraded without being recorded.
+//
+// LOCK ORDER: platform_index -> platform_payment_log. The same order every
+// other multi-row transaction in this file uses.
+app.post("/api/platform/quinielas/:slug/entitlement", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
   if (!verifyPassword(providedPlatformAuth, platformHash)) {
     return res.status(403).json({ error: "unauthorized" });
   }
-  const { paid, paymentId } = req.body || {};
-  if (typeof paid !== "boolean") return res.status(400).json({ error: "invalid_params" });
-  // A payment record is only written when marking as PAID, and only with a
-  // usable idempotency key.
-  if (paid && !isUsablePaymentId(paymentId)) return res.status(400).json({ error: "invalid_payment_id" });
+  const body = req.body || {};
+  const plan = body.plan;
+  const grantId = body.grantId;
+  if (!isUsableGrantId(grantId)) return res.status(400).json({ error: "invalid_grant_id" });
+  if (plan !== "PLUS" && plan !== "MANUAL_GRANT" && plan !== "FREE") {
+    return res.status(400).json({ error: "invalid_plan" });
+  }
+  // A manual override is the ONE grant allowed to name its own numbers, so
+  // it is the one whose numbers get validated. PLUS never reads these.
+  if (plan === "MANUAL_GRANT" && !isValidManualGrantLimits(body.participantLimit, body.manualRoundLimit)) {
+    return res.status(400).json({ error: "invalid_limits" });
+  }
+  const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 300) : null;
+  if (plan === "MANUAL_GRANT" && !reason) return res.status(400).json({ error: "reason_required" });
 
   const client = await pool.connect();
   try {
@@ -1816,48 +1996,69 @@ app.post("/api/platform/quinielas/:slug/paid", async (req, res) => {
       return res.status(404).json({ error: "not_found" });
     }
 
-    // The payment log is only read (and locked) when there is a record to
-    // write. Price comes from settings read inside this transaction but NOT
-    // locked: a concurrent price edit is not a correctness problem for
-    // recording this payment, and locking it would serialize every payment
-    // against every settings save.
-    const paymentLog = paid ? ((await getRowLocked("platform_payment_log", client)) || { payments: [] }) : null;
-    const settings = paid ? ((await getRow("platform_settings", client)) || {}) : null;
+    // Read INSIDE the transaction, and used as the sole source for a PLUS
+    // grant's limits and price. Nothing about a purchase comes from the
+    // request body — that is what stops a crafted call from minting a
+    // 500-participant "PLUS" for zero pesos.
+    const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+    const now = new Date().toISOString();
+    let entitlement;
+    if (plan === "PLUS") {
+      entitlement = buildPlusEntitlement(commercialConfig, now, {
+        source: "platform_grant", grantedBy: "platform", reason,
+      });
+    } else if (plan === "MANUAL_GRANT") {
+      entitlement = buildManualGrantEntitlement(now, {
+        grantedBy: "platform", reason,
+        participantLimit: body.participantLimit, manualRoundLimit: body.manualRoundLimit,
+      });
+    } else {
+      // Undoing a grant. FREE never snapshots numbers — it tracks whatever
+      // commercial_config says FREE means at enforcement time (MON-001C).
+      entitlement = buildFreeEntitlement(commercialConfig, now);
+      entitlement.source = "platform_revoke";
+      entitlement.grantedBy = "platform";
+      entitlement.reason = reason;
+    }
 
-    const result = applyPaidToggle({
-      index: idx, paymentLog, settings, slug: req.params.slug, paid, paymentId,
+    // Only locked when there is money to record, and only for PLUS.
+    const paymentLog = plan === "PLUS"
+      ? ((await getRowLocked("platform_payment_log", client)) || { payments: [] })
+      : null;
+
+    const result = applyEntitlementGrant({
+      index: idx, paymentLog, entitlement, slug: req.params.slug,
+      grantId, grantedBy: "platform", reason, now,
     });
     if (!result.ok) {
       await client.query("ROLLBACK");
-      // payment_id_conflict is a caller error (an id replayed across
-      // quinielas, or after an un-mark), not a missing quiniela.
-      const status = result.error === "not_found" ? 404 : 409;
+      // grant_id_conflict is a caller error (an id replayed for a DIFFERENT
+      // quiniela), not a missing quiniela and not a malformed request.
+      const status = result.error === "not_found" ? 404 : (result.error === "grant_id_conflict" ? 409 : 400);
       return res.status(status).json({ error: result.error });
     }
+    // A replayed grantId applies nothing and writes nothing — not even a
+    // version bump — so a retry can never disturb the row it already changed.
     if (result.paymentLog) await putRow("platform_payment_log", result.paymentLog, client);
-    // A no-op (already in the requested state) writes NOTHING — not even a
-    // version bump — so a second, late tab cannot disturb the row at all.
-    // `paid` is an admin-owned field, so a real change participates in the
-    // same version protocol as the dashboard's own edits: bumping is what
-    // makes a stale generic /api/kv write 409 instead of reverting it.
     if (result.index) await putRow("platform_index", result.index, client);
     await client.query("COMMIT");
     res.json({
-      ok: true, paid, recorded: result.recorded, transitioned: result.transitioned,
+      ok: true, plan, applied: result.applied, recorded: result.recorded,
+      // Tells the panel WHICH of the three outcomes happened — granted,
+      // already on the plan, or purchased coverage restored — so it can say
+      // something true instead of one message for all of them.
+      reason: result.reason || null,
       indexVersion: result.index ? result.index.version : readStoredVersion(idx),
     });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("platform paid toggle failed", err);
+    console.error("platform entitlement grant failed", err);
     res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
   }
 });
 
-// Editing a quiniela from the platform dashboard: display name, owner
-// password and the per-quiniela jornada limit, applied to meta AND
-// platform_index together or not at all.
 app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
@@ -1867,12 +2068,12 @@ app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
   const body = req.body || {};
   const wantsName = typeof body.name === "string" && body.name.trim() !== "";
   const wantsPassword = typeof body.ownerPassword === "string" && body.ownerPassword.trim() !== "";
-  const hasLimit = Object.prototype.hasOwnProperty.call(body, "customJornadaLimit");
-  const limit = body.customJornadaLimit;
-  if (hasLimit && limit !== null && !(Number.isSafeInteger(limit) && limit >= 1)) {
-    return res.status(400).json({ error: "invalid_params" });
-  }
-  if (!wantsName && !wantsPassword && !hasLimit) return res.status(400).json({ error: "invalid_params" });
+  // customJornadaLimit is gone with the rest of the legacy cobro model: it
+  // was the per-quiniela version of the "jornadas gratis" threshold and fed
+  // nothing but the client-side gate that has been removed. Giving one
+  // quiniela a different round budget is a MANUAL_GRANT now, which
+  // enforcement actually reads.
+  if (!wantsName && !wantsPassword) return res.status(400).json({ error: "invalid_params" });
 
   const metaKey = `quiniela:${req.params.slug}:meta`;
   const client = await pool.connect();
@@ -1894,14 +2095,13 @@ app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
       index: idx, meta, slug: req.params.slug,
       name: wantsName ? body.name.trim().slice(0, 120) : null,
       hashedOwnerPassword: wantsPassword ? hashPassword(body.ownerPassword.trim()) : null,
-      customJornadaLimit: hasLimit ? (limit === null ? null : limit) : undefined,
     });
     if (!result.ok) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: result.error });
     }
-    // Both rows in the SAME transaction: either all three changes land or none
-    // of them does.
+    // Both rows in the SAME transaction: either both changes land or neither
+    // does.
     await putRow(metaKey, result.meta, client);
     await putRow("platform_index", result.index, client);
     await client.query("COMMIT");
@@ -2187,7 +2387,16 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     const bindingEntry = platformIdx && Array.isArray(platformIdx.quinielas)
       ? platformIdx.quinielas.find((q) => q.slug === slug)
       : null;
-    if (bindingEntry) {
+    if (!bindingEntry) {
+      // MON-002B: same fail-closed rule the two write paths already applied.
+      // A real per-slug quiniela with no platform_index entry is a data
+      // integrity problem, and letting the import proceed unbound would hand
+      // it a tournament with no commercial identity attached at all.
+      console.error("sync-competition blocked: no platform_index entry", { slug });
+      await client.query("ROLLBACK");
+      return res.status(402).json({ error: "entitlement_unavailable", createdRounds: 0, createdMatches: 0, skippedEvents: 0 });
+    }
+    {
       const binding = evaluateCompetitionBinding(bindingEntry.entitlement, requestedIdentity);
       if (binding.violation) {
         await client.query("ROLLBACK");
@@ -2308,6 +2517,10 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
 // Deliberately minimal: no dashboard, no aggregation — just a plain, appendable
 // log meant to be queried directly in Postgres when someone wants to look.
 const KNOWN_EVENTS = new Set([
+  // MON-002B: the paywall's own primary action. Registered here because a
+  // trackEvent() the server rejects is worse than no telemetry at all — it
+  // looks instrumented and records nothing.
+  "upgrade_cta_clicked",
   "access_link_opened",
   "join_started",
   "join_completed",

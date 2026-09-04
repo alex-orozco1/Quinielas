@@ -118,11 +118,11 @@ test("CASE F (PIN save failure): the PIN input's value/state is never cleared on
 test("CASE G: renderAdminSetupReview's publish failure restores the round from a snapshot AND keeps the admin on the same screen", () => {
   const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
   assert.ok(body.includes("const snapshot = JSON.parse(JSON.stringify(liveRound));"), "must snapshot before mutating");
-  // MON-001A: the generic fallback copy is now conditional on the error
-  // NOT being a plan-limit rejection (which shows the precise
-  // planLimitMessage() instead) -- still shown for every other failure.
+  // MON-002B: the generic fallback copy stays for every non-commercial
+  // failure; a plan-limit rejection opens the paywall instead, built from
+  // the server's own response.
   assert.ok(body.includes('"No pudimos publicar la jornada. Tus cambios siguen aquí."'));
-  assert.ok(body.includes("planLimitMessage(result)"));
+  assert.ok(body.includes("showPlanBlock(result)"));
   assert.ok(!body.includes("renderAdminSetupManual()"), "failure path must not navigate to a different screen");
 });
 
@@ -140,7 +140,7 @@ test("CASE G: renderAdminSetupManual's publish failure removes only the failed r
   const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
   assert.ok(body.includes("meta.rounds = meta.rounds.filter(r => r.id !== round.id);"), "must roll back the optimistic push on failure");
   assert.ok(body.includes('"No pudimos publicar la jornada. Tus cambios siguen aquí."'));
-  assert.ok(body.includes("planLimitMessage(result)"));
+  assert.ok(body.includes("showPlanBlock(result)"));
 });
 
 test("CASE C: renderAdminSetupResolve AWAITS the sync-competition fetch before deciding review vs manual", () => {
