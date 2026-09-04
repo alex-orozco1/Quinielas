@@ -237,9 +237,12 @@ test("a grandfathered entitlement already over the new limits keeps working; sti
 // ---- Competition identity ----
 
 test("computeCompetitionIdentity: null with no league; combines leagueId+season; handles missing season", () => {
-  assert.equal(computeCompetitionIdentity({}), null);
-  assert.equal(computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" }), "4350:2026-2027");
-  assert.equal(computeCompetitionIdentity({ sportsdbLeagueId: "4350" }), "4350:unknown-season");
+  assert.equal(computeCompetitionIdentity(null, "2026-2027"), null);
+  assert.equal(computeCompetitionIdentity("", "2026-2027"), null);
+  assert.equal(computeCompetitionIdentity("   ", "2026-2027"), null);
+  assert.equal(computeCompetitionIdentity("4350", "2026-2027"), "4350:2026-2027");
+  assert.equal(computeCompetitionIdentity("4350"), "4350:unknown-season");
+  assert.equal(computeCompetitionIdentity("4350", "  "), "4350:unknown-season");
 });
 
 test("CASE (with league): round-count lifecycle is a no-op once competitionIdentity is set; participant capacity still applies", () => {
@@ -313,7 +316,7 @@ test("FIX 4: POST /api/create-quiniela computes competitionIdentity on the entit
   const idx = serverSrc.indexOf('app.post("/api/create-quiniela"');
   const body = serverSrc.slice(idx, idx + 5000);
   assert.ok(body.includes("if (cleanLeagueId) {"));
-  assert.ok(body.includes("entitlement.competitionIdentity = computeCompetitionIdentity(meta.settings);"));
+  assert.ok(body.includes("entitlement.competitionIdentity = computeCompetitionIdentity(cleanLeagueId, meta.settings.sportsdbSeason);"));
 });
 
 test("FIX 4: the quiniela-meta write path blocks changing an ALREADY-set league/season once the quiniela is already operating, unless the write is platform-authenticated", () => {
@@ -443,8 +446,8 @@ test("CASE N: an entitlement bound to one league REFUSES a different league enti
 
 test("CASE L: for each of the 6 annual leagues QRACKS supports, consecutive seasons produce DIFFERENT identities (never collide)", () => {
   ["4328", "4335", "4331", "4332", "4334", "4480"].forEach((leagueId) => {
-    const a = computeCompetitionIdentity({ sportsdbLeagueId: leagueId, sportsdbSeason: "2026-2027" });
-    const b = computeCompetitionIdentity({ sportsdbLeagueId: leagueId, sportsdbSeason: "2027-2028" });
+    const a = computeCompetitionIdentity(leagueId, "2026-2027");
+    const b = computeCompetitionIdentity(leagueId, "2027-2028");
     assert.notEqual(a, b, `league ${leagueId}: consecutive seasons must never share an identity`);
     const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, undefined, { competitionIdentity: a });
     assert.equal(evaluateCompetitionBinding(ent, b).violation, true, `league ${leagueId}: next season must be refused`);
@@ -461,8 +464,8 @@ test("CASE K (KNOWN GAP, documented not hidden): Liga MX Apertura and Clausura w
   // signal today that separates Apertura from Clausura. Asserting the
   // real behavior keeps this visible and will fail loudly the moment a
   // future ticket introduces a real distinguishing signal.
-  const apertura = computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" });
-  const clausura = computeCompetitionIdentity({ sportsdbLeagueId: "4350", sportsdbSeason: "2026-2027" });
+  const apertura = computeCompetitionIdentity("4350", "2026-2027");
+  const clausura = computeCompetitionIdentity("4350", "2026-2027");
   assert.equal(apertura, clausura, "DOCUMENTED GAP: not currently distinguishable -- see the delivery report's open decision");
 });
 
@@ -583,7 +586,9 @@ test("MON-001D: sync-competition locks platform_index BEFORE the meta row -- sam
 
 test("MON-001D: sync-competition evaluates the competition binding BEFORE calling the provider -- a mismatch fetches and writes nothing at all", () => {
   const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
-  const body = serverSrc.slice(idx, idx + 6000);
+  // Ventana ampliada en MON-002C: el handler creció con el registro de la
+  // competencia sobre la metadata del ciclo.
+  const body = serverSrc.slice(idx, idx + 9000);
   const bindIdx = body.indexOf("evaluateCompetitionBinding(bindingEntry.entitlement, requestedIdentity)");
   const fetchIdx = body.indexOf("await sportsDataProvider.getSeasonEvents(");
   assert.ok(bindIdx !== -1 && fetchIdx !== -1 && bindIdx < fetchIdx, "binding must be checked before any provider call");
@@ -611,7 +616,7 @@ test("MON-001D: adoption persists the identity onto the ENTITLEMENT (platform_in
 test("MON-001D: the requested identity is derived server-side from the resolved league+season, never read from the request body", () => {
   const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
   const body = serverSrc.slice(idx, idx + 6000);
-  assert.ok(body.includes("const requestedIdentity = computeCompetitionIdentity({ sportsdbLeagueId: externalLeagueId, sportsdbSeason: season });"));
+  assert.ok(body.includes("const requestedIdentity = computeCompetitionIdentity(externalLeagueId, season);"));
   assert.ok(!body.includes("req.body.competitionIdentity"), "must never accept a client-supplied competition identity");
 });
 

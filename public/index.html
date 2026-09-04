@@ -1401,6 +1401,7 @@
     league_change_blocked: "Ya no puedes cambiar la liga: esta quiniela ya empezó a jugar.",
     invalid_grant_id: "No se pudo registrar el cambio de plan. Vuelve a intentarlo.",
     grant_id_conflict: "Ese registro de cobro ya existe para otra quiniela. Actualizamos los datos; vuelve a intentarlo.",
+    entitlement_scope_mismatch: "Tu plan corresponde a un torneo anterior. Empieza el torneo nuevo desde Ajustes para continuar.",
     invalid_limits: "Esos límites no son válidos.",
     invalid_plan: "Ese plan no existe.",
     reason_required: "Escribe el motivo del ajuste manual.",
@@ -1542,6 +1543,24 @@
       return result;
     }catch(e){ console.error("save meta failed", e); return { ok: false, error: "network_error" }; }
   }
+
+  // MON-002C: la única acción que mueve una quiniela de un torneo al
+  // siguiente. No cobra nada y no borra nada; el servidor conserva
+  // participantes, jornadas, resultados e historial.
+  async function apiStartNewTournament(name){
+    try{
+      const headers = { "Content-Type": "application/json" };
+      const cred = adminOrOwnerCred();
+      if(cred) headers["X-Qracks-Auth"] = cred;
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/new-cycle", {
+        method: "POST", headers, credentials: "same-origin",
+        body: JSON.stringify({ name: name || null })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, ...data };
+    }catch(e){ console.error("apiStartNewTournament failed", e); return { ok: false, error: "network_error" }; }
+  }
+
   // Reads a participant's picks. Before that round's deadline, the server only
   // hands back the full picks to the participant themselves (their own PIN) or
   // an admin/owner — everyone else gets the closed-rounds-only view, so no one
@@ -4537,6 +4556,82 @@
   // jornadas". No colour, no button, no pressure -- it exists so the limit
   // stops being a surprise, which is the whole complaint the hard block used
   // to produce.
+  // MON-002C: qué torneo está jugando esta quiniela, en lenguaje de persona.
+  // Nunca muestra identificadores internos ni del proveedor — el servidor
+  // manda nombre y estado, no ids, precisamente para que no haya nada que
+  // filtrar aquí.
+  function tournamentStatusHtml(plan){
+    const t = plan && plan.tournament;
+    if(!t) return "";
+    // En el primer torneo de una quiniela sin nombre de competencia no hay
+    // nada útil que decir: hablar de "torneos" a quien apenas empieza sobra.
+    if(!t.name && t.cycle === 1 && !t.previousCycles) return "";
+    const name = t.name || (t.cycle > 1 ? `Torneo ${t.cycle}` : "Tu torneo");
+    const ended = t.state === "ENDED";
+    return `<p class="muted" id="qz-tournament-status" style="margin:0 0 4px;">${
+      ended ? "🏁 " : ""}Torneo actual: <strong>${esc(name)}</strong>${ended ? " — este torneo terminó" : ""}</p>`;
+  }
+
+  // Una acción primaria por estado: cuando el torneo terminó, empezar el
+  // siguiente ES la acción. Mientras sigue vivo, la opción existe pero no
+  // compite con nada (vive en Ajustes).
+  function tournamentEndedCardHtml(plan){
+    const t = plan && plan.tournament;
+    if(!t || t.state !== "ENDED") return "";
+    return `
+      <div class="card" id="qz-tournament-ended" style="border-color:var(--gold);background:#FFF9EC;">
+        <p style="margin:0 0 6px;font-weight:700;">Este torneo terminó</p>
+        <p class="muted" style="margin:0 0 10px;">Para jugar el siguiente, inicia un torneo nuevo. Se conservan tus participantes, tus jornadas y todo el historial.</p>
+        <button class="btn btn-gold btn-sm" data-start-new-tournament>Iniciar torneo nuevo</button>
+      </div>
+    `;
+  }
+
+  // El diálogo dice lo único que puede sorprender: el Plus no se transfiere.
+  async function startNewTournamentFlow(plan){
+    const hadPlus = !!(plan && plan.plan && plan.plan !== "FREE");
+    const message = (hadPlus
+      ? "Tu Plus anterior no se transfiere: el torneo nuevo empieza en Gratis, y puedes pasarlo a Plus cuando quieras.\n\n"
+      : "El torneo nuevo empieza en Gratis, con su propio conteo de jornadas.\n\n")
+      + "Se conservan tus participantes, tus jornadas y todos los resultados de antes.";
+    if(!(await qzConfirm(message, {
+      title: "¿Empezar un torneo nuevo?",
+      confirmLabel: "Empezar torneo nuevo",
+      cancelLabel: "Cancelar",
+      destructive: false
+    }))) return;
+
+    const name = await qzPrompt("¿Cómo se llama el torneo nuevo? (opcional)", {
+      title: "Torneo nuevo", confirmLabel: "Empezar"
+    });
+    if(name === null) return;
+
+    const r = await apiStartNewTournament(name.trim());
+    if(!r.ok){
+      toast(ERROR_MESSAGES[r.error] || "No se pudo empezar el torneo nuevo, intenta de nuevo");
+      return;
+    }
+    invalidatePlan();
+    // Los avisos de límite son por torneo: el nuevo merece los suyos.
+    try{
+      window.localStorage.removeItem(planWarningKey("people"));
+      window.localStorage.removeItem(planWarningKey("rounds"));
+    }catch(e){}
+    toast("✅ Listo, empezaste un torneo nuevo. Tu historial sigue completo.");
+    render();
+  }
+
+  function wireTournamentActions(scope){
+    if(!scope) return;
+    scope.querySelectorAll("[data-start-new-tournament]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        await startNewTournamentFlow(await loadPlan());
+        btn.disabled = false;
+      });
+    });
+  }
+
   function planStatusHtml(plan){
     if(!plan) return "";
     const bits = [`Plan ${esc(plan.planLabel)}`];
@@ -4546,7 +4641,9 @@
     if(plan.rounds && plan.rounds.applies){
       bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
     }else if(plan.rounds && plan.competition && plan.competition.bound){
-      bits.push("torneo completo");
+      // Plus con torneo: no hay cuenta de jornadas que mostrar, porque cubre
+      // el torneo entero, final incluida.
+      bits.push("cubre este torneo completo");
     }
     return `<p class="muted" id="qz-plan-status" style="margin:0 0 12px;">${bits.join(" · ")}</p>`;
   }
@@ -4719,8 +4816,10 @@
     const plan = await loadPlan();
     const liveStrip = document.getElementById("qz-plan-strip");
     if(!liveStrip || !plan) return;
-    liveStrip.innerHTML = planStatusHtml(plan) + planWarningHtml(plan);
+    liveStrip.innerHTML = tournamentStatusHtml(plan) + planStatusHtml(plan)
+      + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
     wirePlanWarnings(liveStrip);
+    wireTournamentActions(liveStrip);
   }
 
   function renderAdmin(main){
@@ -6427,10 +6526,26 @@
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
         <div class="divider"></div>
         <div class="eyebrow">Cerrar torneo</div>
-        <p class="muted">Cuando termine el torneo (o cuando el grupo decida dejarlo hasta ahí), esto anuncia al campeón, guarda la tabla final y las jornadas en el historial, y deja todo listo para empezar un torneo nuevo — sin perder nada de lo anterior.</p>
+        <p class="muted">Cuando termine el torneo, esto anuncia al campeón, guarda la tabla final y las jornadas jugadas en el historial, <strong>despeja el tablero</strong> y empieza el torneo nuevo. Nada se pierde: lo archivado se sigue consultando.</p>
         <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
+        <div class="divider"></div>
+        <div class="eyebrow">Empezar un torneo nuevo sin cerrar este</div>
+        <p class="muted">Lo mismo, pero <strong>sin archivar ni despejar</strong>: tus jornadas y resultados siguen a la vista tal como están. Úsalo si el torneo anterior nunca se cerró formalmente. En ambos casos el torneo nuevo empieza en Gratis, con su propio conteo de jornadas.</p>
+        <p class="muted" id="qz-new-tournament-note" style="margin-top:-4px;"></p>
+        <button class="btn btn-ghost" data-start-new-tournament>Empezar un torneo nuevo sin cerrar este</button>
       </div>
     `;
+    wireTournamentActions(body);
+    (async () => {
+      const plan = await loadPlan();
+      const note = document.getElementById("qz-new-tournament-note");
+      if(!note || !plan) return;
+      if(plan.plan && plan.plan !== "FREE"){
+        note.textContent = "Ojo: tu plan actual cubre este torneo. El torneo nuevo empieza en Gratis y no se transfiere.";
+      }else if(plan.tournament && plan.tournament.previousCycles > 0){
+        note.textContent = `Llevas ${plan.tournament.previousCycles + 1} torneos en esta quiniela.`;
+      }
+    })();
     document.getElementById("qz-export-backup").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -6501,10 +6616,32 @@
       await ensureAllPicksLoaded();
       const finalStandings = standingsList().map(p => ({ name: p.name, pts: p.pts }));
       const champion = finalStandings.length ? finalStandings[0] : null;
-      const confirmMsg = champion
-        ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nEsto se va a guardar en el historial y se van a borrar las jornadas activas para empezar un torneo nuevo.`
-        : "Se va a cerrar el torneo (sin jornadas jugadas) y se van a borrar las jornadas activas.";
+      // MON-002C. Este botón dice "y empezar uno nuevo", así que tiene que
+      // empezarlo de verdad — incluido el ciclo comercial. Antes no lo hacía:
+      // borraba todas las jornadas y dejaba la quiniela en el MISMO torneo con
+      // el presupuesto ya gastado, así que el Admin se quedaba con una
+      // quiniela vacía donde no podía publicar ni una jornada. Cerrar el
+      // torneo ES el hecho que marca su final, y por eso alcanza como
+      // evidencia para pasar al siguiente.
+      const planNow = await loadPlan();
+      const losingPlus = !!(planNow && planNow.plan && planNow.plan !== "FREE");
+      const confirmMsg = (champion
+        ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nSe guarda en el historial, se archivan las jornadas de este torneo y empieza un torneo nuevo.\n\n`
+        : "Se cierra el torneo (sin jornadas jugadas), se archivan las jornadas y empieza un torneo nuevo.\n\n")
+        + (losingPlus
+          ? "Ojo: tu plan actual cubre ESTE torneo. El torneo nuevo empieza en Gratis y tu Plus no se transfiere."
+          : "El torneo nuevo empieza en Gratis, con su propio conteo de jornadas.");
       if(!(await qzConfirm(confirmMsg, { title: "¿Cerrar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
+
+      // El ciclo se mueve ANTES de tocar nada. Si esto falla no se destruye
+      // nada y el Admin puede reintentar; al revés, una falla aquí lo dejaría
+      // sin jornadas y sin torneo nuevo, que es exactamente el estado del que
+      // este arreglo lo saca.
+      const cycle = await apiStartNewTournament(null);
+      if(!cycle.ok){
+        toast(ERROR_MESSAGES[cycle.error] || "No se pudo cerrar el torneo, intenta de nuevo");
+        return;
+      }
 
       if(!meta.pastTournaments) meta.pastTournaments = [];
       meta.pastTournaments.push({
@@ -6526,10 +6663,20 @@
       meta.rounds = [];
       meta.participants.forEach(p => p.paid = false);
       const ok = await setMeta(meta);
+      invalidatePlan();
       if(ok){
-        toast(champion ? `Torneo cerrado 🏆 Campeón: ${champion.name}` : "Torneo cerrado");
+        // Los avisos de límite son por torneo: el nuevo merece los suyos.
+        try{
+          window.localStorage.removeItem(planWarningKey("people"));
+          window.localStorage.removeItem(planWarningKey("rounds"));
+        }catch(e){}
+        toast(champion
+          ? `Torneo cerrado 🏆 Campeón: ${champion.name}. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.`
+          : "Torneo cerrado. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.");
       } else {
-        toast("No se pudo guardar, intenta de nuevo");
+        // El ciclo nuevo SÍ quedó: se dice, para que nadie vuelva a cerrarlo
+        // creyendo que no pasó nada.
+        toast("Empezaste el torneo nuevo, pero no se pudo archivar la tabla final. Intenta guardar de nuevo.");
       }
       renderAdmin(document.getElementById("qz-main"));
     });

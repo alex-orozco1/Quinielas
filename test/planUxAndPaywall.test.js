@@ -262,14 +262,23 @@ test("LIFECYCLE: a bulk publish is judged on the total, not one round at a time"
   assert.equal(checkLifecycleRoundConsumption(FREE, cfg, 5, 3).allowed, false, "5 + 3 > 7");
 });
 
-test("LIFECYCLE: deleting a round does not return budget — the counter is a durable id list", () => {
-  const branch = serverSrc.slice(serverSrc.indexOf("const consumedIds = new Set(entry.lifecycleConsumedRoundIds || []);"));
-  assert.ok(branch.includes("entry.lifecycleConsumedRoundIds = [...consumedIds, ...newlyConsumedIds];"),
-    "ids accumulate; nothing ever removes one");
-  assert.ok(!branch.slice(0, 1500).includes("lifecycleConsumedRoundIds.filter"),
-    "no path may prune the consumed list");
-  // and re-publishing the same id is never counted twice
-  assert.ok(branch.includes("!consumedIds.has(r.id)"));
+test("LIFECYCLE: deleting a round does not return budget — consumption is a durable, per-cycle id list", () => {
+  const scopeSrc = fs.readFileSync(path.join(__dirname, "..", "tournamentScope.js"), "utf8");
+  // Los ids se acumulan; ninguna ruta los poda.
+  assert.ok(!/consumedRoundIdsByScope[^\n]*\.(filter|splice|shift|pop)/.test(scopeSrc));
+  assert.ok(!/consumedRoundIdsByScope[^\n]*\.(filter|splice|shift|pop)/.test(serverSrc));
+  // Y republicar la misma jornada nunca cuenta dos veces DENTRO de su ciclo:
+  // borrar no devuelve presupuesto, y volver a ponerla tampoco vuelve a
+  // cobrarlo. (Reusar ese id para una jornada distinta en un ciclo POSTERIOR
+  // sí cuesta — eso vive en tournamentLifecycle.test.js.)
+  const { newlyConsumedIds, recordConsumption } = require("../tournamentScope");
+  const e1 = "ts:1:manual:e1";
+  const entry = { consumedRoundIdsByScope: { [e1]: ["r1", "r2"] } };
+  const here = { currentScopeId: e1, existingRoundIds: ["r2"] };
+  assert.deepEqual(newlyConsumedIds(entry, ["r1", "r2"], here), [], "ya consumidas en este ciclo");
+  assert.deepEqual(newlyConsumedIds(entry, ["r3"], here), ["r3"]);
+  const after = recordConsumption(entry, e1, ["r3"]);
+  assert.deepEqual(after[e1], ["r1", "r2", "r3"], "solo crece");
 });
 
 test("LIFECYCLE: actions that consume nothing are never blocked, even at the limit", () => {

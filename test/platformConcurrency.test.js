@@ -639,23 +639,54 @@ test("PURCHASE HISTORY 9: a MANUAL_GRANT in between does not make the purchase d
   assert.equal(entryOf(store, "alpha").entitlement.pricePaidMXN, 199);
 });
 
-test("PURCHASE HISTORY: a purchase in a DIFFERENT scope does not cover this one", async () => {
-  // The shape MON-002C will use. Today a grant always carries the current
-  // binding over, so scopes never differ on their own — this drives it
-  // directly to prove the question is asked per tournament, not per quiniela.
+test("PURCHASE HISTORY: a purchase in a DIFFERENT tournament cycle does not cover this one", async () => {
+  // MON-002C replaced the scope key: it was "leagueId:season", which could
+  // not tell Liga MX Apertura from Clausura (both are "4350:2026-2027"), and
+  // is now the internal cycle id. This drives the two cycles directly.
+  const e1 = "ts:1:football:thesportsdb:4350:e1";
+  const e2 = "ts:1:football:thesportsdb:4350:e2";
   const store = grantStore();
   await store.transaction("platform_index", async ({ current, write }) => {
-    current.quinielas[0].entitlement.competitionIdentity = "4350:2026-2027";
+    current.quinielas[0].tournamentScope = { id: e1, editionSeq: 1, lifecycle: "ACTIVE", providerRefs: { provider: "thesportsdb", competitionId: "4350" } };
     write(current);
   });
   await grant(store, "alpha", { plan: "PLUS", grantId: "grant-scope-000001" });
   assert.equal(paymentsOf(store).length, 1);
-  assert.equal(paymentsOf(store)[0].competitionIdentity, "4350:2026-2027", "the log says which tournament it bought");
+  assert.equal(paymentsOf(store)[0].competitionIdentity, null, "el log guarda la competencia si la hay");
 
   const history = entryOf(store, "alpha").entitlementHistory;
-  assert.ok(findPurchaseForScope(history, "4350:2026-2027"), "covered for the tournament it paid for");
-  assert.equal(findPurchaseForScope(history, "4350:2027-2028"), null, "and NOT for a different one");
-  assert.equal(findPurchaseForScope(history, null), null);
+  assert.ok(findPurchaseForScope(history, e1), "cubierto para el torneo que pagó");
+  assert.equal(findPurchaseForScope(history, e2), null, "y NO para la siguiente edición");
+});
+
+test("PURCHASE HISTORY: the same league and season in two cycles are two different purchases", async () => {
+  // The exact collision MON-002C exists for: Apertura 2026 and Clausura 2027
+  // are one string to the provider, and two tournaments to a customer.
+  const e1 = "ts:1:football:thesportsdb:4350:e1";
+  const e2 = "ts:1:football:thesportsdb:4350:e2";
+  const store = grantStore();
+  const setScope = (id, seq) => store.transaction("platform_index", async ({ current, write }) => {
+    current.quinielas[0].tournamentScope = { id, editionSeq: seq, lifecycle: "ACTIVE", providerRefs: { provider: "thesportsdb", competitionId: "4350" } };
+    write(current);
+  });
+
+  await setScope(e1, 1);
+  const apertura = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-apertura-001" });
+  assert.equal(apertura.recorded, true);
+
+  // The Admin starts the next tournament: new cycle, plan back to FREE.
+  await setScope(e2, 2);
+  await store.transaction("platform_index", async ({ current, write }) => {
+    current.quinielas[0].entitlement = { ...buildFreeEntitlement(DEFAULT_COMMERCIAL_CONFIG), scopeId: e2 };
+    write(current);
+  });
+
+  const clausura = await grant(store, "alpha", { plan: "PLUS", grantId: "grant-clausura-001" });
+  assert.equal(clausura.applied, true);
+  assert.equal(clausura.recorded, true, "la segunda edición es una COMPRA, no una reactivación");
+  assert.equal(clausura.reason, null);
+  assert.equal(paymentsOf(store).length, 2, "un pago por torneo");
+  assert.ok(findPurchaseForScope(entryOf(store, "alpha").entitlementHistory, e1), "y la primera compra sigue reconocida");
 });
 
 test("PURCHASE HISTORY: a legacy row without the `purchase` marker still counts as bought", async () => {

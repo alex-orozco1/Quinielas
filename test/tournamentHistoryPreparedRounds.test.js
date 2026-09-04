@@ -26,13 +26,29 @@ function runCloseTournamentRoundsFilter(rounds){
   return runner({ rounds });
 }
 
+// El handler completo, delimitado por llaves en vez de por una ventana de N
+// caracteres: una ventana fija convierte cualquier crecimiento del handler en
+// un falso negativo silencioso (la aserción "no contiene X" pasa porque X
+// quedó fuera del recorte, no porque no exista).
+function closeTournamentHandler(){
+  const marker = 'document.getElementById("qz-close-tournament").addEventListener("click"';
+  const at = indexSrc.indexOf(marker);
+  assert.ok(at !== -1, "no se encontró el handler de cerrar torneo");
+  const braceStart = indexSrc.indexOf("{", indexSrc.indexOf("=>", at));
+  let depth = 0;
+  for(let i = braceStart; i < indexSrc.length; i++){
+    if(indexSrc[i] === "{") depth++;
+    else if(indexSrc[i] === "}"){ depth--; if(depth === 0) return indexSrc.slice(at, i + 1); }
+  }
+  throw new Error("handler sin cerrar");
+}
+
 function round(number, published, resultsPublished){
   return { id: "r" + number, number, published, resultsPublished: !!resultsPublished, matches: [{ id: "m" + number, teamA: "A", teamB: "B" }] };
 }
 
 test("root cause confirmed: the close-tournament handler no longer stores the raw unfiltered meta.rounds", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-close-tournament").addEventListener("click"');
-  const handlerBody = indexSrc.slice(idx, idx + 2200);
+  const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("rounds: meta.rounds\n"), "must not still store the raw array");
   assert.ok(handlerBody.includes("rounds: meta.rounds.filter(r => r.published !== false)"), "must filter out published:false before storing the historical snapshot");
 });
@@ -110,8 +126,7 @@ test("CASE D: renderAdminRondas (Admin -> Jornadas) still reads meta.rounds dire
 // ---- CASE F: scoring integrity is unaffected -- champion/standings are computed via standingsList() before this fix runs, untouched by it ----
 
 test("CASE F: the champion/finalStandings computation happens via standingsList() BEFORE the historical rounds are filtered/stored -- this fix cannot alter scoring", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-close-tournament").addEventListener("click"');
-  const handlerBody = indexSrc.slice(idx, idx + 2200);
+  const handlerBody = closeTournamentHandler();
   const standingsIdx = handlerBody.indexOf("const finalStandings = standingsList()");
   const filterIdx = handlerBody.indexOf("rounds: meta.rounds.filter(r => r.published !== false)");
   assert.ok(standingsIdx !== -1 && filterIdx !== -1 && standingsIdx < filterIdx, "standings/champion must be computed independently, before the historical rounds filter -- this fix only changes what gets STORED as history, never how points/champion are calculated");
@@ -120,8 +135,7 @@ test("CASE F: the champion/finalStandings computation happens via standingsList(
 // ---- Payment Penalty untouched ----
 
 test("this fix does not reference penalizedRounds/reconcilePenaltyLedger/penaltyPointsFor anywhere in the close-tournament handler -- Payment Penalty logic is completely untouched", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-close-tournament").addEventListener("click"');
-  const handlerBody = indexSrc.slice(idx, idx + 2200);
+  const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
   assert.ok(!handlerBody.includes("penaltyPointsFor"));
   assert.ok(!handlerBody.includes(".penalizedRounds"));

@@ -107,6 +107,12 @@ const SERVER_OWNED_INDEX_FIELDS = Object.freeze([
   "entitlement", "entitlementHistory",
   "lifecycleConsumedRoundIds", "lifecycleRoundsConsumed",
   "participantCount", "roundCount",
+  // MON-002C. The tournament cycle, its history, and what each cycle has
+  // spent. A browser that could write any of these could invent a scope, move
+  // a purchase onto a tournament it was not bought for, declare a tournament
+  // over, or reset a budget to zero — so none of them is ever taken from a
+  // request, on any path.
+  "tournamentScope", "scopeHistory", "consumedRoundIdsByScope",
 ]);
 
 // Applies an admin's edit onto the CURRENT (locked) index rather than
@@ -210,10 +216,28 @@ function findPurchaseForScope(history, scope) {
     const ent = h && h.entitlement;
     if (!ent || ent.plan !== "PLUS") continue;
     if (!(h.purchase === true || Number.isFinite(ent.pricePaidMXN))) continue;
-    if ((ent.competitionIdentity || null) !== (scope || null)) continue;
+    if (!purchaseMatchesScope(ent, scope)) continue;
     return ent;
   }
   return null;
+}
+
+// MON-002C moved the scope from `leagueId:season` to the internal tournament
+// scope id, because the old string could not tell Apertura from Clausura —
+// both produced "4350:2026-2027", so one purchase covered two tournaments.
+//
+// A purchase written before that migration has no scopeId. It can only ever
+// have been bought for the FIRST cycle, since there was no way to have a
+// second one, so it matches an `:e1` scope and nothing else. That preserves
+// the right that exists without inventing coverage for an edition nobody
+// paid for.
+function purchaseMatchesScope(entitlement, scope) {
+  const wanted = scope || null;
+  const bought = entitlement && typeof entitlement.scopeId === "string" && entitlement.scopeId !== ""
+    ? entitlement.scopeId : null;
+  if (bought) return bought === wanted;
+  if (!wanted) return (entitlement.competitionIdentity || null) === null;
+  return /:e1$/.test(wanted);
 }
 
 function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, grantedBy, reason, now }) {
@@ -237,6 +261,12 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   // anything the caller sent.
   const currentIdentity = entry.entitlement && entry.entitlement.competitionIdentity;
   if (currentIdentity && !granted.competitionIdentity) granted.competitionIdentity = currentIdentity;
+  // MON-002C: the tournament cycle this grant belongs to comes from the
+  // quiniela's CURRENT scope, read under lock — never from the caller. A
+  // grant that could name its own scope would be a way to attach a purchase
+  // to a tournament it was not bought for, in either direction.
+  const currentScopeId = entry.tournamentScope && entry.tournamentScope.id;
+  if (currentScopeId) granted.scopeId = currentScopeId;
 
   // ---- one purchase per quiniela per tournament (MON-002B QA fix) --------
   //
@@ -269,8 +299,10 @@ function applyEntitlementGrant({ index, paymentLog, entitlement, slug, grantId, 
   // shape to change rather than a hidden assumption to discover.
   //
   const currentPlan = entry.entitlement && !entry.entitlement.revoked ? entry.entitlement.plan : null;
-  const scope = granted.competitionIdentity || null;
-  const sameScope = (currentIdentity || null) === scope;
+  // The scope that decides "already on this plan" and "already bought" is the
+  // tournament cycle, not the league+season string it used to be.
+  const scope = granted.scopeId || null;
+  const sameScope = (currentScopeId || null) === scope;
   if (currentPlan === granted.plan && sameScope && granted.plan !== "MANUAL_GRANT") {
     // MANUAL_GRANT is excluded on purpose: re-issuing one is how an operator
     // ADJUSTS the numbers on an override, and it never records money, so it
@@ -407,6 +439,7 @@ module.exports = {
   mergePlatformIndex,
   applyEntitlementGrant,
   findPurchaseForScope,
+  purchaseMatchesScope,
   applyQuinielaSettings,
   ADMIN_EDITABLE_INDEX_FIELDS,
   SERVER_OWNED_INDEX_FIELDS,
