@@ -572,11 +572,58 @@ test("SECURITY: the new-cycle endpoint is Admin/owner only and runs in one locke
 
 test("SECURITY: the client never supplies a scope, a sequence or a lifecycle", () => {
   const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
-  // The ONLY thing read from the body is a display name.
+  // Exactly two things come from the body, and neither of them can decide
+  // anything: a display name, and a precondition (MON-002C QA-1).
   const bodyReads = handler.match(/body\.\w+/g) || [];
-  assert.deepEqual([...new Set(bodyReads)], ["body.name"], `el cuerpo solo puede aportar un nombre: ${bodyReads}`);
+  assert.deepEqual([...new Set(bodyReads)].sort(), ["body.expectedCycle", "body.name"],
+    `el cuerpo solo puede aportar un nombre y una precondición: ${bodyReads}`);
   assert.ok(handler.includes("tournamentScope.buildNextScope(previous"), "la secuencia sale del scope guardado");
   assert.ok(!handler.includes("body.scopeId") && !handler.includes("body.editionSeq") && !handler.includes("body.lifecycle"));
+});
+
+// MON-002C QA-1. expectedCycle is a FRESHNESS CONDITION, never an input to the
+// next cycle. The distinction is the whole point: expectedCycle=99 must be
+// refused, not produce e100.
+test("SECURITY: expectedCycle is a precondition, never the source of the new cycle", () => {
+  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
+  // It is compared, and that is all it is ever used for.
+  assert.ok(handler.includes("if (expectedCycle !== storedCycle) {"), "se compara contra lo guardado");
+  assert.ok(handler.includes("const storedCycle = entry.tournamentScope.editionSeq;"),
+    "y lo guardado se lee de la fila bloqueada, no del cuerpo");
+  // It never reaches the builder, is never assigned onto a scope, and is never
+  // arithmetic — any of those would make it an authority.
+  assert.ok(!/buildNextScope\([^)]*expectedCycle/.test(handler), "nunca entra al constructor del scope");
+  assert.ok(!/editionSeq\s*[:=]\s*expectedCycle/.test(handler), "nunca se asigna como secuencia");
+  assert.ok(!/expectedCycle\s*[+\-]/.test(handler), "nunca se hace aritmética con él");
+  // The comparison happens BEFORE anything is written.
+  assert.ok(handler.indexOf("if (expectedCycle !== storedCycle) {") < handler.indexOf("entry.tournamentScope = next;"),
+    "se compara antes de escribir nada");
+  // A mismatch rolls back and returns 409, so a stale click mutates nothing.
+  const branch = handler.slice(handler.indexOf("if (expectedCycle !== storedCycle) {"), handler.indexOf("const now = new Date().toISOString();"));
+  assert.ok(branch.includes('await client.query("ROLLBACK");'), "un desajuste no escribe nada");
+  assert.ok(branch.includes('res.status(409).json({ error: "stale_tournament_cycle"'), "y es recuperable, no un 500");
+});
+
+test("SECURITY: the precondition is validated only AFTER the caller is authorised", () => {
+  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
+  const forbidden = handler.indexOf('res.status(403).json({ error: "forbidden" })');
+  const invalid = handler.indexOf('res.status(400).json({ error: "invalid_expected_cycle" })');
+  const stale = handler.indexOf('res.status(409).json({ error: "stale_tournament_cycle"');
+  assert.ok(forbidden !== -1 && invalid !== -1 && stale !== -1);
+  assert.ok(forbidden < invalid,
+    "a quien no ha probado que puede llamar no se le dice nada sobre la forma del cuerpo");
+  assert.ok(invalid < stale, "y la forma se valida antes que la frescura");
+});
+
+// Shape rules, asserted as the code states them rather than restated here.
+test("SECURITY: only a whole positive number is a usable precondition", () => {
+  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
+  assert.ok(handler.includes("!Number.isSafeInteger(expectedCycle) || expectedCycle < 1"),
+    "null, cadenas, flotantes, negativos y números fuera del rango seguro se rechazan");
+  // No coercion anywhere: a string that happens to look like a number is not
+  // a precondition, it is a caller that did not read the contract.
+  assert.ok(!/Number\(expectedCycle\)|parseInt\(expectedCycle|\+expectedCycle/.test(handler),
+    "nunca se convierte el valor recibido");
 });
 
 test("SECURITY: a grant takes its cycle from the locked row, never from the caller", () => {
@@ -613,7 +660,7 @@ test("SECURITY: monetisation never reads a provider id directly", () => {
 test("FRONTEND: the tournament helpers are declared as siblings, not buried inside another function", () => {
   const lines = indexSrc.split("\n");
   const helpers = [
-    "async function apiStartNewTournament(name){",
+    "async function apiStartNewTournament(name, expectedCycle){",
     "function tournamentStatusHtml(plan){",
     "function tournamentEndedCardHtml(plan){",
     "async function startNewTournamentFlow(plan){",
@@ -694,6 +741,86 @@ test("FRONTEND: closing the tournament actually starts the next one", () => {
   // The two actions no longer both claim to start a new tournament.
   assert.ok(indexSrc.includes("Empezar un torneo nuevo sin cerrar este"),
     "la acción sin archivar se distingue de la de cerrar");
+});
+
+// MON-002C QA-1. What the screen does with a 409 is half the fix: retrying by
+// itself would start a SECOND tournament nobody asked for.
+test("FRONTEND: a stale click refreshes and explains — it never retries by itself", () => {
+  for (const fn of [
+    blockFrom(indexSrc, "async function startNewTournamentFlow(plan)"),
+    blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener'),
+  ]) {
+    const code = stripComments(fn);
+    const at = code.indexOf('stale_tournament_cycle');
+    assert.ok(at !== -1, "el 409 se maneja explícitamente, no cae en el error genérico");
+    const branch = code.slice(at, code.indexOf("return;", at) + 7);
+    assert.ok(branch.includes("invalidatePlan()"), "refresca el estado");
+    assert.ok(/toast\(/.test(branch), "y se lo dice a la persona");
+    assert.ok(branch.includes("return;"), "y se detiene ahí");
+    // The one thing it must never do.
+    assert.ok(!branch.includes("apiStartNewTournament"), "jamás reintenta solo");
+  }
+  // The message is human, and says what happened rather than naming a code.
+  assert.ok(indexSrc.includes("El torneo ya cambió. Actualizamos la pantalla."));
+  assert.ok(indexSrc.includes('stale_tournament_cycle: "El torneo ya cambió'),
+    "y también está en el diccionario de errores, para cualquier otro camino");
+});
+
+test("FRONTEND: the cycle it sends is the one the screen was showing", () => {
+  const flow = stripComments(blockFrom(indexSrc, "async function startNewTournamentFlow(plan)"));
+  assert.ok(flow.includes("const expectedCycle = plan && plan.tournament && plan.tournament.cycle;"),
+    "sale de lo que el servidor ya reportó, no de un contador del navegador");
+  assert.ok(flow.includes("apiStartNewTournament(name.trim(), expectedCycle)"));
+  // Without a readable cycle it refuses rather than inventing one — sending a
+  // made-up number is exactly what the precondition exists to stop.
+  assert.ok(/if\(!Number\.isSafeInteger\(expectedCycle\) \|\| expectedCycle < 1\)/.test(flow),
+    "sin un ciclo legible, no manda nada");
+  const closeFn = stripComments(blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener'));
+  assert.ok(closeFn.includes("apiStartNewTournament(null, expectedCycle)"),
+    "cerrar torneo manda la misma precondición");
+  assert.ok(/if\(!Number\.isSafeInteger\(expectedCycle\) \|\| expectedCycle < 1\)/.test(closeFn));
+  // Nothing is archived or cleared on a stale close.
+  const staleAt = closeFn.indexOf("stale_tournament_cycle");
+  const staleBranch = closeFn.slice(staleAt, closeFn.indexOf("return;", staleAt));
+  assert.ok(!staleBranch.includes("meta.rounds = []") && !staleBranch.includes("pastTournaments"),
+    "un cierre viejo no archiva ni despeja nada");
+});
+
+// Un P2 encontrado en el navegador durante QA-1: toast() cuelga el mensaje de
+// `root`, y render() reemplaza root.innerHTML entero. Avisar y repintar en ese
+// orden destruye el aviso en el mismo tick — la persona no lee nada. La prueba
+// del navegador que "pasaba" antes coincidía con el texto de Ajustes, no con
+// el aviso; ésta mira el orden real de las llamadas.
+test("FRONTEND: se repinta primero y se avisa después, o el aviso no se ve", () => {
+  const repaints = /\b(render|renderAdmin)\s*\(/;
+  for (const [name, fn] of [
+    ["startNewTournamentFlow", blockFrom(indexSrc, "async function startNewTournamentFlow(plan)")],
+    ["cerrar torneo", blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener')],
+  ]) {
+    const code = stripComments(fn);
+    // Cada rama que repinta debe hacerlo ANTES de su toast.
+    const lines = code.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!repaints.test(lines[i])) continue;
+      // Busca el toast más cercano hacia atrás dentro de la misma rama (hasta
+      // el `if` o el inicio del bloque anterior).
+      for (let j = i - 1; j >= 0 && j > i - 12; j--) {
+        if (/\bif\s*\(|\breturn;|\}/.test(lines[j])) break;
+        assert.ok(!/\btoast\s*\(/.test(lines[j]),
+          `${name}: toast() en la línea ${j} se emite justo antes de repintar en la ${i} — el aviso se pierde\n  ${lines[j].trim()}\n  ${lines[i].trim()}`);
+      }
+    }
+  }
+});
+
+test("FRONTEND: double click is defended too, but as a second line and not the fix", () => {
+  const wire = stripComments(blockFrom(indexSrc, "function wireTournamentActions(scope)"));
+  assert.ok(wire.includes("btn.disabled = true;"), "el botón se deshabilita mientras corre");
+  assert.ok(wire.includes("btn.disabled = false;"));
+  // But the real guarantee is server-side: the browser cannot be the thing
+  // that stops a second transition.
+  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
+  assert.ok(handler.includes("if (expectedCycle !== storedCycle) {"));
 });
 
 test("FRONTEND: the tournament surface is Admin-only", () => {

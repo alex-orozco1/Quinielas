@@ -1836,6 +1836,33 @@ app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), as
   const displayName = typeof body.name === "string" && body.name.trim() !== ""
     ? body.name.trim().slice(0, 120) : null;
 
+  // MON-002C QA-1: the freshness precondition. WITHOUT it, holding a lock only
+  // serialises the two writers — it does not stop them both writing. Two tabs
+  // both loaded on cycle 1 produced e1->e2 and then e2->e3, and five tabs
+  // produced five cycles; a double click or a retry after a commit did the
+  // same. Each of those transitions also resets the entitlement, so a Plus
+  // bought in between could be destroyed by a stale second click.
+  //
+  // `expectedCycle` says WHICH cycle the Admin was looking at when they
+  // pressed the button. It is a precondition and nothing else:
+  //
+  //   - it never chooses the next cycle (buildNextScope computes that from the
+  //     STORED scope, so expectedCycle=99 can never produce e100);
+  //   - it is compared INSIDE the transaction, after the lock, against the row
+  //     that was just re-read — which is what makes the second writer see the
+  //     first writer's commit;
+  //   - a mismatch writes nothing at all and is recoverable: the screen
+  //     refreshes and the Admin decides again.
+  //
+  // Required, not optional. A caller that may omit it is a caller that can
+  // opt out of the guard, which is the bug rather than a fallback for it.
+  //
+  // It is VALIDATED further down, after authorisation — never here. Answering
+  // "your body is malformed" to somebody who has not proven they may call this
+  // endpoint at all tells them something about the request shape before they
+  // have earned any answer but 403.
+  const expectedCycle = body.expectedCycle;
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1854,6 +1881,13 @@ app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), as
       await client.query("ROLLBACK");
       return res.status(403).json({ error: "forbidden" });
     }
+    // Shape before freshness: a body that is not a whole positive number is not
+    // a stale precondition, it is not a precondition at all. Nothing has been
+    // written at this point, so this rollback leaves the row untouched.
+    if (!Number.isSafeInteger(expectedCycle) || expectedCycle < 1) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "invalid_expected_cycle" });
+    }
     const entry = platformIdx && Array.isArray(platformIdx.quinielas)
       ? platformIdx.quinielas.find((q) => q.slug === slug)
       : null;
@@ -1861,6 +1895,19 @@ app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), as
       console.error("new-cycle blocked: incomplete platform_index entry", { slug });
       await client.query("ROLLBACK");
       return res.status(402).json({ error: "entitlement_unavailable" });
+    }
+
+    // The precondition, checked against the row read under lock a few lines
+    // above. Everything before this point is a read; nothing has been written,
+    // so a rollback here leaves the quiniela exactly as it was.
+    const storedCycle = entry.tournamentScope.editionSeq;
+    if (expectedCycle !== storedCycle) {
+      await client.query("ROLLBACK");
+      console.log("new-cycle refused: stale cycle", { slug, expectedCycle, storedCycle });
+      // The current cycle travels back so the screen can say what actually
+      // happened without another round trip. It is the same number /plan
+      // already reports, so nothing new is exposed.
+      return res.status(409).json({ error: "stale_tournament_cycle", currentCycle: storedCycle });
     }
 
     const now = new Date().toISOString();

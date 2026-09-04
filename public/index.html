@@ -1400,6 +1400,8 @@
     competition_identity_unavailable: "No pudimos identificar la competencia de esta quiniela. Revisa la liga y la temporada en Ajustes.",
     league_change_blocked: "Ya no puedes cambiar la liga: esta quiniela ya empezó a jugar.",
     invalid_grant_id: "No se pudo registrar el cambio de plan. Vuelve a intentarlo.",
+    stale_tournament_cycle: "El torneo ya cambió. Actualizamos la pantalla.",
+    invalid_expected_cycle: "No pudimos leer el estado del torneo. Recarga la página e intenta de nuevo.",
     grant_id_conflict: "Ese registro de cobro ya existe para otra quiniela. Actualizamos los datos; vuelve a intentarlo.",
     entitlement_scope_mismatch: "Tu plan corresponde a un torneo anterior. Empieza el torneo nuevo desde Ajustes para continuar.",
     invalid_limits: "Esos límites no son válidos.",
@@ -1547,14 +1549,18 @@
   // MON-002C: la única acción que mueve una quiniela de un torneo al
   // siguiente. No cobra nada y no borra nada; el servidor conserva
   // participantes, jornadas, resultados e historial.
-  async function apiStartNewTournament(name){
+  // expectedCycle es el torneo que esta pestaña estaba viendo. No elige nada:
+  // el servidor calcula el ciclo siguiente desde lo que tiene guardado, y si
+  // este número ya quedó viejo (otra pestaña, un doble click, un reintento
+  // después de que la petición sí entró) responde 409 y no escribe nada.
+  async function apiStartNewTournament(name, expectedCycle){
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
       if(cred) headers["X-Qracks-Auth"] = cred;
       const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/new-cycle", {
         method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ name: name || null })
+        body: JSON.stringify({ name: name || null, expectedCycle })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, ...data };
@@ -4589,6 +4595,13 @@
 
   // El diálogo dice lo único que puede sorprender: el Plus no se transfiere.
   async function startNewTournamentFlow(plan){
+    // Sin un ciclo que citar no hay precondición que mandar, y mandar algo
+    // inventado sería justo lo que la precondición existe para impedir.
+    const expectedCycle = plan && plan.tournament && plan.tournament.cycle;
+    if(!Number.isSafeInteger(expectedCycle) || expectedCycle < 1){
+      toast("No pudimos leer el estado del torneo. Recarga la página e intenta de nuevo.");
+      return;
+    }
     const hadPlus = !!(plan && plan.plan && plan.plan !== "FREE");
     const message = (hadPlus
       ? "Tu Plus anterior no se transfiere: el torneo nuevo empieza en Gratis, y puedes pasarlo a Plus cuando quieras.\n\n"
@@ -4606,7 +4619,20 @@
     });
     if(name === null) return;
 
-    const r = await apiStartNewTournament(name.trim());
+    const r = await apiStartNewTournament(name.trim(), expectedCycle);
+    if(r.error === "stale_tournament_cycle"){
+      // Alguien más ya lo hizo (otra pestaña, otro admin, o esta misma
+      // pantalla que quedó vieja). NO se reintenta solo: reintentar sería
+      // empezar un SEGUNDO torneo sin que nadie lo haya pedido. Se refresca y
+      // se le dice qué pasó; si de verdad quiere otro, vuelve a apretar.
+      invalidatePlan();
+      // El orden importa: toast() cuelga el mensaje de `root`, y render()
+      // reemplaza root.innerHTML entero — avisar antes de repintar destruye el
+      // aviso en el mismo tick y la persona no llega a leer nada.
+      render();
+      toast("El torneo ya cambió. Actualizamos la pantalla.");
+      return;
+    }
     if(!r.ok){
       toast(ERROR_MESSAGES[r.error] || "No se pudo empezar el torneo nuevo, intenta de nuevo");
       return;
@@ -4617,8 +4643,9 @@
       window.localStorage.removeItem(planWarningKey("people"));
       window.localStorage.removeItem(planWarningKey("rounds"));
     }catch(e){}
-    toast("✅ Listo, empezaste un torneo nuevo. Tu historial sigue completo.");
+    // Repintar primero, avisar después: si no, el toast muere con el render.
     render();
+    toast("✅ Listo, empezaste un torneo nuevo. Tu historial sigue completo.");
   }
 
   function wireTournamentActions(scope){
@@ -6637,7 +6664,21 @@
       // nada y el Admin puede reintentar; al revés, una falla aquí lo dejaría
       // sin jornadas y sin torneo nuevo, que es exactamente el estado del que
       // este arreglo lo saca.
-      const cycle = await apiStartNewTournament(null);
+      const expectedCycle = planNow && planNow.tournament && planNow.tournament.cycle;
+      if(!Number.isSafeInteger(expectedCycle) || expectedCycle < 1){
+        toast("No pudimos leer el estado del torneo. Recarga la página e intenta de nuevo.");
+        return;
+      }
+      const cycle = await apiStartNewTournament(null, expectedCycle);
+      if(cycle.error === "stale_tournament_cycle"){
+        // El torneo ya lo cerró alguien más, o esta pantalla quedó vieja. No
+        // se reintenta ni se archiva nada: archivar ahora guardaría la tabla
+        // de un torneo que ya no es el vigente.
+        invalidatePlan();
+        renderAdmin(document.getElementById("qz-main"));
+        toast("El torneo ya cambió. Actualizamos la pantalla.");
+        return;
+      }
       if(!cycle.ok){
         toast(ERROR_MESSAGES[cycle.error] || "No se pudo cerrar el torneo, intenta de nuevo");
         return;
@@ -6670,15 +6711,18 @@
           window.localStorage.removeItem(planWarningKey("people"));
           window.localStorage.removeItem(planWarningKey("rounds"));
         }catch(e){}
-        toast(champion
+      }
+      const closeMsg = ok
+        ? (champion
           ? `Torneo cerrado 🏆 Campeón: ${champion.name}. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.`
-          : "Torneo cerrado. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.");
-      } else {
+          : "Torneo cerrado. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.")
         // El ciclo nuevo SÍ quedó: se dice, para que nadie vuelva a cerrarlo
         // creyendo que no pasó nada.
-        toast("Empezaste el torneo nuevo, pero no se pudo archivar la tabla final. Intenta guardar de nuevo.");
-      }
+        : "Empezaste el torneo nuevo, pero no se pudo archivar la tabla final. Intenta guardar de nuevo.";
+      // Siempre repintar antes de avisar: un toast emitido antes del repintado
+      // se pierde si el repintado reemplaza el contenedor donde vive.
       renderAdmin(document.getElementById("qz-main"));
+      toast(closeMsg);
     });
 
     const migrateBtn = document.getElementById("qz-migrate-btn");
