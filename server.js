@@ -28,6 +28,12 @@ const {
   readParticipantsRevision, readParticipantRev, mergeParticipants, stampMetaRevisions,
   readTournamentEpoch,
 } = require("./metaParticipants");
+// HOTFIX-001. Who is allowed to replace meta.rounds, and what the server keeps
+// when the answer is "not this writer". See roundsConcurrency.js for the bug
+// this closes and why tournamentEpoch did not already cover it.
+const {
+  storedRoundsRevision, resolveRoundsWrite, stampRoundsRevision,
+} = require("./roundsConcurrency");
 const tournamentScope = require("./tournamentScope");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
@@ -247,6 +253,22 @@ async function ensureTable() {
   );
   const secretRow = await pool.query("SELECT value FROM kv WHERE key = '__session_secret__'");
   sessionSecret = secretRow.rows[0].value;
+
+  // HOTFIX-001 backfill. Every quiniela meta row written from now on carries a
+  // server-owned board revision; the ones that already exist do not, and until
+  // they do their Admin is in the one state this protocol must never produce —
+  // no revision to have seen, so no way to prove they saw it. Stamping them at
+  // 0 costs one UPDATE per boot after the first and makes the protection
+  // effective for existing data immediately, instead of one write later.
+  // jsonb_set with create_missing=true only touches rows that lack the key, and
+  // `WHERE NOT ... ? 'roundsRevision'` makes reboots after the first a no-op.
+  await pool.query(`
+    UPDATE kv
+       SET value = jsonb_set(value, '{roundsRevision}', '0'::jsonb, true)
+     WHERE (key = 'quiniela_meta_v1' OR key LIKE 'quiniela:%:meta')
+       AND jsonb_typeof(value) = 'object'
+       AND NOT (value ? 'roundsRevision')
+  `);
 
   // Growth Loop funnel events — a plain table (not the kv blob store) since
   // this grows by appending rows, and needs to stay simply queryable
@@ -502,6 +524,12 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
     // the first place. published === undefined (legacy rounds) stays
     // visible, same as always.
     clone.rounds = clone.rounds.filter((r) => r.published !== false);
+    // HOTFIX-001. This copy of the board is DELIBERATELY incomplete, so it must
+    // never be usable as proof of having seen the real one. Dropping the
+    // revision means a write built from a participant's view can only ever be
+    // judged as "did not say which board it saw" — refused if it proposes a
+    // different board, which is precisely what a filtered echo would be.
+    delete clone.roundsRevision;
   }
   return clone;
 }
@@ -590,9 +618,32 @@ const META_RESERVED_COMMERCIAL_FIELDS = Object.freeze([
   "lastClose",
 ]);
 
-function mergeProtectedMetaFields(oldValue, newValue, authTier) {
+// HOTFIX-001. The ONE call every meta write path makes before persisting.
+// stampMetaRevisions() already carried the participant revisions; the board now
+// travels with it, so a path cannot pick up one protection and quietly miss the
+// other. Every `putRow(<a quiniela's meta key>, ...)` in this file goes through
+// here — enforced by a structural test, because the failure mode of forgetting
+// one is silent data loss, which is exactly what this ticket is about.
+function stampMetaWrite(doc, oldValue) {
+  return stampRoundsRevision(stampMetaRevisions(doc, oldValue), oldValue);
+}
+
+// HOTFIX-001. `roundsWrite` is the verdict resolveRoundsWrite() reached against
+// the row read UNDER LOCK, and it is the ONLY source of the board that gets
+// stored. Taking newValue.rounds directly — what this function used to do — is
+// the lost update: a writer arbitrarily far behind replaced the whole array and
+// the server said 200.
+function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
   const merged = JSON.parse(JSON.stringify(newValue));
   META_RESERVED_COMMERCIAL_FIELDS.forEach((f) => { delete merged[f]; });
+  // The revision is server-owned, exactly like participantsRevision: whatever
+  // the request carried was a CLAIM about what its writer had seen, already
+  // spent by resolveRoundsWrite(). It must never survive into the stored row —
+  // stampMetaWrite() below computes the value that does.
+  delete merged.roundsRevision;
+  merged.rounds = roundsWrite
+    ? JSON.parse(JSON.stringify(roundsWrite.rounds))
+    : (Array.isArray(oldValue && oldValue.rounds) ? oldValue.rounds : []);
 
   // MON-002C QA-2. Two things in meta are written by the SERVER, on the close
   // path, and a request can only ever echo a stale copy of them back.
@@ -694,7 +745,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   // taken from the request — the incoming one was only ever a claim about
   // what the writer had seen. Nothing about the merge itself is persisted.
   return {
-    value: stampMetaRevisions(merged, oldValue),
+    value: stampMetaWrite(merged, oldValue),
     participantsRestored: participantMerge.restored,
     participantsRefreshed: participantMerge.refreshed,
     roundsRestored: roundsAreStale,
@@ -1066,7 +1117,7 @@ app.post("/api/submit-bet-answer", async (req, res) => {
       if (!participant.customBetAnswers) participant.customBetAnswers = {};
       const prevCorrect = participant.customBetAnswers[betId] ? participant.customBetAnswers[betId].correct : null;
       participant.customBetAnswers[betId] = { guess: cleanGuess, correct: prevCorrect };
-      const storedAfterAnswer = stampMetaRevisions(value, beforeAnswer);
+      const storedAfterAnswer = stampMetaWrite(value, beforeAnswer);
       await putRow(metaKey, storedAfterAnswer, client);
       await client.query("COMMIT");
       res.json({ ok: true, participantRevs: participantRevMap(storedAfterAnswer) });
@@ -1204,7 +1255,57 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(403).json({ error: "unauthorized" });
         }
-        const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier);
+        // HOTFIX-001. Un documento de quiniela es siempre un OBJETO. Se exige
+        // explícitamente, en el mismo orden que ya usan las demás rutas
+        // (404 -> 403 -> 400), porque a partir de aquí todo lo que sigue
+        // asigna campos sobre él: entregado un array o un primitivo, esas
+        // asignaciones no hacen nada en silencio y el fallo aparece varias
+        // líneas más abajo como un 500 sin relación aparente. Falla cerrado.
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "invalid_value" });
+        }
+
+        // HOTFIX-001. Decided BEFORE anything is merged, checked or charged,
+        // against the row read under lock — and after authorisation, so an
+        // unauthenticated caller learns nothing about the board's state.
+        //
+        // A stale write must not reach the entitlement block below: rejecting
+        // it here, on a transaction that ends in ROLLBACK, is what guarantees
+        // the ticket's billing rule that a refused write consumes nothing. It
+        // cannot consume a jornada because it never records one.
+        const roundsWrite = resolveRoundsWrite({ stored: oldValue, incoming: value });
+        if (roundsWrite.outcome === "invalid") {
+          await client.query("ROLLBACK");
+          // A board that cannot exist (two rounds sharing an id, a match with
+          // no id) is refused rather than repaired: guessing what the writer
+          // meant is the silent behaviour this ticket removes.
+          return res.status(400).json({
+            error: roundsWrite.reason, roundId: roundsWrite.roundId,
+            matchId: roundsWrite.matchId, roundNumber: roundsWrite.roundNumber,
+          });
+        }
+        if (roundsWrite.outcome === "conflict") {
+          await client.query("ROLLBACK");
+          console.log("meta write refused: stale rounds", {
+            slug: info.slug, claimed: roundsWrite.claimedRevision, stored: roundsWrite.storedRevision,
+          });
+          // 409, never 200: this write proposed a DIFFERENT board from a
+          // snapshot that had already been overtaken, so applying it would
+          // delete or revert somebody else's change. Nothing at all is
+          // written — not even the parts of the document that had no
+          // conflict — because a half-applied save is its own silent loss.
+          // The current revision goes back so the browser can reconcile and
+          // confirm its refetch actually landed on this state.
+          return res.status(409).json({
+            error: "rounds_conflict",
+            roundsRevision: roundsWrite.storedRevision,
+            participantsRevision: readParticipantsRevision(oldValue),
+            tournamentEpoch: readTournamentEpoch(oldValue),
+          });
+        }
+
+        const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier, roundsWrite);
         const mergedValue = metaMerge.value;
         const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
         if (!roundsCheck.ok) {
@@ -1385,6 +1486,16 @@ app.post("/api/kv/:key", async (req, res) => {
           // que se conservó el guardado. Decirlo evita que el Admin crea que
           // sus jornadas "se borraron solas".
           roundsRestored: metaMerge.roundsRestored,
+          // HOTFIX-001. The board's server-owned revision, so this tab's NEXT
+          // save is judged against the state it just created instead of the
+          // one it had loaded. Without it a tab would conflict with itself
+          // after every successful write.
+          roundsRevision: storedRoundsRevision(mergedValue),
+          // True when this write said nothing about the board at all (no
+          // `rounds` array, or `rounds: null`). The stored board was kept.
+          // Said out loud rather than absorbed, so a client that meant to send
+          // one and did not finds out.
+          roundsPreserved: roundsWrite.outcome === "no_statement",
           // The revs this write produced, so the tab that made it stays
           // current for its OWN next save instead of being judged stale
           // against the very state it just created.
@@ -1571,7 +1682,7 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
       // next ordinary save would write the OLD pin straight back over it.
       const beforePinChange = JSON.parse(JSON.stringify(value));
       participant.pin = hashPassword(newPin);
-      const storedAfterPin = stampMetaRevisions(value, beforePinChange);
+      const storedAfterPin = stampMetaWrite(value, beforePinChange);
       await putRow(metaKey, storedAfterPin, client);
       await client.query("COMMIT");
       issueSessionCookie(res, slug, participant);
@@ -1713,13 +1824,23 @@ app.post("/api/self-register", async (req, res) => {
     // revision — which is precisely what later marks an Admin tab loaded
     // before this moment as stale, so that tab's next save keeps this person
     // instead of overwriting them away (see metaParticipants.js).
-    const beforeRegistration = { participants: value.participants, participantsRevision: readParticipantsRevision(value) };
+    // HOTFIX-001: `rounds`/`roundsRevision` are part of this snapshot even
+    // though registering nobody touches them. stampMetaWrite() computes the
+    // stored board revision by comparing against what it is given, so a
+    // snapshot that omitted the board would look like "the board changed" and
+    // reset a revision every open Admin tab is being judged against.
+    const beforeRegistration = {
+      participants: value.participants,
+      participantsRevision: readParticipantsRevision(value),
+      rounds: value.rounds,
+      roundsRevision: storedRoundsRevision(value),
+    };
     value.participants = value.participants.concat([newParticipant]);
     if (entry) {
       entry.participantCount = value.participants.length;
       await putRow("platform_index", platformIdx, client);
     }
-    const storedAfterRegistration = stampMetaRevisions(value, beforeRegistration);
+    const storedAfterRegistration = stampMetaWrite(value, beforeRegistration);
     await putRow(metaKey, storedAfterRegistration, client);
     await client.query("COMMIT");
     // MON-001C fix #3: the session cookie's quiniela identity must be the
@@ -2249,7 +2370,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // Both rows, one COMMIT. This is the whole fix: there is no window in
     // which the cycle has moved and the board has not.
     await putRow("platform_index", stampVersion(platformIdx, readStoredVersion(platformIdx)), client);
-    await putRow(metaKey, stampMetaRevisions(meta, metaBefore), client);
+    await putRow(metaKey, stampMetaWrite(meta, metaBefore), client);
     await client.query("COMMIT");
     res.json({
       ok: true, replayed: false,
@@ -2321,6 +2442,10 @@ app.post("/api/create-quiniela", async (req, res) => {
       groupName: cleanGroupName,
       participants: [{ id: creatorId, name: cleanCreatorName, isAdmin: true, paid: false, pin: null }],
       rounds: [],
+      // HOTFIX-001: the board's revision exists from the first byte, so the
+      // very first Admin save is judged by the same rule as every later one
+      // rather than being waved through as a legacy document.
+      roundsRevision: 0,
       settings: {
         ownerPassword: hashPassword(cleanPassword),
         entryFee: 0,
@@ -2429,7 +2554,12 @@ app.post("/api/migrate-quiniela", async (req, res) => {
       return res.status(409).json({ error: "slug_taken" });
     }
 
-    await putRow(targetKey, meta, client);
+    // HOTFIX-001: compared against ITSELF on purpose — migrating copies the
+    // board unchanged to a new key, so the revision must be carried over, not
+    // advanced (a legacy row with none starts at 0). Participant revisions are
+    // deliberately left exactly as this path already handled them; nothing
+    // about them changes here.
+    await putRow(targetKey, stampRoundsRevision(meta, meta), client);
 
     for (const p of (meta.participants || [])) {
       const oldPicksKey = `quiniela_picks_${p.id}_v1`;
@@ -2717,7 +2847,10 @@ app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
     }
     // Both rows in the SAME transaction: either both changes land or neither
     // does.
-    await putRow(metaKey, result.meta, client);
+    // HOTFIX-001: this path never touches the board, and stamping against the
+    // row read under lock is what proves it — a revision that moved here would
+    // mean something changed that nobody asked to change.
+    await putRow(metaKey, stampRoundsRevision(result.meta, meta), client);
     await putRow("platform_index", result.index, client);
     await client.query("COMMIT");
     res.json({ ok: true, indexVersion: result.index.version });
@@ -3130,8 +3263,15 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     });
 
     if (newRounds.length) {
+      // HOTFIX-001. The board BEFORE the import, captured from the row read
+      // under lock, so the revision advances exactly once and by exactly the
+      // change this import made. Without it an Admin tab that loaded before
+      // the sync would still look fresh, and its next ordinary save would
+      // replace the imported calendar with the board it had — reproduced
+      // against a live server as scenario 2 of this ticket.
+      const boardBeforeImport = { rounds: meta.rounds, roundsRevision: storedRoundsRevision(meta) };
       meta.rounds = [...(meta.rounds || []), ...newRounds].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
-      await putRow(metaKey, meta, client);
+      await putRow(metaKey, stampRoundsRevision(meta, boardBeforeImport), client);
     }
 
     await client.query("COMMIT");
