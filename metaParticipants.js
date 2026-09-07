@@ -319,7 +319,28 @@ function stampMetaRevisions(doc, oldValue) {
   return stampParticipantsRevision(stampParticipantRevisions(doc, oldValue), oldValue);
 }
 
+// ---- the tournament epoch (MON-002C QA-2) --------------------------------
+//
+// Closing a tournament is the one thing that empties meta.rounds on the
+// server's own initiative, and an Admin tab that loaded BEFORE the close still
+// holds the full board. Its next ordinary save — renaming the group, editing a
+// setting — would put those rounds back and delete the archive with them:
+// reproduced against a live server, the archive vanished, the board came back,
+// and the restored rounds were charged to the NEW tournament's budget.
+//
+// Participants already had an answer to this exact shape of problem (see
+// mergeParticipants): the stored row wins over a writer that is behind. The
+// epoch is the same idea for the board. It counts closes, it is written only
+// by the server, and a document carrying an older one is by definition a
+// pre-close view — so its `rounds` are not an update, they are an echo of
+// something that has since been archived.
+function readTournamentEpoch(doc) {
+  const v = doc && doc.tournamentEpoch;
+  return Number.isSafeInteger(v) && v >= 0 ? v : 0;
+}
+
 module.exports = {
+  readTournamentEpoch,
   readParticipantsRevision,
   readParticipantRev,
   participantSignature,

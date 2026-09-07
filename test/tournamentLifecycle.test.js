@@ -64,6 +64,28 @@ function blockFrom(source, marker) {
   throw new Error(`bloque sin cerrar: ${marker}`);
 }
 
+// blockFrom() engancha la PRIMERA llave tras el marcador, que en una función
+// con parámetros destructurados es la del destructuring, no la del cuerpo.
+// Esto salta hasta el paréntesis que cierra la lista de parámetros y toma la
+// llave siguiente, que sí abre el cuerpo.
+function fnBody(source, signature) {
+  const at = source.indexOf(signature);
+  assert.ok(at !== -1, `no se encontró: ${signature}`);
+  let i = source.indexOf("(", at);
+  let parens = 0;
+  for (; i < source.length; i++) {
+    if (source[i] === "(") parens++;
+    else if (source[i] === ")") { parens--; if (parens === 0) break; }
+  }
+  const braceStart = source.indexOf("{", i);
+  let depth = 0;
+  for (let j = braceStart; j < source.length; j++) {
+    if (source[j] === "{") depth++;
+    else if (source[j] === "}") { depth--; if (depth === 0) return source.slice(at, j + 1); }
+  }
+  throw new Error(`función sin cerrar: ${signature}`);
+}
+
 const ligaMx = { sportKey: "football", provider: "thesportsdb", competitionId: "4350" };
 const scopeFor = (seq, over = {}) => ({ ...T.buildScope({ ...ligaMx, editionSeq: seq, ...over }) });
 
@@ -255,9 +277,17 @@ test("SCOPE: a corrupted cycle number produces NO next cycle, never a silent res
     const next = T.buildNextScope(broken, { ...ligaMx });
     assert.equal(next, null, `una secuencia rota (${JSON.stringify(broken)}) no puede volver a e1`);
   }
-  // And the endpoint fails the request rather than proceeding without one.
-  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
-  assert.ok(/if\s*\(!next\)\s*\{[\s\S]{0,120}ROLLBACK/.test(handler), "sin ciclo nuevo, no se escribe nada");
+  // El constructor devuelve null, y TODOS los llamadores fallan cerrado.
+  const advance = stripComments(fnBody(serverSrc, "function advanceTournamentCycle("));
+  assert.ok(advance.includes("if (!next) return null;"), "sin ciclo nuevo, el helper no inventa uno");
+  for (const marker of [
+    'app.post("/api/quinielas/:slug/tournament/new-cycle"',
+    'app.post("/api/quinielas/:slug/tournament/close"',
+  ]) {
+    const handler = stripComments(blockFrom(serverSrc, marker));
+    assert.ok(/if\s*\(!moved\)\s*\{[\s\S]{0,120}ROLLBACK/.test(handler),
+      `${marker}: sin ciclo nuevo, no se escribe nada`);
+  }
 });
 
 
@@ -571,14 +601,36 @@ test("SECURITY: the new-cycle endpoint is Admin/owner only and runs in one locke
 });
 
 test("SECURITY: the client never supplies a scope, a sequence or a lifecycle", () => {
-  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
-  // Exactly two things come from the body, and neither of them can decide
-  // anything: a display name, and a precondition (MON-002C QA-1).
-  const bodyReads = handler.match(/body\.\w+/g) || [];
-  assert.deepEqual([...new Set(bodyReads)].sort(), ["body.expectedCycle", "body.name"],
-    `el cuerpo solo puede aportar un nombre y una precondición: ${bodyReads}`);
-  assert.ok(handler.includes("tournamentScope.buildNextScope(previous"), "la secuencia sale del scope guardado");
-  assert.ok(!handler.includes("body.scopeId") && !handler.includes("body.editionSeq") && !handler.includes("body.lifecycle"));
+  // Two endpoints move a cycle now, and BOTH have to hold the line.
+  const expected = {
+    'app.post("/api/quinielas/:slug/tournament/new-cycle"': ["body.expectedCycle", "body.name"],
+    // El cierre agrega la intención (token de correlación). La tabla final
+    // entra por sanitizeCloseSummary(), no por el handler — ver abajo.
+    'app.post("/api/quinielas/:slug/tournament/close"': ["body.closeIntentId", "body.expectedCycle", "body.name"],
+  };
+  for (const [marker, allowed] of Object.entries(expected)) {
+    const handler = stripComments(blockFrom(serverSrc, marker));
+    const bodyReads = handler.match(/body\.\w+/g) || [];
+    assert.deepEqual([...new Set(bodyReads)].sort(), allowed,
+      `${marker}: el cuerpo sólo puede aportar ${allowed.join(", ")} — trae ${bodyReads}`);
+    assert.ok(!handler.includes("body.scopeId") && !handler.includes("body.editionSeq") && !handler.includes("body.lifecycle"));
+  }
+  // La secuencia sale del scope guardado, en la única implementación que hay.
+  const advance = stripComments(fnBody(serverSrc, "function advanceTournamentCycle("));
+  assert.ok(advance.includes("tournamentScope.buildNextScope(previous"), "la secuencia sale del scope guardado");
+  // Y hay UNA sola implementación: dos copias podrían divergir, y cerrar
+  // avanzaría el ciclo distinto de empezar uno nuevo.
+  assert.equal((stripComments(serverSrc).match(/tournamentScope\.buildNextScope\(/g) || []).length, 1,
+    "una sola implementación de la transición");
+  // La tabla final es lo ÚNICO que el cierre acepta como contenido, y entra
+  // por un solo embudo que la acota y la sanea.
+  const sanitizer = stripComments(fnBody(serverSrc, "function sanitizeCloseSummary("));
+  assert.ok(sanitizer.includes("body.standings"), "la tabla entra por el sanitizador");
+  assert.ok(sanitizer.includes("MAX_ARCHIVED_STANDINGS"), "y viene acotada");
+  assert.ok(sanitizer.includes("const champion = standings.length ? { ...standings[0] } : null;"),
+    "el campeón se deriva de la tabla saneada, no se recibe aparte");
+  assert.ok(!/body\.champion/.test(stripComments(serverSrc)),
+    "un campeón mandado por el cliente no se lee en ninguna parte");
 });
 
 // MON-002C QA-1. expectedCycle is a FRESHNESS CONDITION, never an input to the
@@ -595,13 +647,20 @@ test("SECURITY: expectedCycle is a precondition, never the source of the new cyc
   assert.ok(!/buildNextScope\([^)]*expectedCycle/.test(handler), "nunca entra al constructor del scope");
   assert.ok(!/editionSeq\s*[:=]\s*expectedCycle/.test(handler), "nunca se asigna como secuencia");
   assert.ok(!/expectedCycle\s*[+\-]/.test(handler), "nunca se hace aritmética con él");
-  // The comparison happens BEFORE anything is written.
-  assert.ok(handler.indexOf("if (expectedCycle !== storedCycle) {") < handler.indexOf("entry.tournamentScope = next;"),
-    "se compara antes de escribir nada");
-  // A mismatch rolls back and returns 409, so a stale click mutates nothing.
-  const branch = handler.slice(handler.indexOf("if (expectedCycle !== storedCycle) {"), handler.indexOf("const now = new Date().toISOString();"));
-  assert.ok(branch.includes('await client.query("ROLLBACK");'), "un desajuste no escribe nada");
-  assert.ok(branch.includes('res.status(409).json({ error: "stale_tournament_cycle"'), "y es recuperable, no un 500");
+  // The comparison happens BEFORE anything is written, on BOTH endpoints.
+  for (const marker of [
+    'app.post("/api/quinielas/:slug/tournament/new-cycle"',
+    'app.post("/api/quinielas/:slug/tournament/close"',
+  ]) {
+    const h = stripComments(blockFrom(serverSrc, marker));
+    const cmp = h.indexOf("if (expectedCycle !== storedCycle) {");
+    assert.ok(cmp !== -1, `${marker}: falta la precondición`);
+    assert.ok(cmp < h.indexOf("advanceTournamentCycle(entry"), `${marker}: se compara antes de mover el ciclo`);
+    assert.ok(cmp < h.indexOf('await putRow('), `${marker}: se compara antes de escribir nada`);
+    const branch = h.slice(cmp, h.indexOf("const now = new Date().toISOString();", cmp));
+    assert.ok(branch.includes('await client.query("ROLLBACK");'), `${marker}: un desajuste no escribe nada`);
+    assert.ok(branch.includes('res.status(409).json({ error: "stale_tournament_cycle"'), `${marker}: recuperable, no un 500`);
+  }
 });
 
 test("SECURITY: the precondition is validated only AFTER the caller is authorised", () => {
@@ -723,68 +782,10 @@ test("FRONTEND: the new-tournament flow states the consequence before doing anyt
 // every round but left the quiniela on the SAME commercial cycle with its
 // budget already spent — an empty quiniela that could not publish anything,
 // after a button that said it had started a new tournament.
-test("FRONTEND: closing the tournament actually starts the next one", () => {
-  const handler = blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener');
-  const code = stripComments(handler);
-  assert.ok(code.includes("apiStartNewTournament"), "cerrar el torneo mueve el ciclo comercial");
-  // Order matters: nothing is destroyed until the new cycle actually exists,
-  // so a failure leaves the Admin able to retry instead of stranded.
-  assert.ok(code.indexOf("apiStartNewTournament") < code.indexOf("meta.rounds = []"),
-    "el ciclo se mueve ANTES de borrar las jornadas");
-  assert.ok(code.indexOf("qzConfirm") < code.indexOf("apiStartNewTournament"),
-    "y después de confirmar, nunca antes");
-  // And a failed cycle move aborts without touching anything.
-  const guard = code.slice(code.indexOf("apiStartNewTournament"), code.indexOf("meta.rounds = []"));
-  assert.ok(/if\s*\(!cycle\.ok\)\s*\{[^}]*return;/.test(guard), "si falla, no se destruye nada");
-  // The Admin is told what it costs them before it happens.
-  assert.ok(handler.includes("tu Plus no se transfiere"), "avisa que el Plus no se transfiere");
-  // The two actions no longer both claim to start a new tournament.
-  assert.ok(indexSrc.includes("Empezar un torneo nuevo sin cerrar este"),
-    "la acción sin archivar se distingue de la de cerrar");
-});
 
 // MON-002C QA-1. What the screen does with a 409 is half the fix: retrying by
 // itself would start a SECOND tournament nobody asked for.
-test("FRONTEND: a stale click refreshes and explains — it never retries by itself", () => {
-  for (const fn of [
-    blockFrom(indexSrc, "async function startNewTournamentFlow(plan)"),
-    blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener'),
-  ]) {
-    const code = stripComments(fn);
-    const at = code.indexOf('stale_tournament_cycle');
-    assert.ok(at !== -1, "el 409 se maneja explícitamente, no cae en el error genérico");
-    const branch = code.slice(at, code.indexOf("return;", at) + 7);
-    assert.ok(branch.includes("invalidatePlan()"), "refresca el estado");
-    assert.ok(/toast\(/.test(branch), "y se lo dice a la persona");
-    assert.ok(branch.includes("return;"), "y se detiene ahí");
-    // The one thing it must never do.
-    assert.ok(!branch.includes("apiStartNewTournament"), "jamás reintenta solo");
-  }
-  // The message is human, and says what happened rather than naming a code.
-  assert.ok(indexSrc.includes("El torneo ya cambió. Actualizamos la pantalla."));
-  assert.ok(indexSrc.includes('stale_tournament_cycle: "El torneo ya cambió'),
-    "y también está en el diccionario de errores, para cualquier otro camino");
-});
 
-test("FRONTEND: the cycle it sends is the one the screen was showing", () => {
-  const flow = stripComments(blockFrom(indexSrc, "async function startNewTournamentFlow(plan)"));
-  assert.ok(flow.includes("const expectedCycle = plan && plan.tournament && plan.tournament.cycle;"),
-    "sale de lo que el servidor ya reportó, no de un contador del navegador");
-  assert.ok(flow.includes("apiStartNewTournament(name.trim(), expectedCycle)"));
-  // Without a readable cycle it refuses rather than inventing one — sending a
-  // made-up number is exactly what the precondition exists to stop.
-  assert.ok(/if\(!Number\.isSafeInteger\(expectedCycle\) \|\| expectedCycle < 1\)/.test(flow),
-    "sin un ciclo legible, no manda nada");
-  const closeFn = stripComments(blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener'));
-  assert.ok(closeFn.includes("apiStartNewTournament(null, expectedCycle)"),
-    "cerrar torneo manda la misma precondición");
-  assert.ok(/if\(!Number\.isSafeInteger\(expectedCycle\) \|\| expectedCycle < 1\)/.test(closeFn));
-  // Nothing is archived or cleared on a stale close.
-  const staleAt = closeFn.indexOf("stale_tournament_cycle");
-  const staleBranch = closeFn.slice(staleAt, closeFn.indexOf("return;", staleAt));
-  assert.ok(!staleBranch.includes("meta.rounds = []") && !staleBranch.includes("pastTournaments"),
-    "un cierre viejo no archiva ni despeja nada");
-});
 
 // Un P2 encontrado en el navegador durante QA-1: toast() cuelga el mensaje de
 // `root`, y render() reemplaza root.innerHTML entero. Avisar y repintar en ese
@@ -795,7 +796,7 @@ test("FRONTEND: se repinta primero y se avisa después, o el aviso no se ve", ()
   const repaints = /\b(render|renderAdmin)\s*\(/;
   for (const [name, fn] of [
     ["startNewTournamentFlow", blockFrom(indexSrc, "async function startNewTournamentFlow(plan)")],
-    ["cerrar torneo", blockFrom(indexSrc, 'document.getElementById("qz-close-tournament").addEventListener')],
+    ["cerrar torneo", blockFrom(indexSrc, "async function runCloseTournament()")],
   ]) {
     const code = stripComments(fn);
     // Cada rama que repinta debe hacerlo ANTES de su toast.
@@ -817,10 +818,74 @@ test("FRONTEND: double click is defended too, but as a second line and not the f
   const wire = stripComments(blockFrom(indexSrc, "function wireTournamentActions(scope)"));
   assert.ok(wire.includes("btn.disabled = true;"), "el botón se deshabilita mientras corre");
   assert.ok(wire.includes("btn.disabled = false;"));
+  // Cerrar torneo tenía el mismo botón sin guarda: tres clicks apilaban tres
+  // diálogos y el Admin confirmaba cierres que ya no aplicaban.
+  const closeWire = stripComments(blockFrom(indexSrc, 'closeBtn.addEventListener("click"'));
+  assert.ok(closeWire.includes("if(closeInFlight) return;"), "un segundo click no arranca un segundo flujo");
+  assert.ok(closeWire.includes("closeBtn.disabled = true;"));
+  assert.ok(closeWire.includes("finally"), "y se libera pase lo que pase");
   // But the real guarantee is server-side: the browser cannot be the thing
   // that stops a second transition.
   const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
   assert.ok(handler.includes("if (expectedCycle !== storedCycle) {"));
+});
+
+// MON-002C QA-2. Cerrar el torneo es UNA operación del servidor, y el
+// navegador ya no orquesta dos escrituras que podían quedar a medias.
+test("FRONTEND: closing calls the atomic endpoint, never the two-step dance", () => {
+  const fn = stripComments(blockFrom(indexSrc, "async function runCloseTournament()"));
+  assert.ok(fn.includes("apiCloseTournament(intent)"), "cierra con la operación atómica");
+  assert.ok(!fn.includes("apiStartNewTournament"), "ya no avanza el ciclo por su cuenta");
+  assert.ok(!fn.includes("meta.rounds = []"), "ni despeja el tablero por su cuenta");
+  assert.ok(!fn.includes("pastTournaments"), "ni escribe el historial por su cuenta");
+  assert.ok(!fn.includes("setMeta("), "ni guarda meta por separado");
+  // El diálogo sigue diciendo lo que cuesta, y va antes de cualquier acción.
+  assert.ok(fn.indexOf("qzConfirm") < fn.indexOf("apiCloseTournament"), "confirma primero");
+  assert.ok(fn.includes("tu Plus no se transfiere"));
+});
+
+test("FRONTEND: the close intent is written BEFORE the request, so a crash leaves it recoverable", () => {
+  const fn = stripComments(blockFrom(indexSrc, "async function runCloseTournament()"));
+  const write = fn.indexOf("writeCloseIntent(intent)");
+  const send = fn.indexOf("apiCloseTournament(intent)");
+  assert.ok(write !== -1 && send !== -1 && write < send,
+    "el token se persiste antes de mandar, o una caída lo perdería");
+  // El id lo genera el navegador con crypto, no un contador ni una fecha.
+  const gen = stripComments(blockFrom(indexSrc, "function newCloseIntentId()"));
+  assert.ok(gen.includes("getRandomValues"), "id impredecible, no derivable");
+  assert.ok(!/Date\.now\(\)\s*\+|counter|\+\+/.test(gen));
+});
+
+test("FRONTEND: an unknown result never auto-retries — it offers to verify the SAME close", () => {
+  const unknown = stripComments(blockFrom(indexSrc, "function closeUnknown()"));
+  assert.ok(!unknown.includes("apiCloseTournament"), "jamás reintenta solo algo destructivo");
+  assert.ok(!unknown.includes("clearCloseIntent"), "y conserva la intención para poder verificarla");
+  assert.ok(unknown.includes("invalidatePlan()") && unknown.includes("renderAdmin"), "refresca el estado real primero");
+  assert.ok(/toast\(/.test(unknown));
+
+  // Verificar manda LA MISMA intención y el MISMO ciclo esperado.
+  const verify = stripComments(blockFrom(indexSrc, 'const verifyBtn = document.getElementById("qz-verify-close")'));
+  assert.ok(verify.includes("intentId: pending.intentId"), "la misma intención");
+  assert.ok(verify.includes("expectedCycle: pending.expectedCycle"),
+    "y la misma precondición: si otro movió el torneo, se rechaza en vez de cerrar el equivocado");
+  assert.ok(!verify.includes("newCloseIntentId"), "verificar nunca genera una intención nueva");
+
+  // Y la pantalla distingue los tres estados sin mentir en ninguno.
+  assert.ok(indexSrc.includes("Un cierre quedó sin confirmar"), "estado: resultado desconocido");
+  assert.ok(indexSrc.includes("Verificar ese cierre"), "acción: verificar el mismo cierre");
+  assert.ok(indexSrc.includes("Ese cierre ya se había completado"), "estado: ya estaba cerrado");
+  assert.ok(indexSrc.includes("no se creó otro"), "y se dice que NO se creó otro torneo");
+});
+
+test("FRONTEND: the cycle it sends is the one the screen was showing", () => {
+  const fn = stripComments(blockFrom(indexSrc, "async function runCloseTournament()"));
+  assert.ok(fn.includes("const expectedCycle = planNow && planNow.tournament && planNow.tournament.cycle;"),
+    "sale de lo que el servidor ya reportó");
+  assert.ok(/if\(!Number\.isSafeInteger\(expectedCycle\) \|\| expectedCycle < 1\)/.test(fn),
+    "sin un ciclo legible, no manda nada");
+  // Y el flujo de "empezar sin cerrar" conserva su propia precondición.
+  const flow = stripComments(blockFrom(indexSrc, "async function startNewTournamentFlow(plan)"));
+  assert.ok(flow.includes("apiStartNewTournament(name.trim(), expectedCycle)"));
 });
 
 test("FRONTEND: the tournament surface is Admin-only", () => {
@@ -842,7 +907,7 @@ test("FRONTEND: the tournament surface is Admin-only", () => {
 // 40-seat courtesy grant vanished on the next tournament and left a 15-person
 // group stuck under the 10-person FREE cap.
 test("RENEWAL: a Plus PURCHASE resets, a granted status carries — and both are stamped for the new cycle", () => {
-  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
+  const handler = stripComments(fnBody(serverSrc, "function advanceTournamentCycle("));
   assert.ok(handler.includes('const carriesOver = previousPlan === "GRANDFATHERED" || previousPlan === "MANUAL_GRANT";'),
     "sólo lo que no fue una compra se conserva");
   // The carried plan is re-stamped for the cycle it now covers — otherwise it
@@ -865,13 +930,127 @@ test("RENEWAL: a Plus PURCHASE resets, a granted status carries — and both are
 });
 
 test("RENEWAL: the new cycle never inherits the old competition binding", () => {
-  const handler = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/new-cycle"'));
+  const handler = stripComments(fnBody(serverSrc, "function advanceTournamentCycle("));
   assert.ok(handler.includes("freshEntitlement.competitionIdentity = null;"),
     "el torneo nuevo adopta la competencia que realmente importe, no la anterior");
   // It applies on BOTH branches — a carried grant that kept the old binding
   // would silently pin the new tournament to the previous one's competition.
   assert.ok(handler.indexOf("freshEntitlement.competitionIdentity = null;") > handler.indexOf("} else {"),
     "fuera del if/else, así que aplica igual a lo conservado y a lo reiniciado");
+});
+
+// ==== MON-002C QA-2: cerrar el torneo es UNA operación ====================
+
+test("CLOSE: the cycle, the archive, the cleared board and the reset paid flags commit TOGETHER", () => {
+  const h = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/close"'));
+  // Una sola transacción, y las dos filas se escriben dentro de ella.
+  assert.equal((h.match(/await client\.query\("BEGIN"\)/g) || []).length, 1);
+  assert.equal((h.match(/await client\.query\("COMMIT"\)/g) || []).length, 1, "un solo COMMIT");
+  const commitAt = h.indexOf('await client.query("COMMIT")');
+  for (const write of ['await putRow("platform_index"', "await putRow(metaKey,"]) {
+    const at = h.indexOf(write);
+    assert.ok(at !== -1 && at < commitAt, `${write} ocurre dentro de la transacción`);
+  }
+  // Todas las mutaciones ocurren antes del COMMIT: no queda ninguna ventana
+  // en la que el ciclo se haya movido y el tablero no.
+  for (const mutation of ["advanceTournamentCycle(entry", "meta.pastTournaments.push(", "meta.rounds = [];", "entry.lastClose ="]) {
+    const at = h.indexOf(mutation);
+    assert.ok(at !== -1 && at < commitAt, `${mutation} va dentro de la transacción`);
+  }
+  // Y el orden de locks es el mismo que el resto del archivo.
+  assert.ok(h.indexOf('getRowLocked("platform_index"') < h.indexOf("getRowLocked(metaKey"),
+    "platform_index primero, luego la meta de la quiniela");
+});
+
+test("CLOSE: the same intention replays instead of advancing another cycle", () => {
+  const h = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/close"'));
+  const replayAt = h.indexOf("if (recorded && recorded.intentId === intentId) {");
+  assert.ok(replayAt !== -1, "el servidor reconoce la intención que ya ejecutó");
+  // El replay se resuelve ANTES de la precondición de frescura: una respuesta
+  // perdida no puede convertirse en un 409 confuso ni en un ciclo de más.
+  assert.ok(replayAt < h.indexOf("if (expectedCycle !== storedCycle)"),
+    "la misma intención se reconoce antes de juzgarla vieja");
+  // Y no muta nada.
+  const branch = h.slice(replayAt, h.indexOf("const storedCycle", replayAt));
+  assert.ok(branch.includes('await client.query("ROLLBACK");'), "un replay no escribe");
+  assert.ok(!branch.includes("advanceTournamentCycle") && !branch.includes("putRow"),
+    "un replay no avanza el ciclo ni escribe filas");
+  assert.ok(branch.includes("replayed: true"), "y se identifica como tal, para que la pantalla no mienta");
+  // El registro es server-owned: si el navegador pudiera escribirlo, podría
+  // fingir un cierre o borrarlo para conseguir un segundo ciclo.
+  const state = fs.readFileSync(path.join(__dirname, "..", "platformState.js"), "utf8");
+  assert.ok(state.includes('"lastClose"'), "lastClose es server-owned en platform_index");
+  assert.ok(serverSrc.includes('"lifecycleConsumedRoundIds", "lifecycleRoundsConsumed",\n  "lastClose",'),
+    "y meta lo rechaza como nombre reservado");
+});
+
+test("CLOSE: the intent id is a correlation token, never an authority", () => {
+  const h = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/close"'));
+  // No elige ciclo, no se compara con números, no reemplaza a expectedCycle.
+  assert.ok(!/buildNextScope\([^)]*intentId/.test(h));
+  assert.ok(!/editionSeq\s*[:=]\s*intentId/.test(h));
+  assert.ok(h.includes("if (expectedCycle !== storedCycle)"), "la precondición sigue ahí, intacta");
+  // Forma acotada, sin coerción.
+  const guard = stripComments(fnBody(serverSrc, "function isUsableIntentId("));
+  assert.ok(guard.includes("/^[A-Za-z0-9_-]{8,64}$/"), "acotado en alfabeto y longitud");
+  assert.ok(guard.includes('typeof value === "string"'), "y sin coerción");
+});
+
+test("CLOSE: authorisation first, then shape, then freshness", () => {
+  const h = stripComments(blockFrom(serverSrc, 'app.post("/api/quinielas/:slug/tournament/close"'));
+  const at = (needle) => { const i = h.indexOf(needle); assert.ok(i !== -1, `falta: ${needle}`); return i; };
+  const forbidden = at('res.status(403).json({ error: "forbidden" })');
+  const intent = at('res.status(400).json({ error: "invalid_close_intent" })');
+  const cycle = at('res.status(400).json({ error: "invalid_expected_cycle" })');
+  const summary = at('res.status(400).json({ error: "invalid_close_summary" })');
+  const stale = at('res.status(409).json({ error: "stale_tournament_cycle"');
+  assert.ok(forbidden < intent && forbidden < cycle && forbidden < summary,
+    "a quien no puede llamar no se le dice nada sobre el cuerpo");
+  assert.ok(Math.max(intent, cycle, summary) < stale, "la forma se valida antes que la frescura");
+});
+
+test("CLOSE: a pre-close document can never restore the board or delete the archive", () => {
+  const merge = stripComments(fnBody(serverSrc, "function mergeProtectedMetaFields("));
+  // El historial sólo lo escribe el cierre: en la ruta genérica siempre gana
+  // lo guardado.
+  assert.ok(merge.includes("merged.pastTournaments = Array.isArray(oldValue && oldValue.pastTournaments)"),
+    "pastTournaments viene siempre de la fila guardada");
+  // Y un documento con época vieja no puede devolver las jornadas archivadas.
+  assert.ok(merge.includes("const roundsAreStale = readTournamentEpoch(merged) < storedEpoch;"));
+  assert.ok(merge.includes("merged.rounds = Array.isArray(oldValue && oldValue.rounds) ? oldValue.rounds : [];"));
+  // La época es server-owned: se reescribe siempre desde lo guardado, así que
+  // un cliente no puede inflarla para saltarse la comprobación.
+  assert.ok(merge.includes("merged.tournamentEpoch = storedEpoch;"),
+    "el cliente nunca mueve la época");
+  // Sólo el cierre la incrementa.
+  assert.equal((stripComments(serverSrc).match(/tournamentEpoch\s*=\s*readTournamentEpoch\(metaBefore\) \+ 1/g) || []).length, 1,
+    "un solo lugar la incrementa: el cierre");
+});
+
+test("CLOSE: readTournamentEpoch refuses anything that is not a whole count", () => {
+  const { readTournamentEpoch } = require("../metaParticipants");
+  assert.equal(readTournamentEpoch(undefined), 0);
+  assert.equal(readTournamentEpoch({}), 0);
+  for (const bad of [null, "3", 1.5, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 10, [], {}]) {
+    assert.equal(readTournamentEpoch({ tournamentEpoch: bad }), 0, `debe ignorar ${JSON.stringify(bad)}`);
+  }
+  assert.equal(readTournamentEpoch({ tournamentEpoch: 0 }), 0);
+  assert.equal(readTournamentEpoch({ tournamentEpoch: 7 }), 7);
+});
+
+test("CLOSE: a pending intent must not be trapped behind the first-round setup screen", () => {
+  // Un cierre que SÍ se completó deja el tablero vacío, que es exactamente lo
+  // que dispara la pantalla de "prepara tu primera jornada" — y desde ahí no
+  // se llega a Ajustes, donde vive el aviso para verificar. El Admin no podría
+  // enterarse de que su cierre ya está hecho, y su siguiente clic en "Cerrar
+  // torneo" sería una intención NUEVA que sí avanza otro ciclo.
+  assert.ok(indexSrc.includes("if(currentUser.isAdmin && !setupContinuityResolved && readCloseIntent()){"),
+    "con un cierre pendiente, la pantalla de setup no secuestra la sesión");
+  // Y llegar ahí no verifica nada solo: la decisión sigue siendo del Admin.
+  const guard = stripComments(indexSrc.slice(
+    indexSrc.indexOf("if(currentUser.isAdmin && !setupContinuityResolved && readCloseIntent()){"),
+    indexSrc.indexOf("if(currentUser.isAdmin && !setupContinuityResolved){")));
+  assert.ok(!guard.includes("apiCloseTournament"), "no dispara ninguna petición por su cuenta");
 });
 
 test("PLAN READ: the tournament block carries no identifiers a browser could echo back", () => {

@@ -1401,6 +1401,9 @@
     league_change_blocked: "Ya no puedes cambiar la liga: esta quiniela ya empezó a jugar.",
     invalid_grant_id: "No se pudo registrar el cambio de plan. Vuelve a intentarlo.",
     stale_tournament_cycle: "El torneo ya cambió. Actualizamos la pantalla.",
+    invalid_close_intent: "No pudimos identificar ese cierre. Recarga la página e intenta de nuevo.",
+    invalid_close_summary: "No pudimos leer la tabla final. Recarga la página e intenta de nuevo.",
+    unknown_result: "No pudimos confirmar si el torneo se cerró. Verifica el estado antes de intentar otra vez.",
     invalid_expected_cycle: "No pudimos leer el estado del torneo. Recarga la página e intenta de nuevo.",
     grant_id_conflict: "Ese registro de cobro ya existe para otra quiniela. Actualizamos los datos; vuelve a intentarlo.",
     entitlement_scope_mismatch: "Tu plan corresponde a un torneo anterior. Empieza el torneo nuevo desde Ajustes para continuar.",
@@ -1565,6 +1568,59 @@
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, ...data };
     }catch(e){ console.error("apiStartNewTournament failed", e); return { ok: false, error: "network_error" }; }
+  }
+
+  // MON-002C QA-2: cerrar el torneo es UNA operación del servidor —
+  // archivar, despejar el tablero, resetear pagos y avanzar el ciclo commitean
+  // juntos o no pasa nada. Antes eran dos llamadas que orquestaba el
+  // navegador, y si la segunda fallaba el servidor ya estaba en el torneo
+  // nuevo con las jornadas viejas puestas; un reintento después de refrescar
+  // quemaba un segundo ciclo.
+  //
+  // closeIntentId identifica LA DECISIÓN HUMANA, no la petición. Sobrevive al
+  // refresh porque se guarda antes de mandar nada, y el servidor recuerda cuál
+  // fue el último cierre que ejecutó: si llega dos veces la misma intención,
+  // responde lo que ya pasó sin tocar nada. El navegador nunca decide si el
+  // cierre ocurrió; sólo lleva el token que le permite preguntarlo.
+  function closeIntentKey(){ return "qracks_close_intent_" + (SLUG || "root"); }
+  function readCloseIntent(){
+    try{
+      const raw = window.localStorage.getItem(closeIntentKey());
+      if(!raw) return null;
+      const v = JSON.parse(raw);
+      return (v && typeof v.intentId === "string" && Number.isSafeInteger(v.expectedCycle)) ? v : null;
+    }catch(e){ return null; }
+  }
+  function writeCloseIntent(v){
+    try{ window.localStorage.setItem(closeIntentKey(), JSON.stringify(v)); }catch(e){}
+  }
+  function clearCloseIntent(){
+    try{ window.localStorage.removeItem(closeIntentKey()); }catch(e){}
+  }
+  function newCloseIntentId(){
+    const b = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(b);
+    return Array.from(b).map(x => x.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function apiCloseTournament({ intentId, expectedCycle, standings }){
+    try{
+      const headers = { "Content-Type": "application/json" };
+      const cred = adminOrOwnerCred();
+      if(cred) headers["X-Qracks-Auth"] = cred;
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/close", {
+        method: "POST", headers, credentials: "same-origin",
+        body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, ...data };
+    }catch(e){
+      // NO es un fallo: es un resultado DESCONOCIDO. La petición pudo haber
+      // llegado y commiteado. Quien llama debe verificar, nunca reintentar a
+      // ciegas algo destructivo.
+      console.error("apiCloseTournament: resultado desconocido", e);
+      return { ok: false, error: "unknown_result" };
+    }
   }
 
   // Reads a participant's picks. Before that round's deadline, the server only
@@ -1829,6 +1885,10 @@
   let activeTab = "jornada";
   let adminSubTab = "rondas";
   let ownerUnlocked = false;
+  // MON-002C QA-2: evita que dos clicks apilen dos flujos de cierre. Es una
+  // defensa secundaria; la garantía de "una intención, una transición" vive en
+  // el servidor.
+  let closeInFlight = false;
   let allPicksLoadInFlight = null;
   let jornadaFilter = "porjugar"; // porjugar | envivo | jugados
   let chartSelectedIds = null; // set on first chart render (top 5)
@@ -2784,6 +2844,19 @@
         const fresh = await getMeta({ owner: adminOrOwnerCred() });
         if(fresh) meta = fresh;
       }catch(e){ console.error("admin meta refresh failed", e); }
+    }
+    // MON-002C QA-2: con un cierre sin confirmar pendiente, la pantalla de
+    // "prepara tu primera jornada" no puede secuestrar la sesión. Un cierre
+    // que SÍ se completó deja el tablero vacío, que es justo lo que dispara
+    // esa pantalla — y desde ahí no hay forma de llegar a Ajustes, donde vive
+    // el aviso para verificar. El Admin se quedaría sin manera de enterarse de
+    // que su cierre ya está hecho, y su siguiente clic en "Cerrar torneo"
+    // sería una intención NUEVA que sí avanza otro ciclo.
+    //
+    // No se verifica nada solo: sólo se le deja llegar a la pantalla donde
+    // puede decidir.
+    if(currentUser.isAdmin && !setupContinuityResolved && readCloseIntent()){
+      setupContinuityResolved = true;
     }
     if(currentUser.isAdmin && !setupContinuityResolved){
       setupContinuityResolved = true;
@@ -6552,6 +6625,22 @@
         <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
         <div class="divider"></div>
+        ${(() => {
+          // Estado 2 de los tres que pide el ciclo de cierre: hay una intención
+          // de cierre sin respuesta definitiva. No se afirma que haya fallado
+          // NI que haya funcionado — el navegador no lo sabe, y por eso la
+          // única acción que ofrece es preguntárselo al servidor.
+          const pending = readCloseIntent();
+          if(!pending) return "";
+          return `
+            <div class="card" id="qz-close-pending" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:12px;">
+              <p style="margin:0 0 6px;font-weight:700;">Un cierre quedó sin confirmar</p>
+              <p class="muted" style="margin:0 0 10px;">Mandaste cerrar el torneo y no supimos si se completó. Verificar no cierra un torneo nuevo: pregunta por <strong>ese mismo cierre</strong> y termina lo que falte.</p>
+              <button class="btn btn-gold btn-sm" id="qz-verify-close">Verificar ese cierre</button>
+              <button class="btn btn-ghost btn-sm" id="qz-discard-close">Descartar aviso</button>
+            </div>
+          `;
+        })()}
         <div class="eyebrow">Cerrar torneo</div>
         <p class="muted">Cuando termine el torneo, esto anuncia al campeón, guarda la tabla final y las jornadas jugadas en el historial, <strong>despeja el tablero</strong> y empieza el torneo nuevo. Nada se pierde: lo archivado se sigue consultando.</p>
         <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
@@ -6635,21 +6724,110 @@
         toast("No se pudo guardar, intenta de nuevo");
       }
     });
-    document.getElementById("qz-close-tournament").addEventListener("click", async () => {
+    // Un cierre resuelto: se refresca la pantalla y se dice qué pasó. El
+    // mensaje distingue haber cerrado ahora de haber confirmado un cierre que
+    // ya estaba hecho — una recuperación no se presenta como un cierre nuevo.
+    function finishClose(r){
+      clearCloseIntent();
+      invalidatePlan();
+      try{
+        window.localStorage.removeItem(planWarningKey("people"));
+        window.localStorage.removeItem(planWarningKey("rounds"));
+      }catch(e){}
+      renderAdmin(document.getElementById("qz-main"));
+      const who = r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
+      toast(r.replayed
+        ? `Ese cierre ya se había completado.${who} Sigues en el torneo nuevo — no se creó otro.`
+        : `Torneo cerrado.${who} Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.`);
+    }
+
+    // Resultado desconocido: la petición pudo haber llegado. NO se reintenta
+    // solo — reintentar a ciegas es justo lo que podía quemar un segundo
+    // ciclo. Se conserva el token, se refresca, y se ofrece verificar.
+    function closeUnknown(){
+      invalidatePlan();
+      renderAdmin(document.getElementById("qz-main"));
+      toast("No pudimos confirmar si el torneo se cerró. Revisa el estado abajo y verifica.");
+    }
+
+    function closeFailed(r){
+      if(r.error === "stale_tournament_cycle"){
+        // Esta intención ya no aplica: el torneo cambió por otro lado.
+        clearCloseIntent();
+        invalidatePlan();
+        renderAdmin(document.getElementById("qz-main"));
+        toast("El torneo ya cambió. Actualizamos la pantalla.");
+        return;
+      }
+      clearCloseIntent();
+      toast(ERROR_MESSAGES[r.error] || "No se pudo cerrar el torneo, intenta de nuevo");
+    }
+
+    // Verificar/terminar EL MISMO cierre. Manda la misma intención y el mismo
+    // ciclo esperado: si el cierre ya se ejecutó el servidor lo reconoce por la
+    // intención y responde lo que pasó; si no se ejecutó, la precondición
+    // sigue siendo válida y se completa ahora; y si alguien más movió el
+    // torneo mientras tanto, se rechaza en vez de cerrar el equivocado.
+    const verifyBtn = document.getElementById("qz-verify-close");
+    if(verifyBtn){
+      verifyBtn.addEventListener("click", async () => {
+        const pending = readCloseIntent();
+        if(!pending){ renderAdmin(document.getElementById("qz-main")); return; }
+        verifyBtn.disabled = true;
+        const r = await apiCloseTournament({
+          intentId: pending.intentId,
+          expectedCycle: pending.expectedCycle,
+          standings: pending.standings || [],
+        });
+        verifyBtn.disabled = false;
+        if(r.ok) return finishClose(r);
+        if(r.error === "unknown_result") return closeUnknown();
+        closeFailed(r);
+      });
+    }
+
+    const discardBtn = document.getElementById("qz-discard-close");
+    if(discardBtn){
+      discardBtn.addEventListener("click", async () => {
+        if(!(await qzConfirm("Sólo deja de recordarte que verifiques. No cierra ni reabre nada — el estado del torneo es el que muestra la pantalla.", {
+          title: "¿Descartar este aviso?", confirmLabel: "Descartar", destructive: false
+        }))) return;
+        clearCloseIntent();
+        renderAdmin(document.getElementById("qz-main"));
+      });
+    }
+
+    // Defensa secundaria (la garantía real es del servidor: precondición +
+    // intención). Sin esto, tres clicks rápidos apilan tres diálogos, y el
+    // Admin termina confirmando cierres que ya no aplican y leyendo dos avisos
+    // de "el torneo ya cambió" que él mismo provocó. El flag va fuera del
+    // handler porque el botón se vuelve a pintar en cada render.
+    const closeBtn = document.getElementById("qz-close-tournament");
+    closeBtn.addEventListener("click", async () => {
+      if(closeInFlight) return;
+      closeInFlight = true;
+      closeBtn.disabled = true;
+      try{
+        await runCloseTournament();
+      } finally {
+        closeInFlight = false;
+        // El botón puede haber desaparecido con el re-render; reactivarlo sólo
+        // tiene sentido si sigue en pantalla.
+        if(document.body.contains(closeBtn)) closeBtn.disabled = false;
+      }
+    });
+
+    async function runCloseTournament(){
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
       if(!playedRounds.length){
         if(!(await qzConfirm("Todavía no hay jornadas con resultados.", { title: "¿De todos modos quieres cerrar y limpiar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
       }
       await ensureAllPicksLoaded();
+      // La tabla final es dato de PANTALLA: el servidor la guarda como
+      // historial, la acota y saca al campeón de ella misma, pero ninguna
+      // decisión comercial la lee.
       const finalStandings = standingsList().map(p => ({ name: p.name, pts: p.pts }));
       const champion = finalStandings.length ? finalStandings[0] : null;
-      // MON-002C. Este botón dice "y empezar uno nuevo", así que tiene que
-      // empezarlo de verdad — incluido el ciclo comercial. Antes no lo hacía:
-      // borraba todas las jornadas y dejaba la quiniela en el MISMO torneo con
-      // el presupuesto ya gastado, así que el Admin se quedaba con una
-      // quiniela vacía donde no podía publicar ni una jornada. Cerrar el
-      // torneo ES el hecho que marca su final, y por eso alcanza como
-      // evidencia para pasar al siguiente.
       const planNow = await loadPlan();
       const losingPlus = !!(planNow && planNow.plan && planNow.plan !== "FREE");
       const confirmMsg = (champion
@@ -6660,70 +6838,23 @@
           : "El torneo nuevo empieza en Gratis, con su propio conteo de jornadas.");
       if(!(await qzConfirm(confirmMsg, { title: "¿Cerrar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
 
-      // El ciclo se mueve ANTES de tocar nada. Si esto falla no se destruye
-      // nada y el Admin puede reintentar; al revés, una falla aquí lo dejaría
-      // sin jornadas y sin torneo nuevo, que es exactamente el estado del que
-      // este arreglo lo saca.
       const expectedCycle = planNow && planNow.tournament && planNow.tournament.cycle;
       if(!Number.isSafeInteger(expectedCycle) || expectedCycle < 1){
         toast("No pudimos leer el estado del torneo. Recarga la página e intenta de nuevo.");
         return;
       }
-      const cycle = await apiStartNewTournament(null, expectedCycle);
-      if(cycle.error === "stale_tournament_cycle"){
-        // El torneo ya lo cerró alguien más, o esta pantalla quedó vieja. No
-        // se reintenta ni se archiva nada: archivar ahora guardaría la tabla
-        // de un torneo que ya no es el vigente.
-        invalidatePlan();
-        renderAdmin(document.getElementById("qz-main"));
-        toast("El torneo ya cambió. Actualizamos la pantalla.");
-        return;
-      }
-      if(!cycle.ok){
-        toast(ERROR_MESSAGES[cycle.error] || "No se pudo cerrar el torneo, intenta de nuevo");
-        return;
-      }
 
-      if(!meta.pastTournaments) meta.pastTournaments = [];
-      meta.pastTournaments.push({
-        closedAt: new Date().toISOString(),
-        champion,
-        standings: finalStandings,
-        // UX-ADM-005: a round that's published:false is only a prepared
-        // calendar entry -- the admin configured it ahead of time, but it
-        // never became part of the actual game for participants. Storing
-        // it in the historical snapshot would make "X jornadas jugadas"
-        // count preparation as if it had been played. published===undefined
-        // (legacy) is still treated as published, same rule as everywhere
-        // else in QRACKS. Deliberately NOT filtering on resultsPublished
-        // here -- a published round that's still open/pending results is
-        // real, official history, not preparation; only published:false is
-        // preparation.
-        rounds: meta.rounds.filter(r => r.published !== false)
-      });
-      meta.rounds = [];
-      meta.participants.forEach(p => p.paid = false);
-      const ok = await setMeta(meta);
-      invalidatePlan();
-      if(ok){
-        // Los avisos de límite son por torneo: el nuevo merece los suyos.
-        try{
-          window.localStorage.removeItem(planWarningKey("people"));
-          window.localStorage.removeItem(planWarningKey("rounds"));
-        }catch(e){}
-      }
-      const closeMsg = ok
-        ? (champion
-          ? `Torneo cerrado 🏆 Campeón: ${champion.name}. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.`
-          : "Torneo cerrado. Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.")
-        // El ciclo nuevo SÍ quedó: se dice, para que nadie vuelva a cerrarlo
-        // creyendo que no pasó nada.
-        : "Empezaste el torneo nuevo, pero no se pudo archivar la tabla final. Intenta guardar de nuevo.";
-      // Siempre repintar antes de avisar: un toast emitido antes del repintado
-      // se pierde si el repintado reemplaza el contenedor donde vive.
-      renderAdmin(document.getElementById("qz-main"));
-      toast(closeMsg);
-    });
+      // El token se guarda ANTES de mandar nada. Si el navegador se cae entre
+      // el envío y la respuesta, al volver sigue existiendo la intención y se
+      // puede preguntar por ella en vez de adivinar.
+      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, startedAt: Date.now() };
+      writeCloseIntent(intent);
+
+      const r = await apiCloseTournament(intent);
+      if(r.ok) return finishClose(r);
+      if(r.error === "unknown_result") return closeUnknown();
+      closeFailed(r);
+    }
 
     const migrateBtn = document.getElementById("qz-migrate-btn");
     if(migrateBtn){
