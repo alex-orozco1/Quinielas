@@ -21,13 +21,27 @@ const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.htm
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
 test("HOTFIX BUG 3 (MON-002B): the SERVER consumes lifecycle only for published rounds, never for imported-but-unpublished ones", () => {
+  // MON-002C separó las dos mitades de la regla: qué está publicado, y qué
+  // no se había contado nunca en NINGÚN ciclo.
   assert.ok(
-    serverSrc.includes('.filter((r) => r.published !== false && !consumedIds.has(r.id))'),
-    "a round only consumes budget when it is published AND has never been counted before"
+    serverSrc.includes('.filter((r) => r && r.published !== false)'),
+    "solo una jornada publicada puede consumir presupuesto"
   );
-  // The durable counter, not meta.rounds.length: deleting a round must never
-  // hand budget back, and importing a 17-round calendar must never spend it.
-  assert.ok(serverSrc.includes("entry.lifecycleConsumedRoundIds = [...consumedIds, ...newlyConsumedIds];"));
+  // ...y qué cuenta como jornada nueva. Un id ya gastado sólo sale gratis
+  // cuando la fila GUARDADA sigue teniendo esa jornada: si no, publicar un
+  // calendario entero bajo los ids del torneo anterior saldría gratis (P1
+  // reproducido contra un servidor real, ver tournamentLifecycle.test.js).
+  assert.ok(
+    serverSrc.includes("const storedRoundIds = (oldValue.rounds || []).map((r) => r && r.id);"),
+    "los ids que eximen se leen de la fila guardada bajo lock"
+  );
+  assert.ok(
+    serverSrc.includes("currentScopeId, existingRoundIds: storedRoundIds,"),
+    "y se pasan al cálculo de consumo del ciclo en curso"
+  );
+  // El contador durable, no meta.rounds.length: borrar una jornada nunca
+  // devuelve presupuesto, e importar un calendario de 17 nunca lo gasta.
+  assert.ok(serverSrc.includes("entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, currentScopeId, newlyConsumedIds);"));
   assert.ok(!serverSrc.includes("checkLifecycleRoundConsumption(entry.entitlement, commercialConfig, mergedValue.rounds.length"));
 });
 

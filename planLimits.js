@@ -24,11 +24,12 @@
 //                       a round does NOT return lifecycle budget — the
 //                       counter lives in platform_index (owner-writable
 //                       meta can never touch it), not in meta.rounds.length.
-//                       When there IS a league, lifecycle is meant to track
-//                       the tournament/season itself (see competitionIdentity
-//                       below) rather than a round count — enforcement of
-//                       THAT is explicitly NOT implemented yet (see the
-//                       OPEN DECISION comment on computeCompetitionIdentity).
+//                       When there IS a league, lifecycle tracks the
+//                       TOURNAMENT CYCLE itself rather than a round count:
+//                       the cycle is an explicit, server-assigned identity
+//                       (tournamentScope.js, MON-002C), and a purchase
+//                       covers the one cycle it was stamped for — see
+//                       entitlementCoversScope below.
 // ==========================================================================
 
 // ---- Commercial config: the DYNAMIC, server-side SSOT ------------------
@@ -74,25 +75,34 @@ function isCommercialConfigValid(config) {
   return true;
 }
 
-// ---- Competition identity (with-league lifecycle) -----------------------
+// ---- Competition identity (WHICH competition, not WHICH edition) --------
 //
-// OPEN DECISION, documented explicitly rather than silently assumed:
-// sportsdbSeason (see seasonDefaults.js) is a single calendar-year string
-// like "2026-2027" covering the WHOLE football year. For a split-format
-// league (Liga MX's Apertura Jul-Dec / Clausura Jan-Jun is the concrete
-// example already in this codebase), Apertura 2026 and Clausura 2027
-// BOTH fall inside the same "2026-2027" season string — so
-// leagueId+season alone can NOT reliably distinguish them. This function
-// returns the best available identity today (leagueId:season) and this
-// comment is the flag: treat any enforcement that depends on this being
-// a unique per-tournament identity as provisional until a real
-// tournament/stage identifier is confirmed available from the provider
-// (or a product decision picks a different signal).
-function computeCompetitionIdentity(settings) {
-  const leagueId = settings && settings.sportsdbLeagueId;
-  const season = settings && settings.sportsdbSeason;
-  if (!leagueId) return null;
-  return `${leagueId}:${season || "unknown-season"}`;
+// This answers one question and no longer pretends to answer two.
+//
+// The season string a provider gives us (see seasonDefaults.js) is a single
+// calendar-year label like "2026-2027" covering the WHOLE football year. For
+// a split-format league — Liga MX's Apertura Jul-Dec / Clausura Jan-Jun is
+// the concrete example already in this codebase — Apertura 2026 and Clausura
+// 2027 BOTH fall inside that one string, so competitionId+season can NOT
+// distinguish two editions. MON-002B flagged that as an open decision;
+// MON-002C resolved it, and the resolution was NOT to make this string
+// smarter. Edition is now an explicit product event carried by
+// tournamentScope.js (a server-assigned editionSeq), never parsed out of a
+// provider label or guessed from a date.
+//
+// So what remains here is the MON-001D binding question only: "is this
+// quiniela importing the competition it is bound to, or a different one?"
+// Two editions of the same league share this identity by design — telling
+// THEM apart is the scope's job, not this function's.
+//
+// The arguments are deliberately generic. Monetisation must not know that
+// today's provider calls its competition key `sportsdbLeagueId`; the caller
+// that reads the provider's settings does that mapping (server.js), the same
+// way it already does when building a tournament scope.
+function computeCompetitionIdentity(competitionId, season) {
+  if (competitionId == null || String(competitionId).trim() === "") return null;
+  const s = typeof season === "string" && season.trim() !== "" ? season.trim() : "unknown-season";
+  return `${String(competitionId).trim()}:${s}`;
 }
 
 // ---- Entitlement snapshots ------------------------------------------------
@@ -229,6 +239,35 @@ function grantsFullCompetition(entitlement) {
   return !!entitlement && entitlement.plan !== "FREE";
 }
 
+// MON-002C. Which tournament cycle an entitlement was granted for.
+//
+// `scopeId` is the internal identity from tournamentScope.js. A row written
+// before MON-002C has none — those are stamped by the boot migration, so a
+// null here is structurally an anomaly rather than a normal state, and the
+// callers below treat it conservatively rather than guessing.
+function entitlementScopeId(entitlement) {
+  const v = entitlement && entitlement.scopeId;
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
+// Does this entitlement actually cover the cycle being played right now?
+//
+// A purchase belongs to the tournament it was bought for. Once the Admin
+// starts a new tournament, the quiniela is on a new scope and the old
+// purchase does not follow it — that is the whole no-rollover guarantee, and
+// it is enforced here rather than trusted to the grant path alone.
+//
+// The one deliberate exception is a legacy row the migration has not stamped:
+// it can only ever have been bought for the FIRST cycle, because there was no
+// way to have a second one before this ticket. Matching it to e1 preserves a
+// right that exists; matching it to anything else would invent one.
+function entitlementCoversScope(entitlement, currentScopeId) {
+  if (!currentScopeId) return true;              // no cycle model in play (legacy call sites)
+  const scopeId = entitlementScopeId(entitlement);
+  if (scopeId) return scopeId === currentScopeId;
+  return /:e1$/.test(currentScopeId);
+}
+
 // MON-001C: the approved FREE-vs-PLUS split. FREE is a free product that
 // always tracks the CURRENT commercial_config — a platform-wide config
 // change (10 -> 12 participants) applies to every existing FREE quiniela
@@ -260,11 +299,15 @@ function resolveEnforcementLimits(entitlement, commercialConfig) {
 // could claim to add many in a single call, so this must handle N, not
 // just assume 1). A live check — removing a participant later genuinely
 // frees a slot for someone new.
-function checkParticipantCapacity(entitlement, commercialConfig, currentCount, additionalCount) {
+function checkParticipantCapacity(entitlement, commercialConfig, currentCount, additionalCount, opts) {
   const add = Number.isFinite(additionalCount) ? additionalCount : 1;
-  if (add <= 0) return { allowed: true }; // no new capacity requested -- never block, even if currentCount already exceeds the limit (e.g. a later-reduced config, or a grandfathered/legacy quiniela)
+  if (add <= 0) return { allowed: true }; // no new capacity requested -- never block, even if currentCount already exceeds the limit (e.g. a later-reduced config, a grandfathered/legacy quiniela, or a quiniela that carried more people than the new cycle's FREE plan allows -- MON-002C keeps those people, it just stops NEW ones)
   if (!entitlement || entitlement.revoked) {
     return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
+  }
+  const currentScopeId = opts && opts.currentScopeId;
+  if (!entitlementCoversScope(entitlement, currentScopeId)) {
+    return { allowed: false, reason: "entitlement_scope_mismatch", plan: entitlement.plan };
   }
   const limits = resolveEnforcementLimits(entitlement, commercialConfig);
   if (!limits) {
@@ -285,13 +328,22 @@ function checkParticipantCapacity(entitlement, commercialConfig, currentCount, a
 // attempted bypass, and both must be evaluated against the total, not
 // checked one at a time as if each were independently a "+1"). Only
 // meaningful when entitlement.competitionIdentity is null (no league) —
-// see the OPEN DECISION above for why with-league lifecycle isn't
-// enforced by round count at all yet.
-function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedCount, additionalCount) {
+// a paid plan bound to a competition gets that competition's whole current
+// cycle instead of a round budget (see the early return below).
+function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedCount, additionalCount, opts) {
   const add = Number.isFinite(additionalCount) ? additionalCount : 1;
   if (add <= 0) return { allowed: true }; // no new consumption requested -- never block
   if (!entitlement || entitlement.revoked) {
     return { allowed: false, reason: "entitlement_unavailable", plan: entitlement && entitlement.plan };
+  }
+  // MON-002C: a plan that was bought for a DIFFERENT tournament cycle covers
+  // nothing here. In the normal flow this is unreachable — starting a new
+  // cycle resets the entitlement to FREE — so reaching it means the row is in
+  // a state no code path should have produced. Fail closed and loudly rather
+  // than silently handing out the previous tournament's coverage.
+  const currentScopeId = opts && opts.currentScopeId;
+  if (!entitlementCoversScope(entitlement, currentScopeId)) {
+    return { allowed: false, reason: "entitlement_scope_mismatch", plan: entitlement.plan };
   }
   if (entitlement.competitionIdentity && grantsFullCompetition(entitlement)) {
     // MON-002B: "Plus = 50 personas + torneo completo si existe". A paid/
@@ -303,10 +355,11 @@ function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedC
     // manualRoundLimit of those rounds, which is what makes "Gratis = 10
     // personas + 7 jornadas" true whether or not a league was picked.
     //
-    // Still open, and deliberately NOT decided here (MON-002C): what
-    // happens when that tournament ENDS — renewal, and whether
-    // leagueId:season is a precise enough tournament identity for split
-    // formats (see computeCompetitionIdentity's OPEN DECISION above).
+    // "That whole tournament" means the CYCLE this entitlement was bought
+    // for, and nothing after it: the scope check at the top of this function
+    // has already refused an entitlement stamped for a previous cycle, so
+    // this early return can only ever hand out coverage of the tournament
+    // actually being played right now (MON-002C).
     return { allowed: true };
   }
   const limits = resolveEnforcementLimits(entitlement, commercialConfig);
@@ -328,7 +381,7 @@ function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedC
 //
 // The binding lives on the entitlement (platform_index, platform-tier
 // key) — NOT in meta.settings, which the quiniela owner can write. The
-// owner CAN still edit meta.settings.sportsdbSeason/sportsdbLeagueId
+// owner CAN still edit the league/season fields in meta.settings
 // (subject to MON-001C's league-change block on the meta-write path), but
 // doing so can never move the binding itself; this function is what makes
 // a mismatch fail loudly instead of silently importing another tournament.
@@ -480,6 +533,8 @@ module.exports = {
   checkParticipantCapacity,
   checkLifecycleRoundConsumption,
   grantsFullCompetition,
+  entitlementScopeId,
+  entitlementCoversScope,
   buildUpgradeOffer,
   summarizePlan,
   isValidManualGrantLimits,

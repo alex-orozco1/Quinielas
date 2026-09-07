@@ -18,6 +18,7 @@ const {
   buildPlusEntitlement, buildManualGrantEntitlement,
   checkParticipantCapacity, checkLifecycleRoundConsumption,
   summarizePlan, buildUpgradeOffer, isValidManualGrantLimits,
+  entitlementScopeId,
 } = require("./planLimits");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
@@ -25,7 +26,9 @@ const {
 } = require("./platformState");
 const {
   readParticipantsRevision, readParticipantRev, mergeParticipants, stampMetaRevisions,
+  readTournamentEpoch,
 } = require("./metaParticipants");
+const tournamentScope = require("./tournamentScope");
 const { planCompetitionSync } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
@@ -319,13 +322,73 @@ async function ensureTable() {
       entry.lifecycleConsumedRoundIds = [];
       migrated = true;
     }
+
+    // MON-002C: give every existing quiniela its FIRST tournament cycle.
+    //
+    // Conservative by construction, which is what a migration touching money
+    // has to be. Whatever a quiniela is playing right now becomes cycle 1, so:
+    //
+    //   - a Plus already bought keeps covering exactly what it was covering,
+    //     because that IS cycle 1 — no right is lost;
+    //   - and it covers nothing else, because a second edition would be a
+    //     cycle this purchase is not stamped for — no right is invented;
+    //   - every round already published is attributed to cycle 1, so the
+    //     budget picture does not change and old rounds can never spend a
+    //     later cycle's allowance.
+    //
+    // Idempotent: an entry that already has a scope is left completely alone,
+    // so running this on every boot converges after the first one.
+    if (!entry.tournamentScope || !tournamentScope.isUsableScopeId(entry.tournamentScope.id)) {
+      const boundIdentity = entry.entitlement && entry.entitlement.competitionIdentity;
+      // The league id is the first half of the legacy "leagueId:season"
+      // identity. It is read only to LABEL the cycle; the id itself comes
+      // from the scope builder, never from the provider string.
+      const legacyLeagueId = typeof boundIdentity === "string" && boundIdentity.includes(":")
+        ? boundIdentity.split(":")[0] : null;
+      const legacySeason = typeof boundIdentity === "string" && boundIdentity.includes(":")
+        ? boundIdentity.slice(boundIdentity.indexOf(":") + 1) : null;
+      entry.tournamentScope = tournamentScope.buildInitialScope({
+        sportKey: "football",
+        provider: legacyLeagueId ? "thesportsdb" : null,
+        competitionId: legacyLeagueId,
+        providerSeasonId: legacySeason,
+        startedAt: entry.createdAt || new Date().toISOString(),
+      });
+      // A cycle we did not start and cannot ask a provider about is exactly
+      // the case UNKNOWN exists for. It is never ENDED by assumption.
+      entry.tournamentScope.lifecycle = tournamentScope.LIFECYCLE.UNKNOWN;
+      entry.scopeHistory = Array.isArray(entry.scopeHistory) ? entry.scopeHistory : [];
+      migrated = true;
+    }
+
+    const scopeId = entry.tournamentScope.id;
+    // Everything published so far belongs to cycle 1.
+    if (!entry.consumedRoundIdsByScope || typeof entry.consumedRoundIdsByScope !== "object" || Array.isArray(entry.consumedRoundIdsByScope)) {
+      entry.consumedRoundIdsByScope = {
+        [scopeId]: Array.isArray(entry.lifecycleConsumedRoundIds) ? entry.lifecycleConsumedRoundIds.map(String) : [],
+      };
+      migrated = true;
+    }
+    // Stamp the cycle onto the entitlement and onto every purchase in the
+    // history, so "which tournament was this bought for" stops depending on
+    // the un-stamped fallback.
+    if (entry.entitlement && !entitlementScopeId(entry.entitlement)) {
+      entry.entitlement.scopeId = scopeId;
+      migrated = true;
+    }
+    (Array.isArray(entry.entitlementHistory) ? entry.entitlementHistory : []).forEach((h) => {
+      if (h && h.entitlement && !entitlementScopeId(h.entitlement)) {
+        h.entitlement.scopeId = scopeId;
+        migrated = true;
+      }
+    });
   });
   if (migrated) {
     await pool.query(
       "UPDATE kv SET value = $1::jsonb, updated_at = now() WHERE key = 'platform_index'",
       [JSON.stringify(idx)]
     );
-    console.error(`MON-001B grandfathering migration: stamped entitlement on ${idx.quinielas.filter((q) => q.entitlement && q.entitlement.source === "grandfather_migration").length} platform_index entries`);
+    console.error(`MON-001B/MON-002C migration: ${idx.quinielas.length} platform_index entries now carry an entitlement and a tournament cycle`);
   }
 }
 
@@ -508,8 +571,51 @@ function participantRevMap(doc) {
   return out;
 }
 
+// MON-002C. Names that mean something specific in platform_index, and
+// nothing at all here.
+//
+// A quiniela's meta document is owner-writable by design, so a determined
+// owner can store whatever they like in it. What they must not be able to do
+// is store a decoy: a key called `tournamentScope` sitting in meta is inert
+// today (every commercial decision reads the locked platform_index row, and
+// the probe proves an owner writing one cannot move their cycle), but it is
+// exactly the kind of thing a future reader mistakes for the authority. So
+// the names are refused at the door rather than left lying around looking
+// official. This is hygiene, not enforcement — enforcement is that these
+// fields are never read from here in the first place.
+const META_RESERVED_COMMERCIAL_FIELDS = Object.freeze([
+  "tournamentScope", "scopeHistory", "consumedRoundIdsByScope",
+  "entitlement", "entitlementHistory",
+  "lifecycleConsumedRoundIds", "lifecycleRoundsConsumed",
+  "lastClose",
+]);
+
 function mergeProtectedMetaFields(oldValue, newValue, authTier) {
   const merged = JSON.parse(JSON.stringify(newValue));
+  META_RESERVED_COMMERCIAL_FIELDS.forEach((f) => { delete merged[f]; });
+
+  // MON-002C QA-2. Two things in meta are written by the SERVER, on the close
+  // path, and a request can only ever echo a stale copy of them back.
+  //
+  // pastTournaments is append-only history: the close endpoint is its only
+  // writer, so the stored value always wins. Taking it from the request let a
+  // tab that loaded before the close delete the archive it had never seen.
+  //
+  // The epoch counts closes and is likewise server-written. A document
+  // carrying an older epoch was read before the last close, so its `rounds`
+  // describe a board that has since been archived and cleared — putting them
+  // back is not an edit, it is an undo of something the Admin asked for, and
+  // it charged those rounds to the new tournament's budget. The stored board
+  // wins, and the caller is told, the same way a restored participant is.
+  merged.pastTournaments = Array.isArray(oldValue && oldValue.pastTournaments)
+    ? oldValue.pastTournaments : [];
+  const storedEpoch = readTournamentEpoch(oldValue);
+  const roundsAreStale = readTournamentEpoch(merged) < storedEpoch;
+  if (roundsAreStale) {
+    merged.rounds = Array.isArray(oldValue && oldValue.rounds) ? oldValue.rounds : [];
+  }
+  merged.tournamentEpoch = storedEpoch;
+
   const oldSettings = (oldValue && oldValue.settings) || null;
   if (!merged.settings) merged.settings = {};
 
@@ -591,6 +697,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier) {
     value: stampMetaRevisions(merged, oldValue),
     participantsRestored: participantMerge.restored,
     participantsRefreshed: participantMerge.refreshed,
+    roundsRestored: roundsAreStale,
   };
 }
 
@@ -1176,14 +1283,18 @@ app.post("/api/kv/:key", async (req, res) => {
           // creation time (that was MON-001C's other fix, for
           // create-quiniela's own path).
           if (newLeagueId && !entry.entitlement.competitionIdentity) {
-            entry.entitlement.competitionIdentity = computeCompetitionIdentity(mergedValue.settings);
+            entry.entitlement.competitionIdentity = computeCompetitionIdentity(newLeagueId, mergedValue.settings.sportsdbSeason);
           }
 
           const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+          // MON-002C: which tournament cycle this quiniela is playing. Every
+          // commercial decision below is made against it, so a plan bought
+          // for a previous tournament cannot answer for this one.
+          const currentScopeId = entry.tournamentScope && entry.tournamentScope.id;
           const oldParticipantCount = (oldValue.participants || []).length;
           const newParticipantCount = (mergedValue.participants || []).length;
           if (newParticipantCount > oldParticipantCount) {
-            const check = checkParticipantCapacity(entry.entitlement, commercialConfig, oldParticipantCount, newParticipantCount - oldParticipantCount);
+            const check = checkParticipantCapacity(entry.entitlement, commercialConfig, oldParticipantCount, newParticipantCount - oldParticipantCount, { currentScopeId });
             if (!check.allowed) {
               await client.query("ROLLBACK");
               // MON-002B: the rejection carries everything the paywall needs
@@ -1207,13 +1318,25 @@ app.post("/api/kv/:key", async (req, res) => {
           // "unpublish" action in the product today, but this is
           // correct regardless) is also never double-counted, since the
           // id simply stays in the list once added.
-          const consumedIds = new Set(entry.lifecycleConsumedRoundIds || []);
-          const newlyConsumedIds = (mergedValue.rounds || [])
-            .filter((r) => r.published !== false && !consumedIds.has(r.id))
+          // MON-002C: consumption is attributed PER CYCLE, and what exempts a
+          // round is that the STORED row still holds it — not merely that its
+          // id was spent once. See newlyConsumedIds() for why: an id-only rule
+          // let a whole new calendar be published free under the previous
+          // cycle's ids, which was reproduced against a live server.
+          //
+          // oldValue is the row read under lock a few lines above. Passing the
+          // INCOMING document here instead would hand the decision to exactly
+          // the party the rule exists to constrain.
+          const publishedIds = (mergedValue.rounds || [])
+            .filter((r) => r && r.published !== false)
             .map((r) => r.id);
+          const storedRoundIds = (oldValue.rounds || []).map((r) => r && r.id);
+          const newlyConsumedIds = tournamentScope.newlyConsumedIds(entry, publishedIds, {
+            currentScopeId, existingRoundIds: storedRoundIds,
+          });
           if (newlyConsumedIds.length > 0) {
-            const currentConsumed = Number.isFinite(entry.lifecycleRoundsConsumed) ? entry.lifecycleRoundsConsumed : consumedIds.size;
-            const check = checkLifecycleRoundConsumption(entry.entitlement, commercialConfig, currentConsumed, newlyConsumedIds.length);
+            const currentConsumed = tournamentScope.consumedInScope(entry, currentScopeId);
+            const check = checkLifecycleRoundConsumption(entry.entitlement, commercialConfig, currentConsumed, newlyConsumedIds.length, { currentScopeId });
             if (!check.allowed) {
               await client.query("ROLLBACK");
               return res.status(402).json({
@@ -1227,8 +1350,12 @@ app.post("/api/kv/:key", async (req, res) => {
           // (and the existing display-only participantCount/roundCount
           // cache) in the SAME transaction as the meta write itself, so
           // they can never drift apart under concurrency.
-          entry.lifecycleConsumedRoundIds = [...consumedIds, ...newlyConsumedIds];
-          entry.lifecycleRoundsConsumed = entry.lifecycleConsumedRoundIds.length;
+          entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, currentScopeId, newlyConsumedIds);
+          // Kept in step for anything still reading the flat pre-MON-002C
+          // shape (and for a human reading the row): the durable list of every
+          // round ever published, across every cycle.
+          entry.lifecycleConsumedRoundIds = [...tournamentScope.allConsumedRoundIds(entry)];
+          entry.lifecycleRoundsConsumed = tournamentScope.consumedInScope(entry, currentScopeId);
           entry.participantCount = newParticipantCount;
           entry.roundCount = (mergedValue.rounds || []).length;
           await putRow("platform_index", platformIdx, client);
@@ -1254,6 +1381,10 @@ app.post("/api/kv/:key", async (req, res) => {
           // state of. The stored values won; saying so is what keeps this
           // from being a silent loss.
           participantsRefreshed: metaMerge.participantsRefreshed,
+          // El tablero de esta pestaña era anterior al cierre del torneo, así
+          // que se conservó el guardado. Decirlo evita que el Admin crea que
+          // sus jornadas "se borraron solas".
+          roundsRestored: metaMerge.roundsRestored,
           // The revs this write produced, so the tab that made it stays
           // current for its OWN next save instead of being judged stale
           // against the very state it just created.
@@ -1560,7 +1691,9 @@ app.post("/api/self-register", async (req, res) => {
         return res.status(402).json({ error: "entitlement_unavailable" });
       }
       const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
-      const check = checkParticipantCapacity(entry.entitlement, commercialConfig, value.participants.length, 1);
+      const check = checkParticipantCapacity(entry.entitlement, commercialConfig, value.participants.length, 1, {
+        currentScopeId: entry.tournamentScope && entry.tournamentScope.id,
+      });
       if (!check.allowed) {
         await client.query("ROLLBACK");
         // MON-002B: deliberately the BARE code, with no plan name, no limit
@@ -1653,11 +1786,14 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
 
     const commercialConfig = (await getRow("commercial_config")) || DEFAULT_COMMERCIAL_CONFIG;
     const participantsUsed = Array.isArray(meta.participants) ? meta.participants.length : 0;
-    // The DURABLE counter, the same number enforcement compares against —
-    // never meta.rounds.length, which deleting a round would reduce.
-    const roundsUsed = Number.isFinite(entry.lifecycleRoundsConsumed)
-      ? entry.lifecycleRoundsConsumed
-      : (Array.isArray(entry.lifecycleConsumedRoundIds) ? entry.lifecycleConsumedRoundIds.length : 0);
+    // MON-002C: the budget shown is the one being enforced — what the CURRENT
+    // tournament cycle has spent, not everything the quiniela has ever
+    // published. A quiniela on its second tournament starts at zero even
+    // though its history is full of rounds.
+    const currentScope = entry.tournamentScope || null;
+    const roundsUsed = currentScope
+      ? tournamentScope.consumedInScope(entry, currentScope.id)
+      : (Number.isFinite(entry.lifecycleRoundsConsumed) ? entry.lifecycleRoundsConsumed : 0);
 
     const summary = summarizePlan(entry.entitlement, commercialConfig, { participantsUsed, roundsUsed });
     // The league's display NAME lives in the browser's own picker list and is
@@ -1673,10 +1809,462 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
         season: season || null,
         label: summary.competition.bound && season ? `Temporada ${season}` : null,
       },
+      // MON-002C. Deliberately carries NO scope id and no provider ids: the
+      // screens need to say which tournament is being played and whether it
+      // is over, and neither of those is an identifier. Keeping the id out of
+      // the response also keeps it out of anything a browser could echo back.
+      tournament: currentScope ? {
+        cycle: currentScope.editionSeq,
+        name: currentScope.displayName || null,
+        state: tournamentScope.readLifecycle(currentScope),
+        startedAt: currentScope.startedAt || null,
+        endedAt: currentScope.endedAt || null,
+        // Whether this quiniela has ever played an earlier tournament — what
+        // tells the screen to say "tu Plus anterior no se transfiere" rather
+        // than explaining cycles to somebody on their first one.
+        previousCycles: Array.isArray(entry.scopeHistory) ? entry.scopeHistory.length : 0,
+      } : null,
     });
   } catch (err) {
     console.error("plan read failed", err);
     res.status(500).json({ error: "server_error" });
+  }
+});
+
+// ---------- advancing the tournament cycle (MON-002C) ----------
+//
+// The ONE place a quiniela moves from one tournament to the next. Both
+// endpoints below call it, so a close and a plain "empezar torneo nuevo"
+// cannot drift into doing the transition differently — they are the same
+// event, with different ceremony around it.
+//
+// It MUTATES `entry` (a platform_index entry already read under lock) and
+// returns the transition, or null when the stored cycle is unusable. Writing
+// the row and committing stays with the CALLER: that is what lets the close
+// endpoint put this and the meta changes into the same transaction.
+function advanceTournamentCycle(entry, { meta, displayName, now, commercialConfig }) {
+  const previous = entry.tournamentScope;
+  const ended = tournamentScope.endScope(previous, tournamentScope.ENDED_REASONS.ADMIN_STARTED_NEW_CYCLE, now);
+  const next = tournamentScope.buildNextScope(previous, {
+    sportKey: previous.sportKey,
+    provider: previous.providerRefs && previous.providerRefs.provider,
+    competitionId: previous.providerRefs && previous.providerRefs.competitionId,
+    displayName,
+    providerSeasonId: (meta && meta.settings && meta.settings.sportsdbSeason) || null,
+    startedAt: now,
+  });
+  if (!next) return null;
+
+  // The previous cycle moves into the history WITH what it spent, so the
+  // record of how much each tournament used survives intact.
+  entry.scopeHistory = Array.isArray(entry.scopeHistory) ? entry.scopeHistory : [];
+  entry.scopeHistory.push({
+    scope: ended,
+    roundsConsumed: tournamentScope.consumedInScope(entry, previous.id),
+    entitlementAtEnd: entry.entitlement,
+    closedAt: now,
+  });
+  entry.tournamentScope = next;
+  // The new cycle starts empty. The OLD cycle's ids stay exactly where they
+  // are, which is what keeps a re-published old round free and a new round
+  // chargeable.
+  entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, next.id, []);
+  entry.lifecycleRoundsConsumed = 0;
+
+  // ---- what carries into the new tournament, and what does not ----------
+  //
+  // The rule this ticket states is about a PURCHASE: Plus was bought for one
+  // tournament, so the next tournament is a new decision and a new payment.
+  // That is the whole no-rollover guarantee, and PLUS is reset here for it.
+  //
+  // GRANDFATHERED and MANUAL_GRANT are not purchases, and resetting them
+  // would be a silent downgrade nobody asked for. Both were reproduced doing
+  // real damage before this branch existed: an operator's 40-seat courtesy
+  // grant vanished on the next tournament and left a 15-person group stuck
+  // under the 10-person FREE cap, unable to admit anyone — and every legacy
+  // quiniela grandfathered by MON-001B would have lost its preserved status
+  // the first time it played a second tournament. Neither is a renewal
+  // decision; both are statuses somebody deliberately granted, and an
+  // operator can still revoke either in one click, which is not true of a
+  // downgrade that happens by itself.
+  //
+  // So: the plan carries, re-stamped for the cycle it now covers, and the
+  // history records that it carried rather than silently looking like a
+  // fresh grant.
+  const previousPlan = entry.entitlement && !entry.entitlement.revoked ? entry.entitlement.plan : null;
+  const carriesOver = previousPlan === "GRANDFATHERED" || previousPlan === "MANUAL_GRANT";
+  let freshEntitlement;
+  if (carriesOver) {
+    freshEntitlement = { ...entry.entitlement, grantedAt: now, scopeId: next.id };
+    freshEntitlement.reason = entry.entitlement.reason
+      ? `${entry.entitlement.reason} (se conserva en el torneo nuevo)`
+      : "Se conserva en el torneo nuevo: no es una compra por torneo.";
+  } else {
+    freshEntitlement = buildFreeEntitlement(commercialConfig, now);
+    freshEntitlement.source = "new_tournament_cycle";
+    freshEntitlement.reason = "Torneo nuevo: el plan anterior no se transfiere.";
+    freshEntitlement.scopeId = next.id;
+  }
+  // The competition binding starts over either way, so the new cycle can
+  // adopt whichever tournament it actually imports.
+  freshEntitlement.competitionIdentity = null;
+  entry.entitlement = freshEntitlement;
+  entry.entitlementHistory = Array.isArray(entry.entitlementHistory) ? entry.entitlementHistory : [];
+  entry.entitlementHistory.push({
+    action: carriesOver ? "new_cycle_carried" : "new_cycle",
+    at: now, grantId: null, grantedBy: "admin",
+    reason: freshEntitlement.reason, purchase: false,
+    entitlement: freshEntitlement,
+  });
+  return { next, previous, ended, carriesOver };
+}
+
+// ---------- starting the next tournament (MON-002C) ----------
+//
+// The one action that moves a quiniela from one tournament to the next, and
+// the only thing in the product that creates a new commercial scope.
+//
+// It exists because no provider wired into this server can tell one edition
+// from the next. TheSportsDB reports Liga MX Apertura 2026 and Clausura 2027
+// under the same season string, and declares neither MULTI_INSTANCE_SEASONS
+// nor FINISHED_SIGNAL — so the boundary between two tournaments is drawn by
+// the person who knows it happened, not guessed from a calendar that came
+// back short or a date that passed.
+//
+// What it does, and just as importantly what it does NOT do:
+//
+//   preserves   participants, their PINs and roles, every past round, every
+//               result, the whole history, and the record of what was bought
+//   creates     a new cycle with its own budget, starting on FREE
+//   never       charges anything, transfers the previous Plus, deletes a
+//               round, or touches the payment log
+//
+// Starting a new tournament is also the one piece of EVIDENCE we have that
+// the previous one is over, so the cycle being left behind is marked ENDED
+// with that as its stated reason — a fact somebody asserted, not an
+// inference.
+// Rate-limited like every other endpoint that opens a locked multi-row
+// transaction. Each call also appends to scopeHistory, so an unthrottled loop
+// would grow one JSONB row without bound — a slow way to hurt the whole
+// platform from a single authenticated organizer account.
+app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), async (req, res) => {
+  const slug = req.params.slug;
+  const metaKey = `quiniela:${slug}:meta`;
+  const body = req.body || {};
+  const displayName = typeof body.name === "string" && body.name.trim() !== ""
+    ? body.name.trim().slice(0, 120) : null;
+
+  // MON-002C QA-1: the freshness precondition. WITHOUT it, holding a lock only
+  // serialises the two writers — it does not stop them both writing. Two tabs
+  // both loaded on cycle 1 produced e1->e2 and then e2->e3, and five tabs
+  // produced five cycles; a double click or a retry after a commit did the
+  // same. Each of those transitions also resets the entitlement, so a Plus
+  // bought in between could be destroyed by a stale second click.
+  //
+  // `expectedCycle` says WHICH cycle the Admin was looking at when they
+  // pressed the button. It is a precondition and nothing else:
+  //
+  //   - it never chooses the next cycle (buildNextScope computes that from the
+  //     STORED scope, so expectedCycle=99 can never produce e100);
+  //   - it is compared INSIDE the transaction, after the lock, against the row
+  //     that was just re-read — which is what makes the second writer see the
+  //     first writer's commit;
+  //   - a mismatch writes nothing at all and is recoverable: the screen
+  //     refreshes and the Admin decides again.
+  //
+  // Required, not optional. A caller that may omit it is a caller that can
+  // opt out of the guard, which is the bug rather than a fallback for it.
+  //
+  // It is VALIDATED further down, after authorisation — never here. Answering
+  // "your body is malformed" to somebody who has not proven they may call this
+  // endpoint at all tells them something about the request shape before they
+  // have earned any answer but 403.
+  const expectedCycle = body.expectedCycle;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Same lock order as every other multi-row transaction in this file:
+    // platform_index first, then the quiniela's own meta row.
+    const platformIdx = await getRowLocked("platform_index", client);
+    const meta = await getRowLocked(metaKey, client);
+    if (!meta) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
+    // The organizer's decision, not the platform's: they are the one who
+    // knows their group is starting a new tournament.
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+    if (!isAdminOrOwner) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "forbidden" });
+    }
+    // Shape before freshness: a body that is not a whole positive number is not
+    // a stale precondition, it is not a precondition at all. Nothing has been
+    // written at this point, so this rollback leaves the row untouched.
+    if (!Number.isSafeInteger(expectedCycle) || expectedCycle < 1) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "invalid_expected_cycle" });
+    }
+    const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+      ? platformIdx.quinielas.find((q) => q.slug === slug)
+      : null;
+    if (!entry || !entry.entitlement || !entry.tournamentScope) {
+      console.error("new-cycle blocked: incomplete platform_index entry", { slug });
+      await client.query("ROLLBACK");
+      return res.status(402).json({ error: "entitlement_unavailable" });
+    }
+
+    // The precondition, checked against the row read under lock a few lines
+    // above. Everything before this point is a read; nothing has been written,
+    // so a rollback here leaves the quiniela exactly as it was.
+    const storedCycle = entry.tournamentScope.editionSeq;
+    if (expectedCycle !== storedCycle) {
+      await client.query("ROLLBACK");
+      console.log("new-cycle refused: stale cycle", { slug, expectedCycle, storedCycle });
+      // The current cycle travels back so the screen can say what actually
+      // happened without another round trip. It is the same number /plan
+      // already reports, so nothing new is exposed.
+      return res.status(409).json({ error: "stale_tournament_cycle", currentCycle: storedCycle });
+    }
+
+    const now = new Date().toISOString();
+    const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+    const moved = advanceTournamentCycle(entry, { meta, displayName, now, commercialConfig });
+    if (!moved) {
+      await client.query("ROLLBACK");
+      return res.status(500).json({ error: "server_error" });
+    }
+    const next = moved.next;
+    await putRow("platform_index", stampVersion(platformIdx, readStoredVersion(platformIdx)), client);
+    await client.query("COMMIT");
+    res.json({
+      ok: true,
+      tournament: { cycle: next.editionSeq, name: next.displayName, state: next.lifecycle },
+      previousCycles: entry.scopeHistory.length,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("new tournament cycle failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+
+// ---------- closing the tournament, atomically (MON-002C QA-2) ----------
+//
+// THE BUG THIS REPLACES
+//
+// Closing used to be two calls the BROWSER orchestrated: advance the cycle,
+// then write the archived meta. Between them there is no transaction, so a
+// failure on the second left the server on e2 with e1's rounds still on the
+// board — and the honest-looking "no se pudo archivar, intenta de nuevo"
+// had nothing idempotent to retry INTO. A second click after a refresh sent
+// expectedCycle=2 and legitimately produced e2 -> e3. One human intention to
+// close one tournament could burn two commercial cycles.
+//
+// No amount of copy fixes that, because the browser cannot be the authority
+// on whether a close already happened.
+//
+// WHAT REPLACES IT
+//
+// One transaction, under the same lock order as every other multi-row write
+// in this file (platform_index, then the quiniela's meta). The cycle advance,
+// the archive, the cleared board and the reset `paid` flags all commit
+// together or not at all. The failure mode the QA found does not become
+// better-handled; it stops existing.
+//
+// Atomicity alone still leaves one gap: the COMMIT lands and the response is
+// lost (timeout, closed laptop, dropped connection). The client cannot tell
+// that from "nothing happened", and guessing wrong in either direction is
+// bad — retry and you burn a second cycle, don't retry and the Admin thinks
+// their tournament is still open.
+//
+// So a close carries an INTENT ID: an opaque token the screen generates once
+// per human decision and keeps until it hears a definitive answer. The server
+// records the id of the close it performed, durably, on the platform_index
+// entry it already owns. A request whose intent id matches that record is the
+// SAME intention arriving twice: it replays the recorded outcome and mutates
+// nothing.
+//
+// The id is a correlation token, never an authority. It cannot pick a cycle,
+// cannot skip the expectedCycle precondition for a NEW intention, and cannot
+// resurrect an intention older than the last one recorded (that falls through
+// to the staleness check and is refused). A browser that loses its token
+// simply sees the refreshed state; deciding to close again from there is a
+// new, explicit intention, and the ticket says that one may advance.
+//
+// Order of checks, and why:
+//   404 not_found          — no such quiniela
+//   403 forbidden          — authorisation FIRST; nothing about the body is
+//                            revealed to someone who may not call this
+//   400 invalid_*          — shape; a malformed body is not a precondition
+//   402 entitlement_*      — the row is not in a state that can be closed
+//   200 replayed           — same intention, already done: no mutations
+//   409 stale_*            — a different, out-of-date intention
+//   200 closed             — performed now
+function isUsableIntentId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value);
+}
+
+// The final table is DISPLAY data. It is computed from picks the browser
+// already has, and it lands in meta, which the owner can write anyway — so
+// accepting it here grants nothing new. What it must never do is reach a
+// commercial decision, and it does not: nothing below reads it except to
+// store it. It is still bounded and shape-checked, because a malformed or
+// enormous payload would corrupt the row for everyone reading it later.
+const MAX_ARCHIVED_STANDINGS = 500;
+function sanitizeStandingRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const name = typeof row.name === "string" ? row.name.trim().slice(0, 80) : null;
+  if (!name) return null;
+  const pts = Number.isFinite(row.pts) ? row.pts : 0;
+  return { name, pts };
+}
+function sanitizeCloseSummary(body) {
+  if (body.standings != null && !Array.isArray(body.standings)) return null;
+  const standings = Array.isArray(body.standings)
+    ? body.standings.slice(0, MAX_ARCHIVED_STANDINGS).map(sanitizeStandingRow).filter(Boolean)
+    : [];
+  // The champion is not taken on trust either: it is the top of the table we
+  // just sanitised, so it can never disagree with the standings stored next
+  // to it.
+  const champion = standings.length ? { ...standings[0] } : null;
+  return { standings, champion };
+}
+
+app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async (req, res) => {
+  const slug = req.params.slug;
+  const metaKey = `quiniela:${slug}:meta`;
+  const body = req.body || {};
+  const expectedCycle = body.expectedCycle;
+  const intentId = body.closeIntentId;
+  const displayName = typeof body.name === "string" && body.name.trim() !== ""
+    ? body.name.trim().slice(0, 120) : null;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const platformIdx = await getRowLocked("platform_index", client);
+    const metaBefore = await getRowLocked(metaKey, client);
+    if (!metaBefore) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, metaBefore);
+    if (!isAdminOrOwner) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "forbidden" });
+    }
+    if (!isUsableIntentId(intentId)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "invalid_close_intent" });
+    }
+    if (!Number.isSafeInteger(expectedCycle) || expectedCycle < 1) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "invalid_expected_cycle" });
+    }
+    const summary = sanitizeCloseSummary(body);
+    if (!summary) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "invalid_close_summary" });
+    }
+    const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+      ? platformIdx.quinielas.find((q) => q.slug === slug)
+      : null;
+    if (!entry || !entry.entitlement || !entry.tournamentScope) {
+      console.error("close blocked: incomplete platform_index entry", { slug });
+      await client.query("ROLLBACK");
+      return res.status(402).json({ error: "entitlement_unavailable" });
+    }
+
+    // Same intention, arriving again. Whatever happened to the first response,
+    // this one gets the recorded outcome and changes nothing — which is what
+    // makes "we don't know if it went through" a safe thing for a screen to
+    // recover from.
+    const recorded = entry.lastClose;
+    if (recorded && recorded.intentId === intentId) {
+      await client.query("ROLLBACK");
+      return res.json({
+        ok: true, replayed: true,
+        closedAt: recorded.at,
+        tournament: { cycle: entry.tournamentScope.editionSeq, name: entry.tournamentScope.displayName, state: tournamentScope.readLifecycle(entry.tournamentScope) },
+        previousCycles: Array.isArray(entry.scopeHistory) ? entry.scopeHistory.length : 0,
+        archivedRounds: recorded.archivedRounds,
+        champion: recorded.champion || null,
+      });
+    }
+
+    const storedCycle = entry.tournamentScope.editionSeq;
+    if (expectedCycle !== storedCycle) {
+      await client.query("ROLLBACK");
+      console.log("close refused: stale cycle", { slug, expectedCycle, storedCycle });
+      return res.status(409).json({ error: "stale_tournament_cycle", currentCycle: storedCycle });
+    }
+
+    const now = new Date().toISOString();
+    const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+
+    // The meta is rebuilt from the row read UNDER LOCK, never from anything
+    // the request supplied: which rounds get archived is a fact about what is
+    // stored, not a claim a client gets to make.
+    const meta = JSON.parse(JSON.stringify(metaBefore));
+    // UX-ADM-005: published:false is a prepared calendar entry the group never
+    // actually played, so it is not history. published===undefined (legacy) is
+    // still treated as published, the same rule as everywhere else in QRACKS.
+    const archived = (Array.isArray(meta.rounds) ? meta.rounds : []).filter((r) => r && r.published !== false);
+    meta.pastTournaments = Array.isArray(meta.pastTournaments) ? meta.pastTournaments : [];
+    meta.pastTournaments.push({
+      closedAt: now,
+      champion: summary.champion,
+      standings: summary.standings,
+      rounds: archived,
+      // Which cycle this archive belongs to, and which intention produced it.
+      // Both are written by the server; they make a duplicated archive
+      // detectable after the fact instead of being an indistinguishable
+      // repeat of the same table.
+      cycle: storedCycle,
+      closeIntentId: intentId,
+    });
+    meta.rounds = [];
+    if (Array.isArray(meta.participants)) meta.participants.forEach((p) => { if (p) p.paid = false; });
+    // Marca el corte. Cualquier documento leído antes de este punto queda
+    // identificable como una vista pre-cierre del tablero.
+    meta.tournamentEpoch = readTournamentEpoch(metaBefore) + 1;
+
+    const moved = advanceTournamentCycle(entry, { meta, displayName, now, commercialConfig });
+    if (!moved) {
+      await client.query("ROLLBACK");
+      return res.status(500).json({ error: "server_error" });
+    }
+    entry.lastClose = {
+      intentId, at: now,
+      fromCycle: storedCycle, toCycle: moved.next.editionSeq,
+      archivedRounds: archived.length,
+      champion: summary.champion,
+    };
+
+    // Both rows, one COMMIT. This is the whole fix: there is no window in
+    // which the cycle has moved and the board has not.
+    await putRow("platform_index", stampVersion(platformIdx, readStoredVersion(platformIdx)), client);
+    await putRow(metaKey, stampMetaRevisions(meta, metaBefore), client);
+    await client.query("COMMIT");
+    res.json({
+      ok: true, replayed: false,
+      closedAt: now,
+      tournament: { cycle: moved.next.editionSeq, name: moved.next.displayName, state: moved.next.lifecycle },
+      previousCycles: entry.scopeHistory.length,
+      archivedRounds: archived.length,
+      champion: summary.champion,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("close tournament failed", err);
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
   }
 });
 
@@ -1772,16 +2360,32 @@ app.post("/api/create-quiniela", async (req, res) => {
     const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
     const entitlement = buildFreeEntitlement(commercialConfig);
     if (cleanLeagueId) {
-      entitlement.competitionIdentity = computeCompetitionIdentity(meta.settings);
+      entitlement.competitionIdentity = computeCompetitionIdentity(cleanLeagueId, meta.settings.sportsdbSeason);
     }
+    // MON-002C: every quiniela starts on cycle 1 of a tournament scope, with
+    // or without a league. The scope is what a purchase attaches to, so it has
+    // to exist from the first moment — a quiniela with no scope would have
+    // nothing to bound a Plus purchase to.
+    const scope = tournamentScope.buildInitialScope({
+      sportKey: "football",
+      provider: cleanLeagueId ? "thesportsdb" : null,
+      competitionId: cleanLeagueId,
+      displayName: null,
+      providerSeasonId: meta.settings.sportsdbSeason || null,
+      startedAt: new Date().toISOString(),
+    });
+    entitlement.scopeId = scope.id;
     idx.quinielas.push({
       slug: cleanSlug, name: cleanGroupName, creatorName: cleanCreatorName,
       contact: cleanContact, createdAt: new Date().toISOString(),
       participantCount: 1, roundCount: 0,
       entitlement,
       entitlementHistory: [{ action: "grant", entitlement, at: entitlement.grantedAt }],
+      tournamentScope: scope,
+      scopeHistory: [],
       lifecycleRoundsConsumed: 0,
       lifecycleConsumedRoundIds: [],
+      consumedRoundIdsByScope: { [scope.id]: [] },
     });
     await putRow("platform_index", idx, client);
 
@@ -1851,14 +2455,25 @@ app.post("/api/migrate-quiniela", async (req, res) => {
       source: "migrate_quiniela",
       reason: "Movida desde el link raíz — ya existía antes del cobro por plan.",
     });
+    const migratedScope = tournamentScope.buildInitialScope({
+      sportKey: "football",
+      provider: (meta.settings && meta.settings.sportsdbLeagueId) ? "thesportsdb" : null,
+      competitionId: meta.settings && meta.settings.sportsdbLeagueId,
+      providerSeasonId: (meta.settings && meta.settings.sportsdbSeason) || null,
+      startedAt: new Date().toISOString(),
+    });
+    migratedEntitlement.scopeId = migratedScope.id;
     idx.quinielas.push({
       slug: cleanSlug, name: meta.groupName, creatorName: creator.name || "",
       createdAt: new Date().toISOString(),
       participantCount: (meta.participants || []).length, roundCount: (meta.rounds || []).length,
       entitlement: migratedEntitlement,
       entitlementHistory: [{ action: "grant", entitlement: migratedEntitlement, at: migratedEntitlement.grantedAt }],
+      tournamentScope: migratedScope,
+      scopeHistory: [],
       lifecycleRoundsConsumed: 0,
       lifecycleConsumedRoundIds: [],
+      consumedRoundIdsByScope: { [migratedScope.id]: [] },
     });
     await putRow("platform_index", idx, client);
 
@@ -2383,7 +2998,7 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     // platform-tier — not owner-writable). A mismatch is refused before
     // the provider is even called, so no data is fetched, imported, or
     // partially written for the wrong tournament.
-    const requestedIdentity = computeCompetitionIdentity({ sportsdbLeagueId: externalLeagueId, sportsdbSeason: season });
+    const requestedIdentity = computeCompetitionIdentity(externalLeagueId, season);
     const bindingEntry = platformIdx && Array.isArray(platformIdx.quinielas)
       ? platformIdx.quinielas.find((q) => q.slug === slug)
       : null;
@@ -2396,6 +3011,7 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       await client.query("ROLLBACK");
       return res.status(402).json({ error: "entitlement_unavailable", createdRounds: 0, createdMatches: 0, skippedEvents: 0 });
     }
+    let indexTouched = false;
     {
       const binding = evaluateCompetitionBinding(bindingEntry.entitlement, requestedIdentity);
       if (binding.violation) {
@@ -2422,8 +3038,37 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
           action: "competition_bound", at: new Date().toISOString(),
           competitionIdentity: binding.identity, source: "sync_competition",
         });
-        await putRow("platform_index", platformIdx, client);
+        indexTouched = true;
       }
+
+      // MON-002C: record WHICH competition the current cycle is playing, on
+      // the scope's metadata. This is labelling only — the scope id does not
+      // move, because a scope only ever changes when an Admin starts a new
+      // tournament. That is exactly why binding a league to a cycle cannot
+      // hand the cycle a different tournament's coverage.
+      const scope = bindingEntry.tournamentScope;
+      if (scope) {
+        const refs = scope.providerRefs || {};
+        if (refs.competitionId !== String(externalLeagueId) || refs.seasonId !== season) {
+          scope.providerRefs = {
+            ...refs,
+            provider: "thesportsdb",
+            competitionId: String(externalLeagueId),
+            seasonId: season,
+          };
+          indexTouched = true;
+        }
+        // The provider wired into this path declares no finished signal, so
+        // the honest answer about whether the tournament is over is "we do
+        // not know" — never inferred from how many events came back.
+        const canSignalFinish = false;
+        const nextLifecycle = tournamentScope.resolveLifecycle(scope, { providerCanSignalFinish: canSignalFinish });
+        if (nextLifecycle !== scope.lifecycle) {
+          scope.lifecycle = nextLifecycle;
+          indexTouched = true;
+        }
+      }
+      if (indexTouched) await putRow("platform_index", platformIdx, client);
     }
 
     let events;

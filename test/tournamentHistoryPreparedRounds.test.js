@@ -1,10 +1,13 @@
 // UX-ADM-005: Cierre/histórico del torneo -- una jornada published:false
 // (preparada) nunca debe quedar guardada en meta.pastTournaments[].rounds,
 // para que "X jornadas jugadas" no cuente calendario preparado como
-// jugado. public/index.html no expone jsdom, así que esto ejecuta el
-// FRAGMENTO REAL de la construcción del objeto pastTournaments (extraído
-// verbatim del handler de "Cerrar torneo") contra un meta.rounds mixto
-// real, no una reimplementación ni solo un chequeo estructural de texto.
+// jugado. Esto ejecuta el FRAGMENTO REAL del filtro (extraído verbatim del
+// código, no reimplementado) contra un meta.rounds mixto real.
+//
+// MON-002C QA-2: el filtro se MOVIÓ del navegador al servidor, porque cerrar
+// el torneo pasó a ser una sola transacción server-side. La regla no cambió;
+// cambió quién la aplica, y ahora la aplica el lado que no puede ser
+// manipulado por quien manda la petición. Estas pruebas siguen al filtro.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -12,6 +15,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
 function assertRealFragment(source, fragment){
   assert.ok(source.includes(fragment), `could not locate real source fragment: "${fragment}"`);
@@ -21,20 +25,44 @@ function assertRealFragment(source, fragment){
 // Executes the REAL filter expression used when building the historical
 // snapshot -- extracted verbatim, not reimplemented.
 function runCloseTournamentRoundsFilter(rounds){
-  const filterExpr = assertRealFragment(indexSrc, "meta.rounds.filter(r => r.published !== false)");
+  const filterExpr = assertRealFragment(serverSrc, "(Array.isArray(meta.rounds) ? meta.rounds : []).filter((r) => r && r.published !== false)");
   const runner = new Function("meta", `return ${filterExpr};`);
   return runner({ rounds });
+}
+
+// El handler completo, delimitado por llaves en vez de por una ventana de N
+// caracteres: una ventana fija convierte cualquier crecimiento del handler en
+// un falso negativo silencioso (la aserción "no contiene X" pasa porque X
+// quedó fuera del recorte, no porque no exista).
+function closeTournamentHandler(){
+  const marker = 'app.post("/api/quinielas/:slug/tournament/close"';
+  const at = serverSrc.indexOf(marker);
+  assert.ok(at !== -1, "no se encontró el endpoint de cerrar torneo");
+  const braceStart = serverSrc.indexOf("{", serverSrc.indexOf("=>", at));
+  let depth = 0;
+  for(let i = braceStart; i < serverSrc.length; i++){
+    if(serverSrc[i] === "{") depth++;
+    else if(serverSrc[i] === "}"){ depth--; if(depth === 0) return serverSrc.slice(at, i + 1); }
+  }
+  throw new Error("handler sin cerrar");
 }
 
 function round(number, published, resultsPublished){
   return { id: "r" + number, number, published, resultsPublished: !!resultsPublished, matches: [{ id: "m" + number, teamA: "A", teamB: "B" }] };
 }
 
-test("root cause confirmed: the close-tournament handler no longer stores the raw unfiltered meta.rounds", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-close-tournament").addEventListener("click"');
-  const handlerBody = indexSrc.slice(idx, idx + 2200);
-  assert.ok(!handlerBody.includes("rounds: meta.rounds\n"), "must not still store the raw array");
-  assert.ok(handlerBody.includes("rounds: meta.rounds.filter(r => r.published !== false)"), "must filter out published:false before storing the historical snapshot");
+test("root cause confirmed: the close endpoint never stores the raw unfiltered meta.rounds", () => {
+  const handlerBody = closeTournamentHandler();
+  assert.ok(!/rounds:\s*meta\.rounds\s*[,\n]/.test(handlerBody), "must not store the raw array");
+  assert.ok(handlerBody.includes("(Array.isArray(meta.rounds) ? meta.rounds : []).filter((r) => r && r.published !== false)"),
+    "must filter out published:false before storing the historical snapshot");
+  // Y lo que se archiva sale de la fila LEÍDA BAJO LOCK, no de la petición:
+  // qué jornadas se jugaron es un hecho de lo guardado, no una afirmación
+  // que el cliente pueda hacer.
+  assert.ok(handlerBody.includes("const meta = JSON.parse(JSON.stringify(metaBefore));"),
+    "el archivo se construye desde la fila leída bajo lock");
+  assert.ok(!/body\.rounds|body\.pastTournaments/.test(handlerBody),
+    "el cuerpo de la petición nunca aporta jornadas ni historial");
 });
 
 // ---- CASE A: prepared excluded ----
@@ -109,19 +137,40 @@ test("CASE D: renderAdminRondas (Admin -> Jornadas) still reads meta.rounds dire
 
 // ---- CASE F: scoring integrity is unaffected -- champion/standings are computed via standingsList() before this fix runs, untouched by it ----
 
-test("CASE F: the champion/finalStandings computation happens via standingsList() BEFORE the historical rounds are filtered/stored -- this fix cannot alter scoring", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-close-tournament").addEventListener("click"');
-  const handlerBody = indexSrc.slice(idx, idx + 2200);
-  const standingsIdx = handlerBody.indexOf("const finalStandings = standingsList()");
-  const filterIdx = handlerBody.indexOf("rounds: meta.rounds.filter(r => r.published !== false)");
-  assert.ok(standingsIdx !== -1 && filterIdx !== -1 && standingsIdx < filterIdx, "standings/champion must be computed independently, before the historical rounds filter -- this fix only changes what gets STORED as history, never how points/champion are calculated");
+test("CASE F: scoring is untouched -- standings are computed by the browser and only STORED by the server", () => {
+  // El cálculo de puntos sigue exactamente donde estaba: standingsList() en el
+  // navegador, antes de mandar nada. El servidor no puntúa; sólo acota, guarda
+  // y saca al campeón de la tabla que recibe, así que este arreglo no puede
+  // alterar cómo se calculan puntos ni campeón.
+  const clickHandler = (() => {
+    const marker = 'async function runCloseTournament()';
+    const at = indexSrc.indexOf(marker);
+    assert.ok(at !== -1);
+    const braceStart = indexSrc.indexOf("{", indexSrc.indexOf(")", at));
+    let depth = 0;
+    for(let i = braceStart; i < indexSrc.length; i++){
+      if(indexSrc[i] === "{") depth++;
+      else if(indexSrc[i] === "}"){ depth--; if(depth === 0) return indexSrc.slice(at, i + 1); }
+    }
+    throw new Error("handler sin cerrar");
+  })();
+  const standingsIdx = clickHandler.indexOf("const finalStandings = standingsList()");
+  const sendIdx = clickHandler.indexOf("apiCloseTournament(intent)");
+  assert.ok(standingsIdx !== -1 && sendIdx !== -1 && standingsIdx < sendIdx,
+    "los puntos se calculan igual que siempre, antes de mandar el cierre");
+  const handlerBody = closeTournamentHandler();
+  assert.ok(!/standingsList|puntos|computeStandings/.test(handlerBody),
+    "el servidor no calcula puntos");
+  // Y el campeón no se toma del cliente: se deriva de la tabla ya saneada, así
+  // que nunca puede contradecir lo que se guarda junto a él.
+  assert.ok(serverSrc.includes("const champion = standings.length ? { ...standings[0] } : null;"),
+    "el campeón sale de la tabla saneada, no de un campo aparte del cliente");
 });
 
 // ---- Payment Penalty untouched ----
 
-test("this fix does not reference penalizedRounds/reconcilePenaltyLedger/penaltyPointsFor anywhere in the close-tournament handler -- Payment Penalty logic is completely untouched", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-close-tournament").addEventListener("click"');
-  const handlerBody = indexSrc.slice(idx, idx + 2200);
+test("this fix does not reference penalizedRounds/reconcilePenaltyLedger/penaltyPointsFor anywhere in the close endpoint -- Payment Penalty logic is completely untouched", () => {
+  const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
   assert.ok(!handlerBody.includes("penaltyPointsFor"));
   assert.ok(!handlerBody.includes(".penalizedRounds"));

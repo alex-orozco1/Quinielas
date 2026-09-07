@@ -327,7 +327,7 @@ test("participantCount is a display cache, never the thing capacity is measured 
   // lock, in both write paths.
   assert.ok(serverSrc.includes("const oldParticipantCount = (oldValue.participants || []).length;"));
   assert.ok(serverSrc.includes("const newParticipantCount = (mergedValue.participants || []).length;"));
-  assert.ok(serverSrc.includes("checkParticipantCapacity(entry.entitlement, commercialConfig, value.participants.length, 1)"));
+  assert.ok(serverSrc.includes("checkParticipantCapacity(entry.entitlement, commercialConfig, value.participants.length, 1, {"));
   assert.ok(!serverSrc.includes("checkParticipantCapacity(entry.entitlement, commercialConfig, entry.participantCount"),
     "the cached count must never be the input to a capacity decision");
 });
