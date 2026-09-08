@@ -1250,7 +1250,11 @@ test("SERVER: submit-bet-answer and set-pin read under the lock and write with t
     // writing, so the value is no longer the bare `value` — but it is still
     // the same transactional client, which is what this guards.
     assert.ok(/await putRow\(metaKey, stored\w+, client\)/.test(slice), `${marker}: must write with the same client`);
-    assert.ok(slice.includes("stampMetaRevisions("), `${marker}: a single-participant change must advance that participant's revision`);
+    // HOTFIX-001 renamed the funnel: stampMetaWrite() is stampMetaRevisions()
+    // plus the board's own revision, so asserting it here is strictly stronger
+    // than before — these handlers must not be able to write a meta row that
+    // skips either protection.
+    assert.ok(slice.includes("stampMetaWrite("), `${marker}: a single-participant change must advance that participant's revision`);
     assert.ok(slice.includes('await client.query("COMMIT")'), `${marker}: must commit`);
     assert.ok(slice.includes('await client.query("ROLLBACK").catch(() => {})'), `${marker}: must roll back on error`);
     assert.ok(slice.includes("client.release()"), `${marker}: must release the connection`);

@@ -357,6 +357,20 @@
   }
   #quiniela-root .toast.show{ opacity:1; transform:translateX(-50%) translateY(-4px); }
 
+  /* HOTFIX-001: aviso de reconciliación. Igual que el modal de abajo, va
+     colgado de document.body y por eso NO se escopa bajo #quiniela-root: un
+     re-render (root.innerHTML se reemplaza entero al cambiar de pantalla) lo
+     borraría justo cuando hace falta leerlo. */
+  .qz-notice{
+    position:fixed; top:14px; left:50%; transform:translateX(-50%);
+    max-width:min(520px, calc(100vw - 28px));
+    background:#0f2e22; color:#f6f7f4; padding:12px 18px; border-radius:12px;
+    font-size:13.5px; font-weight:600; line-height:1.4; text-align:center;
+    box-shadow:0 10px 30px rgba(0,0,0,.28); z-index:300;
+    opacity:0; pointer-events:none; transition:opacity .2s ease, transform .2s ease;
+  }
+  .qz-notice.show{ opacity:1; transform:translateX(-50%) translateY(4px); }
+
   /* UX-018: reusable confirmation modal — deliberately NOT scoped under
      #quiniela-root, since it's appended to document.body so a re-render
      elsewhere in the app (root.innerHTML gets replaced wholesale on most
@@ -1521,8 +1535,32 @@
       const ownerCred = (opts && opts.owner) || adminOrOwnerCred();
       const creds = { owner: ownerCred, platform: platformPasswordCache };
       const result = await kvSetWithError(currentMetaKey(), meta, creds);
+      // HOTFIX-001. El servidor rechazó reemplazar el tablero porque esta
+      // pestaña ya no estaba viendo el actual: otra pestaña, un import o un
+      // cierre publicaron algo entremedio. No se perdió nada del servidor y no
+      // se guardó nada de aquí — así que lo único correcto es traer el estado
+      // bueno, repintar y decirlo en una línea. El usuario no tiene por qué
+      // saber qué es una revisión.
+      if(!result.ok && result.error === "rounds_conflict"){
+        try{
+          const fresh = await getMeta({ owner: adminOrOwnerCred() });
+          // Mutado en sitio: cada pantalla que tenga este mismo objeto ve la
+          // corrección sin necesidad de cambiar la referencia.
+          if(fresh) Object.assign(meta, fresh);
+        }catch(e){ console.error("refresh tras rounds_conflict falló", e); }
+        invalidatePlan();
+        // Repintar ANTES del aviso, y el aviso colgado de document.body: al
+        // revés se borraría solo.
+        try{ await render(); }catch(e){ console.error("render tras rounds_conflict falló", e); }
+        notice("Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
+        return { ...result, reconciled: true };
+      }
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
+        // HOTFIX-001: sin esto, la siguiente escritura de ESTA pestaña se
+        // juzgaría contra el tablero que cargó, no contra el que acaba de
+        // crear — es decir, entraría en conflicto consigo misma.
+        if(Number.isFinite(result.roundsRevision)) meta.roundsRevision = result.roundsRevision;
         adoptParticipantRevs(result.participantRevs);
         // Any successful meta write can move the plan numbers (a participant
         // added or removed, a round published), so the cached plan is dropped
@@ -1895,6 +1933,27 @@
   const CHART_COLORS = ["#E3B23C","#2D6A4F","#C1443A","#3A6EA5","#8E44AD","#D2691E","#16A085","#B8860B","#7f8c8d","#E75480"];
 
   const root = document.getElementById("quiniela-root");
+
+  // HOTFIX-001. toast() se cuelga de `root`, y render() reemplaza root.innerHTML
+  // entero: un aviso emitido justo antes de repintar desaparece sin que nadie
+  // lo lea. Este va en document.body, así que sobrevive al repintado que el
+  // propio aviso provoca. Se usa sólo para lo que el usuario NO puede perderse.
+  function notice(msg){
+    let n = document.getElementById("qz-notice");
+    if(!n){
+      n = document.createElement("div");
+      n.id = "qz-notice";
+      n.className = "qz-notice";
+      n.setAttribute("role", "status");
+      n.setAttribute("aria-live", "polite");
+      n.setAttribute("aria-atomic", "true");
+      document.body.appendChild(n);
+    }
+    n.textContent = msg;
+    n.classList.add("show");
+    clearTimeout(n._h);
+    n._h = setTimeout(()=> n.classList.remove("show"), 6000);
+  }
 
   function toast(msg){
     let t = document.getElementById("qz-toast");
@@ -6727,13 +6786,21 @@
     // Un cierre resuelto: se refresca la pantalla y se dice qué pasó. El
     // mensaje distingue haber cerrado ahora de haber confirmado un cierre que
     // ya estaba hecho — una recuperación no se presenta como un cierre nuevo.
-    function finishClose(r){
+    async function finishClose(r){
       clearCloseIntent();
       invalidatePlan();
       try{
         window.localStorage.removeItem(planWarningKey("people"));
         window.localStorage.removeItem(planWarningKey("rounds"));
       }catch(e){}
+      // HOTFIX-001. Cerrar es una escritura del SERVIDOR sobre el tablero:
+      // archiva, lo vacía y avanza su revisión. Sin traer el estado nuevo, esta
+      // pestaña seguiría pintando las jornadas archivadas y su siguiente
+      // guardado chocaría contra un tablero que ya no es el que tiene.
+      try{
+        const fresh = await getMeta({ owner: adminOrOwnerCred() });
+        if(fresh) Object.assign(meta, fresh);
+      }catch(e){ console.error("refresh tras cierre falló", e); }
       renderAdmin(document.getElementById("qz-main"));
       const who = r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
       toast(r.replayed
@@ -6744,8 +6811,15 @@
     // Resultado desconocido: la petición pudo haber llegado. NO se reintenta
     // solo — reintentar a ciegas es justo lo que podía quemar un segundo
     // ciclo. Se conserva el token, se refresca, y se ofrece verificar.
-    function closeUnknown(){
+    async function closeUnknown(){
       invalidatePlan();
+      // Igual que arriba: el cierre PUDO haber entrado. Traer el estado real es
+      // lo único que permite que la pantalla —y el banner de verificación—
+      // hablen de lo que hay, no de lo que esta pestaña recordaba.
+      try{
+        const fresh = await getMeta({ owner: adminOrOwnerCred() });
+        if(fresh) Object.assign(meta, fresh);
+      }catch(e){ console.error("refresh tras cierre incierto falló", e); }
       renderAdmin(document.getElementById("qz-main"));
       toast("No pudimos confirmar si el torneo se cerró. Revisa el estado abajo y verifica.");
     }
