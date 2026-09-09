@@ -32,6 +32,8 @@
 
 const thesportsdb = require("./providers/theSportsDbAdapter");
 const { SCORE_PHASE, buildScoreContract } = require("./scoreContract");
+const sportmonksClient = require("./providers/sportmonksClient");
+const sportmonksAdapter = require("./providers/sportmonksAdapter");
 
 const CACHE_TTL_MS = 8 * 60 * 1000; // 5-10 min window, per DATA-001.1 §Caché
 const cache = new Map(); // key -> { expiresAt, events }
@@ -105,6 +107,14 @@ function tsdbRegulationComplete(providerStatus) {
   return null;
 }
 
+// Acepta las dos formas que llegan de proveedores distintos —"2026-11-22T03:00:00"
+// y "2025-12-15 02:00:00"— y devuelve siempre un instante ISO, o null. Nunca
+// una fecha desplazada ni un NaN disfrazado.
+function normalizeProviderTimestamp(raw) {
+  if (!raw) return null;
+  return normalizeTimestamp(String(raw).trim().replace(" ", "T"));
+}
+
 function normalizeEvent(raw, provider) {
   const hasScore = raw.intHomeScore != null && raw.intHomeScore !== "" &&
                     raw.intAwayScore != null && raw.intAwayScore !== "";
@@ -150,7 +160,89 @@ function normalizeEvent(raw, provider) {
 // league. This is the call that replaces the old truncated V1 frontend
 // call — see DATA-001 root cause. Throws thesportsdb.ProviderError on
 // failure; callers decide how to surface that (see server.js route).
-async function getSeasonEvents({ provider, externalLeagueId, season }) {
+// ---- El puente Sportmonks -> forma de evento del producto ------------------
+//
+// DATA-004 §3. Existían dos formas incompatibles de evento: la de este archivo
+// (la que consume Competition Sync y el autocompletado de resultados) y la del
+// dominio (sportsDomain.makeEvent, por donde entra Sportmonks). Esto es el
+// boundary explícito y pequeño entre las dos — deliberadamente NO un refactor
+// de una de ellas hacia la otra.
+//
+// Aquí no hay conocimiento de Sportmonks: se traduce de la forma del DOMINIO,
+// que ya es provider-agnostic. Todo lo específico del proveedor vive en su
+// adapter, que es donde el ticket lo quiere.
+function fromDomainEvent(e, stageNameById) {
+  const comp = (role) => (Array.isArray(e.competitors) ? e.competitors : []).find((c) => c && c.role === role) || null;
+  const side = (role) => {
+    const c = comp(role);
+    return { role, externalId: c && c.providerCompetitorId ? c.providerCompetitorId : null, name: (c && c.name) || null };
+  };
+  return {
+    provider: e.provider,
+    externalLeagueId: null,
+    externalEventId: e.providerEventId,
+    // Puede ser null, y eso está bien: la agrupación tiene otras señales.
+    round: e.providerRoundId,
+    stageId: e.stageId || null,
+    stageName: (stageNameById && stageNameById.get(e.stageId)) || null,
+    leg: e.leg || null,
+    status: e.status,
+    // NORMALIZADO AQUÍ, y no antes. Sportmonks entrega "2025-12-15 02:00:00":
+    // sin la T y sin zona. Pasarlo tal cual tenía dos consecuencias, las dos
+    // malas: `new Date()` lo interpreta como hora LOCAL, así que el horario del
+    // partido se desplazaba; y como lo guardado sí es ISO, cada sync veía un
+    // cambio de horario que no existía y proponía la misma actualización para
+    // siempre. El dominio conserva la cadena del proveedor; lo que cruza a
+    // producto es un instante.
+    dateTime: normalizeProviderTimestamp(e.startsAt),
+    participants: [side("home"), side("away")],
+    score: e.score || null,
+    regulationScore: e.regulationScore || null,
+    scoreReasons: e.scoreReasons || [],
+    providerStatus: e.providerStatusRaw == null ? null : String(e.providerStatusRaw),
+  };
+}
+
+// Trae una temporada completa de Sportmonks y la devuelve YA en la forma que el
+// producto consume. `seasonId` es el id de temporada de Sportmonks: es un
+// contrato de configuración explícito, no algo que se adivine de un nombre.
+//
+// El cliente se inyecta para poder ejercitar esto de punta a punta contra los
+// payloads reales registrados, sin red y sin credencial.
+async function getSportmonksSeasonEvents({ seasonId, competitionId, client }) {
+  const api = client || sportmonksClient.createSportmonksClient();
+  const seasonPayload = await api.getSeasonWithStages(seasonId);
+  const { stages } = sportmonksAdapter.fromSeasonPayload(seasonPayload, {
+    competitionId: competitionId || null,
+    providerCompetitionId: competitionId || null,
+  });
+  const stageNameById = new Map(stages.map((st) => [st.id, st.name]));
+  const out = [];
+  for (const stage of stages) {
+    // Un stage que falle NO tumba la importación entera: la fase final de una
+    // liga puede tener stages que el plan no cubre, y perder el resto por eso
+    // sería exactamente la pérdida silenciosa que este ticket combate.
+    let payload;
+    try {
+      payload = await api.getStageFixtures(stage.providerStageId);
+    } catch (err) {
+      continue;
+    }
+    const { events } = sportmonksAdapter.fromStagePayload(payload, { stages });
+    for (const e of events) out.push(fromDomainEvent(e, stageNameById));
+  }
+  return out;
+}
+
+async function getSeasonEvents({ provider, externalLeagueId, season, client }) {
+  if (provider === "sportmonks") {
+    const key = cacheKey(provider, externalLeagueId, season);
+    const cached = getCached(key);
+    if (cached) return cached;
+    const events = await getSportmonksSeasonEvents({ seasonId: season, competitionId: externalLeagueId, client });
+    setCached(key, events);
+    return events;
+  }
   if (provider !== "thesportsdb") {
     // Only one provider exists today; this guard exists so that adding a
     // second provider later is a matter of branching here, not rewriting
@@ -244,6 +336,9 @@ function findMatchingEvent(events, match, roundDeadlineIso) {
 
 module.exports = {
   tsdbRegulationComplete,
+  normalizeProviderTimestamp,
+  fromDomainEvent,
+  getSportmonksSeasonEvents,
   getSeasonEvents,
   getLiveEvents,
   findMatchingEvent,

@@ -100,22 +100,61 @@ function normalizeSportmonksStatus(stateId) {
 // ticket: "el marcador" del proveedor puede incluir prórroga, así que por sí
 // solo no prueba nada sobre los 90 minutos.
 const SPORTMONKS_SCORE_PHASE = Object.freeze({
+  // EL marcador del 1X2 de QRACKS: acumulado al terminar el segundo tiempo.
   "2ND_HALF": SCORE_PHASE.REGULATION,
+
+  // Reconocidas y deliberadamente IGNORADAS. Existen, no son el marcador del
+  // partido, y reconocerlas es lo que impide que vuelvan ambiguo un fixture
+  // perfectamente puntuable.
+  //
+  // 2ND_HALF_ONLY merece su propia línea porque es la trampa de todo esto: son
+  // los goles marcados DENTRO del segundo tiempo, no el acumulado. En un 1-0 al
+  // descanso que acaba 1-1, "2ND_HALF" es 1-1 y "2ND_HALF_ONLY" es 0-1. Tomar
+  // el segundo como marcador de regulación daría un 1X2 plausible y equivocado,
+  // que es el peor modo de fallo que tiene este producto.
   "1ST_HALF": SCORE_PHASE.PARTIAL,
+  "2ND_HALF_ONLY": SCORE_PHASE.PARTIAL,
+
+  // "El marcador" del proveedor. Puede incluir prórroga, así que por sí solo
+  // NUNCA prueba nada sobre los 90 minutos.
   "CURRENT": SCORE_PHASE.FINAL,
   "FT": SCORE_PHASE.FINAL,
+
   "ET": SCORE_PHASE.EXTRA_TIME,
   "AET": SCORE_PHASE.EXTRA_TIME,
   "EXTRA_TIME": SCORE_PHASE.EXTRA_TIME,
+  "ET_1ST_HALF": SCORE_PHASE.EXTRA_TIME,
+  "ET_2ND_HALF": SCORE_PHASE.EXTRA_TIME,
+
   "PENALTY_SHOOTOUT": SCORE_PHASE.PENALTY,
   "PENALTIES": SCORE_PHASE.PENALTY,
   "PENS": SCORE_PHASE.PENALTY,
+
   "AGGREGATE": SCORE_PHASE.AGGREGATE,
 });
 
-function scorePhaseOf(description) {
-  if (typeof description !== "string") return SCORE_PHASE.UNKNOWN;
-  return SPORTMONKS_SCORE_PHASE[description.trim().toUpperCase()] || SCORE_PHASE.UNKNOWN;
+// DATA-004 aprobó `type_id = 2` como LA señal del marcador de regulación. Es
+// un entero estable, no una cadena que el proveedor pueda renombrar o
+// localizar, así que manda sobre la descripción.
+const SPORTMONKS_REGULATION_TYPE_ID = 2;
+
+// Clasifica un registro cruzando sus DOS señales.
+//
+// Cuando las dos están presentes tienen que coincidir. Un registro con
+// type_id 2 pero descripción distinta de 2ND_HALF —o al revés— significa que
+// una de las dos cosas que creemos saber es falsa; ante eso el registro entra
+// como UNKNOWN y el fixture entero queda ambiguo. Dejar que gane una de las dos
+// sería elegir cuál mentira preferimos.
+function scorePhaseOf(description, typeId) {
+  const byName = typeof description === "string"
+    ? (SPORTMONKS_SCORE_PHASE[description.trim().toUpperCase()] || SCORE_PHASE.UNKNOWN)
+    : SCORE_PHASE.UNKNOWN;
+  if (!Number.isSafeInteger(typeId)) return byName;
+
+  const claimsRegulationById = typeId === SPORTMONKS_REGULATION_TYPE_ID;
+  const claimsRegulationByName = byName === SCORE_PHASE.REGULATION;
+  if (claimsRegulationById !== claimsRegulationByName) return SCORE_PHASE.UNKNOWN;
+  return byName;
 }
 
 // Estados en los que el proveedor AFIRMA que el partido terminó dentro del
@@ -168,7 +207,7 @@ function toScoreLines(fx) {
       lines.push({ phase: SCORE_PHASE.UNKNOWN, side: null, goals: null });
       continue;
     }
-    lines.push({ phase: scorePhaseOf(rec.description), side, goals: inner.goals });
+    lines.push({ phase: scorePhaseOf(rec.description, rec.type_id), side, goals: inner.goals });
   }
   return lines;
 }
@@ -543,6 +582,7 @@ function fromStagePayload(stageData, { stages } = {}) {
 
 module.exports = {
   SPORTMONKS_SCORE_PHASE,
+  SPORTMONKS_REGULATION_TYPE_ID,
   SPORTMONKS_REGULATION_COMPLETE_STATES,
   SPORTMONKS_NON_REGULATION_FINISHED_STATES,
   scorePhaseOf,

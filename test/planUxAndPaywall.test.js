@@ -549,7 +549,9 @@ test("UX: a commercial refusal from the import flow is not dressed up as a provi
   // partidos actualizados, fixtures de fase final guardados y diagnósticos. Lo
   // que se comprueba —que un 402 no se disfrace de caída del proveedor— es
   // exactamente lo mismo.
-  const slice = indexSrc.slice(at, at + 4200);
+  // Ampliada de nuevo en DATA-004: el bloque de éxito ahora enumera motivos
+  // de revisión. La afirmación es la misma.
+  const slice = indexSrc.slice(at, at + 6000);
   assert.ok(slice.includes("res.status === 402"), "402 must be handled on its own");
   assert.ok(slice.includes("humanizeError(data.error)"), "with the commercial copy");
   const at402 = slice.indexOf("res.status === 402");

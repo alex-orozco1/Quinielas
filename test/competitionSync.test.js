@@ -5,11 +5,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { planCompetitionSync } = require("../competitionSync");
 
-function ev({ round = "1", externalEventId, homeName = "Home", awayName = "Away", homeId = "h1", awayId = "a1", dateTime }) {
+function ev({ round = "1", externalEventId, homeName = "Home", awayName = "Away", homeId = "h1", awayId = "a1", dateTime, stageId = "stage-1" }) {
   return {
     provider: "thesportsdb",
     externalEventId: externalEventId || null,
     round,
+    // DATA-004: sin ronda, la señal con la que se agrupa es el stage. Un
+    // fixture sin ronda Y sin stage no tiene ninguna, y ése es otro caso.
+    stageId,
     dateTime: dateTime || null,
     participants: [
       { role: "home", externalId: homeId, name: homeName },
@@ -52,14 +55,14 @@ test("non-numeric round label falls back to next sequential number, string prese
   assert.equal(newRounds[0].externalRoundId, "Final");
 });
 
-// DATA-004C CAMBIÓ ESTA REGLA. Antes, un fixture sin ronda se descartaba y se
-// contaba como "skipped". La evidencia real de Liga MX 2025/26 trae 27 de 337
-// fixtures con round_id null — la fase final entera — así que descartarlos
-// borraba la Liguilla completa sin error y sin aviso. Ahora se conservan.
+// DATA-004C dejó de descartar los fixtures sin ronda; DATA-004 los convierte en
+// jornada. La evidencia real de Liga MX 2025/26 trae 27 de 337 fixtures con
+// round_id null — la fase final entera — así que descartarlos borraba la
+// Liguilla completa sin aviso, y dejarlos esperando para siempre era la misma
+// pérdida con otro nombre.
 //
-// Lo que NO cambió, y esta prueba también lo fija: sigue sin inventarse un
-// número de jornada para hacerlos caber.
-test("un fixture sin ronda se CONSERVA en staging, nunca se descarta ni se le inventa jornada", () => {
+// Lo que NO cambió: no se inventa una ronda del proveedor que no existe.
+test("un fixture sin ronda se convierte en jornada por su señal estructural, sin inventar una ronda", () => {
   const events = [
     ev({ round: null, externalEventId: "e1", dateTime: "2026-12-01T00:00:00Z" }),
     ev({ round: "1", externalEventId: "e2", dateTime: "2026-08-01T00:00:00Z" }),
@@ -67,13 +70,12 @@ test("un fixture sin ronda se CONSERVA en staging, nunca se descarta ni se le in
   const { newRounds, stagedFixtures, skippedEvents, diagnostics } =
     planCompetitionSync({ existingRounds: [], events, provider: "thesportsdb" });
   assert.equal(skippedEvents, 0, "sin ronda ya no es un descarte");
-  assert.equal(newRounds.length, 1, "la jornada con ronda se sigue creando igual");
-  assert.equal(newRounds[0].matches.length, 1);
-  assert.equal(stagedFixtures.length, 1, "el fixture sin ronda se conserva");
-  assert.equal(stagedFixtures[0].providerFixtureId, "e1");
-  assert.equal(stagedFixtures[0].providerRoundId, null);
-  assert.ok(!newRounds.some((r) => r.matches.some((m) => m.externalEventId === "e1")),
-    "no se le fabrica una jornada para que quepa en el schema");
+  assert.equal(newRounds.length, 2, "la jornada con ronda y la de fase final");
+  assert.equal(stagedFixtures.length, 0, "nada se queda esperando");
+  const knockout = newRounds.find((r) => r.externalRoundId === null);
+  assert.ok(knockout, "la fase final es una jornada");
+  assert.equal(knockout.matches[0].externalEventId, "e1");
+  assert.equal(knockout.number, 2, "numerada después de la regular, por kickoff");
   assert.ok(!diagnostics.some((d) => d.providerFixtureId === "e1"),
     "round_id = null NO es un error ni motivo de diagnóstico");
 });
@@ -326,12 +328,21 @@ test("PRODBUG #3: existing 1..5 + provider 1..17 con eventos sin ronda -> 6..17 
   events.push(ev({ round: null, externalEventId: "no-round-1", dateTime: "2026-12-01T00:00:00Z" }));
   events.push(ev({ round: null, externalEventId: "no-round-2", dateTime: "2026-12-08T00:00:00Z" }));
   const { newRounds, skippedEvents, stagedFixtures } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
-  assert.deepEqual(newRounds.map((r) => r.number).sort((a, b) => a - b), [6,7,8,9,10,11,12,13,14,15,16,17]);
-  // DATA-004C: los que vienen sin ronda ya no se "saltan" — se conservan. Lo
-  // que esta prueba fija sigue siendo lo mismo: no abortan ni reducen el
-  // resultado válido.
+  // Las 12 jornadas válidas se siguen importando igual...
+  const numeric = newRounds.filter((r) => r.externalRoundId !== null).map((r) => r.number).sort((a, b) => a - b);
+  assert.deepEqual(numeric, [6,7,8,9,10,11,12,13,14,15,16,17]);
+  // ...y los dos sin ronda tampoco abortan ni reducen el resultado válido:
+  // ahora son su propia jornada, numerada sin chocar con ninguna de las 1..17.
   assert.equal(skippedEvents, 0);
-  assert.deepEqual(stagedFixtures.map((f) => f.providerFixtureId).sort(), ["no-round-1", "no-round-2"]);
+  assert.equal(stagedFixtures.length, 0);
+  // Y se separan en DOS jornadas, no una: se juegan con una semana de
+  // diferencia, así que no son el mismo día de partidos. Ésa es la agrupación
+  // temporal haciendo su trabajo, sin mirar un solo nombre.
+  const knockout = newRounds.filter((r) => r.externalRoundId === null).sort((a, b) => a.number - b.number);
+  assert.equal(knockout.length, 2);
+  assert.deepEqual(knockout.map((r) => r.number), [18, 19], "sin chocar con ninguna de las 1..17");
+  assert.deepEqual(knockout[0].matches.map((m) => m.externalEventId), ["no-round-1"]);
+  assert.deepEqual(knockout[1].matches.map((m) => m.externalEventId), ["no-round-2"]);
 });
 
 test("PRODBUG #4: collisions on 1..5 must ONLY suppress those specific numbers, never be interpreted as 'whole calendar already synced'", () => {

@@ -48,6 +48,9 @@ const ev = (o) => ({
   provider: "thesportsdb",
   externalEventId: o.id,
   round: "round" in o ? o.round : "1",
+  stageId: o.stageId === undefined ? "stage-regular" : o.stageId,
+  stageName: o.stageName || null,
+  leg: o.leg || null,
   dateTime: o.at === undefined ? "2026-08-01T02:00:00Z" : o.at,
   participants: [
     { role: "home", externalId: o.homeId === undefined ? "h1" : o.homeId, name: o.home === undefined ? "Local" : o.home },
@@ -138,12 +141,15 @@ test("IDENTIDAD: no existe emparejamiento difuso en ninguna parte del planificad
 
 // ==== 2. Fixtures sin ronda ================================================
 
-test("SIN RONDA: el fixture se preserva y NO se le inventa jornada", () => {
-  const r = plan({ existingRounds: [], events: [ev({ id: "fxK", round: null, at: "2026-12-01T02:00:00Z" })] });
-  assert.equal(r.stagedFixtures.length, 1);
-  assert.equal(r.stagedFixtures[0].providerFixtureId, "fxK");
-  assert.equal(r.stagedFixtures[0].providerRoundId, null);
-  assert.equal(r.newRounds.length, 0, "no se fabrica una jornada para que quepa");
+test("SIN RONDA: el fixture SÍ se convierte en jornada, sin inventar una ronda del proveedor", () => {
+  // DATA-004 Paso C. La señal estructural es stage + leg, nunca un nombre.
+  const r = plan({ existingRounds: [], events: [ev({ id: "fxK", round: null, stageId: "st-final", leg: { number: 1, total: 2 }, at: "2026-12-01T02:00:00Z" })] });
+  assert.equal(r.stagedFixtures.length, 0, "ya no se queda esperando");
+  assert.equal(r.newRounds.length, 1);
+  assert.equal(r.newRounds[0].matches[0].externalEventId, "fxK");
+  assert.equal(r.newRounds[0].externalRoundId, null, "no se inventa una ronda del proveedor que no existe");
+  assert.equal(r.newRounds[0].syncGroupKey, "stage:st-final:leg:1", "la clave es estructural");
+  assert.equal(r.newRounds[0].published, false, "preparada, no publicada");
 });
 
 test("SIN RONDA: no es un error — cero diagnósticos por esa causa", () => {
@@ -163,34 +169,49 @@ test("SIN RONDA: el resync no lo duplica", () => {
 test("SIN RONDA: mezclado con jornadas normales, ninguna de las dos se pierde", () => {
   const r = plan({
     existingRounds: [],
-    events: [ev({ id: "a", round: "1" }), ev({ id: "b", round: null, at: "2026-12-01T02:00:00Z" }), ev({ id: "c", round: "2", at: "2026-08-08T02:00:00Z" })],
+    events: [
+      ev({ id: "a", round: "1" }),
+      ev({ id: "b", round: null, stageId: "st-final", at: "2026-12-01T02:00:00Z" }),
+      ev({ id: "c", round: "2", at: "2026-08-08T02:00:00Z" }),
+    ],
   });
-  assert.deepEqual(r.newRounds.map((x) => x.number), [1, 2]);
-  assert.deepEqual(r.stagedFixtures.map((f) => f.providerFixtureId), ["b"]);
+  assert.deepEqual(r.newRounds.map((x) => x.number).sort((x, y) => x - y), [1, 2, 3]);
+  assert.equal(r.stagedFixtures.length, 0);
+  const knockout = r.newRounds.find((x) => x.externalRoundId === null);
+  assert.equal(knockout.number, 3, "la fase final va después de la regular, por kickoff");
+  assert.equal(knockout.matches[0].externalEventId, "b");
 });
 
 // ==== 3. TBD ================================================================
 
-test("TBD: un fixture sin equipos se representa sin inventarlos", () => {
+test("TBD: un fixture sin equipos entra en la jornada sin que se inventen rivales", () => {
   const r = plan({
     existingRounds: [],
-    events: [ev({ id: "fxT", round: null, home: null, away: null, homeId: null, awayId: null })],
+    events: [ev({ id: "fxT", round: null, stageId: "st-cuartos", home: null, away: null, homeId: null, awayId: null, at: "2026-12-01T02:00:00Z" })],
   });
-  assert.equal(r.stagedFixtures.length, 1);
-  assert.equal(r.stagedFixtures[0].home, null, "ningún equipo inventado");
-  assert.equal(r.stagedFixtures[0].away, null);
+  assert.equal(r.newRounds.length, 1, "un cruce sin rival todavía es un partido de la jornada");
+  const m = r.newRounds[0].matches[0];
+  assert.equal(m.teamA, "", "ningún equipo inventado");
+  assert.equal(m.teamB, "");
+  assert.equal(m.externalHomeId, null);
+  assert.equal(m.externalEventId, "fxT", "y su identidad sí está");
 });
 
-test("TBD: al resolverse, ACTUALIZA el mismo fixture por su id", () => {
-  const first = plan({ existingRounds: [], events: [ev({ id: "fxT", round: null, home: null, away: null, homeId: null, awayId: null })] });
+test("TBD: al resolverse, ACTUALIZA el mismo partido por su id — no nace otro", () => {
+  const tbd = ev({ id: "fxT", round: null, stageId: "st-cuartos", home: null, away: null, homeId: null, awayId: null, at: "2026-12-01T02:00:00Z" });
+  const first = plan({ existingRounds: [], events: [tbd] });
+  const stored = [roundOf(first.newRounds[0].matches.map((m, i) => ({ id: "m_" + i, ...m })), {
+    externalRoundId: null, syncGroupKey: first.newRounds[0].syncGroupKey, published: false,
+  })];
   const second = plan({
-    existingRounds: [], existingStaged: first.stagedFixtures,
-    events: [ev({ id: "fxT", round: null, home: "Toluca", away: "Tigres", homeId: "10", awayId: "20" })],
+    existingRounds: stored,
+    events: [ev({ id: "fxT", round: null, stageId: "st-cuartos", home: "Toluca", away: "Tigres", homeId: "10", awayId: "20", at: "2026-12-01T02:00:00Z" })],
   });
-  assert.equal(second.stagedFixtures.length, 0, "no nace un segundo fixture");
-  assert.equal(second.stagedUpdates.length, 1);
-  assert.equal(second.stagedUpdates[0].providerFixtureId, "fxT");
-  assert.deepEqual(second.stagedUpdates[0].changes.home, { id: "10", name: "Toluca" });
+  assert.equal(second.newRounds.length, 0, "no nace una segunda jornada");
+  assert.equal(second.matchAdditions.length, 0, "ni un segundo partido");
+  assert.equal(second.matchUpdates.length, 1);
+  assert.equal(second.matchUpdates[0].changes.teamA, "Toluca");
+  assert.equal(second.matchUpdates[0].changes.externalHomeId, "10");
 });
 
 test("TBD: un payload posterior SIN equipos nunca borra los que ya se sabían", () => {
@@ -235,10 +256,16 @@ test("ORDEN: los empates de kickoff se desempatan de forma determinística", () 
   assert.deepEqual(one.newRounds[0].matches, two.newRounds[0].matches);
 });
 
-test("ORDEN: los fixtures sin kickoff van al final, nunca delante de uno con fecha", () => {
+test("ORDEN: un fixture sin kickoff no se pierde, pero tampoco entra en una jornada", () => {
+  // Una jornada necesita un cierre y el cierre se siembra del kickoff. Sin
+  // fecha no se inventa una: el partido se conserva aparte, con motivo.
   const r = plan({ existingRounds: [],
-    events: [ev({ id: "sinfecha", round: null, at: null }), ev({ id: "confecha", round: null, at: "2026-12-01T02:00:00Z" })] });
-  assert.deepEqual(r.stagedFixtures.map((f) => f.providerFixtureId), ["confecha", "sinfecha"]);
+    events: [ev({ id: "sinfecha", round: null, stageId: "st-final", at: null }),
+             ev({ id: "confecha", round: null, stageId: "st-final", at: "2026-12-01T02:00:00Z" })] });
+  assert.deepEqual(r.stagedFixtures.map((f) => f.providerFixtureId), ["sinfecha"]);
+  assert.equal(r.newRounds.length, 1);
+  assert.deepEqual(r.newRounds[0].matches.map((m) => m.externalEventId), ["confecha"]);
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.MISSING_KICKOFF && d.providerFixtureId === "sinfecha"));
 });
 
 // ==== 5. Marcadores: FT / AET / FT_PEN / ambiguo ============================
@@ -339,9 +366,12 @@ const smParticipants = [
   { id: 1001, name: "Tigres", meta: { location: "home" } },
   { id: 1002, name: "Toluca", meta: { location: "away" } },
 ];
+// type_id reales: 2 es el de 2ND_HALF, la señal aprobada en DATA-004. El resto
+// usa un id distinto de 2, que es lo único que importa para el cruce.
+const SM_TYPE_ID = { "2ND_HALF": 2, "1ST_HALF": 1, CURRENT: 1525, ET: 5, PENALTY_SHOOTOUT: 4, "2ND_HALF_ONLY": 7, ET_1ST_HALF: 5, ET_2ND_HALF: 6 };
 const smScore = (description, h, a) => ([
-  { id: 1, type_id: 1, description, score: { participant_id: 1001, goals: h, participant: "home" } },
-  { id: 2, type_id: 1, description, score: { participant_id: 1002, goals: a, participant: "away" } },
+  { id: 1, type_id: SM_TYPE_ID[description] ?? 99, description, score: { participant_id: 1001, goals: h, participant: "home" } },
+  { id: 2, type_id: SM_TYPE_ID[description] ?? 99, description, score: { participant_id: 1002, goals: a, participant: "away" } },
 ]);
 const smStages = () => sportmonks.toStages({
   stages: [{ id: 77479151, season_id: 25539, type_id: 224, name: "Apertura, Final", sort_order: 5 }],
@@ -598,20 +628,23 @@ test("ADVERSARIAL: el cierre de torneo limpia el staging junto con el tablero", 
 
 test("ADVERSARIAL: un fixture que ya vive en una jornada no puede quedar además en staging", () => {
   const sync = stripComments(serverSrc.slice(serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"')));
-  assert.ok(sync.includes("const inRounds = new Set()"), "la misma identidad en dos sitios dejaría uno huérfano para siempre");
+  assert.ok(sync.includes("const inRounds = new Set(plan.promotedStagedIds.map(String))"),
+    "la misma identidad en dos sitios dejaría uno huérfano para siempre; los recién promovidos cuentan igual");
   assert.ok(sync.includes("!inRounds.has(String(f.providerFixtureId))"));
 });
 
-test("ADVERSARIAL: un fixture en staging que gana ronda después se reporta, no se atasca", () => {
-  const known = [{ providerFixtureId: "fxT", providerRoundId: null, stageId: "s1",
-    kickoffAt: "2026-12-01T02:00:00Z", home: null, away: null, leg: null, status: "scheduled", provider: "thesportsdb" }];
+test("ADVERSARIAL: un fixture que estaba en espera se PROMUEVE a jornada cuando ya se puede colocar", () => {
+  // DATA-004 cambió esta regla respecto de DATA-004C: entonces se quedaba en
+  // espera; ahora, en cuanto hay señal con la que agruparlo, se coloca. Quedarse
+  // en espera para siempre era una pérdida silenciosa con otro nombre.
+  const known = [{ providerFixtureId: "fxT", providerRoundId: null, stageId: null,
+    kickoffAt: null, home: null, away: null, leg: null, status: "scheduled", provider: "thesportsdb" }];
   const r = plan({ existingRounds: [], existingStaged: known,
     events: [ev({ id: "fxT", round: "18", at: "2026-12-01T02:00:00Z" })] });
-  assert.equal(r.stagedUpdates.length, 1);
-  assert.equal(r.stagedUpdates[0].changes.providerRoundId, "18");
-  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.STAGED_GAINED_ROUND),
-    "convertirlo en jornada es decisión de producto (DATA-004D); quedarse callado no es una opción");
-  assert.equal(r.newRounds.length, 0, "el sync no lo asciende por su cuenta");
+  assert.equal(r.newRounds.length, 1, "ya se puede colocar, así que se coloca");
+  assert.equal(r.newRounds[0].number, 18);
+  assert.deepEqual(r.promotedStagedIds, ["fxT"], "y deja de estar en espera");
+  assert.equal(r.stagedFixtures.length, 0);
 });
 
 test("ADVERSARIAL: un participante no recibe los fixtures en staging", () => {

@@ -4981,7 +4981,7 @@
     wireTournamentActions(liveStrip);
   }
 
-  function renderAdmin(main){
+  async function renderAdmin(main){
     const subtabs = [
       {id:"rondas", label:"Jornadas"},
       {id:"resultados", label:"Resultados"},
@@ -5010,12 +5010,16 @@
     });
     wireTabScrollFade(document.getElementById("qz-admin-subtabs"));
     const body = document.getElementById("qz-admin-body");
-    if(adminSubTab==="rondas") renderAdminRondas(body);
-    else if(adminSubTab==="resultados") renderAdminResultados(body);
-    else if(adminSubTab==="participacion") renderAdminParticipacion(body);
-    else if(adminSubTab==="participantes") renderAdminParticipantes(body);
-    else if(adminSubTab==="adicionales") renderAdminAdicionales(body);
-    else if(adminSubTab==="dueno") renderAdminOwner(body);
+    // DATA-004: se devuelve la promesa del sub-render. Varios de ellos son
+    // asíncronos, así que quien necesite escribir algo DESPUÉS de repintar
+    // —el import, sin ir más lejos— puede esperar en vez de que su mensaje
+    // aparezca y desaparezca en el mismo parpadeo.
+    if(adminSubTab==="rondas") return renderAdminRondas(body);
+    else if(adminSubTab==="resultados") return renderAdminResultados(body);
+    else if(adminSubTab==="participacion") return renderAdminParticipacion(body);
+    else if(adminSubTab==="participantes") return renderAdminParticipantes(body);
+    else if(adminSubTab==="adicionales") return renderAdminAdicionales(body);
+    else if(adminSubTab==="dueno") return renderAdminOwner(body);
   }
 
   // "Adicionales": catch-all tab for extra scoring features that don't fit the core
@@ -5581,6 +5585,7 @@
         <p class="muted" style="margin-top:-4px;">Importa jornadas y partidos automáticamente. Las jornadas importadas quedan preparadas — tú decides cuándo publicarlas.</p>
         <button class="btn btn-ghost btn-sm" id="qz-sync-competition">🔄 Reintentar importar calendario</button>
         <p class="muted" id="qz-sync-status" style="margin-top:8px;"></p>
+        <div class="muted" id="qz-sync-notes" style="margin-top:2px;"></div>
       </div>
       ` : ``}
       <div class="card">
@@ -5590,9 +5595,19 @@
           const statusLabel = isImportedUnpublished
             ? "preparada, sin publicar"
             : (r.resultsPublished ? "resultados capturados" : (isRoundLocked(r) ? "cerrada, sin resultados" : "abierta"));
+          // DATA-004 §6. Un cruce de fase final puede existir antes de que se
+          // sepa quién lo juega. Se dice en una línea, sin dramatizar: es lo
+          // normal en una Liguilla, no un error.
+          const pendientes = (r.matches || []).filter(m => !m.teamA || !m.teamB).length;
+          const pendientesTxt = pendientes
+            ? ` · <span style="color:var(--gold);">${pendientes} pendiente${pendientes===1?"":"s"} de rival</span>`
+            : "";
+          // La etiqueta del proveedor ("Quarter-finals") se muestra si vino,
+          // pero nunca es identidad de nada.
+          const faseTxt = r.phaseLabel ? ` · ${esc(r.phaseLabel)}` : "";
           return `
           <div class="history-item">
-            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}</span></div>
+            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
             <div style="display:flex;gap:6px;">
               ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${r.id}">Publicar jornada</button>` : ``}
               <button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>
@@ -5624,10 +5639,11 @@
             // cuando pasó cualquiera de esas dos cosas es la pérdida
             // silenciosa que este ticket viene a quitar.
             const extras = [];
+            if(data.addedMatches > 0) extras.push(`se agregaron ${data.addedMatches} partido${data.addedMatches===1?"":"s"} a jornadas que ya tenías`);
             if(data.updatedMatches > 0) extras.push(`se actualizaron ${data.updatedMatches} partido${data.updatedMatches===1?"":"s"}`);
-            if(data.stagedFixtures > 0) extras.push(`${data.stagedFixtures} partido${data.stagedFixtures===1?"":"s"} de fase final quedaron guardados`);
+            if(data.stagedFixtures > 0) extras.push(`${data.stagedFixtures} partido${data.stagedFixtures===1?"":"s"} quedaron pendientes de acomodar`);
             const extraTxt = extras.length ? ` También ${extras.join(" y ")}.` : "";
-            syncStatus.textContent = (data.createdRounds > 0
+            const mensaje = (data.createdRounds > 0
               ? `✅ Se importaron ${data.createdRounds} jornada${data.createdRounds===1?"":"s"} nueva${data.createdRounds===1?"":"s"}.`
               // AUTO-001.1 production bug fix: "ya está todo importado" was
               // being shown for ANY createdRounds:0, even when the provider
@@ -5641,16 +5657,40 @@
                   : (data.distinctProviderRounds > 0
                       ? "Ya está todo importado — no hay jornadas nuevas en el calendario."
                       : "No encontramos un calendario disponible para esta competencia/temporada. Revisa la liga y temporada configuradas en Ajustes, o intenta de nuevo más tarde."))) + extraTxt;
-            syncStatus.style.color = "var(--pitch-light)";
-            // Motivos por los que algún partido no se pudo usar. Nunca incluye
-            // "sin jornada": un partido de fase final sin jornada es normal,
-            // no un error.
-            const problems = (data.diagnostics || []).length;
-            if(problems > 0){
-              syncStatus.textContent += ` ⚠️ ${problems} partido${problems===1?"":"s"} necesita${problems===1?"":"n"} revisión — revísalos abajo antes de publicar.`;
-              syncStatus.style.color = "var(--gold)";
+            // Motivos por los que algún partido necesita revisión. Un motivo por
+            // línea, no un partido por línea: diez partidos sin horario son UNA
+            // cosa que revisar, no diez alarmas. Y "sin jornada" NUNCA aparece:
+            // un partido de fase final sin jornada del proveedor es lo normal.
+            const reasons = [...new Set((data.diagnostics || []).map(d => d && d.code).filter(Boolean))];
+            const needsAttention = reasons.filter(c => !SYNC_BENIGN.has(c));
+
+            // DATA-004. Repintar PRIMERO y escribir el mensaje DESPUÉS.
+            // renderAdmin() reemplaza el panel entero, así que un mensaje puesto
+            // antes desaparecía en el mismo instante en que había algo que
+            // contar: justo cuando el import sí había traído jornadas nuevas, el
+            // Admin no veía nada. Encontrado en el navegador real, no en un test.
+            if(data.createdRounds > 0 || data.updatedMatches > 0 || data.addedMatches > 0){
+              // El import lo hace el SERVIDOR. Sin traer el estado nuevo, esta
+              // pestaña repintaba desde su copia vieja y la lista de jornadas
+              // seguía mostrando lo de antes: el Admin importaba la Liguilla
+              // entera y no veía ni una jornada nueva. Encontrado en el
+              // navegador real.
+              try{
+                const fresh = await getMeta({ owner: adminOrOwnerCred() });
+                if(fresh) Object.assign(meta, fresh);
+              }catch(e){ console.error("refresh tras importar falló", e); }
+              invalidatePlan();
+              await renderAdmin(document.getElementById("qz-main"));
             }
-            if(data.createdRounds > 0 || data.updatedMatches > 0) renderAdmin(document.getElementById("qz-main"));
+            const statusEl = document.getElementById("qz-sync-status");
+            if(statusEl){
+              statusEl.textContent = mensaje;
+              statusEl.style.color = needsAttention.length ? "var(--gold)" : "var(--pitch-light)";
+            }
+            const notesEl = document.getElementById("qz-sync-notes");
+            if(notesEl && reasons.length){
+              notesEl.innerHTML = reasons.map(c => `<div style="margin-top:4px;">${needsAttention.includes(c) ? "⚠️" : "ℹ️"} ${esc(syncDiagnosticCopy(c))}</div>`).join("");
+            }
           } else if(res.status === 402){
             // MON-002B: a competition/entitlement refusal is a commercial
             // answer, not a provider outage. It gets its own copy and never
@@ -5954,6 +5994,30 @@
   // pendientes" flow below, so both populate suggestion tags identically —
   // never touches source/picks/draftResults directly, only shows a
   // suggestion the admin must still click to accept, same as always.
+  // DATA-004 §6. Por qué un partido necesita atención tras importar. Sin
+  // lenguaje técnico: nada de round_id, stage_id, JSON ni códigos. Y sin
+  // convertir lo normal en alarma — un cruce que todavía no tiene rival es
+  // exactamente lo que pasa en una fase final, no un fallo.
+  const SYNC_DIAGNOSTIC_COPY = {
+    missing_fixture_id: "Un partido llegó sin identificar y no se pudo guardar.",
+    duplicate_fixture_id: "Un partido venía repetido; se guardó una sola vez.",
+    missing_kickoff: "Hay partidos sin horario todavía. Los guardamos y aparecerán en cuanto se confirme la fecha.",
+    malformed_kickoff: "Un partido traía una fecha que no pudimos leer.",
+    ungroupable_fixture: "Un partido no se pudo acomodar en ninguna jornada. Puedes crearla a mano.",
+    round_number_taken: "Ya tenías una jornada con ese número, así que la tuya se respetó.",
+    locked_by_results: "Cambiaron los equipos de una jornada que ya tiene resultados publicados. No los tocamos — revísala.",
+    kickoff_past_deadline: "Movieron el horario de un partido para después del cierre de su jornada. Revisa la fecha límite.",
+    round_already_scored: "Apareció un partido nuevo en una jornada que ya tiene resultados. No lo agregamos — revísala.",
+    round_already_closed: "Apareció un partido nuevo en una jornada que ya cerró. No lo agregamos, para no pedir un pronóstico imposible.",
+    staged_gained_round: "Un partido pendiente ya tiene jornada asignada.",
+  };
+  function syncDiagnosticCopy(code){
+    return SYNC_DIAGNOSTIC_COPY[code] || "Hay un partido que necesita tu revisión.";
+  }
+  // Motivos que son INFORMATIVOS, no problemas. No pintan la alerta en ámbar ni
+  // piden acción: sólo se cuentan.
+  const SYNC_BENIGN = new Set(["round_number_taken", "staged_gained_round", "duplicate_fixture_id"]);
+
   // DATA-004C. Por qué un partido encontrado no trae resultado sugerido. El
   // caso que importa es el de una eliminatoria: QRACKS puntúa el 1X2 a los 90
   // minutos, así que un partido resuelto en tiempo extra o en penales NO se

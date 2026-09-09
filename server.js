@@ -2943,6 +2943,16 @@ async function recordSportsDataHealth({ operation, outcome, reliabilityState, st
   }
 }
 
+// DATA-004. Qué proveedor usa una quiniela. Opt-in EXPLÍCITO: sin el campo, es
+// TheSportsDB, que es lo que hay hoy en producción. Ninguna quiniela existente
+// cambia de comportamiento por este ticket, y ninguna heurística decide esto
+// por su cuenta — un nombre de liga o de temporada nunca elige proveedor.
+const SUPPORTED_PROVIDERS = Object.freeze(["thesportsdb", "sportmonks"]);
+function providerOf(meta) {
+  const p = meta && meta.settings && meta.settings.provider;
+  return SUPPORTED_PROVIDERS.includes(p) ? p : "thesportsdb";
+}
+
 // AUTO-002 (bulk validation round): shared by both the single-round and
 // whole-quiniela endpoints below, so "search this one round" and "search
 // every pending round" produce identical suggestions from identical logic —
@@ -3023,7 +3033,7 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
 
   try {
     const events = await sportsDataProvider.getSeasonEvents({
-      provider: "thesportsdb",
+      provider: providerOf(meta),
       externalLeagueId,
       season,
     });
@@ -3092,7 +3102,7 @@ app.get("/api/quinielas/:slug/sports-results", rateLimit("sports-results"), asyn
 
   try {
     const events = await sportsDataProvider.getSeasonEvents({
-      provider: "thesportsdb",
+      provider: providerOf(meta),
       externalLeagueId,
       season,
     });
@@ -3239,7 +3249,7 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
         if (refs.competitionId !== String(externalLeagueId) || refs.seasonId !== season) {
           scope.providerRefs = {
             ...refs,
-            provider: "thesportsdb",
+            provider: providerOf(meta),
             competitionId: String(externalLeagueId),
             seasonId: season,
           };
@@ -3258,9 +3268,10 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       if (indexTouched) await putRow("platform_index", platformIdx, client);
     }
 
+    const syncProvider = providerOf(meta);
     let events;
     try {
-      events = await sportsDataProvider.getSeasonEvents({ provider: "thesportsdb", externalLeagueId, season });
+      events = await sportsDataProvider.getSeasonEvents({ provider: syncProvider, externalLeagueId, season });
     } catch (err) {
       await client.query("ROLLBACK"); // fail-safe: no partial writes on provider failure
       const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
@@ -3284,9 +3295,9 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       existingRounds: meta.rounds || [],
       existingStaged: meta.stagedFixtures || [],
       events,
-      provider: "thesportsdb",
+      provider: syncProvider,
     });
-    const { newRounds: plannedRounds, skippedEvents, matchUpdates, stagedUpdates, diagnostics } = plan;
+    const { newRounds: plannedRounds, skippedEvents, matchUpdates, matchAdditions, stagedUpdates, diagnostics } = plan;
     const newRounds = plannedRounds.map((r) => ({
       id: "r_" + crypto.randomBytes(5).toString("hex"),
       ...r,
@@ -3337,6 +3348,24 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       if (updatedMatches) metaTouched = true;
     }
 
+    // DATA-004 Paso C. Un partido que llega después y pertenece a una jornada
+    // que YA existe se añade a ella, no funda una segunda. El planificador ya
+    // decidió que es seguro (una jornada con resultados publicados o con la
+    // votación cerrada nunca llega hasta aquí); esto sólo le pone el id interno
+    // y lo guarda.
+    let addedMatches = 0;
+    if (matchAdditions.length) {
+      const roundById = new Map((meta.rounds || []).map((r) => [r && r.id, r]));
+      for (const add of matchAdditions) {
+        const round = roundById.get(add.roundId);
+        if (!round || !Array.isArray(round.matches)) continue;
+        if (round.matches.some((m) => m && String(m.externalEventId) === String(add.match.externalEventId))) continue;
+        round.matches.push({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...add.match });
+        addedMatches += 1;
+      }
+      if (addedMatches) metaTouched = true;
+    }
+
     // DATA-004C §B — fixtures sin ronda. Se CONSERVAN, no se descartan. No se
     // convierten en jornada aquí: inventarles un número para que quepan en el
     // schema actual falsearía la semántica del dominio. La integración con la
@@ -3344,7 +3373,7 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     // se pierden por el camino.
     let stagedCreated = 0;
     let stagedUpdated = 0;
-    if (plan.stagedFixtures.length || stagedUpdates.length) {
+    if (plan.stagedFixtures.length || stagedUpdates.length || plan.promotedStagedIds.length || (meta.stagedFixtures || []).length) {
       const staged = Array.isArray(meta.stagedFixtures) ? [...meta.stagedFixtures] : [];
       const byId = new Map(staged.map((f, i) => [f && f.providerFixtureId, i]));
       for (const upd of stagedUpdates) {
@@ -3361,8 +3390,9 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       }
       // Un fixture que ya vive en una jornada no puede seguir además en
       // staging: sería la misma identidad en dos sitios, y el que quedara
-      // huérfano no se actualizaría nunca más.
-      const inRounds = new Set();
+      // huérfano no se actualizaría nunca más. `promotedStagedIds` son los que
+      // acaban de colocarse en una jornada en ESTE mismo sync.
+      const inRounds = new Set(plan.promotedStagedIds.map(String));
       for (const r of (meta.rounds || [])) {
         for (const m of (r && r.matches) || []) if (m && m.externalEventId != null) inRounds.add(String(m.externalEventId));
       }
@@ -3395,8 +3425,10 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       createdRounds: newRounds.length,
       skippedEvents,
       updatedMatches,
+      addedMatches,
       stagedCreated,
       stagedUpdated,
+      promoted: plan.promotedStagedIds.length,
       diagnostics,
     });
 
@@ -3419,8 +3451,10 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       // los que alguno no se pudo usar. `round_id = null` NUNCA aparece aquí:
       // no es un error, es la fase final.
       updatedMatches,
+      addedMatches,
       stagedFixtures: stagedCreated,
       stagedUpdated,
+      pendingFixtures: (meta.stagedFixtures || []).length,
       diagnostics,
     });
   } catch (err) {
