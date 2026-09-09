@@ -31,6 +31,7 @@
 // role "home"/"away"; nothing downstream should assume the list length is 2.
 
 const thesportsdb = require("./providers/theSportsDbAdapter");
+const { SCORE_PHASE, buildScoreContract } = require("./scoreContract");
 
 const CACHE_TTL_MS = 8 * 60 * 1000; // 5-10 min window, per DATA-001.1 §Caché
 const cache = new Map(); // key -> { expiresAt, events }
@@ -85,9 +86,39 @@ function normalizeTimestamp(raw) {
   return d.toISOString();
 }
 
+// DATA-004C. Los estados de TheSportsDB en los que el partido terminó DENTRO
+// del tiempo reglamentario. "FT" y nada más: "AET" y "PEN" son terminados
+// también, pero su marcador incluye prórroga o desempate y por tanto no prueba
+// nada sobre los 90 minutos.
+//
+// Éste es el arreglo del riesgo R8 de DATA-004A: buildRoundSuggestions derivaba
+// el 1X2 de intHomeScore/intAwayScore sin mirar nunca el estado, así que un
+// partido decidido en penales podía sugerirse como victoria. Ahora la pregunta
+// se hace UNA vez, aquí, y su respuesta viaja con el evento.
+const TSDB_REGULATION_COMPLETE = new Set(["FT"]);
+const TSDB_NON_REGULATION_FINISHED = new Set(["AET", "PEN"]);
+function tsdbRegulationComplete(providerStatus) {
+  if (typeof providerStatus !== "string") return null;
+  const s = providerStatus.trim().toUpperCase();
+  if (TSDB_REGULATION_COMPLETE.has(s)) return true;
+  if (TSDB_NON_REGULATION_FINISHED.has(s)) return false;
+  return null;
+}
+
 function normalizeEvent(raw, provider) {
   const hasScore = raw.intHomeScore != null && raw.intHomeScore !== "" &&
                     raw.intAwayScore != null && raw.intAwayScore !== "";
+  // TheSportsDB no publica marcadores por fase: su único marcador es el final.
+  // Se declara como tal, y es el estado quien decide si además vale como
+  // reglamentario. Sin esa declaración explícita, el contrato devuelve null.
+  const scoreLines = hasScore ? [
+    { phase: SCORE_PHASE.FINAL, side: "home", goals: Number(raw.intHomeScore) },
+    { phase: SCORE_PHASE.FINAL, side: "away", goals: Number(raw.intAwayScore) },
+  ] : [];
+  const scores = buildScoreContract({
+    lines: scoreLines,
+    regulationComplete: tsdbRegulationComplete(raw.strStatus),
+  });
   return {
     provider,
     externalLeagueId: raw.idLeague != null ? String(raw.idLeague) : null,
@@ -105,7 +136,12 @@ function normalizeEvent(raw, provider) {
       { role: "home", externalId: raw.idHomeTeam != null ? String(raw.idHomeTeam) : null, name: raw.strHomeTeam || null },
       { role: "away", externalId: raw.idAwayTeam != null ? String(raw.idAwayTeam) : null, name: raw.strAwayTeam || null },
     ],
-    score: hasScore ? { home: Number(raw.intHomeScore), away: Number(raw.intAwayScore) } : null,
+    // El marcador final. Dato de PANTALLA: puede incluir prórroga.
+    score: scores.final,
+    // El único que puede alimentar un 1X2. null cuando el estado no prueba que
+    // el partido terminara en los 90 — es decir, exactamente en AET y PEN.
+    regulationScore: scores.regulation,
+    scoreReasons: scores.reasons,
     providerStatus: raw.strStatus || null,
   };
 }
@@ -207,6 +243,7 @@ function findMatchingEvent(events, match, roundDeadlineIso) {
 }
 
 module.exports = {
+  tsdbRegulationComplete,
   getSeasonEvents,
   getLiveEvents,
   findMatchingEvent,

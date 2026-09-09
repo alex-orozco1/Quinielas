@@ -52,15 +52,30 @@ test("non-numeric round label falls back to next sequential number, string prese
   assert.equal(newRounds[0].externalRoundId, "Final");
 });
 
-test("events with no round at all are never guessed into a round — counted as skipped", () => {
+// DATA-004C CAMBIÓ ESTA REGLA. Antes, un fixture sin ronda se descartaba y se
+// contaba como "skipped". La evidencia real de Liga MX 2025/26 trae 27 de 337
+// fixtures con round_id null — la fase final entera — así que descartarlos
+// borraba la Liguilla completa sin error y sin aviso. Ahora se conservan.
+//
+// Lo que NO cambió, y esta prueba también lo fija: sigue sin inventarse un
+// número de jornada para hacerlos caber.
+test("un fixture sin ronda se CONSERVA en staging, nunca se descarta ni se le inventa jornada", () => {
   const events = [
-    ev({ round: null, externalEventId: "e1" }),
+    ev({ round: null, externalEventId: "e1", dateTime: "2026-12-01T00:00:00Z" }),
     ev({ round: "1", externalEventId: "e2", dateTime: "2026-08-01T00:00:00Z" }),
   ];
-  const { newRounds, skippedEvents } = planCompetitionSync({ existingRounds: [], events, provider: "thesportsdb" });
-  assert.equal(skippedEvents, 1);
-  assert.equal(newRounds.length, 1);
+  const { newRounds, stagedFixtures, skippedEvents, diagnostics } =
+    planCompetitionSync({ existingRounds: [], events, provider: "thesportsdb" });
+  assert.equal(skippedEvents, 0, "sin ronda ya no es un descarte");
+  assert.equal(newRounds.length, 1, "la jornada con ronda se sigue creando igual");
   assert.equal(newRounds[0].matches.length, 1);
+  assert.equal(stagedFixtures.length, 1, "el fixture sin ronda se conserva");
+  assert.equal(stagedFixtures[0].providerFixtureId, "e1");
+  assert.equal(stagedFixtures[0].providerRoundId, null);
+  assert.ok(!newRounds.some((r) => r.matches.some((m) => m.externalEventId === "e1")),
+    "no se le fabrica una jornada para que quepa en el schema");
+  assert.ok(!diagnostics.some((d) => d.providerFixtureId === "e1"),
+    "round_id = null NO es un error ni motivo de diagnóstico");
 });
 
 // ---- externalEventId / participant data persisted ----
@@ -303,16 +318,20 @@ test("PRODBUG #2: existing 1..5 + provider 1..5 (same range, nothing new) -> cre
   assert.equal(newRounds.length, 0);
 });
 
-test("PRODBUG #3: existing 1..5 + provider 1..17 where SOME events lack a round -> valid 6..17 still import, invalid ones are only skipped, not aborting the whole sync", () => {
+test("PRODBUG #3: existing 1..5 + provider 1..17 con eventos sin ronda -> 6..17 se importan igual, y los sin ronda se conservan", () => {
   const legacyRounds = [1, 2, 3, 4, 5].map((n) => legacyRound(n, true));
   const events = [];
   for (let n = 1; n <= 17; n++) events.push(ev({ round: String(n), externalEventId: "e" + n, dateTime: "2026-08-01T00:00:00Z" }));
   // Mix in events with no round at all — must not abort or reduce the valid result.
-  events.push(ev({ round: null, externalEventId: "no-round-1" }));
-  events.push(ev({ round: null, externalEventId: "no-round-2" }));
-  const { newRounds, skippedEvents } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
+  events.push(ev({ round: null, externalEventId: "no-round-1", dateTime: "2026-12-01T00:00:00Z" }));
+  events.push(ev({ round: null, externalEventId: "no-round-2", dateTime: "2026-12-08T00:00:00Z" }));
+  const { newRounds, skippedEvents, stagedFixtures } = planCompetitionSync({ existingRounds: legacyRounds, events, provider: "thesportsdb" });
   assert.deepEqual(newRounds.map((r) => r.number).sort((a, b) => a - b), [6,7,8,9,10,11,12,13,14,15,16,17]);
-  assert.equal(skippedEvents, 2);
+  // DATA-004C: los que vienen sin ronda ya no se "saltan" — se conservan. Lo
+  // que esta prueba fija sigue siendo lo mismo: no abortan ni reducen el
+  // resultado válido.
+  assert.equal(skippedEvents, 0);
+  assert.deepEqual(stagedFixtures.map((f) => f.providerFixtureId).sort(), ["no-round-1", "no-round-2"]);
 });
 
 test("PRODBUG #4: collisions on 1..5 must ONLY suppress those specific numbers, never be interpreted as 'whole calendar already synced'", () => {

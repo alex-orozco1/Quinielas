@@ -5617,7 +5617,17 @@
           });
           const data = await res.json().catch(() => ({}));
           if(res.ok && data.ok && !data.reliabilityState){
-            syncStatus.textContent = data.createdRounds > 0
+            // DATA-004C §G: un sync hace más que crear jornadas. Puede
+            // actualizar partidos que ya existían (un cruce que pasó de "por
+            // definir" a tener equipos) y puede traer partidos de fase final
+            // que todavía no son jornada. Decir sólo "no hay nada nuevo"
+            // cuando pasó cualquiera de esas dos cosas es la pérdida
+            // silenciosa que este ticket viene a quitar.
+            const extras = [];
+            if(data.updatedMatches > 0) extras.push(`se actualizaron ${data.updatedMatches} partido${data.updatedMatches===1?"":"s"}`);
+            if(data.stagedFixtures > 0) extras.push(`${data.stagedFixtures} partido${data.stagedFixtures===1?"":"s"} de fase final quedaron guardados`);
+            const extraTxt = extras.length ? ` También ${extras.join(" y ")}.` : "";
+            syncStatus.textContent = (data.createdRounds > 0
               ? `✅ Se importaron ${data.createdRounds} jornada${data.createdRounds===1?"":"s"} nueva${data.createdRounds===1?"":"s"}.`
               // AUTO-001.1 production bug fix: "ya está todo importado" was
               // being shown for ANY createdRounds:0, even when the provider
@@ -5626,11 +5636,21 @@
               // imported everything already. Now only claims that when we
               // actually got real calendar data back (distinctProviderRounds
               // > 0) and it's confirmed there's nothing new in it.
-              : (data.distinctProviderRounds > 0
-                  ? "Ya está todo importado — no hay jornadas nuevas en el calendario."
-                  : "No encontramos un calendario disponible para esta competencia/temporada. Revisa la liga y temporada configuradas en Ajustes, o intenta de nuevo más tarde.");
+              : (extras.length
+                  ? "✅ Calendario actualizado."
+                  : (data.distinctProviderRounds > 0
+                      ? "Ya está todo importado — no hay jornadas nuevas en el calendario."
+                      : "No encontramos un calendario disponible para esta competencia/temporada. Revisa la liga y temporada configuradas en Ajustes, o intenta de nuevo más tarde."))) + extraTxt;
             syncStatus.style.color = "var(--pitch-light)";
-            if(data.createdRounds > 0) renderAdmin(document.getElementById("qz-main"));
+            // Motivos por los que algún partido no se pudo usar. Nunca incluye
+            // "sin jornada": un partido de fase final sin jornada es normal,
+            // no un error.
+            const problems = (data.diagnostics || []).length;
+            if(problems > 0){
+              syncStatus.textContent += ` ⚠️ ${problems} partido${problems===1?"":"s"} necesita${problems===1?"":"n"} revisión — revísalos abajo antes de publicar.`;
+              syncStatus.style.color = "var(--gold)";
+            }
+            if(data.createdRounds > 0 || data.updatedMatches > 0) renderAdmin(document.getElementById("qz-main"));
           } else if(res.status === 402){
             // MON-002B: a competition/entitlement refusal is a commercial
             // answer, not a provider outage. It gets its own copy and never
@@ -5934,10 +5954,30 @@
   // pendientes" flow below, so both populate suggestion tags identically —
   // never touches source/picks/draftResults directly, only shows a
   // suggestion the admin must still click to accept, same as always.
-  function applySuggestionsToForm(round, suggestions, form, statusEl){
+  // DATA-004C. Por qué un partido encontrado no trae resultado sugerido. El
+  // caso que importa es el de una eliminatoria: QRACKS puntúa el 1X2 a los 90
+  // minutos, así que un partido resuelto en tiempo extra o en penales NO se
+  // autocompleta — se pide capturarlo. El mensaje explica la regla en vez de
+  // dejar al Admin pensando que el buscador falló.
+  const UNSCORABLE_COPY = {
+    penalties_present: "Se definió en penales — captúralo tú. QRACKS cuenta el resultado a los 90 minutos.",
+    extra_time_present: "Se definió en tiempo extra — captúralo tú. QRACKS cuenta el resultado a los 90 minutos.",
+    unknown_score_phase: "El marcador llegó incompleto — mejor captúralo tú.",
+    duplicate_conflict: "El marcador llegó incompleto — mejor captúralo tú.",
+    incomplete_phase: "El marcador llegó incompleto — mejor captúralo tú.",
+    no_score_records: "Todavía no hay marcador para este partido.",
+  };
+  function unscorableCopy(reason){
+    return UNSCORABLE_COPY[reason] || "No pudimos confirmar el resultado a los 90 minutos — captúralo tú.";
+  }
+
+  function applySuggestionsToForm(round, suggestions, form, statusEl, unscorable){
     const suggestionsByMatch = {};
     (suggestions || []).forEach(s => { suggestionsByMatch[s.matchId] = s; });
+    const unscorableByMatch = {};
+    (unscorable || []).forEach(u => { unscorableByMatch[u.matchId] = u; });
     let found = 0;
+    let blocked = 0;
     round.matches.forEach(m => {
       const hit = suggestionsByMatch[m.id];
       const tag = document.getElementById("qz-suggest-" + m.id);
@@ -5947,12 +5987,24 @@
         const niceDate = new Date(hit.date).toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
         tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${m.id}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
         tag.style.color = "var(--pitch-light)";
+      } else if(unscorableByMatch[m.id]){
+        // Se encontró el partido, pero su resultado no puede alimentar el 1X2.
+        // Decirlo es la diferencia entre "no apareció" y "apareció y no se
+        // puede usar" — que para el Admin son dos cosas muy distintas.
+        blocked++;
+        tag.textContent = unscorableCopy(unscorableByMatch[m.id].reason);
+        tag.style.color = "var(--gold)";
       } else {
         tag.textContent = "Sin resultado automático todavía";
         tag.style.color = "var(--ink-soft)";
       }
     });
-    if(statusEl) statusEl.textContent = found ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.` : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.";
+    if(statusEl){
+      const blockedTxt = blocked ? ` ${blocked} partido${blocked===1?"":"s"} hay que capturarlo${blocked===1?"":"s"} a mano.` : "";
+      statusEl.textContent = (found
+        ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.`
+        : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.") + blockedTxt;
+    }
     form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
       btn.addEventListener("click", () => {
         const matchId = btn.dataset.acceptSuggestion;
@@ -6014,6 +6066,7 @@
           bulkStatusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState);
         } else {
           renderAdminResultados._bulkCache = data.results || {};
+          renderAdminResultados._bulkUnscorable = data.unscorable || {};
           const roundIdsWithHits = Object.keys(renderAdminResultados._bulkCache).filter(id => (renderAdminResultados._bulkCache[id] || []).length);
           bulkStatusEl.textContent = roundIdsWithHits.length
             ? `Se encontraron resultados para ${roundIdsWithHits.length} jornada${roundIdsWithHits.length===1?"":"s"} pendiente${roundIdsWithHits.length===1?"":"s"}. Selecciónala${roundIdsWithHits.length===1?"":"s"} arriba para revisar y confirmar.`
@@ -6024,7 +6077,7 @@
           if(select.value && renderAdminResultados._bulkCache[select.value]){
             const currentForm = document.getElementById("qz-results-form");
             const currentRound = meta.rounds.find(r => r.id === select.value);
-            if(currentForm && currentRound) applySuggestionsToForm(currentRound, renderAdminResultados._bulkCache[select.value], currentForm, document.getElementById("qz-autofill-status"));
+            if(currentForm && currentRound) applySuggestionsToForm(currentRound, renderAdminResultados._bulkCache[select.value], currentForm, document.getElementById("qz-autofill-status"), (renderAdminResultados._bulkUnscorable || {})[select.value]);
           }
         }
       }catch(e){
@@ -6170,7 +6223,7 @@
           statusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState);
           return;
         }
-        applySuggestionsToForm(round, data.suggestions, form, statusEl);
+        applySuggestionsToForm(round, data.suggestions, form, statusEl, data.unscorable);
       }catch(e){
         console.error(e);
         statusEl.textContent = "⚠️ " + sportsDataFailureMessage(null);
@@ -6181,7 +6234,7 @@
     // immediately — the admin shouldn't have to click the per-round button
     // again for a round QRACKS already checked.
     if(editable && renderAdminResultados._bulkCache && renderAdminResultados._bulkCache[round.id]){
-      applySuggestionsToForm(round, renderAdminResultados._bulkCache[round.id], form, document.getElementById("qz-autofill-status"));
+      applySuggestionsToForm(round, renderAdminResultados._bulkCache[round.id], form, document.getElementById("qz-autofill-status"), (renderAdminResultados._bulkUnscorable || {})[round.id]);
     }
     form.querySelectorAll(".pick-row").forEach(row => {
       if(!editable) return; // read-only view — no click handlers, matches the disabled buttons

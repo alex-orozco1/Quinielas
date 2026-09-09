@@ -20,6 +20,7 @@ const {
   summarizePlan, buildUpgradeOffer, isValidManualGrantLimits,
   entitlementScopeId,
 } = require("./planLimits");
+const { outcomeFromRegulation } = require("./scoreContract");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
   applyEntitlementGrant, applyQuinielaSettings,
@@ -524,6 +525,11 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
     // the first place. published === undefined (legacy rounds) stays
     // visible, same as always.
     clone.rounds = clone.rounds.filter((r) => r.published !== false);
+    // DATA-004C. Los fixtures en staging son fase final IMPORTADA Y NO
+    // PUBLICADA: exactamente la misma clase de información que las jornadas
+    // preparadas que la línea de arriba oculta. Un participante no debe
+    // recibirlos por el cable, ni siquiera para ignorarlos en pantalla.
+    delete clone.stagedFixtures;
     // HOTFIX-001. This copy of the board is DELIBERATELY incomplete, so it must
     // never be usable as proof of having seen the real one. Dropping the
     // revision means a write built from a participant's view can only ever be
@@ -660,6 +666,13 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
   // wins, and the caller is told, the same way a restored participant is.
   merged.pastTournaments = Array.isArray(oldValue && oldValue.pastTournaments)
     ? oldValue.pastTournaments : [];
+  // DATA-004C. Los fixtures en staging (fase final importada que todavía no es
+  // jornada) los escribe SÓLO el sync, igual que pastTournaments. Tomarlos del
+  // request dejaría que una pestaña atrasada borrara una importación que nunca
+  // vio — exactamente la clase de pérdida silenciosa que cerró HOTFIX-001, en
+  // un campo nuevo. La fila guardada siempre gana.
+  merged.stagedFixtures = Array.isArray(oldValue && oldValue.stagedFixtures)
+    ? oldValue.stagedFixtures : [];
   const storedEpoch = readTournamentEpoch(oldValue);
   const roundsAreStale = readTournamentEpoch(merged) < storedEpoch;
   if (roundsAreStale) {
@@ -2350,6 +2363,14 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       closeIntentId: intentId,
     });
     meta.rounds = [];
+    // DATA-004C — hallazgo del QA adversarial de este mismo ticket. Los fixtures
+    // en staging pertenecen al torneo que se está cerrando. Dejarlos vivos los
+    // habría dejado disponibles para convertirse en jornada DENTRO del ciclo
+    // siguiente, y cargados a SU presupuesto: exactamente la fuga que MON-002C
+    // cerró para el tablero, reabierta por un campo nuevo. Se limpian con él.
+    // No se archivan porque no llevan nada propio de QRACKS —ni picks ni
+    // resultados—: un resync los vuelve a traer si siguen siendo relevantes.
+    meta.stagedFixtures = [];
     if (Array.isArray(meta.participants)) meta.participants.forEach((p) => { if (p) p.paid = false; });
     // Marca el corte. Cualquier documento leído antes de este punto queda
     // identificable como una vista pre-cierre del tablero.
@@ -2928,23 +2949,46 @@ async function recordSportsDataHealth({ operation, outcome, reliabilityState, st
 // no duplicated matching rules to drift apart.
 function buildRoundSuggestions(round, events) {
   const suggestions = [];
+  // Partidos encontrados en el proveedor para los que NO se pudo determinar un
+  // 1X2 reglamentario. Se devuelven junto a las sugerencias para que el Admin
+  // sepa que existen en vez de verlos simplemente ausentes.
+  const unscorable = [];
   for (const match of round.matches || []) {
     const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline);
-    if (!hit || !hit.score) continue;
+    if (!hit) continue;
     const [home, away] = hit.participants;
     const straight = sportsDataProvider._teamsMatch(match.teamA, home.name);
-    const result = straight
-      ? (hit.score.home > hit.score.away ? "A" : hit.score.home < hit.score.away ? "B" : "D")
-      : (hit.score.home > hit.score.away ? "B" : hit.score.home < hit.score.away ? "A" : "D");
+    // DATA-004C. El 1X2 sale EXCLUSIVAMENTE del marcador de tiempo
+    // reglamentario, y de ninguna otra cosa. Antes salía de hit.score sin
+    // mirar el estado, así que un partido terminado en prórroga o penales
+    // producía una sugerencia plausible y equivocada (riesgo R8 de DATA-004A).
+    // Sin marcador reglamentario NO se sugiere nada: el Admin lo captura. Falla
+    // cerrado, que en un producto que reparte dinero es la única opción.
+    const result = outcomeFromRegulation(hit.regulationScore, straight);
+    if (!result) {
+      // No desaparece en silencio: se dice que se vio el partido y por qué no
+      // se pudo proponer resultado.
+      unscorable.push({
+        matchId: match.id,
+        externalEventId: hit.externalEventId,
+        reason: (hit.scoreReasons && hit.scoreReasons[0]) || "regulation_not_proven",
+        providerStatus: hit.providerStatus || null,
+      });
+      continue;
+    }
     suggestions.push({
       matchId: match.id,
       externalEventId: hit.externalEventId,
-      score: `${hit.score.home}-${hit.score.away}`,
+      // Se muestra el marcador de regulación, que es el que explica el 1X2
+      // sugerido. Enseñar el final junto a un resultado derivado del
+      // reglamentario haría que la sugerencia pareciera un error.
+      score: `${hit.regulationScore.home}-${hit.regulationScore.away}`,
+      finalScore: hit.score ? `${hit.score.home}-${hit.score.away}` : null,
       result,
       date: hit.dateTime,
     });
   }
-  return suggestions;
+  return { suggestions, unscorable };
 }
 
 app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports-results"), async (req, res) => {
@@ -2984,7 +3028,12 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
       season,
     });
     recordSportsDataHealth({ operation: "automatic_results", outcome: "success" });
-    res.json({ ok: true, reliabilityState: null, suggestions: buildRoundSuggestions(round, events) });
+    // DATA-004C §G. `suggestions` mantiene EXACTAMENTE la forma que el
+    // frontend ya consume (un array). `unscorable` es aditivo: los partidos
+    // que sí se encontraron pero cuyo 1X2 reglamentario no se pudo determinar,
+    // para que no parezcan simplemente ausentes.
+    const built = buildRoundSuggestions(round, events);
+    res.json({ ok: true, reliabilityState: null, suggestions: built.suggestions, unscorable: built.unscorable });
   } catch (err) {
     const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
     if (reliabilityState !== "competition_not_supported") {
@@ -3048,11 +3097,16 @@ app.get("/api/quinielas/:slug/sports-results", rateLimit("sports-results"), asyn
       season,
     });
     recordSportsDataHealth({ operation: "automatic_results", outcome: "success" });
+    // Misma regla que arriba: `results[roundId]` sigue siendo el array de
+    // sugerencias que el frontend ya lee, y lo no puntuable viaja aparte.
     const results = {};
+    const unscorable = {};
     for (const round of eligibleRounds) {
-      results[round.id] = buildRoundSuggestions(round, events);
+      const built = buildRoundSuggestions(round, events);
+      results[round.id] = built.suggestions;
+      if (built.unscorable.length) unscorable[round.id] = built.unscorable;
     }
-    res.json({ ok: true, reliabilityState: null, results });
+    res.json({ ok: true, reliabilityState: null, results, unscorable });
   } catch (err) {
     const reliabilityState = err instanceof ProviderError ? err.reliabilityState : "provider_invalid_response";
     if (reliabilityState !== "competition_not_supported") {
@@ -3226,11 +3280,13 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     // All grouping/idempotency/deadline-seeding decisions live in
     // competitionSync.js (pure, unit-tested) — this endpoint only assigns
     // ids (storage concern) and persists.
-    const { newRounds: plannedRounds, skippedEvents } = planCompetitionSync({
+    const plan = planCompetitionSync({
       existingRounds: meta.rounds || [],
+      existingStaged: meta.stagedFixtures || [],
       events,
       provider: "thesportsdb",
     });
+    const { newRounds: plannedRounds, skippedEvents, matchUpdates, stagedUpdates, diagnostics } = plan;
     const newRounds = plannedRounds.map((r) => ({
       id: "r_" + crypto.randomBytes(5).toString("hex"),
       ...r,
@@ -3253,26 +3309,96 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     // let that be told apart after the fact, without guessing — see
     // AUTO-001.1 §4 in the ticket that requested this.
     const distinctProviderRounds = new Set(events.map((e) => e.round).filter((r) => r != null)).size;
+    const existingRoundCountBefore = (meta.rounds || []).length;
+
+    // HOTFIX-001. El tablero ANTES del import, tomado de la fila leída bajo
+    // lock, para que la revisión avance exactamente una vez y por exactamente
+    // el cambio que este import hizo. Se captura antes de tocar nada.
+    const boardBeforeImport = { rounds: meta.rounds, roundsRevision: storedRoundsRevision(meta) };
+    let metaTouched = false;
+
+    // DATA-004C §C — UPDATE PATH. Un fixture ya importado se ACTUALIZA, no se
+    // duplica ni se ignora: es lo que permite que un cruce TBD acabe teniendo
+    // equipos. La actualización es campo a campo y sólo sobre campos del
+    // proveedor; `results`, `resultsPublished`, `published`, `deadline` y los
+    // ids internos son de QRACKS y no se tocan nunca. Reemplazar el objeto
+    // entero es como se borra el trabajo del Admin sin querer.
+    let updatedMatches = 0;
+    if (matchUpdates.length) {
+      const roundById = new Map((meta.rounds || []).map((r) => [r && r.id, r]));
+      for (const upd of matchUpdates) {
+        const round = roundById.get(upd.roundId);
+        if (!round) continue;
+        const match = (round.matches || []).find((m) => m && m.id === upd.matchId);
+        if (!match) continue;
+        Object.assign(match, upd.changes);
+        updatedMatches += 1;
+      }
+      if (updatedMatches) metaTouched = true;
+    }
+
+    // DATA-004C §B — fixtures sin ronda. Se CONSERVAN, no se descartan. No se
+    // convierten en jornada aquí: inventarles un número para que quepan en el
+    // schema actual falsearía la semántica del dominio. La integración con la
+    // UI es DATA-004D; lo que este ticket garantiza es que llegan enteros y no
+    // se pierden por el camino.
+    let stagedCreated = 0;
+    let stagedUpdated = 0;
+    if (plan.stagedFixtures.length || stagedUpdates.length) {
+      const staged = Array.isArray(meta.stagedFixtures) ? [...meta.stagedFixtures] : [];
+      const byId = new Map(staged.map((f, i) => [f && f.providerFixtureId, i]));
+      for (const upd of stagedUpdates) {
+        const at = byId.get(upd.providerFixtureId);
+        if (at == null) continue;
+        staged[at] = { ...staged[at], ...upd.changes };
+        stagedUpdated += 1;
+      }
+      for (const fx of plan.stagedFixtures) {
+        if (byId.has(fx.providerFixtureId)) continue;   // idempotente por identidad
+        byId.set(fx.providerFixtureId, staged.length);
+        staged.push(fx);
+        stagedCreated += 1;
+      }
+      // Un fixture que ya vive en una jornada no puede seguir además en
+      // staging: sería la misma identidad en dos sitios, y el que quedara
+      // huérfano no se actualizaría nunca más.
+      const inRounds = new Set();
+      for (const r of (meta.rounds || [])) {
+        for (const m of (r && r.matches) || []) if (m && m.externalEventId != null) inRounds.add(String(m.externalEventId));
+      }
+      const deduped = staged.filter((f) => f && !inRounds.has(String(f.providerFixtureId)));
+      const stagedDropped = staged.length - deduped.length;
+      if (stagedCreated || stagedUpdated || stagedDropped) {
+        meta.stagedFixtures = deduped;
+        metaTouched = true;
+      }
+    }
+
+    if (newRounds.length) {
+      meta.rounds = [...(meta.rounds || []), ...newRounds].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
+      metaTouched = true;
+    }
+    if (metaTouched) {
+      await putRow(metaKey, stampRoundsRevision(meta, boardBeforeImport), client);
+    }
+
+    // AUTO-001.1: diagnóstico siempre, no sólo al fallar. createdRounds:0 es
+    // ambiguo por sí solo. DATA-004C añade lo que el sync hizo además de crear
+    // jornadas — actualizar partidos ya conocidos y conservar fixtures sin
+    // ronda — porque un sync que "no creó nada" pero actualizó doce cruces TBD
+    // no es lo mismo que uno que no hizo nada.
     console.log("sync-competition diagnostics", {
       slug, externalLeagueId, season,
       eventsFetched: events.length,
       distinctProviderRounds,
-      existingRoundCount: (meta.rounds || []).length,
+      existingRoundCount: existingRoundCountBefore,
       createdRounds: newRounds.length,
       skippedEvents,
+      updatedMatches,
+      stagedCreated,
+      stagedUpdated,
+      diagnostics,
     });
-
-    if (newRounds.length) {
-      // HOTFIX-001. The board BEFORE the import, captured from the row read
-      // under lock, so the revision advances exactly once and by exactly the
-      // change this import made. Without it an Admin tab that loaded before
-      // the sync would still look fresh, and its next ordinary save would
-      // replace the imported calendar with the board it had — reproduced
-      // against a live server as scenario 2 of this ticket.
-      const boardBeforeImport = { rounds: meta.rounds, roundsRevision: storedRoundsRevision(meta) };
-      meta.rounds = [...(meta.rounds || []), ...newRounds].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
-      await putRow(metaKey, stampRoundsRevision(meta, boardBeforeImport), client);
-    }
 
     await client.query("COMMIT");
     res.json({
@@ -3288,6 +3414,14 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       // fix below. Not sensitive: just counts, no provider payload.
       eventsFetched: events.length,
       distinctProviderRounds,
+      // DATA-004C §G — nada desaparece en silencio. Estos son los fixtures que
+      // el sync tocó de otra forma que creando una jornada, y los motivos por
+      // los que alguno no se pudo usar. `round_id = null` NUNCA aparece aquí:
+      // no es un error, es la fase final.
+      updatedMatches,
+      stagedFixtures: stagedCreated,
+      stagedUpdated,
+      diagnostics,
     });
   } catch (err) {
     await client.query("ROLLBACK");

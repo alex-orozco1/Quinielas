@@ -9,6 +9,7 @@
 
 const { CAPABILITIES } = require("./providerContract");
 const domain = require("../sportsDomain");
+const { SCORE_PHASE, buildScoreContract } = require("../scoreContract");
 const { STRATEGIES, STAGE_NAME_SEPARATOR, getCompetitionConfig } = require("./sportmonksCompetitionConfig");
 
 const KEY = "sportmonks";
@@ -79,6 +80,97 @@ const SPORTMONKS_STATE_TO_STATUS = new Map([
 function normalizeSportmonksStatus(stateId) {
   if (typeof stateId !== "number" || !Number.isSafeInteger(stateId)) return "unknown";
   return SPORTMONKS_STATE_TO_STATUS.get(stateId) || "unknown";
+}
+
+// ---- Sportmonks score phases (DATA-004C) -----------------------------------
+//
+// ESTA TABLA ES EL ÚNICO SITIO donde vive el vocabulario de fases de Sportmonks.
+// Si una corrección futura hace falta, es aquí y en ninguna otra parte.
+//
+// Sportmonks manda `scores[]`, un registro por lado y por fase, cada uno con su
+// `description`. La traducción a las fases propias de QRACKS es explícita: lo
+// que no esté en esta tabla NO se adivina, entra como UNKNOWN y vuelve el
+// fixture ambiguo, que aguas abajo significa "no puntúes esto".
+//
+// La entrada que carga con todo el peso es 2ND_HALF -> REGULATION: el marcador
+// al terminar el segundo tiempo ES el marcador a 90' + compensación, y es lo
+// que sigue siendo cierto aunque después haya prórroga y penales.
+//
+// CURRENT va a FINAL, nunca a REGULATION, y esa distinción es el corazón del
+// ticket: "el marcador" del proveedor puede incluir prórroga, así que por sí
+// solo no prueba nada sobre los 90 minutos.
+const SPORTMONKS_SCORE_PHASE = Object.freeze({
+  "2ND_HALF": SCORE_PHASE.REGULATION,
+  "1ST_HALF": SCORE_PHASE.PARTIAL,
+  "CURRENT": SCORE_PHASE.FINAL,
+  "FT": SCORE_PHASE.FINAL,
+  "ET": SCORE_PHASE.EXTRA_TIME,
+  "AET": SCORE_PHASE.EXTRA_TIME,
+  "EXTRA_TIME": SCORE_PHASE.EXTRA_TIME,
+  "PENALTY_SHOOTOUT": SCORE_PHASE.PENALTY,
+  "PENALTIES": SCORE_PHASE.PENALTY,
+  "PENS": SCORE_PHASE.PENALTY,
+  "AGGREGATE": SCORE_PHASE.AGGREGATE,
+});
+
+function scorePhaseOf(description) {
+  if (typeof description !== "string") return SCORE_PHASE.UNKNOWN;
+  return SPORTMONKS_SCORE_PHASE[description.trim().toUpperCase()] || SCORE_PHASE.UNKNOWN;
+}
+
+// Estados en los que el proveedor AFIRMA que el partido terminó dentro del
+// tiempo reglamentario. Sólo desde aquí puede el contrato de score usar el
+// marcador final como si fuera el de regulación, y aun así con los otros
+// candados de scoreContract.js.
+//
+// Deliberadamente contiene UN solo estado. 7 y 8 son los otros dos que el
+// mapping de ciclo de vida trata como "finished", y son precisamente los que
+// NO prueban regulación (DATA-004C §2.6: "preserva el raw state necesario para
+// distinguir FT/AET/FT_PEN"). Meter un estado de más aquí produciría un 1X2
+// plausible y equivocado; dejar uno de menos sólo produce un null que pide
+// captura manual. La asimetría del daño decide el tamaño del conjunto.
+const SPORTMONKS_REGULATION_COMPLETE_STATES = Object.freeze(new Set([5]));
+const SPORTMONKS_NON_REGULATION_FINISHED_STATES = Object.freeze(new Set([7, 8]));
+
+// true / false / null — y null (no sabemos) nunca autoriza nada.
+function regulationCompleteFromState(stateId) {
+  if (typeof stateId !== "number" || !Number.isSafeInteger(stateId)) return null;
+  if (SPORTMONKS_REGULATION_COMPLETE_STATES.has(stateId)) return true;
+  if (SPORTMONKS_NON_REGULATION_FINISHED_STATES.has(stateId)) return false;
+  return null;
+}
+
+// Traduce `scores[]` a las líneas provider-agnósticas del contrato.
+//
+// El lado se resuelve por `score.participant` cuando viene, y si no cruzando
+// `score.participant_id` contra participants[].meta.location. Un registro cuyo
+// lado NO se puede resolver no se descarta en silencio: entra como UNKNOWN,
+// porque un registro de penales que no supimos atribuir es exactamente la
+// situación en la que NO queremos deducir un marcador de regulación.
+function toScoreLines(fx) {
+  const records = Array.isArray(fx && fx.scores) ? fx.scores : [];
+  const sideById = new Map();
+  (Array.isArray(fx && fx.participants) ? fx.participants : []).forEach((p) => {
+    if (!p || typeof p !== "object" || p.id == null) return;
+    const loc = p.meta && p.meta.location;
+    if (loc === "home" || loc === "away") sideById.set(String(p.id), loc);
+  });
+  const lines = [];
+  for (const rec of records) {
+    if (!rec || typeof rec !== "object" || Array.isArray(rec)) {
+      lines.push({ phase: SCORE_PHASE.UNKNOWN, side: null, goals: null });
+      continue;
+    }
+    const inner = rec.score && typeof rec.score === "object" && !Array.isArray(rec.score) ? rec.score : {};
+    let side = inner.participant === "home" || inner.participant === "away" ? inner.participant : null;
+    if (!side && inner.participant_id != null) side = sideById.get(String(inner.participant_id)) || null;
+    if (side !== "home" && side !== "away") {
+      lines.push({ phase: SCORE_PHASE.UNKNOWN, side: null, goals: null });
+      continue;
+    }
+    lines.push({ phase: scorePhaseOf(rec.description), side, goals: inner.goals });
+  }
+  return lines;
 }
 
 // ---- Sportmonks leg parsing -------------------------------------------------
@@ -354,6 +446,10 @@ function toEvents({ fixtures, stages } = {}) {
   );
   return list.map((fx) => {
     const st = fx.stage_id != null ? stageById.get(String(fx.stage_id)) : null;
+    const scores = buildScoreContract({
+      lines: toScoreLines(fx),
+      regulationComplete: regulationCompleteFromState(fx.state_id),
+    });
     return domain.makeEvent({
       provider: KEY,
       providerEventId: fx.id,
@@ -365,7 +461,18 @@ function toEvents({ fixtures, stages } = {}) {
       startsAt: fx.starting_at || null,
       status: normalizeSportmonksStatus(fx.state_id),
       competitors: mapParticipants(fx),
-      score: null,
+      // DATA-004C. Antes esto era `score: null` fijo: el adapter tiraba el
+      // marcador aunque el payload lo trajera, así que el 1X2 a 90' era
+      // imposible por construcción. Ahora las fases se traducen y el contrato
+      // provider-agnóstico decide qué es utilizable y qué no.
+      score: scores.final,
+      regulationScore: scores.regulation,
+      penaltyScore: scores.penalty,
+      extraTimeScore: scores.extraTime,
+      scoreReasons: scores.reasons,
+      // El código crudo, como campo de primera clase: `status` colapsa
+      // FT/AET/FT_PEN en "finished" y no basta para puntuar.
+      providerStatusRaw: fx.state_id,
       providerRaw: {
         stage_id: fx.stage_id ?? null, round_id: fx.round_id ?? null, leg: fx.leg ?? null,
         state_id: fx.state_id ?? null,
@@ -435,6 +542,12 @@ function fromStagePayload(stageData, { stages } = {}) {
 }
 
 module.exports = {
+  SPORTMONKS_SCORE_PHASE,
+  SPORTMONKS_REGULATION_COMPLETE_STATES,
+  SPORTMONKS_NON_REGULATION_FINISHED_STATES,
+  scorePhaseOf,
+  regulationCompleteFromState,
+  toScoreLines,
   key: KEY,
   fromSeasonPayload,
   fromStagePayload,
