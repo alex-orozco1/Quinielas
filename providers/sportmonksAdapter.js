@@ -149,9 +149,23 @@ function scorePhaseOf(description, typeId) {
   const byName = typeof description === "string"
     ? (SPORTMONKS_SCORE_PHASE[description.trim().toUpperCase()] || SCORE_PHASE.UNKNOWN)
     : SCORE_PHASE.UNKNOWN;
-  if (!Number.isSafeInteger(typeId)) return byName;
 
-  const claimsRegulationById = typeId === SPORTMONKS_REGULATION_TYPE_ID;
+  // P1-B (QA independiente). Antes, si el type_id faltaba o venía malformado se
+  // clasificaba SÓLO por la descripción, así que un "2ND_HALF" sin type_id se
+  // convertía en el marcador que puntúa. El contrato aprobado exige las DOS
+  // señales: 2ND_HALF y type_id 2.
+  //
+  // Se compara la afirmación de cada señal, no su valor. Las dos tienen que
+  // decir lo mismo sobre si esto es regulación:
+  //
+  //   - "2ND_HALF" sin type_id, o con uno que no sea 2  -> UNKNOWN
+  //   - type_id 2 con otra descripción, o sin ninguna    -> UNKNOWN
+  //
+  // Un type_id ausente sólo desclasifica la fase que AUTORIZA a puntuar. Las
+  // demás (prórroga, penales, parciales) se siguen clasificando por nombre: sólo
+  // sirven para BLOQUEAR, así que ser laxo ahí es seguro y ser estricto sólo
+  // habría convertido en ambiguo lo que ya era inofensivo.
+  const claimsRegulationById = Number.isSafeInteger(typeId) && typeId === SPORTMONKS_REGULATION_TYPE_ID;
   const claimsRegulationByName = byName === SCORE_PHASE.REGULATION;
   if (claimsRegulationById !== claimsRegulationByName) return SCORE_PHASE.UNKNOWN;
   return byName;

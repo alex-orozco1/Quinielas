@@ -156,8 +156,24 @@ function buildScoreContract({ lines, regulationComplete } = {}) {
   );
   if (contradiction) reasons.add(REASONS.PHASE_CONTRADICTION);
 
+  // Hubo registros que DICEN ser de regulación, aunque no se hayan podido leer
+  // (incompletos, contradictorios). Distinto de "no vino ninguno", y la
+  // diferencia importa: donde hay evidencia de regulación rota, deducirla del
+  // marcador final sería tapar el problema en vez de reportarlo.
+  const regulationPhasePresent = byPhase.has(SCORE_PHASE.REGULATION);
+
   let regulation = null;
-  if (contradiction) {
+  if (ambiguous) {
+    // P1-A (QA independiente). Antes, un registro sin clasificar marcaba el
+    // fixture como ambiguo y aun así se devolvía el marcador de regulación si
+    // existía. El contrato decía una cosa y el código hacía otra: bastaba con
+    // que un payload trajera un 2ND_HALF aparentemente bueno MÁS una línea
+    // desconocida o malformada para seguir produciendo 1X2.
+    //
+    // Si hay algo en el marcador que no sabemos leer, no sabemos qué partido
+    // estamos puntuando. Fail closed, sin excepciones.
+    regulation = null;
+  } else if (contradiction) {
     regulation = null;
   } else if (explicitRegulation.score) {
     // CAMINO 1 — evidencia directa. El proveedor dice cuál fue el marcador al
@@ -165,6 +181,17 @@ function buildScoreContract({ lines, regulationComplete } = {}) {
     // siendo válida aunque después hubiera prórroga y penales, que es
     // precisamente el caso que importa.
     regulation = explicitRegulation.score;
+  } else if (regulationPhasePresent) {
+    // Vino evidencia de regulación y NO se pudo leer (incompleta, o dos
+    // registros que se contradicen). No se cae al camino 2: el marcador final
+    // puede hacer de reglamentario sólo cuando no hay ninguna afirmación
+    // directa sobre los 90 minutos, jamás cuando la hay y está rota. Deducirlo
+    // entonces sería tapar el problema en vez de reportarlo.
+    //
+    // Encontrado revisando este mismo arreglo: un 2ND_HALF duplicado y
+    // contradictorio, con estado FT y un CURRENT presente, acababa usando el
+    // CURRENT — y el orden de estas ramas era lo único que lo decidía.
+    regulation = null;
   } else if (
     finalOut.score &&
     regulationComplete === true &&
@@ -179,7 +206,8 @@ function buildScoreContract({ lines, regulationComplete } = {}) {
     // rastro de prórroga o penales que lo contradiga, ni nada sin clasificar.
     // Cualquiera de los cuatro candados que falle devuelve null.
     regulation = finalOut.score;
-  } else {
+  }
+  if (regulation === null) {
     if (hasPenaltyRecords) reasons.add(REASONS.PENALTIES_PRESENT);
     if (hasExtraTimeRecords) reasons.add(REASONS.EXTRA_TIME_PRESENT);
     if (!list.length) reasons.add(REASONS.NO_RECORDS);

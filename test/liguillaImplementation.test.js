@@ -19,7 +19,9 @@ const path = require("node:path");
 
 const D = require("./liguillaDataset");
 const { planCompetitionSync, DIAGNOSTIC, fromDomainEvent: syncFromDomain } = require("../competitionSync");
-const { outcomeFromRegulation } = require("../scoreContract");
+const { outcomeFromRegulation, buildScoreContract, SCORE_PHASE } = require("../scoreContract");
+const line = (phase, side, goals) => ({ phase, side, goals });
+const both = (phase, h, a) => [line(phase, "home", h), line(phase, "away", a)];
 const sportmonks = require("../providers/sportmonksAdapter");
 const sportsDataProvider = require("../sportsDataProvider");
 
@@ -683,4 +685,160 @@ test("ADVERSARIAL · un partido que llega tarde entra en SU ventana, no funda un
   assert.equal(second.matchAdditions.length, 1);
   const destino = stored.find((r) => r.id === second.matchAdditions[0].roundId);
   assert.equal(destino.number, first.newRounds[0].number, "y aterriza en la jornada de SU semana");
+});
+
+// ==== QA Correction 01 — fail-closed del contrato de scoring ===============
+//
+// Dos P1 encontrados por el QA independiente sobre el commit 7235ccd:
+//
+//   P1-A · una línea de marcador sin clasificar marcaba el fixture como
+//          ambiguo y aun así se devolvía el marcador de regulación si existía.
+//          El contrato decía "ante algo que no entendemos, no se puntúa" y el
+//          código no lo cumplía.
+//   P1-B · "2ND_HALF" sin type_id 2 se convertía en el marcador que puntúa. El
+//          contrato aprobado exige las DOS señales.
+//
+// Los dos comparten la misma consecuencia: un payload retorcido acababa
+// produciendo un 1X2. Y un 1X2 equivocado no falla ruidosamente — se publica y
+// le paga a la persona equivocada.
+
+const smLine = (description, typeId, h, a) => ([
+  { id: 1, type_id: typeId, description, score: { participant_id: D.TEAMS.a.id, goals: h, participant: "home" } },
+  { id: 2, type_id: typeId, description, score: { participant_id: D.TEAMS.c.id, goals: a, participant: "away" } },
+]);
+const conScores = (scores, state_id = D.STATE.FT) => D.fixture({
+  id: 19690001, stage_id: 77479151, round_id: null, leg: "2/2",
+  starting_at: "2025-12-15 02:00:00", state_id,
+  participants: D.pair(D.TEAMS.a, D.TEAMS.c), scores,
+});
+const regDe = (scores, state_id) => eventOf(conScores(scores, state_id)).regulationScore;
+
+test("QA01 · 1 — 2ND_HALF con type_id 2 sigue siendo válido", () => {
+  assert.deepEqual(regDe(smLine("2ND_HALF", 2, 2, 1)), { home: 2, away: 1 });
+  assert.equal(outcomeFromRegulation(regDe(smLine("2ND_HALF", 2, 2, 1)), true), "A");
+});
+
+test("QA01 · 2 — 2ND_HALF SIN type_id -> null", () => {
+  const sinTipo = smLine("2ND_HALF", undefined, 2, 1).map((r) => { const { type_id, ...rest } = r; return rest; });
+  assert.equal(regDe(sinTipo), null, "una sola señal no autoriza a puntuar");
+});
+
+test("QA01 · 3 — 2ND_HALF con type_id malformado -> null", () => {
+  for (const malo of ["2", 2.5, NaN, Infinity, null, true, {}, []]) {
+    assert.equal(regDe(smLine("2ND_HALF", malo, 2, 1)), null, `type_id ${JSON.stringify(malo)} no puede autorizar`);
+  }
+});
+
+test("QA01 · 4 — 2ND_HALF con type_id distinto de 2 -> null", () => {
+  for (const otro of [1, 3, 7, 1525]) {
+    assert.equal(regDe(smLine("2ND_HALF", otro, 2, 1)), null, `type_id ${otro} contradice la descripción`);
+  }
+});
+
+test("QA01 · 5 — type_id 2 con OTRA descripción -> null", () => {
+  for (const desc of ["CURRENT", "1ST_HALF", "ET", "2ND_HALF_ONLY", "ALGO_NUEVO"]) {
+    assert.equal(regDe(smLine(desc, 2, 2, 1)), null, `"${desc}" con type_id 2 es una contradicción`);
+  }
+});
+
+test("QA01 · 6 — type_id 2 SIN descripción -> null", () => {
+  const sinDesc = smLine("2ND_HALF", 2, 2, 1).map((r) => { const { description, ...rest } = r; return rest; });
+  assert.equal(regDe(sinDesc), null);
+  assert.equal(regDe(smLine(null, 2, 2, 1)), null);
+  assert.equal(regDe(smLine("", 2, 2, 1)), null);
+});
+
+test("QA01 · 7 — regulación válida + una línea DESCONOCIDA -> null", () => {
+  // El caso exacto del P1-A: el 2ND_HALF es impecable, pero hay algo más en el
+  // marcador que no sabemos leer. Si no entendemos el payload entero, no
+  // sabemos qué partido estamos puntuando.
+  const c = buildScoreContract({
+    lines: [...both(SCORE_PHASE.REGULATION, 2, 1), ...both(SCORE_PHASE.UNKNOWN, 9, 9)],
+    regulationComplete: true,
+  });
+  assert.equal(c.ambiguous, true);
+  assert.equal(c.regulation, null, "ambiguo tiene que significar 'no puntúes esto', también aquí");
+  assert.equal(outcomeFromRegulation(c.regulation, true), null);
+  // Y por el camino real del adapter.
+  assert.equal(regDe([...smLine("2ND_HALF", 2, 2, 1), ...smLine("FASE_NUEVA", 4242, 9, 9)]), null);
+});
+
+test("QA01 · 8 — regulación válida + un registro MALFORMADO -> null", () => {
+  for (const basura of [null, "no soy un objeto", 42, []]) {
+    assert.equal(regDe([...smLine("2ND_HALF", 2, 2, 1), basura]), null,
+      `un registro ${JSON.stringify(basura)} junto a la regulación tiene que bloquear`);
+  }
+  // Y un `score` interno que no es objeto.
+  assert.equal(regDe([...smLine("2ND_HALF", 2, 2, 1), { id: 9, type_id: 4, description: "PENALTY_SHOOTOUT", score: "5-4" }]), null);
+});
+
+test("QA01 · 9 — regulación válida + un lado irresoluble -> null", () => {
+  // Un registro que no se puede atribuir a local ni a visitante. Si es de
+  // penales y lo ignoráramos, perderíamos la señal de que hubo penales.
+  const huerfano = { id: 9, type_id: 4, description: "PENALTY_SHOOTOUT", score: { participant_id: 999999, goals: 5 } };
+  assert.equal(regDe([...smLine("2ND_HALF", 2, 1, 1), huerfano]), null);
+  const sinLado = { id: 9, type_id: 4, description: "PENALTY_SHOOTOUT", score: { goals: 5 } };
+  assert.equal(regDe([...smLine("2ND_HALF", 2, 1, 1), sinLado]), null);
+});
+
+test("QA01 · 10 — FT normal sigue funcionando", () => {
+  const raw = D.regular(1, 19500001, "2025-07-11 02:00:00");
+  assert.deepEqual(reg(raw), { home: 2, away: 1 });
+  assert.equal(outcome(raw), "A");
+});
+
+test("QA01 · 11 — AET sigue usando los 90 minutos", () => {
+  assert.deepEqual(reg(D.finalAet), { home: 1, away: 1 });
+  assert.equal(outcome(D.finalAet), "D", "no el 2-1 tras la prórroga");
+});
+
+test("QA01 · 12 — FT_PEN sigue usando los 90 minutos", () => {
+  assert.deepEqual(reg(D.finalPen), { home: 1, away: 1 });
+  assert.deepEqual(eventOf(D.finalPen).penaltyScore, { home: 5, away: 4 });
+  assert.equal(outcome(D.finalPen), "D", "no el 5-4 de los penales");
+});
+
+test("QA01 · 13 — 2ND_HALF_ONLY nunca produce regulación", () => {
+  assert.equal(sportmonks.scorePhaseOf("2ND_HALF_ONLY", D.TYPE.SECOND_HALF_ONLY), "partial");
+  assert.equal(regDe(smLine("2ND_HALF_ONLY", D.TYPE.SECOND_HALF_ONLY, 1, 0)), null);
+  // Y su presencia junto al 2ND_HALF real no estorba: es una fase reconocida.
+  assert.deepEqual(reg(D.finalPen), { home: 1, away: 1 });
+});
+
+test("QA01 · 14 — CURRENT por sí solo nunca produce regulación", () => {
+  assert.equal(regDe(smLine("CURRENT", D.TYPE.CURRENT, 3, 1), D.STATE.AET), null);
+  assert.equal(regDe(smLine("CURRENT", D.TYPE.CURRENT, 3, 1), D.STATE.FT_PEN), null);
+  // El ÚNICO caso en que el marcador final vale como reglamentario: el estado
+  // prueba que el partido terminó dentro de los 90 y no hay rastro de nada más.
+  assert.deepEqual(regDe(smLine("CURRENT", D.TYPE.CURRENT, 3, 1), D.STATE.FT), { home: 3, away: 1 });
+});
+
+test("QA01 · extra — evidencia de regulación ROTA no cae al marcador final", () => {
+  // Encontrado revisando este mismo arreglo. Un 2ND_HALF duplicado y
+  // contradictorio dejaba `explicitRegulation` en null; con estado FT y un
+  // CURRENT presente, el camino de respaldo lo usaba igualmente. Donde hay
+  // evidencia de los 90 y está rota, deducirla del final es tapar el problema.
+  const c = buildScoreContract({
+    lines: [...both(SCORE_PHASE.REGULATION, 1, 1), line(SCORE_PHASE.REGULATION, "home", 2), ...both(SCORE_PHASE.FINAL, 3, 0)],
+    regulationComplete: true,
+  });
+  assert.equal(c.regulation, null);
+  assert.ok(c.reasons.includes("duplicate_conflict"));
+  // Sin NINGUNA afirmación sobre los 90, el respaldo sí sigue vivo.
+  const d = buildScoreContract({ lines: both(SCORE_PHASE.FINAL, 3, 0), regulationComplete: true });
+  assert.deepEqual(d.regulation, { home: 3, away: 0 });
+});
+
+test("QA01 · el contrato sigue siendo provider-agnostic", () => {
+  // La exigencia de doble señal es de Sportmonks y vive en SU adapter.
+  // scoreContract no sabe qué es un type_id, y TheSportsDB no tiene ninguno.
+  const src = stripComments(fs.readFileSync(path.join(__dirname, "..", "scoreContract.js"), "utf8"));
+  assert.ok(!/type_id|sportmonks|2ND_HALF|thesportsdb/i.test(src),
+    "scoreContract no puede conocer el vocabulario de ningún proveedor");
+  // Y TheSportsDB sigue puntuando por su estado, sin type_id de ninguna clase.
+  const raw = (status) => ({ idEvent: "1", idLeague: "4350", intRound: "17", strStatus: status,
+    strHomeTeam: "A", strAwayTeam: "B", idHomeTeam: "1", idAwayTeam: "2",
+    intHomeScore: "2", intAwayScore: "1", strTimestamp: "2026-08-01T02:00:00" });
+  assert.deepEqual(sportsDataProvider.normalizeEvent(raw("FT"), "thesportsdb").regulationScore, { home: 2, away: 1 });
+  assert.equal(sportsDataProvider.normalizeEvent(raw("PEN"), "thesportsdb").regulationScore, null);
 });

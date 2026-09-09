@@ -416,10 +416,13 @@ test("SPORTMONKS: un registro cuyo lado no se puede atribuir vuelve el fixture a
 });
 
 test("SPORTMONKS: una descripción desconocida nunca se adivina", () => {
-  assert.equal(sportmonks.scorePhaseOf("ALGO_NUEVO"), SCORE_PHASE.UNKNOWN);
-  assert.equal(sportmonks.scorePhaseOf(null), SCORE_PHASE.UNKNOWN);
-  assert.equal(sportmonks.scorePhaseOf("2nd_half"), SCORE_PHASE.REGULATION, "case-insensitive");
-  assert.equal(sportmonks.scorePhaseOf("CURRENT"), SCORE_PHASE.FINAL, "el marcador 'actual' NO es prueba de regulación");
+  assert.equal(sportmonks.scorePhaseOf("ALGO_NUEVO", 99), SCORE_PHASE.UNKNOWN);
+  assert.equal(sportmonks.scorePhaseOf(null, 99), SCORE_PHASE.UNKNOWN);
+  // QA Correction 01 (P1-B): la fase que AUTORIZA a puntuar exige las dos
+  // señales. Sin type_id 2, "2ND_HALF" ya no basta.
+  assert.equal(sportmonks.scorePhaseOf("2nd_half", 2), SCORE_PHASE.REGULATION, "case-insensitive");
+  assert.equal(sportmonks.scorePhaseOf("2ND_HALF"), SCORE_PHASE.UNKNOWN, "sin type_id no se autoriza nada");
+  assert.equal(sportmonks.scorePhaseOf("CURRENT", 1525), SCORE_PHASE.FINAL, "el marcador 'actual' NO es prueba de regulación");
 });
 
 test("SPORTMONKS: el conjunto de estados que prueban regulación es exactamente {5}", () => {
