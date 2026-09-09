@@ -58,10 +58,14 @@ const ev = (o) => ({
   ],
 });
 const plan = (args) => planCompetitionSync({ provider: "thesportsdb", ...args });
+// Un partido guardado por el código actual lleva su proveedor: es la mitad de
+// la identidad. Los helpers lo reflejan para que las pruebas midan el estado
+// estable, no el momento del backfill.
+const withProvider = (m) => (m && m.externalEventId && !m.externalProvider ? { ...m, externalProvider: "thesportsdb" } : m);
 const roundOf = (fixtures, over = {}) => ({
   id: "r_1", number: 1, published: true, resultsPublished: false, results: {},
   deadline: "2026-08-01T00:00:00Z", provider: "thesportsdb", externalRoundId: "1",
-  matches: fixtures, ...over,
+  matches: (fixtures || []).map(withProvider), ...over,
 });
 
 // ==== 1. Identidad e idempotencia ==========================================

@@ -50,6 +50,26 @@ function str(v) {
   return v == null || v === "" ? null : String(v);
 }
 
+// ---- la identidad lógica de un partido (QA Correction 02) -----------------
+//
+// El contrato aprobado siempre dijo `provider + providerFixtureId`, y el código
+// sólo usaba el id. Dos proveedores pueden repartir el mismo número: en cuanto
+// TheSportsDB y Sportmonks conviven —o uno hace de respaldo del otro— un
+// fixture `123` de Sportmonks podía ACTUALIZAR un `123` de TheSportsDB,
+// conservando el id interno del partido y, con él, los picks del partido
+// equivocado. Corrupción silenciosa, y del peor tipo: todo sigue pareciendo
+// correcto.
+//
+// El separador es "|" porque ningún nombre de proveedor lo contiene, y aun así
+// se comprueba: si un proveedor lo llevara, la clave dejaría de ser inyectiva y
+// dos partidos distintos podrían colisionar. Ante eso no hay clave que valga.
+function identityKey(provider, providerFixtureId) {
+  const p = str(provider);
+  const id = str(providerFixtureId);
+  if (!p || !id || p.includes("|")) return null;
+  return `${p}|${id}`;
+}
+
 // Desde la forma de sportsDataProvider.normalizeEvent (el camino de
 // TheSportsDB, el que hoy está en producción).
 function fromProviderEvent(ev) {
@@ -65,6 +85,7 @@ function fromProviderEvent(ev) {
     return id || name ? { id, name } : null;
   };
   return {
+    provider: str(ev.provider),
     providerFixtureId: str(ev.externalEventId),
     providerRoundId: str(ev.round),
     stageId: str(ev.stageId),
@@ -90,6 +111,7 @@ function fromDomainEvent(ev) {
     return id || name ? { id, name } : null;
   };
   return {
+    provider: str(ev.provider),
     providerFixtureId: str(ev.providerEventId),
     providerRoundId: str(ev.providerRoundId),
     stageId: str(ev.stageId),
@@ -183,6 +205,12 @@ const DIAGNOSTIC = Object.freeze({
   // Un partido nuevo pertenece a una jornada cuya votación ya cerró. Añadirlo
   // sería pedir un pronóstico que nadie pudo hacer.
   ROUND_ALREADY_CLOSED: "round_already_closed",
+  // Un partido histórico con id externo del que no se puede demostrar de qué
+  // proveedor vino. No se actualiza por coincidencia de id: se reporta.
+  UNATTRIBUTABLE_FIXTURE: "unattributable_fixture",
+  // El mismo id externo existe ya bajo OTRO proveedor. No son el mismo partido
+  // y no se fusionan; se dice, porque visto desde fuera se parecen.
+  CROSS_PROVIDER_ID: "cross_provider_id",
   LOCKED_BY_RESULTS: "locked_by_results",
   KICKOFF_PAST_DEADLINE: "kickoff_past_deadline",
 });
@@ -193,6 +221,12 @@ const DIAGNOSTIC = Object.freeze({
 // borra el trabajo del Admin sin querer.
 const PROVIDER_OWNED_MATCH_FIELDS = Object.freeze([
   "teamA", "teamB", "externalHomeId", "externalAwayId", "kickoffAt",
+  // La otra mitad de la identidad. Está aquí para que un partido heredado —que
+  // sólo guardaba el id— la GANE la primera vez que su proveedor se demuestra
+  // por la jornada que lo importó. Es aditivo y no destruye nada: sólo se
+  // escribe cuando falta, y sólo con el proveedor con el que ya se encontró el
+  // partido, así que no puede cambiarlo por otro.
+  "externalProvider",
 ]);
 
 function kickoffMs(value) {
@@ -223,6 +257,9 @@ function matchFromFixture(fx) {
     teamA: (fx.home && fx.home.name) || "",
     teamB: (fx.away && fx.away.name) || "",
     externalEventId: fx.providerFixtureId,
+    // Persistido JUNTO al id externo, no deducido después: es la mitad de la
+    // identidad, y sin él una recarga de la base no puede reconstruirla.
+    externalProvider: fx.provider || null,
     externalHomeId: (fx.home && fx.home.id) || null,
     externalAwayId: (fx.away && fx.away.id) || null,
     kickoffAt: fx.kickoffAt || null,
@@ -248,17 +285,43 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
   };
 
   // --- índice de identidad: todo fixture que YA conocemos, esté donde esté ---
-  const knownInRounds = new Map();   // providerFixtureId -> { round, match }
+  //
+  // Indexado por `provider|id`, nunca por el id solo. Y como también hay que
+  // poder RESPONDER a "¿existe ya este id bajo otro proveedor?", se lleva un
+  // índice secundario por id: no para actualizar por él —eso es justo lo que
+  // este arreglo prohíbe— sino para poder decirlo.
+  const knownInRounds = new Map();   // provider|id -> { round, match }
+  const idsInRounds = new Map();     // id -> Set(provider)
+  // Partidos históricos con id externo y sin proveedor demostrable. No se
+  // actualizan por coincidencia de id; se listan para poder reportarlos.
+  const unattributableIds = new Set();
   for (const r of rounds) {
     for (const m of (Array.isArray(r && r.matches) ? r.matches : [])) {
       const id = str(m && m.externalEventId);
-      if (id && !knownInRounds.has(id)) knownInRounds.set(id, { round: r, match: m });
+      if (!id) continue;
+      // LEGACY. Los partidos importados antes de este arreglo no llevan
+      // `externalProvider`. La jornada SÍ registra qué proveedor la importó, y
+      // ése es un vínculo persistido e inequívoco: el sync que la creó puso su
+      // propio nombre ahí. Cuando ni el partido ni su jornada lo dicen, el
+      // proveedor no se puede demostrar y no se adivina.
+      const prov = str(m.externalProvider) || str(r && r.provider);
+      if (!prov) { unattributableIds.add(id); continue; }
+      if (!idsInRounds.has(id)) idsInRounds.set(id, new Set());
+      idsInRounds.get(id).add(prov);
+      const key = identityKey(prov, id);
+      if (key && !knownInRounds.has(key)) knownInRounds.set(key, { round: r, match: m });
     }
   }
-  const knownStaged = new Map();     // providerFixtureId -> fixture guardado
+  const knownStaged = new Map();     // provider|id -> fixture guardado
+  const idsStaged = new Map();       // id -> Set(provider)
   for (const f of staged) {
     const id = str(f && f.providerFixtureId);
-    if (id && !knownStaged.has(id)) knownStaged.set(id, f);
+    const prov = str(f && f.provider);
+    if (!id || !prov) continue;
+    if (!idsStaged.has(id)) idsStaged.set(id, new Set());
+    idsStaged.get(id).add(prov);
+    const key = identityKey(prov, id);
+    if (key && !knownStaged.has(key)) knownStaged.set(key, f);
   }
 
   // Los números de jornada ya ocupados: una jornada existente SIEMPRE gana, sea
@@ -272,21 +335,28 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
   const usable = [];
   for (const fx of incoming) {
     const id = str(fx.providerFixtureId);
-    if (!id) {
-      // Sin identidad no se puede ni crear ni actualizar sin arriesgar un
-      // duplicado en el siguiente sync. Se descarta, pero NUNCA en silencio.
-      note(DIAGNOSTIC.MISSING_FIXTURE_ID, null, fx.kickoffAt || null);
+    // El proveedor del propio fixture manda; el del sync es el respaldo, porque
+    // un lote siempre viene de una importación concreta.
+    const prov = str(fx.provider) || str(provider);
+    const key = identityKey(prov, id);
+    if (!key) {
+      // Sin identidad COMPLETA no se puede ni crear ni actualizar sin arriesgar
+      // un duplicado —o algo peor— en el siguiente sync. Se descarta, pero
+      // NUNCA en silencio.
+      note(DIAGNOSTIC.MISSING_FIXTURE_ID, id, fx.kickoffAt || null);
       continue;
     }
-    if (seenInBatch.has(id)) {
+    // La deduplicación del lote también es por identidad completa: dos
+    // proveedores con el mismo número son dos partidos, no uno repetido.
+    if (seenInBatch.has(key)) {
       note(DIAGNOSTIC.DUPLICATE_FIXTURE_ID, id);
       continue;
     }
-    seenInBatch.add(id);
+    seenInBatch.add(key);
     if (fx.kickoffAt && kickoffMs(fx.kickoffAt) == null) {
       note(DIAGNOSTIC.MALFORMED_KICKOFF, id, fx.kickoffAt);
     }
-    usable.push({ ...fx, providerFixtureId: id });
+    usable.push({ ...fx, providerFixtureId: id, provider: prov, identityKey: key });
   }
   usable.sort(compareFixtures);
 
@@ -296,8 +366,22 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
 
   for (const fx of usable) {
     const id = fx.providerFixtureId;
+    const key = fx.identityKey;
 
-    const inRound = knownInRounds.get(id);
+    // El mismo número ya existe bajo OTRO proveedor. No son el mismo partido y
+    // no se fusionan —eso era el P1—, pero visto desde fuera se parecen, así
+    // que se dice.
+    const otrosEnJornadas = idsInRounds.get(id);
+    const otrosEnEspera = idsStaged.get(id);
+    const hayOtroProveedor =
+      (otrosEnJornadas && [...otrosEnJornadas].some((p) => p !== fx.provider)) ||
+      (otrosEnEspera && [...otrosEnEspera].some((p) => p !== fx.provider));
+    if (hayOtroProveedor) note(DIAGNOSTIC.CROSS_PROVIDER_ID, id, fx.provider);
+    // Un partido histórico con este mismo id y sin proveedor demostrable. No se
+    // actualiza por coincidencia de id: eso es exactamente lo que corrompe.
+    if (unattributableIds.has(id)) note(DIAGNOSTIC.UNATTRIBUTABLE_FIXTURE, id, null);
+
+    const inRound = knownInRounds.get(key);
     if (inRound) {
       const changes = {};
       const proposed = matchFromFixture(fx);
@@ -342,7 +426,7 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
     // el resultado vuelve a intentar colocarse en una jornada: es así como un
     // cruce que llegó sin rival acaba, semanas después, dentro de una jornada
     // real. "Todavía no se sabe" nunca pisa "ya se sabe".
-    const inStaged = knownStaged.get(id);
+    const inStaged = knownStaged.get(key);
     if (inStaged) {
       const changes = {};
       for (const key of ["providerRoundId", "stageId", "stageName", "kickoffAt", "leg", "status"]) {
@@ -544,7 +628,9 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
       away: fx.away || null,
       leg: fx.leg || null,
       status: fx.status || null,
-      provider: provider || null,
+      // El proveedor del fixture, no el del sync: la identidad tiene que
+      // sobrevivir intacta a una recarga de la base.
+      provider: fx.provider || provider || null,
     })),
     promotedStagedIds,
     matchUpdates,

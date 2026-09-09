@@ -305,11 +305,22 @@ const MATCH_WINDOW_MS = 1000 * 60 * 60 * 24 * 20; // ~20 days, unchanged from pr
 
 // Returns a normalized event (see shape above) or null. `match` is a
 // QRACKS round.matches[] entry: { teamA, teamB, externalEventId? }.
-function findMatchingEvent(events, match, roundDeadlineIso) {
-  // Fast path: this match already has a stable external id (e.g. imported
-  // via a future Competition Sync) — trust it directly, no fuzzy matching.
-  if (match.externalEventId) {
-    const direct = events.find((e) => e.externalEventId === String(match.externalEventId));
+function findMatchingEvent(events, match, roundDeadlineIso, matchProvider) {
+  // Fast path: this match already has a stable external id — trust it directly,
+  // no fuzzy matching.
+  //
+  // QA Correction 02: el id SOLO no es identidad. Dos proveedores reparten el
+  // mismo número, así que un evento de Sportmonks podía casar con un partido
+  // importado de TheSportsDB y sugerir el resultado de OTRO partido. La
+  // identidad completa es `provider + id`, también aquí.
+  //
+  // `matchProvider` se resuelve fuera (el partido lo dice, o su jornada). Si no
+  // se puede demostrar, no hay camino rápido: se cae al emparejamiento por
+  // nombre y fecha, que es el mismo que usa una jornada creada a mano.
+  const resolvedProvider = matchProvider || match.externalProvider || null;
+  if (match.externalEventId && resolvedProvider) {
+    const direct = events.find((e) =>
+      e.externalEventId === String(match.externalEventId) && e.provider === resolvedProvider);
     if (direct) return direct;
     // Falls through to name-based matching if the id isn't in this batch —
     // never a hard failure just because the id lookup missed.

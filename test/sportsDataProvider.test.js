@@ -151,8 +151,24 @@ test("findMatchingEvent: fast path via externalEventId", () => {
     provider.normalizeEvent({ idEvent: "1", strHomeTeam: "X", strAwayTeam: "Y", intHomeScore: "1", intAwayScore: "0", strStatus: "FT", strTimestamp: "2026-07-17T01:00:00" }, "thesportsdb"),
     provider.normalizeEvent({ idEvent: "2", strHomeTeam: "Necaxa", strAwayTeam: "Atlante", intHomeScore: "2", intAwayScore: "1", strStatus: "FT", strTimestamp: "2026-07-17T01:00:00" }, "thesportsdb"),
   ];
-  const hit = provider.findMatchingEvent(events, { teamA: "whatever", teamB: "irrelevant", externalEventId: "2" }, "2026-07-17T00:00:00");
+  // QA Correction 02: el camino rápido exige la identidad COMPLETA. El id solo
+  // no basta, porque dos proveedores reparten el mismo número.
+  const hit = provider.findMatchingEvent(events,
+    { teamA: "whatever", teamB: "irrelevant", externalEventId: "2", externalProvider: "thesportsdb" },
+    "2026-07-17T00:00:00");
   assert.equal(hit.externalEventId, "2");
+
+  // Mismo id, OTRO proveedor: el camino rápido no puede contestar por él.
+  const cruzado = provider.findMatchingEvent(events,
+    { teamA: "whatever", teamB: "irrelevant", externalEventId: "2", externalProvider: "sportmonks" },
+    "2026-07-17T00:00:00");
+  assert.equal(cruzado, null, "un evento de un proveedor no contesta por el partido de otro");
+
+  // Sin proveedor demostrable tampoco: se cae al emparejamiento por nombre, el
+  // mismo que usa una jornada creada a mano.
+  const sinProveedor = provider.findMatchingEvent(events,
+    { teamA: "whatever", teamB: "irrelevant", externalEventId: "2" }, "2026-07-17T00:00:00");
+  assert.equal(sinProveedor, null);
 });
 
 test("findMatchingEvent: fuzzy team-name fallback within date window", () => {

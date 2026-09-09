@@ -71,7 +71,7 @@ const roundOf = (matches, over = {}) => ({
   matches, ...over,
 });
 const asMatch = (fx, i = 0) => ({
-  id: "m_" + i, externalEventId: String(fx.id),
+  id: "m_" + i, externalEventId: String(fx.id), externalProvider: "sportmonks",
   teamA: (fx.participants[0] && fx.participants[0].name) || "",
   teamB: (fx.participants[1] && fx.participants[1].name) || "",
   externalHomeId: fx.participants[0] ? String(fx.participants[0].id) : null,
@@ -841,4 +841,228 @@ test("QA01 · el contrato sigue siendo provider-agnostic", () => {
     intHomeScore: "2", intAwayScore: "1", strTimestamp: "2026-08-01T02:00:00" });
   assert.deepEqual(sportsDataProvider.normalizeEvent(raw("FT"), "thesportsdb").regulationScore, { home: 2, away: 1 });
   assert.equal(sportsDataProvider.normalizeEvent(raw("PEN"), "thesportsdb").regulationScore, null);
+});
+
+// ==== QA Correction 02 — la identidad lleva proveedor =======================
+//
+// El contrato siempre dijo `provider + providerFixtureId`, y el sync usaba sólo
+// el id. Dos proveedores reparten el mismo número: en cuanto TheSportsDB y
+// Sportmonks conviven, un `123` de uno podía ACTUALIZAR el `123` del otro,
+// conservando el id interno del partido y con él los picks del partido
+// equivocado. Corrupción silenciosa, y de la peor: todo sigue pareciendo bien.
+
+const smFx = (id, over = {}) => ({
+  provider: "sportmonks", providerFixtureId: String(id), providerRoundId: null,
+  stageId: "sportmonks:stage:77478884", stageName: "Quarter-finals",
+  kickoffAt: "2025-11-27T02:00:00.000Z", leg: { number: 1, total: 2 }, status: "scheduled",
+  home: { id: "9001", name: "Sportmonks Local" }, away: { id: "9002", name: "Sportmonks Visita" }, ...over,
+});
+// La ronda 9 y no la 1: en un lote mixto (artificial — una quiniela usa un solo
+// proveedor por sync) la jornada 1 se la lleva quien llegue antes por kickoff, y
+// la regla de "una jornada existente con ese número siempre gana" taparía lo que
+// estas pruebas miden, que es la identidad.
+const tsdbFx = (id, over = {}) => ({
+  provider: "thesportsdb", providerFixtureId: String(id), providerRoundId: "9",
+  stageId: null, stageName: null,
+  kickoffAt: "2026-08-01T02:00:00.000Z", leg: null, status: "scheduled",
+  home: { id: "1", name: "TSDB Local" }, away: { id: "2", name: "TSDB Visita" }, ...over,
+});
+const roundCon = (matches, over = {}) => ({
+  id: "r_x", number: 1, published: false, resultsPublished: false, results: {},
+  deadline: "2026-08-01T00:00:00.000Z", provider: "thesportsdb", externalRoundId: "1",
+  matches, ...over,
+});
+const planCon = (args) => planCompetitionSync({ provider: "sportmonks", existingRounds: [], existingStaged: [], ...args });
+
+test("QA02 · 1 — Sportmonks 123 dos veces = el MISMO partido", () => {
+  const first = planCon({ fixtures: [smFx(123)] });
+  const stored = applyPlanToRounds([], first);
+  const second = planCompetitionSync({ provider: "sportmonks", existingRounds: stored, fixtures: [smFx(123)] });
+  assert.equal(second.newRounds.length, 0);
+  assert.equal(second.matchAdditions.length, 0);
+  assert.equal(second.matchUpdates.length, 0, "idempotente");
+});
+
+test("QA02 · 2 — TheSportsDB 123 y Sportmonks 123 son partidos DISTINTOS", () => {
+  const stored = [roundCon([{ id: "m_TSDB", externalEventId: "123", externalProvider: "thesportsdb",
+    teamA: "TSDB Local", teamB: "TSDB Visita", externalHomeId: "1", externalAwayId: "2",
+    kickoffAt: "2026-08-01T02:00:00.000Z" }])];
+  const r = planCompetitionSync({ provider: "sportmonks", existingRounds: stored, fixtures: [smFx(123)] });
+  assert.equal(r.matchUpdates.length, 0, "el partido de TheSportsDB no se toca");
+  assert.equal(stored[0].matches[0].teamA, "TSDB Local");
+  const nace = r.newRounds.length + r.matchAdditions.length;
+  assert.ok(nace >= 1, "el de Sportmonks entra como partido propio");
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.CROSS_PROVIDER_ID),
+    "y se avisa, porque vistos desde fuera se parecen");
+});
+
+test("QA02 · 3 — el mismo id de dos proveedores en un lote NO se deduplica entre sí", () => {
+  const r = planCon({ fixtures: [smFx(123), tsdbFx(123)] });
+  const ids = r.newRounds.flatMap((x) => x.matches.map((m) => `${m.externalProvider}|${m.externalEventId}`));
+  assert.equal(ids.length, 2, "dos partidos, no uno repetido");
+  assert.deepEqual(ids.sort(), ["sportmonks|123", "thesportsdb|123"]);
+  assert.ok(!r.diagnostics.some((d) => d.code === DIAGNOSTIC.DUPLICATE_FIXTURE_ID),
+    "no es un duplicado: son identidades distintas");
+});
+
+test("QA02 · 4 — un Sportmonks 123 en espera no lo actualiza un TheSportsDB 123", () => {
+  const staged = [{ providerFixtureId: "123", provider: "sportmonks", providerRoundId: null,
+    stageId: null, kickoffAt: null, home: null, away: null, leg: null, status: "scheduled" }];
+  const r = planCompetitionSync({ provider: "thesportsdb", existingRounds: [], existingStaged: staged,
+    fixtures: [tsdbFx(123)] });
+  assert.equal(r.stagedUpdates.length, 0, "el pendiente de Sportmonks no se toca");
+  assert.equal(r.promotedStagedIds.length, 0);
+  assert.equal(r.newRounds.length, 1, "el de TheSportsDB es su propio partido");
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.CROSS_PROVIDER_ID));
+});
+
+test("QA02 · 5 — una jornada con TheSportsDB 123 no la actualiza un Sportmonks 123", () => {
+  // La reproducción exacta del P1: antes, esto reescribía los equipos del
+  // partido de TheSportsDB conservando su id interno — y con él, sus picks.
+  const stored = [roundCon([{ id: "m_INTERNO", externalEventId: "123", externalProvider: "thesportsdb",
+    teamA: "Necaxa", teamB: "Atlante", externalHomeId: "1", externalAwayId: "2",
+    kickoffAt: "2026-08-01T02:00:00.000Z" }], { published: true, deadline: "2030-01-01T00:00:00.000Z" })];
+  const r = planCompetitionSync({ provider: "sportmonks", existingRounds: stored, fixtures: [smFx(123)] });
+  assert.ok(!r.matchUpdates.some((u) => u.matchId === "m_INTERNO"),
+    "el id interno del partido de TheSportsDB no puede aparecer en una actualización de Sportmonks");
+  assert.equal(stored[0].matches[0].teamA, "Necaxa", "sus equipos siguen siendo los suyos");
+});
+
+test("QA02 · 6 — misma jornada, mismo proveedor, mismo id -> actualización correcta", () => {
+  const stored = [roundCon([{ id: "m_SM", externalEventId: "123", externalProvider: "sportmonks",
+    teamA: "Por definir", teamB: "Por definir", externalHomeId: null, externalAwayId: null,
+    kickoffAt: "2025-11-27T02:00:00.000Z" }], { provider: "sportmonks", externalRoundId: null,
+    syncGroupKey: "stage:sportmonks:stage:77478884:leg:1" })];
+  const r = planCompetitionSync({ provider: "sportmonks", existingRounds: stored, fixtures: [smFx(123)] });
+  assert.equal(r.matchUpdates.length, 1);
+  assert.equal(r.matchUpdates[0].matchId, "m_SM");
+  assert.equal(r.matchUpdates[0].changes.teamA, "Sportmonks Local");
+});
+
+test("QA02 · 7 — un TBD de Sportmonks resuelto por su propia identidad conserva el partido y sus picks", () => {
+  const stored = [roundCon([{ id: "m_TBD", externalEventId: "19600020", externalProvider: "sportmonks",
+    teamA: "", teamB: "", externalHomeId: null, externalAwayId: null,
+    kickoffAt: "2025-12-04T02:00:00.000Z" }], { provider: "sportmonks", externalRoundId: null,
+    syncGroupKey: "stage:sportmonks:stage:77479071:leg:1", published: true, deadline: "2030-01-01T00:00:00.000Z" })];
+  const r = planCompetitionSync({ provider: "sportmonks", existingRounds: stored, fixtures: toSyncFixtures([D.sfResuelta]) });
+  assert.equal(r.newRounds.length, 0);
+  assert.equal(r.matchAdditions.length, 0);
+  assert.equal(r.matchUpdates.length, 1);
+  assert.equal(r.matchUpdates[0].matchId, "m_TBD", "el mismo partido, así que el pick sigue apuntando a él");
+  assert.equal(r.matchUpdates[0].changes.teamA, "Club A");
+});
+
+test("QA02 · 8 — un partido heredado sin proveedor se atribuye por la jornada que lo importó", () => {
+  // Vínculo persistido e inequívoco: el sync que creó la jornada dejó su propio
+  // nombre en ella. No es una heurística, es un dato que ya estaba guardado.
+  const stored = [roundCon([{ id: "m_LEGACY", externalEventId: "123",
+    teamA: "Por definir", teamB: "Por definir", kickoffAt: "2026-08-01T02:00:00.000Z" }])];
+  const r = planCompetitionSync({ provider: "thesportsdb", existingRounds: stored, fixtures: [tsdbFx(123)] });
+  assert.equal(r.matchUpdates.length, 1, "se reconoce como el mismo partido");
+  assert.equal(r.matchUpdates[0].matchId, "m_LEGACY");
+  assert.equal(r.matchUpdates[0].changes.externalProvider, "thesportsdb",
+    "y GANA su proveedor, para que la identidad sobreviva a una recarga");
+  assert.ok(!r.diagnostics.some((d) => d.code === DIAGNOSTIC.UNATTRIBUTABLE_FIXTURE));
+});
+
+test("QA02 · 9 — un partido heredado sin proveedor demostrable NO se actualiza por el id", () => {
+  // Ni el partido ni su jornada dicen de dónde vino. Adivinarlo por coincidencia
+  // de número es exactamente lo que corrompe.
+  const stored = [roundCon([{ id: "m_HUERFANO", externalEventId: "123",
+    teamA: "Necaxa", teamB: "Atlante", kickoffAt: "2026-08-01T02:00:00.000Z" }], { provider: undefined })];
+  const r = planCompetitionSync({ provider: "thesportsdb", existingRounds: stored, fixtures: [tsdbFx(123)] });
+  assert.ok(!r.matchUpdates.some((u) => u.matchId === "m_HUERFANO"), "no se toca");
+  assert.equal(stored[0].matches[0].teamA, "Necaxa", "ni se fusiona, ni se borra, ni se sobreescribe");
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.UNATTRIBUTABLE_FIXTURE), "se reporta");
+});
+
+test("QA02 · 10 — diez reintentos, cero duplicados", () => {
+  const fixtures = [smFx(123), smFx(456, { kickoffAt: "2025-11-28T02:00:00.000Z" }), tsdbFx(123)];
+  let rounds = applyPlanToRounds([], planCon({ fixtures }));
+  const huella = () => rounds.flatMap((r) => r.matches.map((m) => `${m.externalProvider}|${m.externalEventId}`)).sort().join(",");
+  const inicial = huella();
+  for (let i = 0; i < 10; i++) {
+    rounds = applyPlanToRounds(rounds, planCompetitionSync({ provider: "sportmonks", existingRounds: rounds, fixtures }));
+  }
+  assert.equal(huella(), inicial, "diez veces y el mismo estado");
+  const ids = rounds.flatMap((r) => r.matches.map((m) => `${m.externalProvider}|${m.externalEventId}`));
+  assert.equal(new Set(ids).size, ids.length, "ninguna identidad repetida");
+  assert.equal(ids.length, 3);
+});
+
+test("QA02 · 11 — dos planificaciones concurrentes proponen exactamente lo mismo", () => {
+  const fixtures = [smFx(123), tsdbFx(123)];
+  const a = planCon({ fixtures });
+  const b = planCon({ fixtures });
+  assert.equal(JSON.stringify(a.newRounds), JSON.stringify(b.newRounds));
+});
+
+test("QA02 · 12 — la identidad sobrevive a una recarga: va persistida en el partido", () => {
+  const r = planCon({ fixtures: [smFx(123)] });
+  const m = r.newRounds[0].matches[0];
+  assert.equal(m.externalProvider, "sportmonks", "el proveedor se guarda JUNTO al id externo");
+  assert.equal(m.externalEventId, "123");
+  // Y lo mismo para lo que queda en espera.
+  const s = planCompetitionSync({ provider: "sportmonks", existingRounds: [],
+    fixtures: [smFx(789, { stageId: null, providerRoundId: null })] });
+  assert.equal(s.stagedFixtures[0].provider, "sportmonks");
+  // Un round-trip por JSON —que es lo que hace la base— no pierde nada.
+  const revivido = JSON.parse(JSON.stringify(r.newRounds[0]));
+  const otra = planCompetitionSync({ provider: "sportmonks",
+    existingRounds: [{ ...revivido, id: "r_revivido", matches: revivido.matches.map((x, i) => ({ id: "m_" + i, ...x })) }],
+    fixtures: [smFx(123)] });
+  assert.equal(otra.matchUpdates.length, 0, "tras recargar sigue siendo el mismo partido");
+  assert.equal(otra.newRounds.length, 0);
+});
+
+test("QA02 · 13 — TheSportsDB sigue funcionando igual", () => {
+  const r = planCompetitionSync({ provider: "thesportsdb", existingRounds: [], fixtures: [tsdbFx(1), tsdbFx(2)] });
+  assert.equal(r.newRounds.length, 1);
+  assert.equal(r.newRounds[0].externalRoundId, "9");
+  assert.equal(r.newRounds[0].matches.length, 2);
+  assert.ok(r.newRounds[0].matches.every((m) => m.externalProvider === "thesportsdb"));
+});
+
+test("QA02 · 14 — Sportmonks sigue funcionando igual", () => {
+  const r = plan([D.playIn, D.qfIda, D.qfVuelta, D.finalPen]);
+  assert.equal(r.newRounds.length, 4);
+  assert.ok(r.newRounds.every((x) => x.matches.every((m) => m.externalProvider === "sportmonks")));
+  assert.equal(r.stagedFixtures.length, 0);
+});
+
+test("QA02 · 15 — FT / AET / FT_PEN siguen puntuando por los 90 minutos", () => {
+  assert.deepEqual(reg(D.regular(1, 19500001, "2025-07-11 02:00:00")), { home: 2, away: 1 });
+  assert.deepEqual(reg(D.finalAet), { home: 1, away: 1 });
+  assert.deepEqual(reg(D.finalPen), { home: 1, away: 1 });
+  assert.equal(outcome(D.finalPen), "D");
+});
+
+test("QA02 · 16 — el camino de resultados también exige la identidad completa", () => {
+  const src = stripComments(serverSrc);
+  assert.ok(src.includes("const matchProvider = match.externalProvider || round.provider || null;"),
+    "el proveedor del partido se resuelve antes de buscar su evento");
+  assert.ok(src.includes("findMatchingEvent(events, match, round.deadline, matchProvider)"));
+  const sdp = stripComments(fs.readFileSync(path.join(__dirname, "..", "sportsDataProvider.js"), "utf8"));
+  assert.ok(sdp.includes('e.externalEventId === String(match.externalEventId) && e.provider === resolvedProvider'),
+    "un evento de un proveedor no puede contestar por el partido de otro");
+});
+
+test("QA02 · la clave de identidad es inyectiva, o no hay clave", () => {
+  // Un nombre de proveedor con el separador dentro rompería la inyectividad y
+  // dos partidos distintos podrían colisionar. Ante eso, no hay identidad.
+  const r = planCompetitionSync({ provider: "mal|formado", existingRounds: [],
+    fixtures: [{ ...smFx(123), provider: "mal|formado" }] });
+  assert.equal(r.newRounds.length, 0);
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.MISSING_FIXTURE_ID));
+});
+
+test("QA02 · un fixture sin proveedor hereda el del sync, y sin ninguno falla cerrado", () => {
+  const conHerencia = planCompetitionSync({ provider: "sportmonks", existingRounds: [],
+    fixtures: [{ ...smFx(123), provider: null }] });
+  assert.equal(conHerencia.newRounds[0].matches[0].externalProvider, "sportmonks",
+    "un lote siempre viene de una importación concreta");
+  const sinNada = planCompetitionSync({ provider: null, existingRounds: [],
+    fixtures: [{ ...smFx(123), provider: null }] });
+  assert.equal(sinNada.newRounds.length, 0);
+  assert.ok(sinNada.diagnostics.some((d) => d.code === DIAGNOSTIC.MISSING_FIXTURE_ID));
 });

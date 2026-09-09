@@ -2964,7 +2964,12 @@ function buildRoundSuggestions(round, events) {
   // sepa que existen en vez de verlos simplemente ausentes.
   const unscorable = [];
   for (const match of round.matches || []) {
-    const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline);
+    // QA Correction 02: la identidad de un partido es `provider + id`. El
+    // proveedor sale del partido, y si es heredado, de la jornada que lo
+    // importó. Sin él no hay camino rápido por id — que es justo lo que impide
+    // que un evento de un proveedor conteste por el partido de otro.
+    const matchProvider = match.externalProvider || round.provider || null;
+    const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline, matchProvider);
     if (!hit) continue;
     const [home, away] = hit.participants;
     const straight = sportsDataProvider._teamsMatch(match.teamA, home.name);
