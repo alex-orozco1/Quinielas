@@ -1043,8 +1043,11 @@ test("QA02 · 16 — el camino de resultados también exige la identidad complet
     "el proveedor del partido se resuelve antes de buscar su evento");
   assert.ok(src.includes("findMatchingEvent(events, match, round.deadline, matchProvider)"));
   const sdp = stripComments(fs.readFileSync(path.join(__dirname, "..", "sportsDataProvider.js"), "utf8"));
-  assert.ok(sdp.includes('e.externalEventId === String(match.externalEventId) && e.provider === resolvedProvider'),
+  // QA Correction 03 lo endureció: ya no es sólo que el camino rápido compare el
+  // proveedor, es que una identidad completa NO tiene otro camino.
+  assert.ok(sdp.includes("e.externalEventId === identity.externalId && e.provider === identity.provider"),
     "un evento de un proveedor no puede contestar por el partido de otro");
+  assert.ok(sdp.includes("if (identity.state === MATCH_IDENTITY.AMBIGUOUS) return null;"));
 });
 
 test("QA02 · la clave de identidad es inyectiva, o no hay clave", () => {
@@ -1065,4 +1068,357 @@ test("QA02 · un fixture sin proveedor hereda el del sync, y sin ninguno falla c
     fixtures: [{ ...smFx(123), provider: null }] });
   assert.equal(sinNada.newRounds.length, 0);
   assert.ok(sinNada.diagnostics.some((d) => d.code === DIAGNOSTIC.MISSING_FIXTURE_ID));
+});
+
+// ==== QA Correction 03 · identidad estricta de resultados ===================
+//
+// El P1 del ticket: `findMatchingEvent` caía a emparejamiento difuso DESPUÉS de
+// fallar el camino exacto, así que un partido con identidad completa podía
+// recibir el resultado del fixture de OTRO proveedor sólo porque los nombres se
+// parecían. Un fallo exacto significa "no está en el lote", no "busca algo
+// parecido".
+//
+// Y el P1 que apareció auditando el arreglo: la orientación local/visitante
+// —que decide si un partido con ganador es "A" o "B", es decir quién cobra—
+// salía de UNA comparación difusa de nombres. Ahí "no casó" y "casó al revés"
+// producían exactamente el mismo valor.
+
+const evOf = (over = {}) => ({
+  provider: "sportmonks", externalEventId: "777", status: "finished",
+  dateTime: "2025-11-27T02:00:00.000Z",
+  participants: [
+    { role: "home", externalId: "9001", name: "Sportmonks Local" },
+    { role: "away", externalId: "9002", name: "Sportmonks Visita" },
+  ],
+  score: { home: 2, away: 1 }, regulationScore: { home: 2, away: 1 },
+  scoreReasons: [], providerStatus: "FT", ...over,
+});
+const mOf = (over = {}) => ({
+  id: "m_0", externalEventId: "777", externalProvider: "sportmonks",
+  teamA: "Sportmonks Local", teamB: "Sportmonks Visita",
+  externalHomeId: "9001", externalAwayId: "9002", ...over,
+});
+const find = (events, match, prov) =>
+  sportsDataProvider.findMatchingEvent(events, match, "2025-11-27T02:00:00.000Z", prov);
+const orient = (match, ev) => sportsDataProvider.resolveOrientation(match, ev.participants[0], ev.participants[1]);
+
+// ---- los tres estados de identidad ----------------------------------------
+
+test("QA03 · 1 — COMPLETA: el evento del proveedor equivocado NO contesta", () => {
+  // EL P1, reproducido: mismos equipos, misma fecha, mismo número de fixture,
+  // otro proveedor. Antes el camino difuso lo daba por bueno.
+  const ajeno = evOf({ provider: "thesportsdb" });
+  assert.equal(find([ajeno], mOf(), "sportmonks"), null);
+});
+
+test("QA03 · 2 — COMPLETA: un id que no está en el lote NO cae a difuso", () => {
+  const otro = evOf({ externalEventId: "888" });
+  assert.equal(find([otro], mOf(), "sportmonks"), null,
+    "fallar el camino exacto significa 'no está', no 'busca algo parecido'");
+});
+
+test("QA03 · 3 — COMPLETA: la identidad exacta sí contesta", () => {
+  const hit = find([evOf()], mOf(), "sportmonks");
+  assert.ok(hit);
+  assert.equal(hit.externalEventId, "777");
+});
+
+test("QA03 · 4 — COMPLETA: el proveedor sale del partido antes que el de la jornada", () => {
+  const id = sportsDataProvider.classifyMatchIdentity(
+    { externalEventId: "777", externalProvider: "sportmonks" }, "thesportsdb");
+  assert.equal(id.state, sportsDataProvider.MATCH_IDENTITY.COMPLETE);
+  assert.equal(id.provider, "sportmonks", "lo que el partido persiste manda sobre el respaldo");
+});
+
+test("QA03 · 5 — COMPLETA: un partido heredado se completa con el proveedor de SU jornada", () => {
+  const heredado = mOf({ externalProvider: undefined });
+  assert.ok(find([evOf()], heredado, "sportmonks"), "la jornada demuestra de dónde vino");
+});
+
+test("QA03 · 6 — AMBIGUA: con id externo y sin proveedor demostrable no hay resultado", () => {
+  const huerfano = mOf({ externalProvider: null });
+  assert.equal(find([evOf()], huerfano, null), null);
+  const id = sportsDataProvider.classifyMatchIdentity(huerfano, null);
+  assert.equal(id.state, sportsDataProvider.MATCH_IDENTITY.AMBIGUOUS);
+});
+
+test("QA03 · 7 — AMBIGUA no degrada a MANUAL aunque los nombres casen perfecto", () => {
+  // Es la trampa del estado intermedio: tener id externo YA demuestra que no es
+  // un partido manual, así que precisamente ahí no hay autoridad para adivinar.
+  const huerfano = mOf({ externalProvider: null });
+  assert.equal(find([evOf()], huerfano, null), null);
+});
+
+test("QA03 · 8 — MANUAL: sin id externo el emparejamiento difuso sigue permitido", () => {
+  const manual = { id: "m_9", teamA: "Sportmonks Local", teamB: "Sportmonks Visita" };
+  const hit = find([evOf()], manual, "sportmonks");
+  assert.ok(hit, "una jornada creada a mano nunca tuvo id: es el único caso legítimo");
+});
+
+test("QA03 · 9 — MANUAL: cadena vacía cuenta como ausencia, no como id", () => {
+  for (const vacio of ["", null, undefined]) {
+    const id = sportsDataProvider.classifyMatchIdentity({ externalEventId: vacio }, "sportmonks");
+    assert.equal(id.state, sportsDataProvider.MATCH_IDENTITY.MANUAL, JSON.stringify(vacio));
+  }
+});
+
+test("QA03 · 10 — MANUAL: el difuso exige los DOS equipos, no uno", () => {
+  const manual = { id: "m_9", teamA: "Sportmonks Local", teamB: "Nadie De Nada" };
+  assert.equal(find([evOf()], manual, "sportmonks"), null);
+});
+
+test("QA03 · 11 — el id numérico y el id cadena son la misma identidad", () => {
+  assert.ok(find([evOf()], mOf({ externalEventId: 777 }), "sportmonks"),
+    "el proveedor manda números y lo guardado es cadena: coaccionar aquí es obligatorio");
+});
+
+// ---- orientación: quién jugó de local -------------------------------------
+
+test("QA03 · 12 — ORIENTACIÓN: los ids de equipo mandan sobre los nombres", () => {
+  // El proveedor renombró a los dos equipos. Con identidad dura da igual.
+  const ev = evOf({ participants: [
+    { role: "home", externalId: "9001", name: "Renombrado Uno" },
+    { role: "away", externalId: "9002", name: "Renombrado Dos" }] });
+  assert.equal(orient(mOf(), ev), true);
+});
+
+test("QA03 · 13 — ORIENTACIÓN: si el proveedor invierte la localía, se invierte el 1X2", () => {
+  const ev = evOf({ participants: [
+    { role: "home", externalId: "9002", name: "Sportmonks Visita" },
+    { role: "away", externalId: "9001", name: "Sportmonks Local" }] });
+  assert.equal(orient(mOf(), ev), false, "el equipo que guardamos como local ahora visita");
+  assert.equal(outcomeFromRegulation({ home: 2, away: 1 }, orient(mOf(), ev)), "B");
+});
+
+test("QA03 · 14 — ORIENTACIÓN: falso NEGATIVO de nombres ya no invierte el resultado", () => {
+  // El P1 de orientación, reproducido. El Admin escribió el apodo; el proveedor
+  // usa el nombre. Antes: teamsMatch false -> straight false -> local ganador
+  // sugerido como visitante ganador.
+  assert.equal(sportsDataProvider._teamsMatch("La Máquina", "Cruz Azul"), false,
+    "la premisa del fallo: la comparación difusa NO casa");
+  const manual = { id: "m_9", teamA: "La Máquina", teamB: "Sportmonks Visita" };
+  assert.equal(orient(manual, evOf()), null, "no se puede demostrar: no se orienta");
+  assert.equal(outcomeFromRegulation({ home: 2, away: 1 }, orient(manual, evOf())), null);
+});
+
+test("QA03 · 15 — ORIENTACIÓN: falso POSITIVO de subcadena tampoco invierte", () => {
+  assert.equal(sportsDataProvider._teamsMatch("Atlético San Luis", "San Luis"), true,
+    "la premisa del fallo: una subcadena casa con un equipo que NO es");
+  const manual = { id: "m_9", teamA: "Atlético San Luis", teamB: "San Luis" };
+  const ev = evOf({ participants: [
+    { role: "home", externalId: null, name: "San Luis" },
+    { role: "away", externalId: null, name: "Atlético San Luis" }] });
+  assert.equal(orient(manual, ev), null, "las cuatro comparaciones se contradicen: falla cerrado");
+});
+
+test("QA03 · 16 — ORIENTACIÓN: mismo id de fixture con OTRO par de equipos no se orienta", () => {
+  const ev = evOf({ participants: [
+    { role: "home", externalId: "9001", name: "Sportmonks Local" },
+    { role: "away", externalId: "7777", name: "Otro Equipo" }] });
+  assert.equal(orient(mOf(), ev), null);
+});
+
+test("QA03 · 17 — ORIENTACIÓN: sin ids, el difuso coherente sigue orientando", () => {
+  const manual = { id: "m_9", teamA: "Sportmonks Local", teamB: "Sportmonks Visita" };
+  assert.equal(orient(manual, evOf()), true);
+  const alReves = { id: "m_9", teamA: "Sportmonks Visita", teamB: "Sportmonks Local" };
+  assert.equal(orient(alReves, evOf()), false);
+});
+
+test("QA03 · 18 — ORIENTACIÓN: un evento sin participantes no revienta ni orienta", () => {
+  assert.equal(sportsDataProvider.resolveOrientation(mOf(), null, null), null);
+  assert.equal(sportsDataProvider.resolveOrientation(mOf(), undefined, undefined), null);
+});
+
+test("QA03 · 19 — ORIENTACIÓN desconocida no puntúa NI SIQUIERA el empate", () => {
+  // Un empate es simétrico, pero si no se pudo demostrar la orientación tampoco
+  // está demostrado que este marcador sea el de estos dos equipos.
+  assert.equal(outcomeFromRegulation({ home: 1, away: 1 }, null), null);
+  assert.equal(outcomeFromRegulation({ home: 1, away: 1 }, undefined), null);
+  assert.equal(outcomeFromRegulation({ home: 1, away: 1 }, "true"), null, "una cadena no es una prueba");
+  assert.equal(outcomeFromRegulation({ home: 1, away: 1 }, 1), null);
+  assert.equal(outcomeFromRegulation({ home: 1, away: 1 }, true), "D", "con prueba, sí");
+});
+
+// ---- el camino vivo: lo que hace server.js ---------------------------------
+
+test("QA03 · 20 — la ruta de resultados usa la orientación demostrada, no el difuso", () => {
+  const src = stripComments(serverSrc);
+  assert.ok(src.includes("sportsDataProvider.resolveOrientation(match, home, away)"));
+  assert.ok(!src.includes("_teamsMatch(match.teamA, home.name)"),
+    "la comparación difusa suelta era el fallo: no puede quedar ninguna");
+  assert.ok(src.includes('reason: straight === null'),
+    "no orientar y no tener marcador son dos motivos distintos para el Admin");
+  assert.ok(src.includes('"orientation_not_proven"'));
+});
+
+test("QA03 · 21 — el Admin ve por qué no se sugirió, no un hueco", () => {
+  assert.ok(indexSrc.includes("orientation_not_proven:"),
+    "un motivo sin copy dice 'no pudimos confirmar' genérico; éste merece el suyo");
+  assert.ok(/orientation_not_proven:\s*"[^"]*local[^"]*"/.test(indexSrc));
+});
+
+test("QA03 · 22 — un evento malformado no tumba el autocompletado de la jornada", () => {
+  const manual = { id: "m_9", teamA: "Sportmonks Local", teamB: "Sportmonks Visita" };
+  const sucio = [null, { status: "finished", score: { home: 1, away: 0 } },
+    { status: "finished", score: { home: 1, away: 0 }, participants: [null, null] }, evOf()];
+  const hit = find(sucio, manual, "sportmonks");
+  assert.ok(hit, "los eventos rotos se saltan; el bueno sigue encontrándose");
+  assert.equal(find(null, manual, "sportmonks"), null);
+});
+
+// ---- barrido: importar -> persistir -> recargar -> sync -> resultado -------
+
+test("QA03 · 23 — BARRIDO: la identidad sobrevive entera al viaje completo", () => {
+  // 1) importar
+  const importado = plan([D.qfIda]);
+  const jornada = importado.newRounds[0];
+  const partido = jornada.matches[0];
+  assert.equal(partido.externalProvider, "sportmonks");
+  assert.ok(partido.externalEventId);
+  assert.ok(partido.externalHomeId && partido.externalAwayId,
+    "los ids de equipo son la orientación: sin ellos el 1X2 vuelve a depender de nombres");
+
+  // 2) persistir + 3) recargar (el viaje por JSONB no inventa ni pierde nada)
+  const recargado = JSON.parse(JSON.stringify({ ...jornada, id: "r_1" }));
+  const recargadoMatch = { ...recargado.matches[0], id: "m_0" };
+
+  // 4) sync otra vez: idempotente, ni duplica ni propone cambios
+  const otraVez = plan([D.qfIda], { existingRounds: [{ ...recargado, id: "r_1",
+    matches: [recargadoMatch], syncGroupKey: jornada.syncGroupKey }] });
+  assert.equal(otraVez.newRounds.length, 0);
+  assert.equal(otraVez.matchUpdates.length, 0, "misma identidad, mismos datos: nada que escribir");
+
+  // 5) buscar resultado: por identidad completa, y sólo por ella
+  const ev = sportsDataProvider.fromDomainEvent(eventOf(D.qfIda), new Map());
+  const hit = find([ev], recargadoMatch, recargado.provider);
+  assert.ok(hit, "el partido recargado encuentra su propio evento");
+  assert.equal(find([{ ...ev, provider: "thesportsdb" }], recargadoMatch, recargado.provider), null,
+    "y NO encuentra el de otro proveedor");
+
+  // 6) orientar + 7) puntuar: por ids, nunca por nombres
+  const o = orient(recargadoMatch, hit);
+  assert.equal(o, true);
+  assert.equal(outcomeFromRegulation(hit.regulationScore, o),
+    outcomeFromRegulation(eventOf(D.qfIda).regulationScore, true),
+    "el 1X2 de después de recargar es el mismo que el de antes de guardar");
+});
+
+test("QA03 · 24 — BARRIDO: renombrar los equipos en el proveedor no cambia el ganador", () => {
+  const jornada = plan([D.qfIda]).newRounds[0];
+  const partido = { ...jornada.matches[0], id: "m_0" };
+  const ev = sportsDataProvider.fromDomainEvent(eventOf(D.qfIda), new Map());
+  const antes = outcomeFromRegulation(ev.regulationScore, orient(partido, ev));
+  const renombrado = { ...ev, participants: [
+    { ...ev.participants[0], name: "Nombre Nuevo Uno" },
+    { ...ev.participants[1], name: "Nombre Nuevo Dos" }] };
+  const despues = outcomeFromRegulation(renombrado.regulationScore, orient(partido, renombrado));
+  assert.ok(antes);
+  assert.equal(despues, antes, "los nombres son etiqueta; los ids son identidad");
+});
+
+// ---- el otro P1 del barrido: los equipos debajo de un pick congelado -------
+//
+// Encontrado auditando `publish -> scoring`. Un pick guardado es un LADO ("A" o
+// "B"), no un equipo. Si el proveedor invierte la localía después del cierre
+// —una vuelta de Liguilla, un cambio de sede— `teamA` y `teamB` se
+// intercambiaban y cada "A" pasaba a significar el equipo contrario. Sin
+// diagnóstico, sin error, y con dinero de por medio.
+
+const rq = (m, over = {}) => ({
+  id: "r1", number: 1, published: true, resultsPublished: false, results: {},
+  deadline: "2025-11-27T02:00:00.000Z", provider: "sportmonks",
+  syncGroupKey: "stage:sportmonks:stage:1:leg:1", matches: [m], ...over,
+});
+const qfx = (over = {}) => ({
+  provider: "sportmonks", providerFixtureId: "777", providerRoundId: null,
+  stageId: "sportmonks:stage:1", stageName: "QF", kickoffAt: "2025-11-27T02:00:00.000Z",
+  leg: { number: 1, total: 2 }, status: "scheduled",
+  home: { id: "9001", name: "Local" }, away: { id: "9002", name: "Visita" }, ...over,
+});
+const qm = (over = {}) => ({
+  id: "m0", externalEventId: "777", externalProvider: "sportmonks",
+  teamA: "Local", teamB: "Visita", externalHomeId: "9001", externalAwayId: "9002",
+  kickoffAt: "2025-11-27T02:00:00.000Z", ...over,
+});
+const invertido = qfx({ home: { id: "9002", name: "Visita" }, away: { id: "9001", name: "Local" } });
+const sync1 = (round, fx, now = "2025-12-01T00:00:00Z") => planCompetitionSync({
+  provider: "sportmonks", existingRounds: [round], fixtures: [fx], now: Date.parse(now),
+});
+
+test("QA03 · 25 — con los picks congelados, invertir la localía NO reescribe los equipos", () => {
+  const r = sync1(rq(qm()), invertido);
+  const changes = (r.matchUpdates[0] || {}).changes || {};
+  for (const f of ["teamA", "teamB", "externalHomeId", "externalAwayId"]) {
+    assert.ok(!(f in changes), `${f} no puede cambiar debajo de un pick ya echado`);
+  }
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.LOCKED_BY_RESULTS), "y se dice");
+});
+
+test("QA03 · 26 — con la votación ABIERTA, invertir la localía SÍ se aplica", () => {
+  // Aquí corregir el partido es información que el participante todavía puede
+  // usar. Congelarlo también sería un fallo, sólo que del otro signo.
+  const r = sync1(rq(qm()), invertido, "2025-11-01T00:00:00Z");
+  assert.equal(r.matchUpdates[0].changes.teamA, "Visita");
+  assert.equal(r.matchUpdates[0].changes.externalHomeId, "9002");
+  assert.equal(r.diagnostics.length, 0);
+});
+
+test("QA03 · 27 — enterarse de quién juega un TBD sí se permite tras el cierre", () => {
+  // Es asignación, no reasignación: quien apostó por "A" apostó por quien
+  // acabara en A. Bloquear esto dejaría la semifinal en "Por definir" para
+  // siempre — el mismo fallo silencioso con el signo cambiado.
+  const tbd = qm({ teamA: "Por definir", teamB: "Por definir", externalHomeId: null, externalAwayId: null });
+  const r = sync1(rq(tbd), qfx());
+  assert.equal(r.matchUpdates[0].changes.teamA, "Local");
+  assert.equal(r.matchUpdates[0].changes.externalHomeId, "9001");
+  assert.equal(r.diagnostics.length, 0);
+});
+
+test("QA03 · 28 — con resultados publicados no se toca NI para rellenar", () => {
+  const tbd = qm({ teamA: "Por definir", teamB: "Por definir", externalHomeId: null, externalAwayId: null });
+  const r = sync1(rq(tbd, { resultsPublished: true }), qfx());
+  assert.equal(r.matchUpdates.length, 0, "esa jornada ya es historia de puntuación");
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.LOCKED_BY_RESULTS));
+});
+
+test("QA03 · 29 — un partido heredado sin ids: la transposición exacta también se frena", () => {
+  const legacy = qm({ externalHomeId: undefined, externalAwayId: undefined });
+  delete legacy.externalHomeId; delete legacy.externalAwayId;
+  const r = sync1(rq(legacy), invertido);
+  const changes = (r.matchUpdates[0] || {}).changes || {};
+  assert.ok(!("teamA" in changes), "el par propuesto es el guardado al revés: es una inversión");
+  assert.ok(r.diagnostics.some((d) => d.code === DIAGNOSTIC.LOCKED_BY_RESULTS));
+});
+
+test("QA03 · 30 — pero un simple renombrado sí pasa", () => {
+  const legacy = qm({ externalHomeId: undefined, externalAwayId: undefined });
+  delete legacy.externalHomeId; delete legacy.externalAwayId;
+  const r = sync1(rq(legacy), qfx({ home: { id: null, name: "Local FC" }, away: { id: null, name: "Visita" } }));
+  assert.equal(r.matchUpdates[0].changes.teamA, "Local FC", "cambiar la etiqueta no cambia el lado");
+  assert.equal(r.diagnostics.length, 0);
+});
+
+test("QA03 · 31 — el candado es de EQUIPOS: el horario sigue actualizándose", () => {
+  const r = sync1(rq(qm()), qfx({ kickoffAt: "2025-11-27T03:00:00.000Z" }));
+  assert.equal(r.matchUpdates[0].changes.kickoffAt, "2025-11-27T03:00:00.000Z");
+});
+
+test("QA03 · 32 — una jornada NO publicada nunca congela nada", () => {
+  // Sin publicar no hay picks que proteger: es una jornada en preparación.
+  const r = sync1(rq(qm(), { published: false }), invertido);
+  assert.equal(r.matchUpdates[0].changes.externalHomeId, "9002");
+  assert.equal(r.diagnostics.length, 0);
+});
+
+test("QA03 · 33 — el proveedor persistido en el partido gana al de la jornada", () => {
+  // Al revés reabría por detrás el cruce de proveedores de QA Correction 02: la
+  // jornada es una señal más débil que lo que el propio partido guardó.
+  const id = sportsDataProvider.classifyMatchIdentity(
+    { externalEventId: "777", externalProvider: "sportmonks" }, "thesportsdb");
+  assert.equal(id.provider, "sportmonks");
+  const lote = [evOf()];
+  assert.equal(find(lote, mOf(), "thesportsdb"), lote[0],
+    "el respaldo no puede cambiar a qué proveedor pertenece un partido");
+  assert.equal(find(lote, mOf(), "sportmonks"), lote[0]);
 });

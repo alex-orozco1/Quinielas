@@ -266,6 +266,46 @@ function matchFromFixture(fx) {
   };
 }
 
+const TEAM_IDENTITY_FIELDS = Object.freeze(["teamA", "teamB", "externalHomeId", "externalAwayId"]);
+
+// ¿Este cambio de equipos REESCRIBE lo que significaban los pronósticos ya
+// echados, o sólo RELLENA lo que no se sabía? (QA Correction 03)
+//
+// Un pick guardado es "A" o "B": un LADO, no un equipo. Mientras el lado no
+// cambie de dueño, el pick sigue significando lo mismo.
+//
+//   asignar     — el partido no tenía equipos conocidos (una semifinal "Por
+//                 definir") y ahora sí. Quien apostó por "A" apostó por quien
+//                 acabara en A: enterarse de quién es no le cambia la apuesta.
+//   reasignar   — el lado A ya tenía dueño y ahora tiene otro. Es el caso real
+//                 de una vuelta de Liguilla o un cambio de sede: `teamA` y
+//                 `teamB` se intercambian, y cada "A" guardado pasa a apuntar
+//                 al equipo contrario sin que nadie vea nada raro.
+//
+// Se decide por los ids del proveedor, que es identidad de verdad. Cuando no
+// hay ids en lo guardado —partidos heredados— queda una última comprobación:
+// si el par propuesto es el par guardado TRANSPUESTO, es una inversión. Es
+// igualdad exacta de cadenas, no emparejamiento por nombre: no deduce identidad,
+// sólo se niega a aplicar algo que se ve exactamente como una inversión.
+function rewritesPickMeaning(before, proposed) {
+  const s = (v) => (v == null || v === "" ? null : String(v));
+  const wasHome = s(before.externalHomeId);
+  const wasAway = s(before.externalAwayId);
+  const nowHome = s(proposed.externalHomeId);
+  const nowAway = s(proposed.externalAwayId);
+
+  if (wasHome && nowHome && wasHome !== nowHome) return true;
+  if (wasAway && nowAway && wasAway !== nowAway) return true;
+  if (wasHome || wasAway) return false;   // el lado que ya tenía dueño lo conserva
+
+  const wasA = s(before.teamA);
+  const wasB = s(before.teamB);
+  const nowA = s(proposed.teamA);
+  const nowB = s(proposed.teamB);
+  if (wasA && wasB && nowA && nowB && wasA === nowB && wasB === nowA) return true;
+  return false;
+}
+
 // ---- el planificador -------------------------------------------------------
 
 function planCompetitionSync({ existingRounds, existingStaged, fixtures, events, provider, now } = {}) {
@@ -396,17 +436,34 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
       }
       if (Object.keys(changes).length === 0) continue;   // idempotente: nada que hacer
 
-      // Una jornada con resultados publicados es historia de puntuación. El
-      // proveedor puede seguir corrigiendo nombres o fechas, pero cambiar los
-      // equipos debajo de un resultado ya publicado reescribiría el sentido de
-      // los picks que ya se puntuaron. Se reporta y no se aplica.
-      if (inRound.round && inRound.round.resultsPublished) {
-        const teamChange = ["teamA", "teamB", "externalHomeId", "externalAwayId"].some((f) => f in changes);
-        if (teamChange) {
-          note(DIAGNOSTIC.LOCKED_BY_RESULTS, id, inRound.round.number);
-          for (const f of ["teamA", "teamB", "externalHomeId", "externalAwayId"]) delete changes[f];
-          if (Object.keys(changes).length === 0) continue;
-        }
+      // Los equipos de un partido se congelan en cuanto los pronósticos dejan de
+      // poder cambiar. Son dos momentos, y los dos importan:
+      //
+      //   resultsPublished — la jornada ya es historia de puntuación. Cambiar
+      //                      los equipos debajo de un resultado publicado
+      //                      reescribe el sentido de picks YA puntuados.
+      //   cierre pasado    — QA Correction 03. Los picks están echados y ya no
+      //                      se pueden corregir, pero todavía no se puntúan. Si
+      //                      el proveedor invierte la localía —cosa que pasa de
+      //                      verdad en una vuelta de Liguilla o con un cambio de
+      //                      sede—, `teamA` y `teamB` se intercambian y cada "A"
+      //                      guardado pasa a significar el OTRO equipo. Nadie ve
+      //                      nada raro: se paga al equivocado.
+      //
+      // Con la votación abierta sí se aplica, y debe aplicarse: ahí corregir el
+      // partido es información que el participante todavía puede usar.
+      const roundDl = kickoffMs(inRound.round && inRound.round.deadline);
+      const scored = !!(inRound.round && inRound.round.resultsPublished);
+      const picksFrozen = scored ||
+        !!(inRound.round && inRound.round.published && roundDl != null && roundDl <= nowMs);
+      const teamChange = TEAM_IDENTITY_FIELDS.some((f) => f in changes);
+      // Con resultados publicados la jornada es historia y no se toca nada de los
+      // equipos, ni siquiera para rellenar. Con los picks congelados pero sin
+      // puntuar, se permite ENTERARSE de quién juega y se prohíbe CAMBIARLO.
+      if (teamChange && picksFrozen && (scored || rewritesPickMeaning(inRound.match, proposed))) {
+        note(DIAGNOSTIC.LOCKED_BY_RESULTS, id, inRound.round.number);
+        for (const f of TEAM_IDENTITY_FIELDS) delete changes[f];
+        if (Object.keys(changes).length === 0) continue;
       }
       // El deadline de la jornada es de QRACKS: el Admin pudo fijarlo, y moverlo
       // solo abriría o cerraría votaciones sin que nadie lo pidiera. Si el
@@ -445,7 +502,7 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
       if ("providerRoundId" in changes && inStaged.providerRoundId == null) {
         note(DIAGNOSTIC.STAGED_GAINED_ROUND, id, changes.providerRoundId);
       }
-      candidates.push({ fixture: merged, fromStagedId: id, stagedChanges: changes });
+      candidates.push({ fixture: merged, fromStagedId: key, stagedChanges: changes });
       continue;
     }
 
@@ -477,7 +534,10 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
     }
     // No se pudo colocar: se conserva. Si venía de staging, sólo se actualiza.
     if (c.fromStagedId && c.stagedChanges && Object.keys(c.stagedChanges).length) {
-      stagedUpdates.push({ providerFixtureId: c.fromStagedId, changes: c.stagedChanges });
+      stagedUpdates.push({
+        providerFixtureId: fx.providerFixtureId, provider: fx.provider,
+        identityKey: c.fromStagedId, changes: c.stagedChanges,
+      });
     } else if (!c.fromStagedId) {
       newStaged.push(fx);
     }
@@ -572,6 +632,11 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
 
     // Jornada nueva. Se parte en ventanas temporales: el mismo stage y leg
     // jugados con una semana de diferencia son dos jornadas, no una.
+    //
+    // El índice va por REFERENCIA al objeto fixture, no por `providerFixtureId`:
+    // dos proveedores pueden traer el mismo número en la misma clave de grupo, y
+    // buscar por número promovería el fixture equivocado desde staging.
+    const candByFixture = new Map(sinDueño.map((c) => [c.fixture, c]));
     for (const cluster of splitIntoClusters(sinDueño.map((c) => c.fixture))) {
       const providerRoundId = cluster[0].providerRoundId;
       const isNumeric = providerRoundId != null && /^[0-9]+$/.test(providerRoundId);
@@ -605,7 +670,7 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
         phaseLabel: cluster[0].stageName || null,
       });
       for (const fx of cluster) {
-        const c = sinDueño.find((x) => x.fixture.providerFixtureId === fx.providerFixtureId);
+        const c = candByFixture.get(fx);
         if (c && c.fromStagedId) promotedStagedIds.push(c.fromStagedId);
       }
     }
@@ -646,6 +711,7 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
 
 module.exports = {
   planCompetitionSync,
+  identityKey,
   fromProviderEvent,
   fromDomainEvent,
   compareFixtures,

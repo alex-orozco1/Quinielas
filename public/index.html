@@ -6032,6 +6032,10 @@
     duplicate_conflict: "El marcador llegó incompleto — mejor captúralo tú.",
     incomplete_phase: "El marcador llegó incompleto — mejor captúralo tú.",
     no_score_records: "Todavía no hay marcador para este partido.",
+    // QA-03: se encontró el partido y hay marcador, pero no se pudo demostrar
+    // cuál de los dos equipos jugó de local. Sugerir sin eso es sugerir el
+    // ganador al azar, así que se pide captura manual.
+    orientation_not_proven: "No pudimos confirmar quién jugó de local — captúralo tú.",
   };
   function unscorableCopy(reason){
     return UNSCORABLE_COPY[reason] || "No pudimos confirmar el resultado a los 90 minutos — captúralo tú.";

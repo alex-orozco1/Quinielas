@@ -36,7 +36,7 @@ const {
   storedRoundsRevision, resolveRoundsWrite, stampRoundsRevision,
 } = require("./roundsConcurrency");
 const tournamentScope = require("./tournamentScope");
-const { planCompetitionSync } = require("./competitionSync");
+const { planCompetitionSync, identityKey } = require("./competitionSync");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
 
@@ -2971,8 +2971,19 @@ function buildRoundSuggestions(round, events) {
     const matchProvider = match.externalProvider || round.provider || null;
     const hit = sportsDataProvider.findMatchingEvent(events, match, round.deadline, matchProvider);
     if (!hit) continue;
-    const [home, away] = hit.participants;
-    const straight = sportsDataProvider._teamsMatch(match.teamA, home.name);
+    // Un evento sin los dos participantes no puede orientarse, y desestructurar
+    // a ciegas tiraba la ruta entera —y con ella el autocompletado de los demás
+    // partidos de la jornada— por un solo payload raro.
+    const parts = Array.isArray(hit.participants) ? hit.participants : [];
+    const [home, away] = parts;
+    // QA Correction 03. Quién jugó de local decide si un partido con ganador se
+    // sugiere como "A" o como "B" — es decir, decide quién cobra. Sale de los
+    // ids de equipo del proveedor cuando existen, y sólo de los nombres cuando
+    // no hay otra cosa; si no se puede demostrar, no se sugiere nada. Antes era
+    // UNA comparación difusa de nombres cuyo "no casó" significaba lo mismo que
+    // "casó al revés", así que un nombre distinto invertía el resultado en
+    // silencio.
+    const straight = sportsDataProvider.resolveOrientation(match, home, away);
     // DATA-004C. El 1X2 sale EXCLUSIVAMENTE del marcador de tiempo
     // reglamentario, y de ninguna otra cosa. Antes salía de hit.score sin
     // mirar el estado, así que un partido terminado en prórroga o penales
@@ -2986,7 +2997,12 @@ function buildRoundSuggestions(round, events) {
       unscorable.push({
         matchId: match.id,
         externalEventId: hit.externalEventId,
-        reason: (hit.scoreReasons && hit.scoreReasons[0]) || "regulation_not_proven",
+        // La orientación se reporta aparte del marcador: "no sé quién jugó de
+        // local" y "el proveedor no dio marcador reglamentario" son dos motivos
+        // distintos y llevan al Admin a mirar cosas distintas.
+        reason: straight === null
+          ? "orientation_not_proven"
+          : (hit.scoreReasons && hit.scoreReasons[0]) || "regulation_not_proven",
         providerStatus: hit.providerStatus || null,
       });
       continue;
@@ -3364,7 +3380,16 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       for (const add of matchAdditions) {
         const round = roundById.get(add.roundId);
         if (!round || !Array.isArray(round.matches)) continue;
-        if (round.matches.some((m) => m && String(m.externalEventId) === String(add.match.externalEventId))) continue;
+        // QA Correction 03. Por IDENTIDAD COMPLETA, no por id a secas. Con el id
+        // solo, un partido de Sportmonks con el mismo número que uno de
+        // TheSportsDB ya presente en la jornada se descartaba aquí — en
+        // silencio, y sin quedar en ninguna otra parte. La identidad es
+        // `provider + id` también para decidir si algo ya está.
+        const addKey = identityKey(add.match.externalProvider, add.match.externalEventId);
+        // Sin `addKey` NO se deduplica: `null === null` habría hecho que
+        // cualquier partido sin identidad demostrable ya presente se tragara la
+        // adición, y el partido desaparecería sin quedar en ninguna otra parte.
+        if (addKey && round.matches.some((m) => m && identityKey(m.externalProvider || round.provider, m.externalEventId) === addKey)) continue;
         round.matches.push({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...add.match });
         addedMatches += 1;
       }
@@ -3380,16 +3405,27 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     let stagedUpdated = 0;
     if (plan.stagedFixtures.length || stagedUpdates.length || plan.promotedStagedIds.length || (meta.stagedFixtures || []).length) {
       const staged = Array.isArray(meta.stagedFixtures) ? [...meta.stagedFixtures] : [];
-      const byId = new Map(staged.map((f, i) => [f && f.providerFixtureId, i]));
+      // QA Correction 03: indexado por IDENTIDAD COMPLETA. Con el id a secas,
+      // un pendiente de Sportmonks con el mismo número que uno de TheSportsDB
+      // se perdía sin dejar rastro.
+      const byId = new Map();
+      staged.forEach((f, i) => {
+        // Los pendientes sin identidad completa NO entran al índice: una clave
+        // nula agruparía a todos bajo la misma entrada y una actualización
+        // acabaría escrita sobre el fixture equivocado.
+        const k = identityKey(f && f.provider, f && f.providerFixtureId);
+        if (k && !byId.has(k)) byId.set(k, i);
+      });
       for (const upd of stagedUpdates) {
-        const at = byId.get(upd.providerFixtureId);
-        if (at == null) continue;
+        const at = byId.get(upd.identityKey || identityKey(upd.provider, upd.providerFixtureId));
+        if (at == null) continue;   // nada que actualizar sin identidad demostrable
         staged[at] = { ...staged[at], ...upd.changes };
         stagedUpdated += 1;
       }
       for (const fx of plan.stagedFixtures) {
-        if (byId.has(fx.providerFixtureId)) continue;   // idempotente por identidad
-        byId.set(fx.providerFixtureId, staged.length);
+        const key = identityKey(fx.provider, fx.providerFixtureId);
+        if (!key || byId.has(key)) continue;   // idempotente por identidad completa
+        byId.set(key, staged.length);
         staged.push(fx);
         stagedCreated += 1;
       }
@@ -3397,11 +3433,19 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
       // staging: sería la misma identidad en dos sitios, y el que quedara
       // huérfano no se actualizaría nunca más. `promotedStagedIds` son los que
       // acaban de colocarse en una jornada en ESTE mismo sync.
-      const inRounds = new Set(plan.promotedStagedIds.map(String));
+      const inRounds = new Set(plan.promotedStagedIds.filter(Boolean).map(String));
       for (const r of (meta.rounds || [])) {
-        for (const m of (r && r.matches) || []) if (m && m.externalEventId != null) inRounds.add(String(m.externalEventId));
+        for (const m of (r && r.matches) || []) {
+          const k = identityKey(m && (m.externalProvider || r.provider), m && m.externalEventId);
+          if (k) inRounds.add(k);
+        }
       }
-      const deduped = staged.filter((f) => f && !inRounds.has(String(f.providerFixtureId)));
+      const deduped = staged.filter((f) => {
+        const k = identityKey(f && f.provider, f && f.providerFixtureId);
+        // Un pendiente sin identidad completa se conserva: no se puede
+        // demostrar que sea el mismo que ninguno del tablero.
+        return !k || !inRounds.has(k);
+      });
       const stagedDropped = staged.length - deduped.length;
       if (stagedCreated || stagedUpdated || stagedDropped) {
         meta.stagedFixtures = deduped;

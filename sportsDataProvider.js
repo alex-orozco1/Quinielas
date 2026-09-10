@@ -269,12 +269,17 @@ async function getLiveEvents({ provider, externalLeagueId }) {
 
 // ---- Matching: normalized provider events <-> QRACKS's own round.matches --
 //
-// Preserves the exact matching behavior that existed before DATA-001
-// (fuzzy team-name comparison within a date window around the round
-// deadline), but now prefers a stable externalEventId when the match
-// already has one stored (see DATA-001 §8/§12: additive only, never
-// required — a manually-created match without externalEventId keeps
-// working exactly as before, forever).
+// OJO al historial, porque la regla cambió y el comentario que decía lo
+// contrario es justo lo que hace que un fallo así vuelva:
+//
+//   DATA-001         — emparejamiento difuso por nombres dentro de una ventana
+//                      de fechas alrededor del cierre de la jornada.
+//   DATA-001 §8/§12  — se PREFIERE el `externalEventId` cuando el partido ya lo
+//                      tiene guardado, con el difuso de respaldo.
+//   QA Correction 03 — ya no se "prefiere": con identidad demostrable NO HAY
+//                      respaldo. El difuso sobrevive únicamente para los
+//                      partidos que nunca tuvieron id externo, que son los
+//                      creados a mano. Ver los tres estados más abajo.
 
 const TEAM_ALIASES = {
   "América": "CF America",
@@ -301,37 +306,142 @@ function teamsMatch(ourName, providerName) {
   return a === b || a.includes(b) || b.includes(a);
 }
 
+// ---- Orientación: cuál de los dos equipos del tablero jugó de local --------
+//
+// QA Correction 03. De esto depende, literalmente, quién cobra: el 1X2 de un
+// partido con ganador es "A" o "B" según qué lado del marcador de regulación
+// corresponde a `teamA`. Equivocarse aquí no produce un error visible — produce
+// una sugerencia perfectamente plausible con el ganador invertido.
+//
+// Hasta ahora la orientación salía de UNA comparación difusa de nombres
+// (`teamsMatch(match.teamA, home.name)`), y esa función es deliberadamente
+// laxa: normaliza acentos, borra "FC"/"CD"/"Club"/"de" y acepta que un nombre
+// sea SUBCADENA del otro. Eso falla en las dos direcciones, y las dos invierten
+// el resultado:
+//
+//   falso negativo  — el Admin escribió "La Máquina" y el proveedor dice
+//                     "Cruz Azul": no casan, `straight` queda en false y el
+//                     local ganador se sugiere como visitante ganador.
+//   falso positivo  — "Atlético San Luis" contiene "San Luis": casa con un
+//                     equipo que NO es, y orienta al revés.
+//
+// La corrección tiene dos partes. Primero, cuando existe identidad dura —los
+// ids de equipo del proveedor, que Competition Sync ya persiste en el partido
+// como `externalHomeId`/`externalAwayId`— los nombres no se miran en absoluto.
+// Segundo, cuando NO existe (jornada manual o heredada), se exige señal
+// coherente en los DOS equipos y en los DOS lados; cualquier ambigüedad o
+// contradicción devuelve null, y null significa "no se sugiere nada". Falla
+// cerrado: el Admin captura ese partido a mano, que es infinitamente mejor que
+// pagarle al equipo equivocado.
+//
+// Devuelve true (teamA jugó de local), false (teamA jugó de visitante) o null
+// (no se pudo demostrar). NUNCA adivina.
+function resolveOrientation(match, home, away) {
+  const s = (v) => (v == null || v === "" ? null : String(v));
+
+  const ourHome = s(match && match.externalHomeId);
+  const ourAway = s(match && match.externalAwayId);
+  const evHome = s(home && home.externalId);
+  const evAway = s(away && away.externalId);
+
+  // Camino 1: identidad dura. Se exigen los cuatro ids y que el par de equipos
+  // sea EL MISMO par, en el orden que sea.
+  if (ourHome && ourAway && evHome && evAway && ourHome !== ourAway && evHome !== evAway) {
+    if (ourHome === evHome && ourAway === evAway) return true;
+    // El proveedor invirtió la localía respecto de lo que guardamos. Es un caso
+    // real —una vuelta de Liguilla, una sede que cambia— y aquí se trata como
+    // lo que es: el mismo partido con los lados al revés. `teamA` es el equipo
+    // que guardamos como local, así que ahora es el visitante.
+    if (ourHome === evAway && ourAway === evHome) return false;
+    // Mismo id de fixture, otro par de equipos. Eso no se orienta: o el
+    // proveedor reasignó el id, o el partido dejó de ser el que era.
+    return null;
+  }
+
+  // Camino 2: sólo nombres (partido manual, o heredado sin ids de equipo). La
+  // laxitud de teamsMatch se compensa exigiendo que las cuatro comparaciones
+  // cuenten la MISMA historia. Una sola contradicción y no hay orientación.
+  const aHome = teamsMatch(match && match.teamA, home && home.name);
+  const aAway = teamsMatch(match && match.teamA, away && away.name);
+  const bHome = teamsMatch(match && match.teamB, home && home.name);
+  const bAway = teamsMatch(match && match.teamB, away && away.name);
+
+  if (aHome && bAway && !aAway && !bHome) return true;
+  if (aAway && bHome && !aHome && !bAway) return false;
+  return null;
+}
+
 const MATCH_WINDOW_MS = 1000 * 60 * 60 * 24 * 20; // ~20 days, unchanged from pre-DATA-001 behavior
 
 // Returns a normalized event (see shape above) or null. `match` is a
 // QRACKS round.matches[] entry: { teamA, teamB, externalEventId? }.
+// ---- Los tres estados de identidad de un partido (QA Correction 03) --------
+//
+// Un partido del tablero está en uno de tres estados, y sólo uno de ellos
+// autoriza a buscar "algo parecido":
+//
+//   COMPLETA  — tiene id externo Y proveedor demostrable. Se busca por
+//               identidad exacta y NADA MÁS. Si ese fixture no está en el lote,
+//               la respuesta es "no encontré ese partido", que NO es lo mismo
+//               que "busca algo que se le parezca".
+//   AMBIGUA   — tiene id externo pero no se puede demostrar de qué proveedor.
+//               Tener un id externo ya demuestra que NO es un partido manual;
+//               si no sabemos de dónde vino, precisamente no tenemos autoridad
+//               para adivinar por nombre y fecha. Falla cerrado.
+//   MANUAL    — no tiene id externo. Es una jornada creada a mano, nunca tuvo
+//               identidad de proveedor, y el emparejamiento por equipos y fecha
+//               es el único que puede tener. Se conserva tal cual.
+//
+// El fallo que esto cierra: antes, un miss del camino exacto CAÍA al
+// emparejamiento por nombre, y ese bucle no miraba el proveedor. Un partido
+// importado de TheSportsDB podía recibir el resultado de un evento de
+// Sportmonks con los mismos equipos y fecha. La identidad `provider + id` se
+// rompía justo en el momento de repartir puntos.
+const MATCH_IDENTITY = Object.freeze({ COMPLETE: "complete", AMBIGUOUS: "ambiguous", MANUAL: "manual" });
+
+function classifyMatchIdentity(match, matchProvider) {
+  const externalId = match && match.externalEventId != null && match.externalEventId !== ""
+    ? String(match.externalEventId) : null;
+  if (!externalId) return { state: MATCH_IDENTITY.MANUAL, externalId: null, provider: null };
+  // El proveedor PERSISTIDO en el partido manda; el que pasa quien llama es el
+  // respaldo. Es la misma regla que Competition Sync ("el proveedor del propio
+  // fixture manda"), y el orden importa: `matchProvider` suele venir del
+  // proveedor de la JORNADA, que es una señal más débil —una jornada heredada
+  // pudo importarse con otro— y dejarla ganar reabriría por detrás justo el
+  // cruce de proveedores que QA Correction 02 cerró.
+  const provider = (match && match.externalProvider) || matchProvider || null;
+  if (!provider) return { state: MATCH_IDENTITY.AMBIGUOUS, externalId, provider: null };
+  return { state: MATCH_IDENTITY.COMPLETE, externalId, provider: String(provider) };
+}
+
 function findMatchingEvent(events, match, roundDeadlineIso, matchProvider) {
-  // Fast path: this match already has a stable external id — trust it directly,
-  // no fuzzy matching.
-  //
-  // QA Correction 02: el id SOLO no es identidad. Dos proveedores reparten el
-  // mismo número, así que un evento de Sportmonks podía casar con un partido
-  // importado de TheSportsDB y sugerir el resultado de OTRO partido. La
-  // identidad completa es `provider + id`, también aquí.
-  //
-  // `matchProvider` se resuelve fuera (el partido lo dice, o su jornada). Si no
-  // se puede demostrar, no hay camino rápido: se cae al emparejamiento por
-  // nombre y fecha, que es el mismo que usa una jornada creada a mano.
-  const resolvedProvider = matchProvider || match.externalProvider || null;
-  if (match.externalEventId && resolvedProvider) {
-    const direct = events.find((e) =>
-      e.externalEventId === String(match.externalEventId) && e.provider === resolvedProvider);
-    if (direct) return direct;
-    // Falls through to name-based matching if the id isn't in this batch —
-    // never a hard failure just because the id lookup missed.
+  const list = Array.isArray(events) ? events : [];
+  const identity = classifyMatchIdentity(match, matchProvider);
+
+  // IDENTIDAD COMPLETA -> exacto y sólo exacto.
+  if (identity.state === MATCH_IDENTITY.COMPLETE) {
+    return list.find((e) =>
+      e && e.externalEventId === identity.externalId && e.provider === identity.provider) || null;
   }
+
+  // IDENTIDAD AMBIGUA -> nada. No es manual, y no sabemos de quién es.
+  if (identity.state === MATCH_IDENTITY.AMBIGUOUS) return null;
+
+  // MANUAL -> el emparejamiento de siempre, por equipos y ventana de fechas.
 
   const targetTime = new Date(roundDeadlineIso).getTime();
   let best = null;
   let bestDiff = Infinity;
-  for (const ev of events) {
+  // Se itera `list`, no `events`: `events` puede no ser iterable, y un evento
+  // nulo o sin participantes tampoco puede tumbar la búsqueda de una jornada
+  // entera. Un evento malformado se salta; no emparejar es siempre preferible a
+  // reventar el autocompletado de los demás partidos.
+  for (const ev of list) {
+    if (!ev || typeof ev !== "object") continue;
     if (ev.status !== "finished" || !ev.score) continue; // only suggest finished results, same as before
+    if (!Array.isArray(ev.participants) || ev.participants.length < 2) continue;
     const [home, away] = ev.participants;
+    if (!home || !away) continue;
     const straight = teamsMatch(match.teamA, home.name) && teamsMatch(match.teamB, away.name);
     const swapped = teamsMatch(match.teamB, home.name) && teamsMatch(match.teamA, away.name);
     if (!straight && !swapped) continue;
@@ -347,12 +457,15 @@ function findMatchingEvent(events, match, roundDeadlineIso, matchProvider) {
 
 module.exports = {
   tsdbRegulationComplete,
+  MATCH_IDENTITY,
+  classifyMatchIdentity,
   normalizeProviderTimestamp,
   fromDomainEvent,
   getSportmonksSeasonEvents,
   getSeasonEvents,
   getLiveEvents,
   findMatchingEvent,
+  resolveOrientation,
   normalizeEvent,
   // exported for tests only
   _teamsMatch: teamsMatch,

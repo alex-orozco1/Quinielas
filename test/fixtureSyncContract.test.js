@@ -635,9 +635,18 @@ test("ADVERSARIAL: el cierre de torneo limpia el staging junto con el tablero", 
 
 test("ADVERSARIAL: un fixture que ya vive en una jornada no puede quedar además en staging", () => {
   const sync = stripComments(serverSrc.slice(serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"')));
-  assert.ok(sync.includes("const inRounds = new Set(plan.promotedStagedIds.map(String))"),
+  assert.ok(sync.includes("const inRounds = new Set(plan.promotedStagedIds.filter(Boolean).map(String))"),
     "la misma identidad en dos sitios dejaría uno huérfano para siempre; los recién promovidos cuentan igual");
-  assert.ok(sync.includes("!inRounds.has(String(f.providerFixtureId))"));
+  // QA-03: la comparación es por identidad COMPLETA (proveedor + id). Comparar
+  // sólo el id borraría de staging el fixture de OTRO proveedor que casualmente
+  // comparte número con uno del tablero.
+  assert.ok(sync.includes("identityKey(m && (m.externalProvider || r.provider), m && m.externalEventId)"),
+    "el lado del tablero aporta proveedor: el del partido, o el de su jornada");
+  assert.ok(sync.includes("identityKey(f && f.provider, f && f.providerFixtureId)"));
+  assert.ok(sync.includes("return !k || !inRounds.has(k);"),
+    "un pendiente sin identidad demostrable se conserva, no se borra");
+  assert.ok(!/inRounds\.has\(String\(f\.providerFixtureId\)\)/.test(sync),
+    "no puede quedar ninguna comparación por id pelado");
 });
 
 test("ADVERSARIAL: un fixture que estaba en espera se PROMUEVE a jornada cuando ya se puede colocar", () => {
@@ -650,7 +659,9 @@ test("ADVERSARIAL: un fixture que estaba en espera se PROMUEVE a jornada cuando 
     events: [ev({ id: "fxT", round: "18", at: "2026-12-01T02:00:00Z" })] });
   assert.equal(r.newRounds.length, 1, "ya se puede colocar, así que se coloca");
   assert.equal(r.newRounds[0].number, 18);
-  assert.deepEqual(r.promotedStagedIds, ["fxT"], "y deja de estar en espera");
+  // QA-03: lo promovido se identifica por proveedor + id. El id pelado no
+  // distingue a dos proveedores que compartan número.
+  assert.deepEqual(r.promotedStagedIds, ["thesportsdb|fxT"], "y deja de estar en espera");
   assert.equal(r.stagedFixtures.length, 0);
 });
 

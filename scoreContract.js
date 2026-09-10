@@ -233,7 +233,16 @@ function buildScoreContract({ lines, regulationComplete } = {}) {
 //
 // Sin marcador de regulación no hay resultado: null, nunca un valor por
 // defecto. Fail closed.
+//
+// QA Correction 03: `homeIsTeamA` tiene TRES estados, no dos. Antes cualquier
+// cosa que no fuera exactamente `false` se trataba como "teamA jugó de local",
+// así que un null —"no se pudo demostrar quién jugó de local"— se convertía en
+// una afirmación, y encima en la afirmación optimista. Ahora sólo `true` y
+// `false` deciden; todo lo demás no puntúa. Un empate tampoco se salva por ser
+// simétrico: si no se pudo demostrar la orientación, tampoco está demostrado
+// que este marcador sea el de estos dos equipos.
 function outcomeFromRegulation(regulation, homeIsTeamA) {
+  if (homeIsTeamA !== true && homeIsTeamA !== false) return null;
   if (!regulation || !isGoals(regulation.home) || !isGoals(regulation.away)) return null;
   if (regulation.home === regulation.away) return "D";
   const homeWon = regulation.home > regulation.away;
