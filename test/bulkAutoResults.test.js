@@ -86,7 +86,13 @@ test("7/22. provider failure in the bulk endpoint never writes to meta.rounds (r
 
 test("9. results are never auto-published — the bulk endpoint response shape only contains suggestions, never a publish action", () => {
   const body = extractRouteHandler(serverSrc, 'app.get("/api/quinielas/:slug/sports-results"');
-  assert.ok(body.includes("res.json({ ok: true, reliabilityState: null, results });"), "success response must only return suggestions grouped by round, nothing else");
+  // DATA-004C añadió `unscorable` (los partidos encontrados cuyo 1X2
+  // reglamentario no se pudo determinar). Es aditivo y de sólo lectura: la
+  // afirmación que importa —que la respuesta no publica nada— se comprueba
+  // ahora explícitamente, en vez de por la forma literal del objeto.
+  assert.ok(body.includes("res.json({ ok: true, reliabilityState: null, results, unscorable });"), "success response must only return suggestions and diagnostics grouped by round");
+  assert.ok(!/resultsPublished\s*=\s*true/.test(body), "the bulk endpoint must never publish results");
+  assert.ok(!/putRow\(/.test(body), "the bulk endpoint must never write anything");
 });
 
 test("10. the single-round endpoint (individual search fallback) is still present and unchanged in shape", () => {

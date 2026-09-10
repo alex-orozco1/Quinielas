@@ -316,10 +316,29 @@ test("KNOWN DEBT 1 (incremental sync): a second sync bringing a NEW event under 
   assert.equal(second.skippedEvents, 0, "and it is not even counted as skipped -- fully silent");
 });
 
-test("KNOWN DEBT 3: deduplication is keyed only by externalRoundId, which is NOT a unique round identity", () => {
+// DATA-004C PAGÓ ESTA DEUDA. La versión anterior de esta prueba fijaba la línea
+// culpable (`existingExternalRoundIds.has(ev.round)`) como deuda conocida. Ya no
+// existe: la identidad de sincronización es provider + providerFixtureId, que es
+// la única que sirve para un fixture de fase final, donde round_id llega null.
+test("DEUDA 3 SALDADA: la identidad de sincronización es el fixture, no la ronda", () => {
   const sync = fs.readFileSync(path.join(__dirname, "..", "competitionSync.js"), "utf8");
-  assert.ok(sync.includes("existingExternalRoundIds.has(ev.round)"),
-    "documents the exact line responsible; the domain layer above now provides the stable identity needed to fix it");
+  assert.ok(!sync.includes("existingExternalRoundIds"),
+    "la deduplicación por externalRoundId ya no puede existir: no hay clave para un fixture sin ronda");
+  assert.ok(sync.includes("knownInRounds"), "la identidad se indexa por fixture");
+  assert.ok(/externalEventId/.test(sync), "y esa identidad es el id del fixture del proveedor");
+
+  // Y la prueba que de verdad importa: mismo fixture, dos veces, cero duplicados
+  // — incluso cuando NO tiene ronda, que es donde antes no había clave ninguna.
+  const roundless = { provider: "thesportsdb", externalEventId: "fx-999", round: null,
+    dateTime: "2025-12-15T02:00:00Z",
+    participants: [{ role: "home", externalId: "h", name: "A" }, { role: "away", externalId: "a", name: "B" }] };
+  const first = planCompetitionSync({ existingRounds: [], events: [roundless], provider: "thesportsdb" });
+  assert.equal(first.stagedFixtures.length, 1);
+  const second = planCompetitionSync({
+    existingRounds: [], existingStaged: first.stagedFixtures, events: [roundless], provider: "thesportsdb",
+  });
+  assert.equal(second.stagedFixtures.length, 0, "resync del mismo fixture sin ronda no puede duplicarlo");
+  assert.equal(second.stagedUpdates.length, 0, "y sin cambios reales tampoco produce una actualización");
 });
 
 test("KNOWN DEBT 3: the reverted commit's duplicate-round.number defect is gone -- legacy path produces unique numbers", () => {

@@ -545,7 +545,13 @@ test("UX: every commercial rejection has copy of its own, and none of it suggest
 
 test("UX: a commercial refusal from the import flow is not dressed up as a provider outage", () => {
   const at = indexSrc.indexOf("const syncBtn = document.getElementById(\"qz-sync-competition\");");
-  const slice = indexSrc.slice(at, at + 2600);
+  // Ventana ampliada en DATA-004C: el bloque de éxito creció con el reporte de
+  // partidos actualizados, fixtures de fase final guardados y diagnósticos. Lo
+  // que se comprueba —que un 402 no se disfrace de caída del proveedor— es
+  // exactamente lo mismo.
+  // Ampliada de nuevo en DATA-004: el bloque de éxito ahora enumera motivos
+  // de revisión. La afirmación es la misma.
+  const slice = indexSrc.slice(at, at + 6000);
   assert.ok(slice.includes("res.status === 402"), "402 must be handled on its own");
   assert.ok(slice.includes("humanizeError(data.error)"), "with the commercial copy");
   const at402 = slice.indexOf("res.status === 402");

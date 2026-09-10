@@ -285,9 +285,31 @@ function normalizeLeg(leg) {
 // exactly the kind of externally-triggerable change in Sports Domain
 // semantics DATA-003 exists to prevent. Not a general/deep-freeze solution:
 // if a future provider nests data inside score, this must be revisited.
+// DATA-004C. Antes esto era un passthrough congelado: aceptaba {foo:1} y lo
+// guardaba como si fuera un marcador. El dominio no podía distinguir un
+// marcador real de un objeto cualquiera, y mucho menos distinguir el marcador
+// de regulación del final. Ahora un marcador es exactamente dos enteros no
+// negativos, o no es un marcador.
 function normalizeScore(score) {
   if (score == null || typeof score !== "object" || Array.isArray(score)) return null;
-  return Object.freeze({ ...score });
+  const { home, away } = score;
+  if (!Number.isSafeInteger(home) || !Number.isSafeInteger(away)) return null;
+  if (home < 0 || away < 0) return null;
+  return Object.freeze({ home, away });
+}
+
+// DATA-004C. Un fixture puede existir antes de que se sepa quién lo juega: es
+// lo normal en una fase final, donde el cruce se conoce después de que el
+// partido ya está en el calendario. Que eso sea un ESTADO explícito, y no la
+// ausencia de un campo, es lo que permite decidir sin adivinar — y lo que
+// impide que "todavía no se sabe" se confunda con "el proveedor no lo mandó".
+const TBD_STATES = Object.freeze(["resolved", "pending"]);
+function deriveTbdState(competitors) {
+  const list = Array.isArray(competitors) ? competitors : [];
+  const home = list.find((c) => c && c.role === "home");
+  const away = list.find((c) => c && c.role === "away");
+  const known = (c) => !!(c && c.providerCompetitorId);
+  return known(home) && known(away) ? "resolved" : "pending";
 }
 
 // ---- Event ----------------------------------------------------------------
@@ -302,6 +324,7 @@ function makeEvent({
   provider, providerEventId, instanceId, stageId,
   providerRoundId, leg, aggregateKey,
   startsAt, status, competitors, score, providerRaw,
+  regulationScore, penaltyScore, extraTimeScore, scoreReasons, providerStatusRaw,
 }) {
   if (!provider || !isUsableProviderId(providerEventId)) {
     throw new Error("makeEvent: provider and a usable providerEventId are required");
@@ -332,7 +355,36 @@ function makeEvent({
         .filter((c) => c && typeof c === "object")
         .map((c) => makeCompetitor(c))
     ),
+    // El marcador FINAL según el proveedor. Puede incluir prórroga: es dato de
+    // PANTALLA. Nunca alimenta el 1X2 — eso sólo sale de regulationScore.
     score: normalizeScore(score),
+    // DATA-004C. El marcador al terminar el tiempo reglamentario (90' + compensación).
+    // ES el único origen legítimo del 1X2 de QRACKS. null significa "no se
+    // pudo determinar sin ambigüedad", y aguas abajo significa "no sugieras
+    // resultado" — nunca un valor por defecto.
+    regulationScore: normalizeScore(regulationScore),
+    // Sólo para mostrar y auditar. Jamás entra en el 1X2.
+    penaltyScore: normalizeScore(penaltyScore),
+    extraTimeScore: normalizeScore(extraTimeScore),
+    // Por qué regulationScore quedó en null, cuando quedó. Lo que convierte un
+    // null mudo en un diagnóstico que alguien puede leer.
+    scoreReasons: Object.freeze(
+      (Array.isArray(scoreReasons) ? scoreReasons : []).filter((r) => typeof r === "string")
+    ),
+    // DATA-004C / DATA-004B §8. `status` es vocabulario cerrado de QRACKS y es
+    // correcto para el ciclo de vida, pero INSUFICIENTE para puntuar: colapsa
+    // FT, AET y FT_PEN en "finished" y borra justo la distinción que el
+    // marcador a 90' necesita. El código crudo del proveedor se conserva como
+    // campo de primera clase — no enterrado en providerRaw, que está declarado
+    // como sólo-auditoría — para que el contrato de score pueda leerlo.
+    providerStatusRaw: providerStatusRaw == null || providerStatusRaw === "" ? null : String(providerStatusRaw),
+    // "resolved" | "pending". Derivado de los competidores, nunca recibido: así
+    // no puede contradecirlos.
+    tbdState: deriveTbdState(
+      (Array.isArray(competitors) ? competitors : [])
+        .filter((c) => c && typeof c === "object")
+        .map((c) => makeCompetitor(c))
+    ),
     // Raw provider payload fragment, preserved for audit/debug ONLY.
     // Explicitly never read by product code -- that is the whole point of
     // this boundary. Shape-checked so a truthy non-object can't be spread
@@ -357,6 +409,8 @@ module.exports = {
   normalizeEventStatus,
   normalizeLeg,
   normalizeScore,
+  TBD_STATES,
+  deriveTbdState,
   COMPETITOR_ROLES,
   normalizeCompetitorRole,
 };

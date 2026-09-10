@@ -625,7 +625,10 @@ test("CASE Y: imported rounds carry competitionIdentity for auditability, but it
   // Window widened in MON-002B: the handler grew a fail-closed branch for a
   // per-slug quiniela with no platform_index entry, which pushed the round
   // stamping further down.
-  const body = serverSrc.slice(idx, idx + 8000);
+  // Ventana ampliada de nuevo en DATA-004C: el handler ganó el update path, el
+  // staging de fixtures sin ronda y los diagnósticos. Lo que se comprueba es
+  // idéntico, sólo está más abajo.
+  const body = serverSrc.slice(idx, idx + 12000);
   assert.ok(body.includes("competitionIdentity: requestedIdentity,"));
   // The enforcement path reads the ENTITLEMENT, never the round's own stamp.
   assert.ok(body.includes("evaluateCompetitionBinding(bindingEntry.entitlement"));

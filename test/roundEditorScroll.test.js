@@ -76,7 +76,9 @@ test("clicking \"Editar\" wires through openRoundEditor, and no client-side payw
 
 test("\"Editar\" remains unconditionally visible for every round -- imported/unpublished, published, and legacy alike", () => {
   const idx = indexSrc.indexOf('<div class="eyebrow">Jornadas existentes</div>');
-  const roundItemSrc = indexSrc.slice(idx, idx + 1200);
+  // Ventana ampliada en DATA-004: el ítem de jornada ganó la etiqueta de fase
+  // y el aviso de "pendiente de rival". Lo que se comprueba es idéntico.
+  const roundItemSrc = indexSrc.slice(idx, idx + 2400);
   assert.ok(roundItemSrc.includes('<button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>'), "Editar button markup must exist");
   // Confirm it's NOT wrapped in the same conditional that gates "Publicar jornada"
   // (isImportedUnpublished ? ... : ``) -- i.e. it must be unconditional.

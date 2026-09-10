@@ -84,14 +84,16 @@ test("RUNTIME URL: getSeasonWithStages issues include=stages -- proven from the 
   });
 });
 
-test("RUNTIME URL: getStageFixtures issues include=fixtures.participants", async () => {
+test("RUNTIME URL: getStageFixtures pide participantes, marcadores y estado", async () => {
   await withToken(async () => {
     const seen = [];
     await clientFor({ "/stages/": STAGE_ENVELOPE }, seen).getStageFixtures(77479151);
     const u = new URL(seen[0]);
     assert.equal(u.pathname, "/v3/football/stages/77479151");
     assert.equal(u.searchParams.get("include"), INCLUDE_STAGE_FIXTURES);
-    assert.equal(u.searchParams.get("include"), "fixtures.participants");
+    // DATA-004C: sin `scores` el payload llega sin marcadores y el 1X2 a 90'
+    // es imposible; sin `state` no se puede distinguir FT de AET/FT_PEN.
+    assert.equal(u.searchParams.get("include"), "fixtures.participants;fixtures.scores;fixtures.state");
   });
 });
 

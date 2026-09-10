@@ -96,7 +96,15 @@ function toEvents({ events, instances } = {}) {
     status: ev.status || "unknown",
     competitors: mapParticipants(ev),
     score: ev.score || null,
-    providerRaw: { round: ev.round ?? null },
+    // DATA-004C. El marcador de regulación viaja con el evento desde
+    // sportsDataProvider, que es donde se decide (TheSportsDB no publica
+    // marcadores por fase: sólo su estado dice si el partido terminó en los 90).
+    // Sin arrastrarlo aquí, esta ruta perdería en silencio la única señal con
+    // la que se puede puntuar — y lo haría el día que alguien la conecte.
+    regulationScore: ev.regulationScore || null,
+    scoreReasons: ev.scoreReasons || [],
+    providerStatusRaw: ev.providerStatus == null ? null : ev.providerStatus,
+    providerRaw: { round: ev.round ?? null, status: ev.providerStatus ?? null },
   }));
 }
 

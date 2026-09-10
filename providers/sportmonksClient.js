@@ -33,7 +33,13 @@ const REQUEST_TIMEOUT_MS = 8000;
 // The relations the Adapter needs. Named here so the Client and its tests
 // cannot drift apart silently, and so a change is one edit at the boundary.
 const INCLUDE_SEASON_STAGES = "stages";
-const INCLUDE_STAGE_FIXTURES = "fixtures.participants";
+// DATA-004C. Antes era sólo "fixtures.participants": el payload llegaba SIN
+// marcadores, así que el 1X2 a 90' era imposible aunque el adapter lo mapeara.
+// `scores` trae los registros por fase (el 2ND_HALF que ES el marcador
+// reglamentario) y `state` el código crudo que distingue FT de AET y FT_PEN —
+// los dos datos que el contrato de score necesita y que ninguno de los dos
+// existía en la petición.
+const INCLUDE_STAGE_FIXTURES = "fixtures.participants;fixtures.scores;fixtures.state";
 
 function getApiToken() {
   const token = process.env.SPORTMONKS_API_TOKEN;
