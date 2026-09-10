@@ -477,31 +477,42 @@ Where possible, every screen should make the next meaningful action obvious.
 
 QRACKS is not a sportsbook: it does not manage bets, hold prize money or distribute winnings. It is built for groups who already organize prediction pools themselves, and its job is to remove the operational work.
 
+When QRACKS charges, it charges for the software — never a cut of whatever the group plays for. Handling prize money is not part of the product today, and it is not what the Payments work in *What's next* refers to.
+
 **Less spreadsheet, less chasing people, less manual scoring — more playing.**
 
 ---
 
 ## Roadmap
 
-New ideas are prioritized against existing product stages rather than automatically becoming new initiatives.
+Where the product stands today. New ideas are prioritized against these stages rather than automatically becoming new initiatives; what comes next is in the section below.
 
 | Stage | Status | What it means |
 |---|---|---|
 | Core Product | ✅ Established | Create, join, predict, score, rank, administer |
 | Performance & Stability | ✅ Continuous | Payload optimization, connection pooling, concurrency safety |
-| Sports Data Reliability | 🔄 Implemented, evolving | Provider abstraction, competition sync, postseason support, fail-closed scoring |
-| Monetization Foundation | ✅ Implemented | Free/Plus plans, entitlements, server-side enforcement, tournament cycles |
+| Sports Data Reliability | ✅ Implemented | Provider abstraction, competition sync, postseason support, fail-closed scoring |
+| Monetization Foundation | ✅ Implemented | Plans, entitlements, server-side enforcement, tournament cycles — **not** payments |
 | Product Iteration | 🔄 Continuous | Removing friction from organizer and participant workflows, guided by real usage |
-| Payments | ⏭️ Next | Self-service checkout and renewal. Today Plus is activated manually by an operator. |
-| More competitions | 🔮 Future | Additional leagues, additional providers, and eventually sports beyond football |
+| Advanced features | ⏸️ On hold | Capabilities beyond today's core loop wait until it shows recurring usage. Unrelated to the Plus plan, which already works. |
 
-Sports beyond football — basketball, motorsport, combat sports and others — are architectural possibilities, not commitments. QRACKS will expand only where doing so preserves the simplicity of the core experience.
+---
+
+## What's next
+
+In order, and without dates:
+
+1. **Payments** — a real Plus checkout, confirmed server-side rather than trusted from the browser. It is the one part of Plus an organizer cannot do alone today.
+2. **Help** — today's per-screen tips become one help system, written once and used across the landing page, participant and administrator views.
+3. **Product iteration** — watch real pools, measure where people actually get stuck, and fix what the evidence shows rather than what seems likely.
+4. **Sports-data rollout** — turn the provider capabilities already built into a safe organizer experience, including choosing and migrating providers. The architecture is ready; the product experience is not.
+5. **More competitions and sports** — broaden coverage once the current flow is stable, and only where simplicity survives. Basketball, motorsport and the rest are possibilities, not commitments.
 
 ---
 
 ## Success criteria
 
-QRACKS is validating whether it can become the easiest way to organize a private sports prediction pool. The near-term signals are organizers creating a second pool, participants returning each matchday, and organizers willing to pay for the work QRACKS removes — not premature scale.
+The target is **100 active pools** — not for the number itself, but for what it proves: recurring use and willingness to pay. Organizers creating a second pool, participants returning each matchday, and organizers paying for the work QRACKS removes.
 
 **Done > Perfect.** Ship, observe, learn, improve.
 
