@@ -37,11 +37,10 @@ Originally built for Liga MX, QRACKS is evolving into a flexible multi-competiti
 3. Share the private invitation link.
 4. Participants join and create their PIN.
 5. Publish the next matchday when you're ready.
-6. Everyone submits their predictions before the deadline.
-7. Predictions lock automatically.
-8. Results are captured manually or through the sports data integration.
-9. QRACKS calculates scores and updates the standings.
-10. Continue through the competition and preserve the final tournament history.
+6. Everyone predicts before the deadline, and predictions lock automatically.
+7. Results are captured manually or through the sports data integration.
+8. QRACKS scores them and updates the standings.
+9. Continue through the competition and keep the final tournament history.
 
 ---
 
@@ -49,81 +48,131 @@ Originally built for Liga MX, QRACKS is evolving into a flexible multi-competiti
 
 ### 👥 Participants
 
-- Join from a shared invitation link
-- Secure personal PIN
-- Automatic prediction saving
-- Matchday countdown
-- Server-enforced deadlines
-- Live standings
-- Match history
-- Previous tournaments
-- Switch participants on shared devices
-- Mobile-first experience
+<table>
+<tr>
+<td width="50%">Join from a shared invitation link</td>
+<td width="50%">Live standings</td>
+</tr>
+<tr>
+<td>Personal PIN, securely hashed</td>
+<td>Matchday result history</td>
+</tr>
+<tr>
+<td>Predictions saved as you go</td>
+<td>Previous tournaments preserved</td>
+</tr>
+<tr>
+<td>Matchday countdown and deadline</td>
+<td>Switch user on a shared device</td>
+</tr>
+<tr>
+<td>Server-enforced prediction lock</td>
+<td>Mobile-first experience</td>
+</tr>
+</table>
 
 ### 🛠️ Pool administrators
 
-- Create and manage matchdays
-- Import competition calendars
-- Keep future matchdays prepared before publication
-- Publish matchdays individually
-- League-specific team selection
-- Edit imported or manually created fixtures
-- Deadline management
-- Submission tracking
-- WhatsApp reminder generation
-- Manual result capture
-- Automatic result suggestions
-- Bulk search for pending results
-- Publish results
-- Automatic leaderboard updates
-- Participant management
-- PIN reset
-- Tournament closing with historical standings
-
-### 📅 Competition management
-
-QRACKS manages matchdays through an explicit lifecycle:
-
-**Prepared → Published / Open → Closed → Results Published**
-
-Future matchdays can exist in the administrator panel without being exposed to participants until the organizer publishes them.
-
-Competition synchronization can import the available calendar and keep future rounds ready for the administrator, reducing repetitive manual setup.
-
-### 🤖 Sports data automation
-
-QRACKS integrates external sports data to reduce administrative work while preserving administrator control.
-
-Current automation includes:
-
-- Competition calendar synchronization
-- Matchday and fixture imports
-- Future-round preparation
-- Result lookup
-- Bulk lookup across pending matchdays
-- Eligibility checks before applying automatic results
-- Manual fallback when external data is unavailable
-- Competition synchronization diagnostics
-
-Automation assists the organizer without removing manual control.
+<table>
+<tr>
+<td width="50%">Create and manage matchdays</td>
+<td width="50%">Submission tracking</td>
+</tr>
+<tr>
+<td>Import the competition calendar</td>
+<td>WhatsApp reminder generation</td>
+</tr>
+<tr>
+<td>Prepare matchdays before publishing</td>
+<td>Manual result capture</td>
+</tr>
+<tr>
+<td>Publish matchdays individually</td>
+<td>Automatic result suggestions</td>
+</tr>
+<tr>
+<td>League-specific team selection</td>
+<td>Bulk lookup across pending matchdays</td>
+</tr>
+<tr>
+<td>Edit imported or manual fixtures</td>
+<td>Publish results and update standings</td>
+</tr>
+<tr>
+<td>Deadline management and reopening</td>
+<td>Participant management and PIN reset</td>
+</tr>
+<tr>
+<td>Synchronization diagnostics in plain language</td>
+<td>Close a tournament and start the next one</td>
+</tr>
+</table>
 
 ### 🏆 Standings & history
 
-- Automatic scoring
-- Updated leaderboard after results are published
-- Historical matchday results
-- Final tournament standings
-- Previous tournament history
-- Shareable standings
+<table>
+<tr>
+<td width="50%">Automatic scoring</td>
+<td width="50%">Full matchday result history</td>
+</tr>
+<tr>
+<td>Leaderboard updated when results publish</td>
+<td>Final standings per tournament</td>
+</tr>
+<tr>
+<td>Previous tournament archive</td>
+<td>Shareable standings image</td>
+</tr>
+</table>
 
 ### ⚙️ Platform administration
 
-- Platform administration dashboard
-- Pool management
-- Payment tracking
-- Exemption management
-- Global platform configuration
-- Legacy pool compatibility
+<table>
+<tr>
+<td width="50%">Dashboard across every pool</td>
+<td width="50%">Plan and price configuration</td>
+</tr>
+<tr>
+<td>Pool index and inspection</td>
+<td>Plus activation, recorded as a payment</td>
+</tr>
+<tr>
+<td>Entitlement grants and revocation</td>
+<td>Manual adjustments with an audit trail</td>
+</tr>
+<tr>
+<td>Payment ledger</td>
+<td>Sports-data health monitoring</td>
+</tr>
+<tr>
+<td>Product analytics</td>
+<td>Legacy pool migration</td>
+</tr>
+</table>
+
+---
+
+## Plans
+
+Every pool carries an **entitlement** — an explicit record of what it is allowed to do, who granted it, and when. Enforcement is server-side and fails closed: a missing or unreadable entitlement denies new capacity rather than allowing it.
+
+| | Free | Plus |
+|---|---|---|
+| Participants | 10 | 50 |
+| Matchdays published | 7 | 18, or the full tournament when a competition is selected |
+| Price | — | $199 MXN, one payment |
+| Scope | — | The one tournament cycle it was bought for |
+
+These are the **current configured values**, not constants. Limits and price live in a server-side commercial configuration that the platform operator edits from the admin panel, and every enforcement decision reads the live row.
+
+A few rules follow from that:
+
+- **Free always tracks the current configuration.** Raising the free participant limit applies to every existing free pool immediately.
+- **Plus is a frozen snapshot.** A pool that bought Plus keeps the numbers and price it was sold, even if the configuration changes later.
+- **Plus does not roll over.** When an organizer starts a new tournament, the pool returns to Free — a purchase belongs to the tournament it was bought for.
+- Pools that predate commercial enforcement are **grandfathered** and keep the experience they already had. Operators can also issue **manual grants** for support, testing, or promotions, with a reason the server requires and records. Unlike a purchase, both of these carry across tournament cycles — they are statuses somebody deliberately granted, not something bought for one tournament.
+
+**There is no automatic checkout yet.** Upgrading is a conversation: the paywall states the price and how to reach the organizers, and a platform operator activates Plus and records the payment in the same operation. The product does not pretend to charge a card it cannot charge.
 
 ---
 
@@ -141,25 +190,63 @@ CLOSED
 RESULTS PUBLISHED
 ```
 
-### Prepared
+**Prepared** — the matchday exists for the administrator, but participants cannot see or interact with it.
 
-The matchday exists and can be managed by the administrator, but participants cannot see or interact with it yet.
+**Published / Open** — participants can submit predictions until the configured deadline.
 
-### Published / Open
+**Closed** — the deadline has passed and predictions can no longer be modified.
 
-The administrator publishes the matchday and participants can submit predictions until the configured deadline.
+**Results Published** — results are final, points are calculated, and the leaderboard updates.
 
-### Closed
+A closed matchday can be reopened by the administrator with a new valid future deadline. This lifecycle keeps the same competition state consistent across matchdays, results, participation tracking, standings and participant flows.
 
-The deadline has passed and predictions can no longer be modified.
+---
 
-### Results Published
+## Tournament lifecycle
 
-Final results are published and QRACKS calculates the corresponding points and updates the leaderboard.
+A pool does not end when a tournament does. Closing a tournament preserves its final standings as history and starts a new cycle in the same pool, with the same participants and the same link.
 
-A closed matchday can also be reopened by the administrator with a new valid future deadline.
+The cycle identity is **assigned by the server**, never parsed from a provider label or inferred from a date. This matters for split-format leagues: two editions inside one provider season would otherwise be indistinguishable, and a single purchase would silently cover both. Instead, a new cycle is an explicit product event — the organizer starts it — and it is recorded with when it began, what it was called, and how it ended.
 
-This lifecycle keeps the same competition state consistent across **Jornadas, Resultados, Participación, standings and participant flows**.
+---
+
+## Sports data
+
+QRACKS separates **what a competition is** from **where the data came from**.
+
+Above the boundary, the product speaks one vocabulary: competitions, tournament instances, stages, events, competitors. Below it, each provider speaks its own, and an adapter translates. No provider field name appears in product code, every identifier is namespaced by provider, and unknown values stay `null` instead of being guessed.
+
+Providers **declare what they can do** rather than having it inferred — whether they model stages, two-legged ties, aggregates, an explicit finished signal, or several tournaments inside one season. Product code asks; it never assumes.
+
+| Provider | Role | Declared capabilities |
+|---|---|---|
+| TheSportsDB | Default for every pool, and the one behind the league picker | None — no stages, no legs, no finished signal |
+| Sportmonks | Fully implemented; opt-in per pool via configuration, not yet exposed in the organizer UI | Stages, legs, aggregates, finished signal, multi-tournament seasons |
+
+Automation covers calendar synchronization, fixture imports, future-round preparation, result lookup, bulk lookup across pending matchdays, eligibility checks before applying automatic results, and diagnostics when something cannot be placed automatically.
+
+**Manual capture is always available**, and automation never removes administrator control. When external data is unavailable, incomplete, or ambiguous, QRACKS says so and lets the organizer decide.
+
+### Beyond regular matchdays
+
+Competition synchronization does not assume a competition is a flat list of numbered matchdays. When a provider publishes later stages of the same tournament, the pool can continue into them without creating a second pool:
+
+- Postseason stages live in the **same tournament scope** as the regular phase — same pool, same participants, same commercial cycle.
+- Fixtures are grouped by **structural signals** — the provider's round when it exists, otherwise stage and leg — not by matchday number alone.
+- A fixture that arrives with **no round identifier at all** is still placed. Discarding it would silently delete an entire phase.
+- Fixtures too far apart in time to belong to the same matchday are **split into separate ones**, so one stage played over two weeks does not collapse into a single deadline.
+- **Two-legged ties** are modelled, and the leg number takes part in grouping, so the first and second leg of a tie become two matchdays rather than one. QRACKS scores each leg on its own — there is no aggregate result.
+- A fixture whose participants are **not decided yet** is kept aside and placed once the provider resolves it, rather than being dropped and re-imported.
+- A fixture's identity is **provider + provider fixture id**. Two providers reusing the same number are two different matches, never one.
+- Updates are **additive and safe**: a provider can correct names, kickoff times and undecided participants, but once predictions are locked it can no longer change which team is on which side of a match.
+
+None of this hardcodes a particular competition's shape. Liga MX's postseason is the case it was validated against, not the case it was written for.
+
+### Scoring
+
+Predictions are 1X2, and they resolve from the score **at the end of regulation time plus stoppage**. Extra time and penalty shootouts never change a 1X2 result: a final decided on penalties is a draw.
+
+If the provider does not clearly prove the regulation-time score — or does not prove which team played at home — QRACKS suggests **nothing** and asks the organizer to capture that match manually. A plausible wrong result is worse than no result.
 
 ---
 
@@ -167,18 +254,18 @@ This lifecycle keeps the same competition state consistent across **Jornadas, Re
 
 Prediction pools only work when participants trust the system.
 
-QRACKS includes safeguards designed to protect competition integrity:
-
-- PINs and administrator passwords are securely hashed
+- PINs and administrator passwords are hashed with scrypt
 - Predictions remain hidden from other participants
-- Administrators can verify whether someone submitted without exposing their predictions
+- Administrators can verify whether someone submitted without seeing what they submitted
 - Deadlines are enforced server-side
-- Future unpublished matchdays remain hidden from participant workflows
+- Unpublished matchdays remain hidden from participant workflows
 - Draft results remain private
 - Incomplete results cannot be published
 - Results cannot be published while a matchday is still open
 - Reopening a matchday requires a new valid deadline
 - PIN resets invalidate previous sessions
+- Concurrent administrator edits are detected rather than silently overwritten
+- A database hardening script (`docs/security/`) denies direct table access to non-service roles, applied as an operational step
 - Legacy pools remain compatible with the current lifecycle
 - QRACKS never holds or distributes prize money
 
@@ -186,7 +273,7 @@ QRACKS includes safeguards designed to protect competition integrity:
 
 ## Supported competitions
 
-Automatic competition support currently includes:
+The organizer's competition picker currently covers:
 
 - 🇲🇽 Liga MX
 - 🏴 Premier League
@@ -196,177 +283,11 @@ Automatic competition support currently includes:
 - 🇫🇷 Ligue 1
 - 🇪🇺 UEFA Champions League
 
-Teams, fixtures and results can also be managed manually when necessary.
+Liga MX additionally has a multi-tournament season configuration validated against real Sportmonks data — used when a pool is configured for that provider.
 
-**More leagues are coming.**
+Teams, fixtures and results can always be managed manually, for these competitions or any other.
 
-QRACKS is being built so additional competitions can be added without changing the core pool experience.
-
-The longer-term architecture is not restricted to football. Other competitions and sports can be incorporated as QRACKS expands its sports-data coverage.
-
----
-
-## What we've built
-
-QRACKS has evolved through more than **15 product and engineering sprints**, progressively turning a simple football pool into a reliable product.
-
-### Core Product
-
-The original QRACKS experience established the complete pool loop:
-
-- Pool creation
-- Private invitations
-- Participant registration
-- PIN authentication
-- Predictions
-- Matchday deadlines
-- Result capture
-- Automatic scoring
-- Standings
-- History
-- Administrator workflows
-
-### Product Experience
-
-QRACKS developed its own product identity and progressively simplified both organizer and participant workflows:
-
-- QRACKS visual identity
-- Responsive experience
-- Mobile-first improvements
-- Landing page evolution
-- Consistent navigation
-- Clear primary actions
-- Administrator UX improvements
-- Participant UX improvements
-- Better system feedback
-- Better loading and empty states
-- Sharing flows
-- Shareable standings
-
-### Administration
-
-The administrator experience has evolved from manually maintaining a pool toward managing the competition itself.
-
-Current capabilities include:
-
-- Matchday management
-- Prepared future matchdays
-- Explicit matchday publication
-- Fixture editing
-- Deadline management
-- Participation monitoring
-- Participant administration
-- PIN reset
-- Result management
-- Competition settings
-- Additional pool settings
-- Tournament closure
-
-Recent lifecycle work also ensures that prepared, unpublished matchdays remain available to administrators without incorrectly appearing as actionable matchdays in participant-facing or participation workflows.
-
-### Competition Automation
-
-Competition management now reduces much of the repetitive work required from organizers:
-
-- Competition selection
-- League-specific teams
-- Calendar synchronization
-- Automatic fixture imports
-- Prepared vs. published matchdays
-- Future-round synchronization
-- Automatic result lookup
-- Bulk pending-result lookup
-- Eligibility validation
-- Manual fallback
-- Synchronization diagnostics
-
-Administrators remain in control of when a matchday becomes part of the active pool.
-
-### Trust & Security
-
-Multiple iterations have focused specifically on protecting competition integrity:
-
-- Hidden participant predictions
-- Role-aware API payloads
-- Server-side deadline enforcement
-- Secure PIN/password handling
-- Administrator authentication
-- Database security hardening
-- Row-level security work
-- Safe result publication
-- Matchday lifecycle validation
-- Legacy compatibility
-
-### Performance
-
-Performance work has reduced unnecessary server and client processing as pools grow:
-
-- Role-specific payload optimization
-- Prediction filtering improvements
-- O(1) lookup maps for repeated operations
-- PostgreSQL connection pooling
-- Concurrent request handling improvements
-- Request deduplication
-- Faster leaderboard workflows
-- Faster administrator workflows
-
-### Platform & Growth
-
-QRACKS has also begun building the foundations required to operate as a real product:
-
-- Platform administration
-- Pool indexing
-- Legacy pool migration
-- Payment-status infrastructure
-- Exemption management
-- SEO foundations
-- Accessibility improvements
-- Growth measurement foundations
-- Product analytics foundations
-
----
-
-## Product principles
-
-QRACKS is built around a small set of principles:
-
-### Simplicity over complexity
-
-Running a pool should not require a manual, spreadsheet or complicated setup.
-
-### Trust above everything
-
-Predictions, deadlines, results and standings must always behave predictably.
-
-### Mobile first
-
-Most participants interact with QRACKS from their phones, often directly from a shared WhatsApp link.
-
-### Fast enough to disappear
-
-Performance should never become part of the experience.
-
-### Useful before impressive
-
-QRACKS prioritizes solving real organizer and participant problems over building features simply because they are technically interesting.
-
-### One clear action
-
-Where possible, every screen should make the next meaningful action obvious.
-
----
-
-## Product philosophy
-
-QRACKS is not a sportsbook.
-
-It does not manage bets, hold prize money or distribute winnings.
-
-It is a lightweight competition platform designed around friends, coworkers and communities who already organize prediction pools themselves.
-
-The product's job is to remove the operational work:
-
-**less spreadsheet, less chasing people, less manual scoring — more playing.**
+Adding a competition is intended to be configuration rather than a rewrite, and the architecture is not restricted to football — other sports become possible as sports-data coverage expands.
 
 ---
 
@@ -383,17 +304,20 @@ Participant / Admin
         ▼
  Node.js + Express
         │
-   ┌────┴─────┐
-   ▼          ▼
-PostgreSQL   Sports Data Provider
-                 │
-                 ▼
-           External Sports Data
+   ┌────┴───────────────────┐
+   ▼                        ▼
+PostgreSQL        Sports Data Domain
+                            │
+                   Provider Abstraction
+                            │
+                  ┌─────────┴─────────┐
+                  ▼                   ▼
+            TheSportsDB           Sportmonks
 ```
 
-The sports-data layer is separated from the core competition logic so provider changes or additional sports-data sources do not need to redefine how QRACKS itself works.
+The sports-data layer is separated from the core competition logic so that changing providers, or running two side by side, does not redefine how QRACKS itself works.
 
-Manual administration remains available as a fallback when external sports data is unavailable or incomplete.
+Manual administration remains available as a fallback whenever external data is unavailable or incomplete.
 
 ---
 
@@ -404,11 +328,9 @@ Manual administration remains available as a fallback when external sports data 
 | Frontend | HTML, CSS, Vanilla JavaScript |
 | Backend | Node.js + Express |
 | Database | PostgreSQL |
-| Sports Data | TheSportsDB + provider abstraction |
+| Sports Data | Provider abstraction — TheSportsDB (default), Sportmonks (opt-in) |
 | Deployment | Render |
 | Testing | Node Test Runner + browser/E2E validation |
-
-The architecture intentionally remains lightweight while QRACKS validates product-market fit.
 
 ---
 
@@ -416,23 +338,26 @@ The architecture intentionally remains lightweight while QRACKS validates produc
 
 ```text
 .
+├── docs/
+├── providers/           # one adapter per sports data provider
 ├── public/
-│   ├── favicon.svg
-│   ├── index.html
-│   ├── logo.svg
-│   └── og-image.png
-├── providers/
 ├── scripts/
 ├── test/
-├── autoResults.js
-├── competitionSync.js
-├── seasonDefaults.js
+├── competitionSync.js   # provider fixtures -> matchdays
+├── planLimits.js        # plans, entitlements, enforcement
+├── scoreContract.js     # regulation-time scoring
+├── sportsDomain.js      # the provider-agnostic vocabulary
 ├── sportsDataProvider.js
+├── tournamentScope.js   # tournament cycle identity
 ├── server.js
 ├── package.json
 ├── render.yaml
 └── README.md
 ```
+
+Abridged — several smaller modules (auto-result eligibility, participant
+merging, platform state, concurrency, provider health) live alongside these
+at the repository root.
 
 ---
 
@@ -483,189 +408,113 @@ http://localhost:3000
 
 QRACKS maintains automated regression coverage for critical product and competition behavior.
 
-Run the test suite with:
-
 ```bash
 node --test test/*.test.js
 ```
 
 Critical areas covered include:
 
-- Competition lifecycle
-- Matchday publication
-- Deadline enforcement
-- Prediction integrity
-- Result publication
-- Scoring
-- Competition synchronization
-- Automatic results
+- Competition lifecycle and matchday publication
+- Deadline enforcement and prediction integrity
+- Result publication and scoring
+- Competition synchronization and fixture identity
+- Postseason stages, two-legged ties and undecided participants
+- Automatic results and manual fallback
+- Plans, entitlements and enforcement
+- Tournament cycles and renewal
+- Concurrent writes and payment integrity
 - Legacy compatibility
-- Administrator workflows
-- Participant visibility
+- Administrator workflows and participant visibility
 
-High-risk UX and lifecycle changes are additionally validated through browser-based end-to-end testing when appropriate.
+High-risk lifecycle and commercial changes are additionally validated against a real PostgreSQL instance and through browser-based end-to-end testing.
 
 ---
 
 ## Deployment
 
-QRACKS is currently deployed on Render.
-
-The repository includes:
-
-```text
-render.yaml
-```
-
-for deployment configuration.
-
-Required environment variables include:
+QRACKS is currently deployed on Render, configured through `render.yaml`.
 
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `PLATFORM_PASSWORD` | Platform administrator password |
 
-Production:
+Production: 🌐 **https://qracks.net**
 
-🌐 **https://qracks.net**
+Operational runbook: [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
 
 ---
 
-## Current focus
+## Product principles
 
-QRACKS is currently focused on making the existing product increasingly reliable before expanding its scope.
+### Simplicity over complexity
 
-Current priorities include:
+Running a pool should not require a manual, spreadsheet or complicated setup.
 
-- Competition integrity
-- Administrator experience
-- Participant experience
-- Mobile usability
-- Sports-data reliability
-- Competition synchronization
-- Automatic results
-- Safe manual fallbacks
-- Performance
-- Stability
-- Better empty and system states
-- Additional competition coverage
-- Growth toward the first 100 active pools
+### Trust above everything
 
-The goal is **not premature scale**.
+Predictions, deadlines, results and standings must always behave predictably.
 
-The goal is proving that QRACKS makes running a prediction pool dramatically easier.
+### Mobile first
+
+Most participants interact with QRACKS from their phones, often directly from a shared WhatsApp link.
+
+### Fast enough to disappear
+
+Performance should never become part of the experience.
+
+### Useful before impressive
+
+QRACKS prioritizes solving real organizer and participant problems over building features simply because they are technically interesting.
+
+### One clear action
+
+Where possible, every screen should make the next meaningful action obvious.
+
+---
+
+## Product philosophy
+
+QRACKS is not a sportsbook: it does not manage bets, hold prize money or distribute winnings. It is built for groups who already organize prediction pools themselves, and its job is to remove the operational work.
+
+When QRACKS charges, it charges for the software — never a cut of whatever the group plays for. Handling prize money is not part of the product today, and it is not what the Payments work in *What's next* refers to.
+
+**Less spreadsheet, less chasing people, less manual scoring — more playing.**
 
 ---
 
 ## Roadmap
 
-QRACKS follows an incremental product roadmap.
+Where the product stands today. New ideas are prioritized against these stages rather than automatically becoming new initiatives; what comes next is in the section below.
 
-New ideas are prioritized against existing product stages rather than automatically becoming new initiatives.
-
-### ✅ Core Product
-
-The fundamental pool experience:
-
-- Create
-- Join
-- Predict
-- Score
-- Rank
-- Administer
-
-### ✅ Performance & Stability
-
-Improve the reliability and speed of the existing experience.
-
-### ✅ Marketing & Product Experience
-
-Establish QRACKS' identity and make the product understandable before someone creates their first pool.
-
-### ✨ Product Polish
-
-Continue removing friction and inconsistencies across administrator and participant workflows.
-
-### 📈 Growth
-
-Improve measurement, acquisition, activation and organizer retention.
-
-### ⭐ Premium Features
-
-Introduce higher-value capabilities only after the core experience demonstrates recurring usage.
-
-### ⚙️ Engineering & Documentation
-
-Continue strengthening architecture, security, observability and maintainability.
-
-### 🚀 Launch Readiness
-
-Ensure the complete experience is reliable enough to confidently expand usage.
-
-### 📊 Product Iteration
-
-Use real organizer and participant behavior to determine the next improvements.
-
-This includes richer competition insights and potential evolution of leaderboard visualization.
-
-### 💰 Monetization
-
-Monetization comes after QRACKS proves recurring value.
-
-QRACKS does not need to become a payments or gambling platform to monetize the organization of prediction pools.
+| Stage | Status | What it means |
+|---|---|---|
+| Core Product | ✅ Established | Create, join, predict, score, rank, administer |
+| Performance & Stability | ✅ Continuous | Payload optimization, connection pooling, concurrency safety |
+| Sports Data Reliability | ✅ Implemented | Provider abstraction, competition sync, postseason support, fail-closed scoring |
+| Monetization Foundation | ✅ Implemented | Plans, entitlements, server-side enforcement, tournament cycles — **not** payments |
+| Product Iteration | 🔄 Continuous | Removing friction from organizer and participant workflows, guided by real usage |
+| Advanced features | ⏸️ On hold | Capabilities beyond today's core loop wait until it shows recurring usage. Unrelated to the Plus plan, which already works. |
 
 ---
 
 ## What's next
 
-The immediate evolution of QRACKS centers around making competition management increasingly automatic without making the product more complicated.
+In order, and without dates:
 
-Areas under consideration include:
-
-- More football leagues
-- Improved sports-data reliability
-- Additional sports-data providers
-- Better automation monitoring
-- Clear alerts when automatic sports data cannot be refreshed
-- Expanded competition history
-- Better organizer insights
-- Continued mobile optimization
-- Richer leaderboard visualization
-- Additional sports
-
-Potential future sports coverage may include competitions such as:
-
-- 🏀 Basketball
-- 🏈 American football
-- ⚾ Baseball
-- 🎾 Tennis
-- 🏎️ Motorsport
-- 🥊 Combat sports
-
-These are future directions, not commitments to immediate implementation.
-
-QRACKS will expand only where doing so preserves the simplicity of the core experience.
+1. **Payments** — a real Plus checkout, confirmed server-side rather than trusted from the browser. It is the one part of Plus an organizer cannot do alone today.
+2. **Help** — today's per-screen tips become one help system, written once and used across the landing page, participant and administrator views.
+3. **Product iteration** — watch real pools, measure where people actually get stuck, and fix what the evidence shows rather than what seems likely.
+4. **Sports-data rollout** — turn the provider capabilities already built into a safe organizer experience, including choosing and migrating providers. The architecture is ready; the product experience is not.
+5. **More competitions and sports** — broaden coverage once the current flow is stable, and only where simplicity survives. Basketball, motorsport and the rest are possibilities, not commitments.
 
 ---
 
 ## Success criteria
 
-QRACKS is currently validating whether it can become the easiest way to organize a private sports prediction pool.
+The target is **100 active pools** — not for the number itself, but for what it proves: recurring use and willingness to pay. Organizers creating a second pool, participants returning each matchday, and organizers paying for the work QRACKS removes.
 
-Near-term product signals include:
-
-- 100 active pools
-- Organizers creating another pool
-- Participants consistently returning each matchday
-- Fast onboarding
-- Simple administration
-- Reliable competition data
-- Organizers willing to pay for the value QRACKS removes from their workflow
-
-**Done > Perfect.**
-
-Ship, observe, learn, improve.
+**Done > Perfect.** Ship, observe, learn, improve.
 
 ---
 
@@ -673,16 +522,7 @@ Ship, observe, learn, improve.
 
 QRACKS is currently under active independent development.
 
-The repository documents the evolution of the product as it moves from an initial football-pool tool toward a broader sports prediction platform.
-
-When contributing, preserve the core principles:
-
-- Do not add complexity without demonstrated value.
-- Protect participant trust.
-- Preserve backward compatibility where possible.
-- Keep administrator workflows simple.
-- Treat mobile as a first-class experience.
-- Prefer small, verifiable improvements over large speculative rewrites.
+Contributions should follow the product principles above, and two rules that matter most in this codebase: preserve backward compatibility with existing pools, and prefer small, verifiable improvements over large speculative rewrites.
 
 ---
 
