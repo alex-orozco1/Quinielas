@@ -58,6 +58,12 @@ const ATTENTION = Object.freeze({
   // El purchase intent no lleva el snapshot de lo que se vendió, así que no se
   // puede reconstruir PLUS sin inventarlo. Falla cerrado y pide una persona.
   SNAPSHOT_UNUSABLE: "purchase_snapshot_unusable",
+  // La quiniela existe, pero no se puede leer a qué torneo está jugando ahora.
+  // Sin eso no se puede demostrar que el plan vaya al torneo que se compró.
+  // Tiene su propio código: no es un torneo VIEJO, es un torneo ILEGIBLE.
+  SCOPE_UNPROVEN: "current_tournament_unreadable",
+  // Esta compra se sustituyó por otra: su sesión quedó inutilizada a propósito.
+  SUPERSEDED: "superseded_by_a_newer_checkout",
 });
 
 // Qué hacer con una confirmación. Un solo enum para las dos rutas que pueden
@@ -77,10 +83,28 @@ const DECISION = Object.freeze({
   QUINIELA_MISSING: "quiniela_missing",
   // Se pagó y no se puede saber QUÉ se vendió. No se otorga nada inventado.
   SNAPSHOT_UNUSABLE: "snapshot_unusable",
+  // Se pagó y no se puede leer el torneo actual: no hay forma de demostrar que
+  // el plan iría al torneo correcto.
+  SCOPE_UNPROVEN: "scope_unproven",
+  // Llegó un pago para una compra que SUSTITUIMOS a propósito. No otorga nada.
+  SUPERSEDED_PURCHASE: "superseded_purchase",
 });
 
 function isSafeCount(n) { return Number.isSafeInteger(n) && n >= 0; }
 function str(v) { return v == null || v === "" ? null : String(v); }
+// Un identificador de torneo LEGIBLE.
+//
+// Un scope id es SIEMPRE una cadena no vacía (tournamentScope.js las produce con
+// forma "ts:1:..."). Cualquier otra cosa —0, false, NaN, un objeto, sólo
+// espacios— no es "otro torneo": es un torneo que no se puede leer, y la
+// diferencia importa porque son dos anotaciones distintas para la persona que
+// acabe mirando por qué un cobro no otorgó nada. Coaccionar con String() hacía
+// que un 0 se leyera como el torneo "0" y se anotara como torneo VIEJO.
+function readableScope(v) {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t === "" ? null : t;
+}
 
 // ---- importes -------------------------------------------------------------
 //
@@ -105,6 +129,93 @@ const SUPPORTED_CURRENCIES = Object.freeze(["mxn"]);
 function normalizeCurrency(value) {
   const c = typeof value === "string" ? value.trim().toLowerCase() : null;
   return c && SUPPORTED_CURRENCIES.includes(c) ? c : null;
+}
+
+// ---- ¿puede esta sesión del proveedor seguir cobrando? --------------------
+//
+// Correction 02. Hacer idempotente un purchase intent no impide DOS CARGOS: lo
+// que impide dos cargos es que no exista más de un objeto del proveedor capaz
+// de aceptar dinero para el mismo torneo. La ventana de reutilización interna
+// (CHECKOUT_REUSE_WINDOW_MS) es contabilidad NUESTRA y no tiene por qué
+// coincidir con el ciclo de vida real de la sesión allá: un intent que para
+// nosotros caducó puede seguir perfectamente cobrable en el proveedor.
+//
+// Así que el estado de una sesión no se deduce del reloj: se pregunta.
+const SESSION_STATE = Object.freeze({
+  CHARGEABLE: "chargeable",   // puede aceptar dinero AHORA
+  USED: "used",               // ya se usó; hay o habrá un pago
+  DEAD: "dead",               // no puede aceptar dinero nunca más
+  UNKNOWN: "unknown",         // no se pudo averiguar -> se trata como cobrable
+});
+
+// Desconocido cuenta como COBRABLE, no como muerto. Es la diferencia entre
+// fallar cerrado y cobrar dos veces.
+function sessionStateOf(observed) {
+  const o = observed || {};
+  if (o.paid === true) return SESSION_STATE.USED;
+  switch (o.lifecycle) {
+    case "chargeable": return SESSION_STATE.CHARGEABLE;
+    case "used": return SESSION_STATE.USED;
+    case "dead": return SESSION_STATE.DEAD;
+    default: return SESSION_STATE.UNKNOWN;
+  }
+}
+
+// Las compras de este torneo que TODAVÍA podrían cobrar. Se buscan por scope,
+// no por slug, porque el invariant es por torneo. Deliberadamente NO se filtra
+// por antigüedad: la edad es nuestra, la capacidad de cobrar es del proveedor.
+function chargeableCandidates(purchases, slug, scopeId) {
+  return (Array.isArray(purchases) ? purchases : []).filter((p) =>
+    p && p.slug === slug && p.scopeId === scopeId
+    && p.status === PURCHASE_STATUS.CREATED
+    && !!p.providerSessionId);
+}
+
+// ¿Se puede abrir un checkout nuevo para este torneo?
+//
+// `observations` es un mapa de id-de-compra -> lo que el proveedor dijo de su
+// sesión (o null si no se pudo preguntar). La respuesta es una de tres, y dos
+// de ellas NO abren nada:
+//
+//   proceed            todas las anteriores están demostradamente muertas
+//   confirm_existing   una ya se usó: hay que confirmarla, no abrir otra
+//   blocked            no se pudo demostrar que alguna esté muerta
+function planCheckoutReplacement(candidates, observations) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const obs = observations || {};
+  if (!list.length) return { decision: "proceed", used: [], unresolved: [] };
+
+  const used = [];
+  const unresolved = [];
+  for (const c of list) {
+    const state = sessionStateOf(obs[c.id]);
+    if (state === SESSION_STATE.USED) used.push(c.id);
+    else if (state !== SESSION_STATE.DEAD) unresolved.push(c.id);
+  }
+  // Que una se haya usado manda sobre todo: abrir otra sería ofrecer un segundo
+  // cargo por algo que ya se está pagando.
+  if (used.length) return { decision: "confirm_existing", used, unresolved };
+  if (unresolved.length) return { decision: "blocked", used, unresolved };
+  return { decision: "proceed", used, unresolved };
+}
+
+// ---- el turno para reemplazar ---------------------------------------------
+//
+// Dos pestañas pidiendo upgrade a la vez no deben lanzar dos reemplazos: la
+// primera toma el turno y la segunda espera. El turno caduca para que una
+// petición que murió a medias no bloquee el torneo para siempre — y retomarlo
+// es seguro porque expirar una sesión ya expirada no hace daño.
+function replacementKey(slug, scopeId) {
+  const a = str(slug), b = str(scopeId);
+  return a && b ? `${a}|${b}` : null;
+}
+
+function isClaimActive(claim, nowMs, ttlMs) {
+  if (!claim || typeof claim !== "object") return false;
+  const at = Date.parse(claim.at);
+  if (!Number.isFinite(at)) return false;
+  const age = nowMs - at;
+  return Number.isFinite(age) && age >= 0 && age < ttlMs;
 }
 
 // ---- el purchase intent ---------------------------------------------------
@@ -298,6 +409,20 @@ function purchasedSnapshotOf(intent) {
 // una quiniela puede existir sin ciclo. Cualquier cosa que no sea `true` cuenta
 // como ausente, que es el lado seguro.
 function evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists }) {
+  // Una compra SUSTITUIDA no otorga nada, pase lo que pase.
+  //
+  // `expired` significa dos cosas muy distintas: "caducó sola" —y entonces un
+  // cobro tardío legítimo SÍ debe ganar, que es por qué canAdvance lo permite— y
+  // "la matamos nosotros al abrir otra". Sin distinguirlas, un webhook sobre la
+  // sesión que acabábamos de inutilizar otorgaba PLUS, que es exactamente el
+  // segundo cargo que Correction 02 existe para impedir.
+  //
+  // Una sesión expirada en el proveedor no puede cobrar, así que un pago aquí
+  // significa que nuestro protocolo la vio muerta cuando no lo estaba. No se
+  // toca el estado —no se inventa dinero— y se pide una persona.
+  if (intent && intent.supersededBy) {
+    return { decision: DECISION.SUPERSEDED_PURCHASE, attention: ATTENTION.SUPERSEDED };
+  }
   const o = observed || {};
   if (!intent) return { decision: DECISION.UNKNOWN_PURCHASE };
 
@@ -355,12 +480,27 @@ function evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists
     };
   }
 
+  // La quiniela está, pero no se puede leer a qué torneo juega ahora.
+  //
+  // Correction 02: antes esto CONFIRMABA. La comprobación de torneo era
+  // `if (currentScopeId && ...)`, así que un scope ausente se saltaba la
+  // comparación entera y caía en otorgar. Una compra nació atada a un torneo
+  // concreto; si no se puede demostrar cuál es el de ahora, no se puede
+  // demostrar que el plan vaya al sitio correcto — y "no se puede demostrar"
+  // nunca debe significar "adelante".
+  if (!readableScope(currentScopeId)) {
+    return {
+      decision: DECISION.SCOPE_UNPROVEN, nextStatus: PURCHASE_STATUS.PAID,
+      attention: ATTENTION.SCOPE_UNPROVEN,
+    };
+  }
+
   // Se cobró de verdad, pero el torneo que se compró ya no es el que se juega.
   // El dinero existe y se registra; el entitlement NO se otorga, porque
   // otorgarlo aquí sería habilitar un torneo que nadie compró. Queda marcado
   // para que un humano decida (reembolso, traslado), que es una decisión
   // comercial y no del código.
-  if (str(currentScopeId) && intent.scopeId !== str(currentScopeId)) {
+  if (intent.scopeId !== readableScope(currentScopeId)) {
     return {
       decision: DECISION.STALE_SCOPE, nextStatus: PURCHASE_STATUS.PAID,
       attention: ATTENTION.STALE_SCOPE,
@@ -453,6 +593,8 @@ function buildPaymentAudit(intent, decision, entitlementResult, now) {
 
 module.exports = {
   PURCHASE_STATUS, STATUS_RANK, ATTENTION, DECISION, SUPPORTED_CURRENCIES,
+  SESSION_STATE, sessionStateOf, chargeableCandidates, planCheckoutReplacement,
+  replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,
   toMinorUnits, normalizeCurrency,
   makePurchaseIntent, canAdvance, isReusableIntent, findReusableIntent,

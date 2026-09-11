@@ -156,6 +156,7 @@ function normalizeEvent(parsedBody) {
 
   return {
     eventId: id, type, kind: "checkout",
+    lifecycle: (typeof obj.status === "string" && SESSION_LIFECYCLE[obj.status]) || "unknown",
     // Pista para localizar el registro durable. NO es autoridad: quien decide
     // es el intent guardado (ver paymentsDomain.locateIntent).
     purchaseId: meta.qracks_purchase_id || null,
@@ -173,13 +174,29 @@ function normalizeEvent(parsedBody) {
 // La misma traducción para una sesión leída directamente (reconciliación).
 // Comparte forma con normalizeEvent a propósito: el dominio evalúa las dos con
 // la misma función y no puede ser más laxo con una que con la otra.
+// Los tres estados que Stripe declara para una sesión de Checkout: `open`,
+// `complete` y `expired` (ver la documentación del propio SDK sobre /expire:
+// "A Checkout Session can be expired when it is in one of these statuses:
+// open"). Cualquier otra cosa es desconocida, y desconocido NUNCA se traduce
+// como seguro.
+const SESSION_LIFECYCLE = Object.freeze({
+  open: "chargeable",     // todavía puede aceptar dinero
+  complete: "used",       // ya se usó: hay pago, o lo habrá
+  expired: "dead",        // no puede aceptar dinero nunca más
+});
+
 function normalizeSession(session) {
   if (!session || typeof session !== "object") return null;
   const meta = (session.metadata && typeof session.metadata === "object") ? session.metadata : {};
   const asId = (v) => (typeof v === "string" && v ? v : (typeof v === "object" && v && typeof v.id === "string" ? v.id : null));
   let terminalStatus = null;
   if (session.status === "expired") terminalStatus = "expired";
+  // Correction 02: el invariant de "un solo checkout cobrable" necesita saber
+  // si ESTA sesión todavía puede cobrar. Se traduce aquí, una vez, y aguas
+  // arriba nadie vuelve a ver la palabra "open".
+  const lifecycle = (typeof session.status === "string" && SESSION_LIFECYCLE[session.status]) || "unknown";
   return {
+    lifecycle,
     eventId: null, type: "reconciliation", kind: "checkout",
     purchaseId: meta.qracks_purchase_id || null,
     slugHint: meta.qracks_slug || null,
@@ -323,12 +340,33 @@ async function retrieveCheckoutSession(sessionId, { env } = {}) {
   return normalizeSession(session);
 }
 
+// Deja una sesión definitivamente incobrable.
+//
+// Stripe sólo admite expirar una sesión en estado `open` — su propio SDK lo
+// documenta así — y por eso esta función NO se usa a ciegas: quien llama
+// consulta primero el estado y sólo expira lo que está abierto. Depender del
+// error de Stripe para distinguir "ya estaba completada" de "ya estaba
+// expirada" significaría leer sus mensajes, que no son un contrato.
+//
+// Devuelve la sesión ya normalizada, para poder COMPROBAR que quedó muerta en
+// vez de suponerlo.
+async function expireCheckoutSession(sessionId, { env } = {}) {
+  if (typeof sessionId !== "string" || !sessionId) return null;
+  const session = await stripeRequest(
+    "POST", `/v1/checkout/sessions/${encodeURIComponent(sessionId)}/expire`,
+    // Sin cuerpo, pero con clave de idempotencia: dos pestañas reemplazando a
+    // la vez no producen dos llamadas con efectos distintos.
+    { params: {}, idempotencyKey: `expire:${sessionId}`, env });
+  return normalizeSession(session);
+}
+
 module.exports = {
   STRIPE_API_VERSION, EVENT, HANDLED_EVENTS, SIGNATURE_TOLERANCE_SECONDS,
   StripeError,
   parseSignatureHeader, verifyWebhookSignature,
   normalizeEvent, normalizeSession,
   readConfig, isConfigured,
-  createCheckoutSession, retrieveCheckoutSession,
+  createCheckoutSession, retrieveCheckoutSession, expireCheckoutSession,
+  SESSION_LIFECYCLE,
   _formEncode: formEncode,
 };

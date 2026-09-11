@@ -861,15 +861,21 @@ test("MON003 · C1.5 — SNAPSHOT: la config NO se relee al confirmar", () => {
   assert.ok(body.includes("buildPurchasedPlusEntitlement(snapshot, now"));
 });
 
-test("MON003 · C1.6 — SNAPSHOT: el checkout exige los límites antes de vender", () => {
+test("MON003 · C1.6 — SNAPSHOT: el checkout exige la oferta ENTERA antes de vender", () => {
+  // Correction 02 lo movió a readPlusOffer(), que devuelve la oferta completa o
+  // null: así ninguna ruta puede quedarse con media oferta.
   const src = stripComments(serverSrc);
-  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
-  const body = co.slice(0, co.indexOf("\n});"));
-  assert.ok(body.includes("Number.isSafeInteger(plusConfig.participantLimit)"));
-  assert.ok(body.includes("Number.isSafeInteger(plusConfig.manualRoundLimit)"));
-  assert.ok(body.includes('reason: "unusable_limits"'));
-  assert.ok(body.includes("participantLimit: plusConfig.participantLimit"));
-  assert.ok(body.includes("manualRoundLimit: plusConfig.manualRoundLimit"));
+  const fn = src.slice(src.indexOf("function readPlusOffer(commercialConfig)"));
+  const body = fn.slice(0, fn.indexOf("function sameOffer"));
+  assert.ok(body.includes("Number.isSafeInteger(plus.participantLimit)"));
+  assert.ok(body.includes("Number.isSafeInteger(plus.manualRoundLimit)"));
+  assert.ok(body.includes("amountMinor == null || amountMinor <= 0"));
+  assert.ok(body.includes("return null"), "una oferta incompleta no es una oferta");
+  // Los DOS sitios que abren una compra la usan; ninguno lee la config a mano.
+  const usos = src.match(/readPlusOffer\(await getRow\("commercial_config", client\)\)/g) || [];
+  assert.equal(usos.length, 2, "checkout y openPurchase, los dos");
+  assert.ok(src.includes("participantLimit: offer.participantLimit"));
+  assert.ok(src.includes("manualRoundLimit: offer.manualRoundLimit"));
 });
 
 test("MON003 · C1.7 — SNAPSHOT: sólo se reutiliza un checkout que venda LO MISMO", () => {
@@ -879,10 +885,13 @@ test("MON003 · C1.7 — SNAPSHOT: sólo se reutiliza un checkout que venda LO M
   const src = stripComments(serverSrc);
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
-  assert.ok(body.includes("const sameOffer ="));
-  assert.ok(body.includes("p.purchased.participantLimit === plusConfig.participantLimit"));
-  assert.ok(body.includes("p.purchased.manualRoundLimit === plusConfig.manualRoundLimit"));
-  assert.ok(!/reusable && reusable\.expectedAmountMinor === amountMinor/.test(body),
+  const cmp = src.slice(src.indexOf("function sameOffer(purchase, offer)"));
+  const cmpBody = cmp.slice(0, cmp.indexOf("async function releaseReplacementClaim"));
+  assert.ok(cmpBody.includes("purchase.expectedAmountMinor === offer.amountMinor"));
+  assert.ok(cmpBody.includes("purchase.purchased.participantLimit === offer.participantLimit"));
+  assert.ok(cmpBody.includes("purchase.purchased.manualRoundLimit === offer.manualRoundLimit"));
+  assert.ok(body.includes("sameOffer(reusable, offer)"));
+  assert.ok(!body.includes("reusable.expectedAmountMinor === amountMinor"),
     "no puede quedar ninguna comparación que mire sólo el importe");
 });
 
@@ -1024,9 +1033,8 @@ test("MON003 · C1.17 — el binding a competencia NO se congela, y es deliberad
 
 test("MON003 · C1.18 — el checkout registra el binding del momento de la compra", () => {
   const src = stripComments(serverSrc);
-  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
-  const body = co.slice(0, co.indexOf("\n});"));
-  assert.ok(body.includes("boundToCompetition: !!(entry.entitlement && entry.entitlement.competitionIdentity)"));
+  const fn = src.slice(src.indexOf("async function openPurchase(slug, superseded)"));
+  assert.ok(fn.slice(0, 4000).includes("boundToCompetition: !!(entry.entitlement && entry.entitlement.competitionIdentity)"));
 });
 
 // ==== 23 · segunda pasada adversarial sobre los estados nuevos =============
@@ -1108,4 +1116,218 @@ test("MON003 · C1.23 — un pago que no puede otorgar nada nunca queda sin expl
     assert.equal(next.attention.code, code);
     assert.ok(D.buildPaymentAudit(next, d.decision, "none", NOW).attention);
   }
+});
+
+// ==========================================================================
+// CORRECTION 02 — un solo objeto del proveedor cobrable por slug + torneo
+// ==========================================================================
+
+test("MON003 · C2.1 — el estado de una sesión se PREGUNTA, no se deduce", () => {
+  assert.equal(D.sessionStateOf({ lifecycle: "chargeable" }), D.SESSION_STATE.CHARGEABLE);
+  assert.equal(D.sessionStateOf({ lifecycle: "used" }), D.SESSION_STATE.USED);
+  assert.equal(D.sessionStateOf({ lifecycle: "dead" }), D.SESSION_STATE.DEAD);
+  // Un pago manda sobre el ciclo de vida: si cobró, se usó.
+  assert.equal(D.sessionStateOf({ paid: true, lifecycle: "dead" }), D.SESSION_STATE.USED);
+  // Y DESCONOCIDO cuenta como cobrable, nunca como muerto: es la diferencia
+  // entre fallar cerrado y cobrar dos veces.
+  for (const o of [null, undefined, {}, { lifecycle: "raro" }, { lifecycle: null }]) {
+    assert.equal(D.sessionStateOf(o), D.SESSION_STATE.UNKNOWN, JSON.stringify(o));
+  }
+});
+
+test("MON003 · C2.2 — el proveedor traduce sus tres estados, y nada más", () => {
+  const mk = (status) => stripe.normalizeSession({ id: "cs", status, payment_status: "unpaid", metadata: {} });
+  assert.equal(mk("open").lifecycle, "chargeable");
+  assert.equal(mk("complete").lifecycle, "used");
+  assert.equal(mk("expired").lifecycle, "dead");
+  assert.equal(mk("algo_nuevo").lifecycle, "unknown", "un estado que no conocemos no es seguro");
+  assert.equal(mk(undefined).lifecycle, "unknown");
+  // El evento del webhook trae la misma traducción.
+  const ev = stripe.normalizeEvent(sessionEvent({ status: "open", payment_status: "unpaid" }));
+  assert.equal(ev.lifecycle, "chargeable");
+});
+
+test("MON003 · C2.3 — las candidatas son TODAS las que pueden cobrar, sin filtros de edad", () => {
+  const viejo = intentOf({ id: "a", createdAt: "2020-01-01T00:00:00.000Z", providerSessionId: "cs_a" });
+  const nuevo = intentOf({ id: "b", providerSessionId: "cs_b" });
+  const pagada = intentOf({ id: "c", status: "paid", providerSessionId: "cs_c" });
+  const sinSesion = intentOf({ id: "d" });
+  const otroScope = intentOf({ id: "e", scopeId: OTHER_SCOPE, providerSessionId: "cs_e" });
+  const todas = [viejo, nuevo, pagada, sinSesion, otroScope];
+  const cands = D.chargeableCandidates(todas, "liga", SCOPE).map((c) => c.id);
+  // La edad es NUESTRA contabilidad; la capacidad de cobrar es del proveedor.
+  assert.deepEqual(cands.sort(), ["a", "b"], "el viejo entra igual: su sesión puede seguir viva");
+  assert.ok(!cands.includes("c"), "una ya pagada no es candidata a morir");
+  assert.ok(!cands.includes("e"), "y el invariant es por TORNEO, no por slug");
+});
+
+test("MON003 · C2.4 — no se abre otra si no se puede demostrar que la anterior murió", () => {
+  const a = intentOf({ id: "a", providerSessionId: "cs_a" });
+  assert.equal(D.planCheckoutReplacement([], {}).decision, "proceed", "sin anteriores, adelante");
+  assert.equal(D.planCheckoutReplacement([a], { a: { lifecycle: "dead" } }).decision, "proceed");
+  // Sin respuesta del proveedor -> bloqueado. Fail closed.
+  assert.equal(D.planCheckoutReplacement([a], {}).decision, "blocked");
+  assert.equal(D.planCheckoutReplacement([a], { a: null }).decision, "blocked");
+  // Todavía cobrable tras intentar matarla -> bloqueado.
+  assert.equal(D.planCheckoutReplacement([a], { a: { lifecycle: "chargeable" } }).decision, "blocked");
+  // Ya usada -> hay que confirmarla, no abrir otra.
+  const usada = D.planCheckoutReplacement([a], { a: { lifecycle: "used" } });
+  assert.equal(usada.decision, "confirm_existing");
+  assert.deepEqual(usada.used, ["a"]);
+});
+
+test("MON003 · C2.5 — una usada manda sobre una sin resolver", () => {
+  const a = intentOf({ id: "a", providerSessionId: "cs_a" });
+  const b = intentOf({ id: "b", providerSessionId: "cs_b" });
+  const r = D.planCheckoutReplacement([a, b], { a: null, b: { lifecycle: "used" } });
+  assert.equal(r.decision, "confirm_existing",
+    "abrir otra sería ofrecer un segundo cargo por algo que ya se está pagando");
+});
+
+test("MON003 · C2.6 — un pago sobre una compra SUSTITUIDA no otorga nada", () => {
+  // El P1 que encontró la sonda: `expired` significaba dos cosas —caducó sola,
+  // y la matamos nosotros— y canAdvance("expired","paid") es true a propósito
+  // para el cobro tardío legítimo. Una sustituida no lo es.
+  const sust = intentOf({ status: "expired", supersededBy: "qpur_nueva" });
+  const d = decide(sust, observedOf());
+  assert.equal(d.decision, D.DECISION.SUPERSEDED_PURCHASE);
+  assert.equal(d.attention, D.ATTENTION.SUPERSEDED);
+  assert.equal(d.nextStatus, undefined, "no se inventa dinero: el estado no se toca");
+  const next = D.applyDecision(sust, d, observedOf(), NOW);
+  assert.equal(next.status, "expired");
+  assert.equal(next.attention.code, "superseded_by_a_newer_checkout");
+});
+
+test("MON003 · C2.7 — pero una que caducó SOLA sí acepta un cobro tardío", () => {
+  const caducada = intentOf({ status: "expired" });   // sin supersededBy
+  assert.equal(decide(caducada, observedOf()).decision, D.DECISION.CONFIRM);
+});
+
+test("MON003 · C2.8 — el turno serializa, y caduca para no bloquear", () => {
+  assert.equal(D.replacementKey("liga", SCOPE), "liga|" + SCOPE);
+  assert.equal(D.replacementKey("liga", null), null);
+  assert.equal(D.replacementKey("", SCOPE), null);
+  const nowMs = Date.parse(NOW);
+  assert.equal(D.isClaimActive({ at: NOW, token: "t" }, nowMs + 1000, 90000), true);
+  assert.equal(D.isClaimActive({ at: NOW, token: "t" }, nowMs + 120000, 90000), false, "caduca");
+  assert.equal(D.isClaimActive(null, nowMs, 90000), false);
+  assert.equal(D.isClaimActive({ at: "no-es-fecha" }, nowMs, 90000), false);
+  assert.equal(D.isClaimActive({ at: NOW }, nowMs - 5000, 90000), false, "un turno del futuro no vale");
+});
+
+// ---- el servidor: el invariant, estructuralmente ----
+
+test("MON003 · C2.9 — SERVER: se demuestra la muerte antes de abrir otra", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const proveAt = body.indexOf("proveSessionsDead(candidates)");
+  const openAt = body.indexOf("openPurchase(slug, candidates)");
+  const netAt = body.indexOf("stripeAdapter.createCheckoutSession");
+  assert.ok(proveAt !== -1 && openAt !== -1 && netAt !== -1);
+  assert.ok(proveAt < openAt, "primero se mata lo anterior");
+  assert.ok(openAt < netAt, "y la compra existe antes de pedir la sesión");
+  // Las tres salidas que NO abren nada.
+  assert.ok(body.includes('error: "payment_in_progress"'));
+  assert.ok(body.includes('error: "replacement_in_progress"'));
+  assert.ok(body.includes('error: "checkout_unavailable"'));
+});
+
+test("MON003 · C2.10 — SERVER: se consulta antes de expirar, y se verifica después", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function proveSessionsDead(candidates)"));
+  const body = fn.slice(0, fn.indexOf("async function openPurchase"));
+  const getAt = body.indexOf("retrieveCheckoutSession");
+  const expAt = body.indexOf("expireCheckoutSession");
+  assert.ok(getAt !== -1 && expAt !== -1);
+  assert.ok(getAt < expAt,
+    "Stripe sólo expira sesiones abiertas: preguntar primero evita depender de sus mensajes de error");
+  assert.ok(body.includes("SESSION_STATE.CHARGEABLE"), "sólo se expira lo que está cobrable");
+  // Y la decisión la toma el dominio con lo OBSERVADO, no con lo supuesto.
+  assert.ok(body.includes("planCheckoutReplacement(candidates, observations)"));
+  // Un error deja la observación en null, que el dominio lee como desconocido.
+  assert.ok(body.includes("observed = null"));
+});
+
+test("MON003 · C2.11 — SERVER: el turno cubre TODA el alta y se suelta siempre", () => {
+  // El segundo agujero: una compra recién creada sin sesión adjunta es
+  // invisible para "¿qué puede cobrar?", pero está a punto de tener una. Dos
+  // peticiones concurrentes creaban cada una la suya.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const claimAt = body.indexOf("isClaimActive(claims[key]");
+  const attachAt = body.indexOf("attachProviderSession(intent.id, session)");
+  const releaseAt = body.indexOf("releaseReplacementClaim(claim)");
+  assert.ok(claimAt !== -1 && attachAt !== -1 && releaseAt !== -1);
+  assert.ok(claimAt < attachAt, "el turno se toma antes de decidir nada");
+  assert.ok(attachAt < releaseAt, "y se suelta DESPUÉS de guardar la sesión, no antes");
+  assert.ok(/\}\s*finally\s*\{\s*[\s\S]{0,400}releaseReplacementClaim/.test(body),
+    "se suelta en un finally: por cualquier salida");
+});
+
+test("MON003 · C2.12 — SERVER: sólo se suelta el turno PROPIO", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function releaseReplacementClaim(claim)"));
+  const body = fn.slice(0, fn.indexOf("async function proveSessionsDead"));
+  assert.ok(body.includes("cur.token !== claim.token"),
+    "si otro lo tomó entre medias, no es nuestro para soltarlo");
+});
+
+test("MON003 · C2.13 — SERVER: la compra nueva y las muertas, en UNA transacción", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function openPurchase(slug, superseded)"));
+  const body = fn.slice(0, fn.indexOf("async function attachProviderSession"));
+  assert.ok(body.includes('client.query("BEGIN")'));
+  assert.ok(body.includes("supersededBy: fresh.id"), "queda dicho quién la sustituyó");
+  assert.ok(body.includes("ATTENTION.SUPERSEDED"));
+  assert.ok(body.includes('buildPaymentAudit(dead, "superseded"'), "y queda auditado");
+  assert.ok(body.includes("purchases: purchases.concat([fresh])"));
+  // Una sola escritura: no hay instante con dos compras abiertas ni con ninguna.
+  assert.equal((body.match(/putRow\(PAYMENT_INTENTS_KEY,/g) || []).length, 1);
+});
+
+test("MON003 · C2.14 — SERVER: el navegador no decide cuál es la compra activa", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(!/req\.body/.test(body));
+  assert.ok(!/req\.query/.test(body));
+});
+
+test("MON003 · C2.15 — el scope ilegible NO otorga, por ninguna vía", () => {
+  const d = decide(intentOf(), observedOf(), null, true);
+  assert.equal(d.decision, D.DECISION.SCOPE_UNPROVEN);
+  assert.equal(d.nextStatus, D.PURCHASE_STATUS.PAID, "el cobro existió");
+  assert.equal(d.attention, D.ATTENTION.SCOPE_UNPROVEN);
+  // Con su propio código: no es un torneo VIEJO, es un torneo ILEGIBLE.
+  assert.notEqual(D.ATTENTION.SCOPE_UNPROVEN, D.ATTENTION.STALE_SCOPE);
+  assert.equal(D.ATTENTION.SCOPE_UNPROVEN, "current_tournament_unreadable");
+  // Un scope id es SIEMPRE una cadena no vacía. Todo lo demás es ILEGIBLE, no
+  // "otro torneo": coaccionar con String() hacía que un 0 se leyera como el
+  // torneo "0" y se anotara como torneo VIEJO, mintiendo a quien lo lea después.
+  for (const sc of [null, undefined, "", "   ", "\t\n", 0, false, NaN, {}, [], true, 123]) {
+    const r = D.evaluateConfirmation({
+      intent: intentOf(), observed: observedOf(), currentScopeId: sc, quinielaExists: true });
+    assert.equal(r.decision, D.DECISION.SCOPE_UNPROVEN, JSON.stringify(String(sc)));
+  }
+  // Y un torneo legítimo distinto sigue siendo un torneo VIEJO, no ilegible.
+  assert.equal(decide(intentOf(), observedOf(), OTHER_SCOPE, true).decision, D.DECISION.STALE_SCOPE);
+  // Con espacios alrededor es el mismo torneo, no otro.
+  assert.equal(decide(intentOf(), observedOf(), "  " + SCOPE + "  ", true).decision, D.DECISION.CONFIRM);
+});
+
+test("MON003 · C2.16 — el orden de decisiones sigue siendo el correcto", () => {
+  const o = observedOf();
+  // Sustituida manda sobre todo: ni se evalúa el resto.
+  assert.equal(decide(intentOf({ supersededBy: "x", purchased: null }), o, null, false).decision,
+    D.DECISION.SUPERSEDED_PURCHASE);
+  // Importe que no cuadra, después.
+  assert.equal(decide(intentOf(), { ...o, amountMinor: 1 }, null, false).decision, D.DECISION.AMOUNT_MISMATCH);
+  // Sin quiniela, antes que el scope.
+  assert.equal(decide(intentOf(), o, null, false).decision, D.DECISION.QUINIELA_MISSING);
+  // Con quiniela y scope ilegible, antes que el snapshot roto.
+  assert.equal(decide(intentOf({ purchased: null }), o, null, true).decision, D.DECISION.SCOPE_UNPROVEN);
+  // Con scope legible pero distinto, el torneo viejo.
+  assert.equal(decide(intentOf({ purchased: null }), o, OTHER_SCOPE, true).decision, D.DECISION.STALE_SCOPE);
 });

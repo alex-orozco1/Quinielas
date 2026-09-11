@@ -5098,9 +5098,14 @@
           // Sin pasarela disponible NO se finge un cobro: se dice la verdad y
           // queda el camino de siempre, que sigue funcionando.
           cleanup(true);
+          // "Ya se está preparando" no es un error: es otra pestaña —o el clic
+          // anterior— en mitad del proceso. El servidor sólo permite un alta a
+          // la vez por torneo, que es lo que impide dos cobros.
           toast(started && started.reason === "unavailable"
             ? (howTo || "El pago con tarjeta no está disponible ahora mismo. Escríbenos y lo activamos.")
-            : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
+            : started && started.reason === "replacement_in_progress"
+              ? "Ya estamos preparando tu pago. Espera unos segundos y vuelve a intentarlo."
+              : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
         });
         cta.focus();
       } else {
