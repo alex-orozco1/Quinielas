@@ -142,17 +142,46 @@ function buildFreeEntitlement(config, nowIso) {
 // quiniela paid for, frozen — see the module header comment on why this
 // must never silently track a later commercial_config change).
 function buildPlusEntitlement(config, nowIso, opts) {
-  const o = opts || {};
-  return {
-    plan: "PLUS",
+  return buildPurchasedPlusEntitlement({
     participantLimit: config.plus.participantLimit,
     manualRoundLimit: config.plus.manualRoundLimit,
     pricePaidMXN: config.plus.priceMXN,
+    configVersion: config.version,
+  }, nowIso, opts);
+}
+
+// MON-003 Correction 01. Un PLUS construido desde NÚMEROS EXPLÍCITOS en vez de
+// desde una configuración.
+//
+// Existe porque un cobro no es instantáneo: entre abrir el checkout y que el
+// pago se confirme pasan minutos, y en ese hueco la configuración comercial
+// puede cambiar. Leerla otra vez al confirmar entregaba los límites NUEVOS a
+// quien había comprado los viejos — que es exactamente lo que el snapshot de
+// MON-001C existe para impedir, sólo que por una puerta que MON-003 abrió.
+//
+// La forma del entitlement se define UNA sola vez, aquí: buildPlusEntitlement
+// delega en esta función, así que la ruta de compra y la de grant manual no
+// pueden divergir en los campos que el enforcement lee.
+//
+// Devuelve null si el snapshot no es utilizable. Nunca rellena un hueco con la
+// configuración de hoy: eso sería volver a adivinar qué se compró.
+function buildPurchasedPlusEntitlement(snapshot, nowIso, opts) {
+  const o = opts || {};
+  const s = snapshot || {};
+  if (!Number.isFinite(s.participantLimit) || !Number.isFinite(s.manualRoundLimit)) return null;
+  if (!Number.isFinite(s.pricePaidMXN)) return null;
+  return {
+    plan: "PLUS",
+    participantLimit: s.participantLimit,
+    manualRoundLimit: s.manualRoundLimit,
+    pricePaidMXN: s.pricePaidMXN,
     source: o.source || "purchase",
     grantedAt: nowIso || new Date().toISOString(),
     grantedBy: o.grantedBy || "system",
     reason: o.reason || null,
-    configVersionAtGrant: config.version,
+    // La versión de configuración que produjo ESTOS números, no la que esté
+    // viva al otorgar: es lo único que hace auditable qué se vendió.
+    configVersionAtGrant: Number.isFinite(s.configVersion) ? s.configVersion : null,
     competitionIdentity: o.competitionIdentity || null,
     revoked: false,
   };
@@ -533,6 +562,7 @@ module.exports = {
   evaluateCompetitionBinding,
   buildFreeEntitlement,
   buildPlusEntitlement,
+  buildPurchasedPlusEntitlement,
   buildGrandfatheredEntitlement,
   buildManualGrantEntitlement,
   isKnownPlan,

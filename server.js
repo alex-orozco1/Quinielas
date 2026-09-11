@@ -14,7 +14,7 @@ const { nextSportsDataHealth, DEFAULT_SPORTS_DATA_HEALTH } = require("./sportsDa
 const {
   DEFAULT_COMMERCIAL_CONFIG, isCommercialConfigValid, computeCompetitionIdentity,
   evaluateCompetitionBinding,
-  buildFreeEntitlement, buildGrandfatheredEntitlement,
+  buildFreeEntitlement, buildGrandfatheredEntitlement, buildPurchasedPlusEntitlement,
   buildPlusEntitlement, buildManualGrantEntitlement,
   checkParticipantCapacity, checkLifecycleRoundConsumption,
   summarizePlan, buildUpgradeOffer, isValidManualGrantLimits,
@@ -2953,12 +2953,22 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       }
 
       const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
-      const amountMinor = paymentsDomain.toMinorUnits(
-        commercialConfig && commercialConfig.plus ? commercialConfig.plus.priceMXN : NaN
-      );
+      const plusConfig = (commercialConfig && commercialConfig.plus) || null;
+      const amountMinor = paymentsDomain.toMinorUnits(plusConfig ? plusConfig.priceMXN : NaN);
       if (amountMinor == null || amountMinor <= 0) {
         await client.query("ROLLBACK");
         logPayment("checkout_creation_failed", { slug, reason: "unusable_price" });
+        return res.status(409).json({ error: "price_unavailable" });
+      }
+      // Correction 01: se congelan también los LÍMITES, no sólo el precio. Sin
+      // ellos, confirmar volvía a leer la configuración comercial viva y le
+      // entregaba los límites de hoy a quien había comprado los de hace veinte
+      // minutos. Si no se pueden leer, no se abre la compra: vender sin saber
+      // qué se vende es peor que no vender.
+      if (!Number.isSafeInteger(plusConfig.participantLimit)
+        || !Number.isSafeInteger(plusConfig.manualRoundLimit)) {
+        await client.query("ROLLBACK");
+        logPayment("checkout_creation_failed", { slug, reason: "unusable_limits" });
         return res.status(409).json({ error: "price_unavailable" });
       }
 
@@ -2967,7 +2977,15 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       const reusable = paymentsDomain.findReusableIntent(
         store.purchases, slug, scope.id, nowMs, CHECKOUT_REUSE_WINDOW_MS);
 
-      if (reusable && reusable.expectedAmountMinor === amountMinor && reusable.providerCheckoutUrl) {
+      // "Reutilizable" significa que vende EXACTAMENTE lo mismo. Con el precio
+      // solo no bastaba: la configuración pudo cambiar los límites sin tocar el
+      // importe, y entonces reutilizar habría cobrado lo de antes prometiendo
+      // lo de ahora (o al revés).
+      const sameOffer = (p) => !!p && p.expectedAmountMinor === amountMinor
+        && p.purchased && p.purchased.participantLimit === plusConfig.participantLimit
+        && p.purchased.manualRoundLimit === plusConfig.manualRoundLimit;
+
+      if (sameOffer(reusable) && reusable.providerCheckoutUrl) {
         // Dos taps, dos pestañas: el mismo enlace, cero llamadas de red, cero
         // compras nuevas.
         await client.query("COMMIT");
@@ -2975,7 +2993,7 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
         return res.json({ ok: true, checkoutUrl: reusable.providerCheckoutUrl, purchaseId: reusable.id });
       }
 
-      if (reusable && reusable.expectedAmountMinor === amountMinor) {
+      if (sameOffer(reusable)) {
         // Existe, pero su sesión no llegó a guardarse. Se reutiliza el MISMO
         // id, que es la clave de idempotencia que se le manda al proveedor: su
         // respuesta será la sesión que ya creó, no una segunda.
@@ -2985,6 +3003,12 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
           purchaseId: newPurchaseId(), slug, scopeId: scope.id,
           configVersion: commercialConfig.version, expectedAmountMinor: amountMinor,
           currency: "mxn", provider: "stripe", now,
+          // Lo que se está vendiendo, congelado con el precio.
+          participantLimit: plusConfig.participantLimit,
+          manualRoundLimit: plusConfig.manualRoundLimit,
+          // Sólo para auditoría: ver paymentsDomain sobre por qué el binding NO
+          // se congela.
+          boundToCompetition: !!(entry.entitlement && entry.entitlement.competitionIdentity),
         });
         if (!intent) {
           await client.query("ROLLBACK");
@@ -3114,56 +3138,63 @@ async function confirmPaymentAndGrant({ observed, eventId }) {
     // El scope actual sale de la fila BLOQUEADA, nunca del proveedor.
     const currentScopeId = entry && entry.tournamentScope ? entry.tournamentScope.id : null;
 
-    const decision = paymentsDomain.evaluateConfirmation({ intent, observed, currentScopeId });
+    // ---- la decisión FINAL, completa, antes de aplicar nada ----
+    //
+    // Correction 01: `quinielaExists` entra en la decisión, no después. Antes se
+    // construía el intent y SÓLO ENTONCES se descubría que la quiniela ya no
+    // estaba; la anotación se escribía sobre un objeto que ya se había usado,
+    // así que no se persistía nunca. El pago quedaba cobrado, sin plan y sin
+    // decir por qué — que es la peor de las tres cosas.
     const now = new Date().toISOString();
-    const nextIntent = paymentsDomain.applyDecision(intent, decision, observed, now);
+    const decision = paymentsDomain.evaluateConfirmation({
+      intent, observed, currentScopeId, quinielaExists: !!entry,
+    });
 
     let entitlementResult = "none";
     let nextIndex = null;
     let nextPaymentLog = null;
 
     if (decision.decision === paymentsDomain.DECISION.CONFIRM) {
-      if (!entry) {
-        // Se cobró y la quiniela ya no está (se borró entre el checkout y la
-        // confirmación). No hay nada que otorgar, pero el dinero existió: se
-        // registra y se marca, porque un cobro sin contrapartida es
-        // exactamente lo que un humano tiene que ver.
-        entitlementResult = "quiniela_missing";
-        decision.attention = decision.attention || paymentsDomain.ATTENTION.IDENTITY_MISMATCH;
-        decision.detail = "quiniela_missing";
-      } else {
-        const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
-        const entitlement = buildPlusEntitlement(commercialConfig, now, {
-          // Distinguible de un grant manual para siempre: esto SÍ representa
-          // dinero recibido, y un ajuste manual no.
-          source: "stripe_purchase", grantedBy: "stripe",
-          reason: "Compra de Plus confirmada por el proveedor de pagos.",
-        });
-        // El importe que se registra es el que se COBRÓ de verdad, congelado
-        // en el intent al crear la compra — no el precio que la configuración
-        // comercial tenga hoy, que pudo cambiar mientras el Admin pagaba.
-        entitlement.pricePaidMXN = intent.expectedAmountMinor / 100;
-        entitlement.purchaseId = intent.id;
-        const paymentLog = (await getRowLocked("platform_payment_log", client)) || { payments: [] };
-        // El grantId deriva del id de compra: estable entre reintentos, así que
-        // la idempotencia de MON-002B actúa como última red aunque todo lo
-        // demás fallara.
-        const grantId = ("stripe" + intent.id.replace(/[^A-Za-z0-9_-]/g, "")).slice(0, 64);
-        const result = applyEntitlementGrant({
-          index: idx, paymentLog, entitlement, slug: intent.slug,
-          grantId, grantedBy: "stripe",
-          reason: "Compra de Plus confirmada por el proveedor de pagos.", now,
-        });
-        if (!result.ok) {
-          await client.query("ROLLBACK");
-          logPayment("entitlement_grant_failed", { purchaseId: intent.id, error: result.error });
-          return { decision: decision.decision, error: result.error };
-        }
-        entitlementResult = result.applied ? (result.reason || "granted") : (result.reason || "not_applied");
-        nextIndex = result.index;
-        nextPaymentLog = result.paymentLog;
+      // Aquí la decisión ya garantiza que hay quiniela Y que el snapshot es
+      // utilizable: el dominio lo comprobó arriba, así que este bloque no
+      // vuelve a preguntarlo ni tiene que corregir la decisión a posteriori.
+      const snapshot = paymentsDomain.purchasedSnapshotOf(intent);
+      const entitlement = buildPurchasedPlusEntitlement(snapshot, now, {
+        // Distinguible de un grant manual para siempre: esto SÍ representa
+        // dinero recibido, y un ajuste manual no.
+        source: "stripe_purchase", grantedBy: "stripe",
+        reason: "Compra de Plus confirmada por el proveedor de pagos.",
+      });
+      entitlement.purchaseId = intent.id;
+      const paymentLog = (await getRowLocked("platform_payment_log", client)) || { payments: [] };
+      // El grantId deriva del id de compra: estable entre reintentos, así que
+      // la idempotencia de MON-002B actúa como última red aunque todo lo
+      // demás fallara.
+      const grantId = ("stripe" + intent.id.replace(/[^A-Za-z0-9_-]/g, "")).slice(0, 64);
+      const result = applyEntitlementGrant({
+        index: idx, paymentLog, entitlement, slug: intent.slug,
+        grantId, grantedBy: "stripe",
+        reason: "Compra de Plus confirmada por el proveedor de pagos.", now,
+      });
+      if (!result.ok) {
+        await client.query("ROLLBACK");
+        logPayment("entitlement_grant_failed", { purchaseId: intent.id, error: result.error });
+        return { decision: decision.decision, error: result.error };
       }
+      entitlementResult = result.applied ? (result.reason || "granted") : (result.reason || "not_applied");
+      nextIndex = result.index;
+      nextPaymentLog = result.paymentLog;
+    } else if (decision.decision === paymentsDomain.DECISION.QUINIELA_MISSING
+      || decision.decision === paymentsDomain.DECISION.SNAPSHOT_UNUSABLE) {
+      // El cobro es real y no hay nada que otorgar. Se nombra en la auditoría
+      // con la misma palabra que usa la decisión, para que lo que se lee
+      // después coincida con lo que se decidió.
+      entitlementResult = decision.decision;
     }
+
+    // Sólo ahora, con la decisión cerrada, se aplica sobre el intent. Cualquier
+    // anotación que la decisión traiga viaja con ella y por tanto se persiste.
+    const nextIntent = paymentsDomain.applyDecision(intent, decision, observed, now);
 
     const purchases = store.purchases.map((p) => (p && p.id === intent.id ? nextIntent : p));
     const audit = store.audit.slice();

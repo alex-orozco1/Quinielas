@@ -49,6 +49,15 @@ const ATTENTION = Object.freeze({
   STALE_SCOPE: "paid_for_a_finished_tournament",
   REFUNDED: "refunded",
   DISPUTED: "disputed",
+  // Se cobró y la quiniela ya no existe. Tiene su propio código porque no es
+  // ninguna de las otras cosas: no es una identidad que no cuadra, ni un
+  // importe raro, ni un torneo viejo. Reutilizar otro código habría descrito
+  // mal el problema al único lector que importa, que es una persona mirando
+  // por qué hay dinero sin contrapartida.
+  QUINIELA_MISSING: "paid_for_a_deleted_quiniela",
+  // El purchase intent no lleva el snapshot de lo que se vendió, así que no se
+  // puede reconstruir PLUS sin inventarlo. Falla cerrado y pide una persona.
+  SNAPSHOT_UNUSABLE: "purchase_snapshot_unusable",
 });
 
 // Qué hacer con una confirmación. Un solo enum para las dos rutas que pueden
@@ -64,6 +73,10 @@ const DECISION = Object.freeze({
   IDENTITY_MISMATCH: "identity_mismatch",
   STALE_SCOPE: "stale_scope",             // se pagó, pero para otro torneo
   IGNORED_STALE: "ignored_stale_event",   // evento viejo que no puede degradar
+  // Se pagó y no hay a quién otorgárselo. El dinero se registra; no hay plan.
+  QUINIELA_MISSING: "quiniela_missing",
+  // Se pagó y no se puede saber QUÉ se vendió. No se otorga nada inventado.
+  SNAPSHOT_UNUSABLE: "snapshot_unusable",
 });
 
 function isSafeCount(n) { return Number.isSafeInteger(n) && n >= 0; }
@@ -103,13 +116,19 @@ function normalizeCurrency(value) {
 // navegador ni el proveedor, lo que manda al confirmar.
 function makePurchaseIntent({
   purchaseId, slug, scopeId, configVersion, expectedAmountMinor, currency,
-  provider, now,
+  provider, now, participantLimit, manualRoundLimit, boundToCompetition,
 }) {
   if (!str(purchaseId) || !str(slug) || !str(scopeId)) return null;
   if (!isSafeCount(expectedAmountMinor) || expectedAmountMinor <= 0) return null;
   const cur = normalizeCurrency(currency);
   if (!cur) return null;
   if (!str(provider)) return null;
+  // Correction 01: los LÍMITES también se congelan, no sólo el importe. Sin
+  // ellos, confirmar tenía que volver a leer la configuración comercial viva y
+  // entregaba los límites de hoy a quien compró los de hace veinte minutos.
+  // Se exigen al crear: una compra sin saber qué vende no debe existir.
+  if (!Number.isSafeInteger(participantLimit) || participantLimit < 1) return null;
+  if (!Number.isSafeInteger(manualRoundLimit) || manualRoundLimit < 1) return null;
   const at = now || new Date().toISOString();
   return {
     id: String(purchaseId),
@@ -121,6 +140,27 @@ function makePurchaseIntent({
     configVersion: Number.isFinite(configVersion) ? configVersion : null,
     expectedAmountMinor,
     currency: cur,
+    // EL SNAPSHOT DE LO VENDIDO. Todo lo que hace falta para reconstruir
+    // exactamente el PLUS que se compró, sin volver a preguntarle nada a una
+    // fila que puede haber cambiado mientras el Admin pagaba.
+    purchased: Object.freeze({
+      plan: "PLUS",
+      participantLimit,
+      manualRoundLimit,
+      priceMinor: expectedAmountMinor,
+      currency: cur,
+      configVersion: Number.isFinite(configVersion) ? configVersion : null,
+      // AUDITORÍA, no enforcement. Si la quiniela ya estaba atada a una
+      // competencia al comprar, `manualRoundLimit` no es el límite que vivirá:
+      // un PLUS con torneo cubre el torneo entero (MON-002B). El binding se
+      // sigue tomando del estado actual al otorgar, y eso es deliberado —
+      // MON-001D lo adopta en la primera importación, así que congelarlo aquí
+      // castigaría a quien compra antes de elegir liga. El precio de PLUS es el
+      // mismo con liga y sin ella, así que no hay nada que pagar de menos: lo
+      // único que cambia es que puede recibir MÁS de lo que el número dice.
+      // Se registra para que eso se pueda ver, en vez de deducirlo.
+      boundToCompetition: !!boundToCompetition,
+    }),
     provider: String(provider),
     providerSessionId: null,
     providerPaymentIntentId: null,
@@ -214,6 +254,26 @@ function locateIntent(purchases, observed) {
   return null;
 }
 
+// Lo que se vendió, en la forma que necesita quien construye el entitlement.
+// Devuelve null si el snapshot no está o no es utilizable — que es un estado
+// real, no un hueco que se rellene con lo que haya hoy.
+function purchasedSnapshotOf(intent) {
+  const p = intent && intent.purchased;
+  if (!p || typeof p !== "object") return null;
+  if (!Number.isSafeInteger(p.participantLimit) || p.participantLimit < 1) return null;
+  if (!Number.isSafeInteger(p.manualRoundLimit) || p.manualRoundLimit < 1) return null;
+  if (!isSafeCount(p.priceMinor) || p.priceMinor <= 0) return null;
+  // El importe congelado y el del snapshot tienen que ser el MISMO número. Si
+  // divergen, algo reescribió uno de los dos y no hay forma honesta de elegir.
+  if (p.priceMinor !== intent.expectedAmountMinor) return null;
+  return {
+    participantLimit: p.participantLimit,
+    manualRoundLimit: p.manualRoundLimit,
+    pricePaidMXN: p.priceMinor / 100,
+    configVersion: Number.isFinite(p.configVersion) ? p.configVersion : null,
+  };
+}
+
 // ---- la decisión ----------------------------------------------------------
 //
 // La única función que dice si un pago otorga PLUS, y la usan las DOS rutas
@@ -224,9 +284,20 @@ function locateIntent(purchases, observed) {
 // de QRACKS: { purchaseId, sessionId, paymentIntentId, paid, amountMinor,
 // currency, terminalStatus }.
 //
-// `currentScopeId` se lee de la fila bloqueada, nunca del proveedor ni del
-// navegador.
-function evaluateConfirmation({ intent, observed, currentScopeId }) {
+// `currentScopeId` y `quinielaExists` se leen de la fila BLOQUEADA, nunca del
+// proveedor ni del navegador. Los dos entran aquí, en la decisión, y no después:
+// Correction 01 encontró que comprobar "¿existe la quiniela?" DESPUÉS de haber
+// construido el intent dejaba la anotación fuera de lo que se persistía, así
+// que el pago quedaba cobrado, sin plan y sin decir por qué.
+//
+// El orden del pipeline es, y tiene que seguir siendo:
+//   observación del proveedor -> decisión de dominio -> realidad de QRACKS bajo
+//   lock -> decisión FINAL -> aplicar y persistir
+//
+// `quinielaExists` se exige explícito: no se deduce de que no haya scope, porque
+// una quiniela puede existir sin ciclo. Cualquier cosa que no sea `true` cuenta
+// como ausente, que es el lado seguro.
+function evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists }) {
   const o = observed || {};
   if (!intent) return { decision: DECISION.UNKNOWN_PURCHASE };
 
@@ -274,6 +345,16 @@ function evaluateConfirmation({ intent, observed, currentScopeId }) {
     return { decision: DECISION.ALREADY_PAID };
   }
 
+  // Se cobró y la quiniela ya no está. Se comprueba ANTES del torneo porque es
+  // un hecho más fundamental: sin quiniela no hay ciclo con el que comparar. El
+  // dinero se registra; no hay nada que otorgar.
+  if (quinielaExists !== true) {
+    return {
+      decision: DECISION.QUINIELA_MISSING, nextStatus: PURCHASE_STATUS.PAID,
+      attention: ATTENTION.QUINIELA_MISSING,
+    };
+  }
+
   // Se cobró de verdad, pero el torneo que se compró ya no es el que se juega.
   // El dinero existe y se registra; el entitlement NO se otorga, porque
   // otorgarlo aquí sería habilitar un torneo que nadie compró. Queda marcado
@@ -283,6 +364,16 @@ function evaluateConfirmation({ intent, observed, currentScopeId }) {
     return {
       decision: DECISION.STALE_SCOPE, nextStatus: PURCHASE_STATUS.PAID,
       attention: ATTENTION.STALE_SCOPE,
+    };
+  }
+
+  // Se cobró y no se puede reconstruir QUÉ se vendió. No se otorga nada
+  // aproximado: rellenar el hueco con la configuración de hoy sería
+  // exactamente el fallo que Correction 01 vino a cerrar, una línea más abajo.
+  if (!purchasedSnapshotOf(intent)) {
+    return {
+      decision: DECISION.SNAPSHOT_UNUSABLE, nextStatus: PURCHASE_STATUS.PAID,
+      attention: ATTENTION.SNAPSHOT_UNUSABLE,
     };
   }
 
@@ -366,6 +457,7 @@ module.exports = {
   toMinorUnits, normalizeCurrency,
   makePurchaseIntent, canAdvance, isReusableIntent, findReusableIntent,
   findPaidIntentForScope, findIntentById, locateIntent,
+  purchasedSnapshotOf,
   evaluateConfirmation, applyDecision,
   hasSeenEvent, rememberEvent, buildPaymentAudit,
 };

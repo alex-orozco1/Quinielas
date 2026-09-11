@@ -33,10 +33,13 @@ const NOW = "2026-09-10T12:00:00.000Z";
 const SCOPE = "ts:1:football:thesportsdb:4350:e1";
 const OTHER_SCOPE = "ts:1:football:thesportsdb:4350:e2";
 
+// Correction 01: una compra congela también los LÍMITES, no sólo el importe.
+const SOLD = Object.freeze({ participantLimit: 50, manualRoundLimit: 18 });
 const intentOf = (over = {}) => ({
   ...D.makePurchaseIntent({
     purchaseId: "qpur_a1", slug: "liga", scopeId: SCOPE, configVersion: 1,
     expectedAmountMinor: 19900, currency: "mxn", provider: "stripe", now: NOW,
+    ...SOLD,
   }),
   ...over,
 });
@@ -44,8 +47,10 @@ const observedOf = (over = {}) => ({
   purchaseId: "qpur_a1", sessionId: "cs_1", paymentIntentId: "pi_1",
   paid: true, amountMinor: 19900, currency: "mxn", terminalStatus: null, ...over,
 });
-const decide = (intent, observed, currentScopeId = SCOPE) =>
-  D.evaluateConfirmation({ intent, observed, currentScopeId });
+// `quinielaExists` es explícito a propósito: cualquier cosa que no sea true
+// cuenta como ausente. El caso por defecto de estas pruebas es que existe.
+const decide = (intent, observed, currentScopeId = SCOPE, quinielaExists = true) =>
+  D.evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists });
 
 // ==== 1 · importes: nunca en coma flotante ================================
 
@@ -70,13 +75,20 @@ test("MON003 · 2 — sólo MXN, y la moneda se normaliza antes de comparar", ()
 
 test("MON003 · 3 — un purchase intent inválido no se crea a medias", () => {
   const base = { purchaseId: "p", slug: "s", scopeId: SCOPE, configVersion: 1,
-    expectedAmountMinor: 19900, currency: "mxn", provider: "stripe", now: NOW };
+    expectedAmountMinor: 19900, currency: "mxn", provider: "stripe", now: NOW, ...SOLD };
   assert.ok(D.makePurchaseIntent(base));
   assert.equal(D.makePurchaseIntent({ ...base, scopeId: null }), null, "sin torneo no hay compra");
   assert.equal(D.makePurchaseIntent({ ...base, expectedAmountMinor: 0 }), null);
   assert.equal(D.makePurchaseIntent({ ...base, expectedAmountMinor: 19900.5 }), null);
   assert.equal(D.makePurchaseIntent({ ...base, currency: "usd" }), null);
   assert.equal(D.makePurchaseIntent({ ...base, slug: "" }), null);
+  // Correction 01: sin los límites tampoco hay compra. Vender sin saber qué se
+  // vende es lo que obligaba a adivinarlo después leyendo la config de hoy.
+  assert.equal(D.makePurchaseIntent({ ...base, participantLimit: undefined }), null);
+  assert.equal(D.makePurchaseIntent({ ...base, manualRoundLimit: undefined }), null);
+  assert.equal(D.makePurchaseIntent({ ...base, participantLimit: 0 }), null);
+  assert.equal(D.makePurchaseIntent({ ...base, manualRoundLimit: -1 }), null);
+  assert.equal(D.makePurchaseIntent({ ...base, participantLimit: 50.5 }), null);
 });
 
 // ==== 2 · camino feliz =====================================================
@@ -777,4 +789,323 @@ test("MON003 · 72 — LOCKS: las rutas de pago respetan el orden de siempre", (
   }
   assert.deepEqual(order(confirmBody),
     ["platform_index", "platform_payment_intents", "platform_payment_log"]);
+});
+
+// ==========================================================================
+// CORRECTION 01
+// ==========================================================================
+
+// ==== 20 · el snapshot de lo vendido =======================================
+
+test("MON003 · C1.1 — SNAPSHOT: una compra congela límites, precio y versión", () => {
+  const i = intentOf();
+  assert.deepEqual(i.purchased, {
+    plan: "PLUS", participantLimit: 50, manualRoundLimit: 18,
+    priceMinor: 19900, currency: "mxn", configVersion: 1,
+    // Auditoría: si ya había competencia al comprar, el límite de jornadas no
+    // será el que vivirá (un PLUS con torneo cubre el torneo entero).
+    boundToCompetition: false,
+  });
+  // Congelado de verdad: el objeto no se puede reescribir en sitio.
+  assert.ok(Object.isFrozen(i.purchased));
+});
+
+test("MON003 · C1.2 — SNAPSHOT: se traduce a lo que el entitlement necesita", () => {
+  const snap = D.purchasedSnapshotOf(intentOf());
+  assert.deepEqual(snap, { participantLimit: 50, manualRoundLimit: 18, pricePaidMXN: 199, configVersion: 1 });
+});
+
+test("MON003 · C1.3 — SNAPSHOT: un snapshot roto NO se rellena con nada", () => {
+  assert.equal(D.purchasedSnapshotOf(intentOf({ purchased: null })), null);
+  assert.equal(D.purchasedSnapshotOf(intentOf({ purchased: {} })), null);
+  assert.equal(D.purchasedSnapshotOf(intentOf({
+    purchased: { participantLimit: 50, manualRoundLimit: 18, priceMinor: 0 } })), null);
+  // Y si el importe congelado y el del snapshot no coinciden, algo reescribió
+  // uno de los dos: no hay forma honesta de elegir cuál.
+  assert.equal(D.purchasedSnapshotOf(intentOf({
+    purchased: { plan: "PLUS", participantLimit: 50, manualRoundLimit: 18,
+      priceMinor: 29900, currency: "mxn", configVersion: 1 } })), null);
+});
+
+test("MON003 · C1.4 — SNAPSHOT: PLUS se construye desde números, no desde una config", () => {
+  const { buildPurchasedPlusEntitlement, buildPlusEntitlement, DEFAULT_COMMERCIAL_CONFIG } = require("../planLimits");
+  const e = buildPurchasedPlusEntitlement(
+    { participantLimit: 50, manualRoundLimit: 18, pricePaidMXN: 199, configVersion: 1 },
+    NOW, { source: "stripe_purchase", grantedBy: "stripe" });
+  assert.equal(e.plan, "PLUS");
+  assert.equal(e.participantLimit, 50);
+  assert.equal(e.manualRoundLimit, 18);
+  assert.equal(e.pricePaidMXN, 199);
+  assert.equal(e.configVersionAtGrant, 1);
+  assert.equal(e.source, "stripe_purchase");
+  // La FORMA se define una sola vez: el constructor de siempre delega en éste,
+  // así que la ruta de compra y la de grant manual no pueden divergir.
+  const viaConfig = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG, NOW, { source: "stripe_purchase", grantedBy: "stripe" });
+  assert.deepEqual(Object.keys(e).sort(), Object.keys(viaConfig).sort());
+  // Y un snapshot incompleto no produce un PLUS a medias.
+  assert.equal(buildPurchasedPlusEntitlement({ participantLimit: 50 }, NOW, {}), null);
+  assert.equal(buildPurchasedPlusEntitlement(null, NOW, {}), null);
+});
+
+test("MON003 · C1.5 — SNAPSHOT: la config NO se relee al confirmar", () => {
+  // La raíz del blocker: confirmar llamaba buildPlusEntitlement(commercialConfig)
+  // y por ahí entraban los límites de HOY.
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function confirmPaymentAndGrant"));
+  const body = fn.slice(0, fn.indexOf("\n// ---------- el webhook"));
+  assert.ok(!/commercial_config/.test(body),
+    "la configuración comercial no puede entrar en la confirmación de un pago");
+  assert.ok(!/buildPlusEntitlement\(/.test(body),
+    "el constructor que toma una config no debe usarse aquí");
+  assert.ok(body.includes("purchasedSnapshotOf(intent)"));
+  assert.ok(body.includes("buildPurchasedPlusEntitlement(snapshot, now"));
+});
+
+test("MON003 · C1.6 — SNAPSHOT: el checkout exige los límites antes de vender", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(body.includes("Number.isSafeInteger(plusConfig.participantLimit)"));
+  assert.ok(body.includes("Number.isSafeInteger(plusConfig.manualRoundLimit)"));
+  assert.ok(body.includes('reason: "unusable_limits"'));
+  assert.ok(body.includes("participantLimit: plusConfig.participantLimit"));
+  assert.ok(body.includes("manualRoundLimit: plusConfig.manualRoundLimit"));
+});
+
+test("MON003 · C1.7 — SNAPSHOT: sólo se reutiliza un checkout que venda LO MISMO", () => {
+  // Con el precio solo no bastaba: la config puede cambiar los límites sin
+  // tocar el importe, y reutilizar habría cobrado lo de antes prometiendo lo
+  // de ahora.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(body.includes("const sameOffer ="));
+  assert.ok(body.includes("p.purchased.participantLimit === plusConfig.participantLimit"));
+  assert.ok(body.includes("p.purchased.manualRoundLimit === plusConfig.manualRoundLimit"));
+  assert.ok(!/reusable && reusable\.expectedAmountMinor === amountMinor/.test(body),
+    "no puede quedar ninguna comparación que mire sólo el importe");
+});
+
+test("MON003 · C1.8 — SNAPSHOT: sin snapshot utilizable el pago NO otorga nada", () => {
+  const d = decide(intentOf({ purchased: null }), observedOf());
+  assert.equal(d.decision, D.DECISION.SNAPSHOT_UNUSABLE);
+  assert.equal(d.nextStatus, D.PURCHASE_STATUS.PAID, "el cobro existió y se registra");
+  assert.equal(d.attention, D.ATTENTION.SNAPSHOT_UNUSABLE);
+  const next = D.applyDecision(intentOf({ purchased: null }), d, observedOf(), NOW);
+  assert.equal(next.status, "paid");
+  assert.equal(next.attention.code, "purchase_snapshot_unusable");
+});
+
+// ==== 21 · quiniela eliminada =============================================
+
+test("MON003 · C1.9 — BORRADA: la decisión la toma el dominio, no un parche después", () => {
+  const d = decide(intentOf(), observedOf(), null, false);
+  assert.equal(d.decision, D.DECISION.QUINIELA_MISSING);
+  assert.equal(d.nextStatus, D.PURCHASE_STATUS.PAID);
+  assert.equal(d.attention, D.ATTENTION.QUINIELA_MISSING);
+});
+
+test("MON003 · C1.10 — BORRADA: el attention SÍ queda en el intent persistido", () => {
+  // La raíz del blocker: applyDecision corría ANTES de descubrir que la
+  // quiniela no estaba, así que la anotación se escribía sobre un objeto ya
+  // usado y no se persistía nunca.
+  const d = decide(intentOf(), observedOf(), null, false);
+  const next = D.applyDecision(intentOf(), d, observedOf(), NOW);
+  assert.equal(next.status, "paid", "el dinero existió");
+  assert.ok(next.attention, "y queda dicho que hay que mirarlo");
+  assert.equal(next.attention.code, "paid_for_a_deleted_quiniela");
+  // La auditoría lo explica con la misma palabra.
+  const a = D.buildPaymentAudit(next, d.decision, "quiniela_missing", NOW);
+  assert.equal(a.decision, "quiniela_missing");
+  assert.equal(a.attention, "paid_for_a_deleted_quiniela");
+});
+
+test("MON003 · C1.11 — BORRADA: el código de atención describe el problema", () => {
+  // El ticket lo pide explícitamente: no reutilizar IDENTITY_MISMATCH, que
+  // describe otra cosa.
+  assert.equal(D.ATTENTION.QUINIELA_MISSING, "paid_for_a_deleted_quiniela");
+  assert.notEqual(D.ATTENTION.QUINIELA_MISSING, D.ATTENTION.IDENTITY_MISMATCH);
+  const src = stripComments(serverSrc);
+  assert.ok(!/quiniela_missing[\s\S]{0,200}IDENTITY_MISMATCH/.test(src));
+  assert.ok(!/decision\.attention\s*=/.test(src),
+    "la decisión no se corrige a posteriori en ninguna parte");
+});
+
+test("MON003 · C1.12 — BORRADA: un pago sin quiniela no se cuela por delante", () => {
+  // El orden importa: sin quiniela no hay ciclo con el que comparar, así que
+  // esta comprobación va antes que la del torneo.
+  const d = decide(intentOf(), observedOf(), OTHER_SCOPE, false);
+  assert.equal(d.decision, D.DECISION.QUINIELA_MISSING,
+    "con la quiniela borrada, ése es el hecho que manda sobre el torneo viejo");
+});
+
+// ==== 22 · el pipeline, en orden ==========================================
+
+test("MON003 · C1.13 — PIPELINE: la decisión está cerrada antes de aplicar", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function confirmPaymentAndGrant"));
+  const body = fn.slice(0, fn.indexOf("\n// ---------- el webhook"));
+  const decideAt = body.indexOf("paymentsDomain.evaluateConfirmation({");
+  const applyAt = body.indexOf("paymentsDomain.applyDecision(");
+  const grantAt = body.indexOf("applyEntitlementGrant({");
+  const persistAt = applyAt + body.slice(applyAt).indexOf("putRow(PAYMENT_INTENTS_KEY,");
+  assert.ok(decideAt !== -1 && applyAt !== -1 && grantAt !== -1);
+  assert.ok(persistAt > applyAt, "tras aplicar el intent tiene que haber una escritura");
+  assert.ok(decideAt < grantAt, "primero se decide");
+  assert.ok(grantAt < applyAt, "la realidad de QRACKS se resuelve antes de aplicar el intent");
+  assert.ok(applyAt < persistAt, "y sólo entonces se persiste");
+  // La otra escritura, la de la salida temprana, retorna sin tocar el flujo
+  // principal: no puede persistir un intent a medio decidir.
+  const early = body.slice(0, decideAt);
+  assert.ok(early.includes("DECISION.UNKNOWN_PURCHASE"));
+  assert.ok(early.includes("return {"), "esa rama sale antes de decidir nada más");
+});
+
+test("MON003 · C1.14 — PIPELINE: la existencia de la quiniela entra en la decisión", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function confirmPaymentAndGrant"));
+  const body = fn.slice(0, fn.indexOf("\n// ---------- el webhook"));
+  assert.ok(body.includes("quinielaExists: !!entry"));
+  // Y sale de la fila bloqueada, como el scope.
+  assert.ok(body.includes('getRowLocked("platform_index", client)'));
+});
+
+test("MON003 · C1.15 — PIPELINE: quinielaExists se exige explícito", () => {
+  // No se deduce de que no haya scope: una quiniela puede existir sin ciclo.
+  // Cualquier cosa que no sea true cuenta como ausente.
+  for (const v of [undefined, null, false, 0, "", "true", 1, {}]) {
+    const d = D.evaluateConfirmation({ intent: intentOf(), observed: observedOf(), currentScopeId: SCOPE, quinielaExists: v });
+    assert.equal(d.decision, D.DECISION.QUINIELA_MISSING, JSON.stringify(v));
+  }
+  assert.equal(D.evaluateConfirmation({ intent: intentOf(), observed: observedOf(), currentScopeId: SCOPE, quinielaExists: true }).decision,
+    D.DECISION.CONFIRM);
+});
+
+test("MON003 · C1.16 — el orden de las decisiones es el correcto de arriba abajo", () => {
+  const i = intentOf();
+  const o = observedOf();
+  // Un importe que no cuadra manda sobre todo lo demás: no se sabe ni qué se cobró.
+  assert.equal(decide(i, { ...o, amountMinor: 1 }, null, false).decision, D.DECISION.AMOUNT_MISMATCH);
+  // Un pago ya confirmado no se reevalúa aunque la quiniela haya desaparecido.
+  assert.equal(decide(intentOf({ status: "paid" }), o, null, false).decision, D.DECISION.ALREADY_PAID);
+  // Sin quiniela, eso manda sobre el torneo y sobre el snapshot.
+  assert.equal(decide(intentOf({ purchased: null }), o, OTHER_SCOPE, false).decision, D.DECISION.QUINIELA_MISSING);
+  // Con quiniela, el torneo viejo manda sobre el snapshot roto.
+  assert.equal(decide(intentOf({ purchased: null }), o, OTHER_SCOPE, true).decision, D.DECISION.STALE_SCOPE);
+});
+
+test("MON003 · C1.17 — el binding a competencia NO se congela, y es deliberado", () => {
+  // Respuesta a "¿queda algo más que se relea del estado mutable?": sí, el
+  // competitionIdentity, que applyEntitlementGrant toma de la entitlement
+  // ACTUAL (MON-002B). Es intencional: MON-001D lo adopta en la primera
+  // importación, así que congelarlo castigaría a quien compra antes de elegir
+  // liga. El precio de PLUS es el mismo con liga y sin ella, así que no hay
+  // nada que pagar de menos — como mucho se recibe más. Se REGISTRA para que
+  // sea visible en la auditoría en vez de deducirse.
+  const sinLiga = D.makePurchaseIntent({
+    purchaseId: "p", slug: "s", scopeId: SCOPE, configVersion: 1,
+    expectedAmountMinor: 19900, currency: "mxn", provider: "stripe", now: NOW,
+    ...SOLD, boundToCompetition: false });
+  const conLiga = D.makePurchaseIntent({
+    purchaseId: "p", slug: "s", scopeId: SCOPE, configVersion: 1,
+    expectedAmountMinor: 19900, currency: "mxn", provider: "stripe", now: NOW,
+    ...SOLD, boundToCompetition: true });
+  assert.equal(sinLiga.purchased.boundToCompetition, false);
+  assert.equal(conLiga.purchased.boundToCompetition, true);
+  // Y NO entra en el snapshot de enforcement: no cambia los números aplicados.
+  assert.deepEqual(D.purchasedSnapshotOf(sinLiga), D.purchasedSnapshotOf(conLiga));
+
+  // El otro sentido —atado al comprar y desatado al confirmar— ya está cerrado
+  // por otra vía: desatar sólo ocurre al iniciar un ciclo nuevo, y eso cambia
+  // el scope, que la decisión rechaza antes de llegar a otorgar.
+  assert.equal(decide(conLiga, observedOf({ purchaseId: "p" }), OTHER_SCOPE).decision,
+    D.DECISION.STALE_SCOPE);
+});
+
+test("MON003 · C1.18 — el checkout registra el binding del momento de la compra", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(body.includes("boundToCompetition: !!(entry.entitlement && entry.entitlement.competitionIdentity)"));
+});
+
+// ==== 23 · segunda pasada adversarial sobre los estados nuevos =============
+
+test("MON003 · C1.19 — ni el navegador ni el proveedor determinan los límites", () => {
+  const { buildPurchasedPlusEntitlement } = require("../planLimits");
+  // Un observed que intenta colar sus propios números: el dominio no los mira,
+  // y el entitlement sale del snapshot.
+  const sucio = observedOf({ participantLimit: 9999, manualRoundLimit: 9999,
+    purchased: { participantLimit: 9999 }, plan: "PLUS" });
+  assert.equal(decide(intentOf(), sucio).decision, D.DECISION.CONFIRM);
+  const e = buildPurchasedPlusEntitlement(D.purchasedSnapshotOf(intentOf()), NOW, {});
+  assert.equal(e.participantLimit, 50);
+  assert.equal(e.manualRoundLimit, 18);
+  assert.equal(e.pricePaidMXN, 199);
+});
+
+test("MON003 · C1.20 — un snapshot cuyo precio no cuadra no otorga nada", () => {
+  // Subir los límites a mano en la fila SIN tocar el precio congelado es la
+  // forma que tendría un error (o una mano) de regalar capacidad. El importe
+  // congelado y el del snapshot tienen que ser el mismo número.
+  const manipulado = intentOf({ purchased: { plan: "PLUS", participantLimit: 9999,
+    manualRoundLimit: 9999, priceMinor: 1, currency: "mxn", configVersion: 1 } });
+  assert.equal(D.purchasedSnapshotOf(manipulado), null);
+  assert.equal(decide(manipulado, observedOf()).decision, D.DECISION.SNAPSHOT_UNUSABLE);
+});
+
+test("MON003 · C1.21 — duplicados y fuera de orden sobre los estados nuevos", () => {
+  for (const [nombre, intent] of [
+    ["quiniela borrada", intentOf()],
+    ["snapshot roto", intentOf({ purchased: null })],
+  ]) {
+    const existe = nombre === "snapshot roto";
+    const d1 = decide(intent, observedOf(), existe ? SCOPE : null, existe);
+    const tras = D.applyDecision(intent, d1, observedOf(), NOW);
+    assert.equal(tras.status, "paid", nombre + ": el cobro se registra");
+    assert.ok(tras.attention, nombre + ": con anotación");
+    // Un segundo evento no lo reevalúa.
+    assert.equal(decide(tras, observedOf(), existe ? SCOPE : null, existe).decision,
+      D.DECISION.ALREADY_PAID, nombre + ": no se reevalúa");
+    // Y un evento viejo no lo degrada ni borra la anotación.
+    const viejo = decide(tras, observedOf({ paid: false, terminalStatus: "expired" }),
+      existe ? SCOPE : null, existe);
+    assert.equal(viejo.decision, D.DECISION.IGNORED_STALE, nombre + ": el evento viejo se ignora");
+    const final = D.applyDecision(tras, viejo, {}, "2026-12-31T00:00:00.000Z");
+    assert.equal(final.status, "paid", nombre + ": sigue cobrado");
+    assert.deepEqual(final.attention, tras.attention, nombre + ": la anotación sobrevive");
+  }
+});
+
+test("MON003 · C1.22 — el snapshot y la auditoría sobreviven a los reintentos", () => {
+  let intent = intentOf();
+  const d = decide(intent, observedOf());
+  intent = D.applyDecision(intent, d, observedOf(), NOW);
+  // Tres reintentos del mismo pago: el snapshot no se toca en ninguno.
+  for (let i = 0; i < 3; i++) {
+    const again = decide(intent, observedOf());
+    assert.equal(again.decision, D.DECISION.ALREADY_PAID);
+    intent = D.applyDecision(intent, again, observedOf(), NOW);
+    assert.deepEqual(intent.purchased, intentOf().purchased, "el snapshot es intacto tras el reintento " + (i + 1));
+  }
+  const a = D.buildPaymentAudit(intent, D.DECISION.ALREADY_PAID, "already_on_plan", NOW);
+  assert.equal(a.amountMinor, 19900);
+  assert.equal(a.currency, "mxn");
+});
+
+test("MON003 · C1.23 — un pago que no puede otorgar nada nunca queda sin explicación", () => {
+  // Las tres formas de "se cobró y no hay plan": las tres dejan estado paid,
+  // anotación y una decisión con nombre. Ninguna queda muda.
+  const casos = [
+    [decide(intentOf(), observedOf(), OTHER_SCOPE, true), D.ATTENTION.STALE_SCOPE],
+    [decide(intentOf(), observedOf(), null, false), D.ATTENTION.QUINIELA_MISSING],
+    [decide(intentOf({ purchased: null }), observedOf(), SCOPE, true), D.ATTENTION.SNAPSHOT_UNUSABLE],
+  ];
+  for (const [d, code] of casos) {
+    assert.equal(d.nextStatus, D.PURCHASE_STATUS.PAID, d.decision);
+    assert.equal(d.attention, code, d.decision);
+    const next = D.applyDecision(intentOf(), d, observedOf(), NOW);
+    assert.equal(next.attention.code, code);
+    assert.ok(D.buildPaymentAudit(next, d.decision, "none", NOW).attention);
+  }
 });
