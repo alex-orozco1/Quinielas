@@ -445,6 +445,13 @@ function buildUpgradeOffer(entitlement, commercialConfig) {
     priceMXN: plus.priceMXN,
     participantLimit: plus.participantLimit,
     roundLimit: plus.manualRoundLimit,
+    // MON-003 Quick Win 1. `roundLimit` NO es el límite de un Plus con
+    // competencia: ése cubre el torneo entero (ver checkLifecycleRoundConsumption).
+    // El número sólo aplica cuando no hay torneo al que agarrarse. La regla
+    // viaja con la oferta, calculada aquí, porque MON-002A ya encontró una vez
+    // una pantalla que había derivado su propia versión de un límite y había
+    // acabado diciendo algo distinto de lo que el servidor aplicaba.
+    roundLimitApplies: !entitlement.competitionIdentity,
     // Whatever the operator configured, or "" — the screen decides which
     // sentence to write, but never invents a channel that does not exist.
     contact: typeof commercialConfig.upgradeContact === "string" ? commercialConfig.upgradeContact : "",

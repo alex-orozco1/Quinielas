@@ -172,7 +172,9 @@ A few rules follow from that:
 - **Plus does not roll over.** When an organizer starts a new tournament, the pool returns to Free — a purchase belongs to the tournament it was bought for.
 - Pools that predate commercial enforcement are **grandfathered** and keep the experience they already had. Operators can also issue **manual grants** for support, testing, or promotions, with a reason the server requires and records. Unlike a purchase, both of these carry across tournament cycles — they are statuses somebody deliberately granted, not something bought for one tournament.
 
-**There is no automatic checkout yet.** Upgrading is a conversation: the paywall states the price and how to reach the organizers, and a platform operator activates Plus and records the payment in the same operation. The product does not pretend to charge a card it cannot charge.
+**Paying for Plus** goes through a hosted Stripe Checkout: the organizer is sent to Stripe, pays there, and Plus is activated only after the payment is verified **server-side** against a signed webhook. The page they come back to never activates anything by itself, and QRACKS never sees or stores a card number.
+
+Checkout is off unless the environment carries Stripe credentials. Where it is off — and for support, promotions and exceptions anywhere — a platform operator still activates Plus manually and records the payment in the same operation. The product does not pretend to charge a card it cannot charge.
 
 ---
 
@@ -276,7 +278,7 @@ Prediction pools only work when participants trust the system.
 The organizer's competition picker currently covers:
 
 - 🇲🇽 Liga MX
-- 🏴 Premier League
+- 🇬🇧 Premier League
 - 🇪🇸 La Liga
 - 🇩🇪 Bundesliga
 - 🇮🇹 Serie A
@@ -438,6 +440,15 @@ QRACKS is currently deployed on Render, configured through `render.yaml`.
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `PLATFORM_PASSWORD` | Platform administrator password |
+| `STRIPE_SECRET_KEY` | Stripe secret key. Server-only — never sent to a browser. |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret, used to verify that an event really came from Stripe. |
+| `PUBLIC_BASE_URL` | The public origin (e.g. `https://qracks.net`), used to build the return URLs a checkout comes back to. |
+
+The three Stripe variables are required **together**: with only some of them the
+product would be able to start a charge it could never verify, so payments stay
+switched off unless all three are present. When they are absent, the upgrade
+path falls back to the manual one and says so — it never shows a checkout that
+cannot charge.
 
 Production: 🌐 **https://qracks.net**
 
@@ -477,7 +488,7 @@ Where possible, every screen should make the next meaningful action obvious.
 
 QRACKS is not a sportsbook: it does not manage bets, hold prize money or distribute winnings. It is built for groups who already organize prediction pools themselves, and its job is to remove the operational work.
 
-When QRACKS charges, it charges for the software — never a cut of whatever the group plays for. Handling prize money is not part of the product today, and it is not what the Payments work in *What's next* refers to.
+When QRACKS charges, it charges for the software — never a cut of whatever the group plays for. Handling prize money is not part of the product, and the payments work does not move it in that direction: money for Plus goes from the organizer to QRACKS through a payment provider, and whatever the group plays for never touches the platform.
 
 **Less spreadsheet, less chasing people, less manual scoring — more playing.**
 
@@ -492,7 +503,8 @@ Where the product stands today. New ideas are prioritized against these stages r
 | Core Product | ✅ Established | Create, join, predict, score, rank, administer |
 | Performance & Stability | ✅ Continuous | Payload optimization, connection pooling, concurrency safety |
 | Sports Data Reliability | ✅ Implemented | Provider abstraction, competition sync, postseason support, fail-closed scoring |
-| Monetization Foundation | ✅ Implemented | Plans, entitlements, server-side enforcement, tournament cycles — **not** payments |
+| Monetization Foundation | ✅ Implemented | Plans, entitlements, server-side enforcement, tournament cycles |
+| Payments | ✅ Implemented | Hosted Stripe Checkout, verified server-side. Live wherever the environment is configured for it. |
 | Product Iteration | 🔄 Continuous | Removing friction from organizer and participant workflows, guided by real usage |
 | Advanced features | ⏸️ On hold | Capabilities beyond today's core loop wait until it shows recurring usage. Unrelated to the Plus plan, which already works. |
 
@@ -502,7 +514,7 @@ Where the product stands today. New ideas are prioritized against these stages r
 
 In order, and without dates:
 
-1. **Payments** — a real Plus checkout, confirmed server-side rather than trusted from the browser. It is the one part of Plus an organizer cannot do alone today.
+1. **Payments, in production** — the checkout is built and verified; what remains is turning it on for real traffic and watching the first purchases closely.
 2. **Help** — today's per-screen tips become one help system, written once and used across the landing page, participant and administrator views.
 3. **Product iteration** — watch real pools, measure where people actually get stuck, and fix what the evidence shows rather than what seems likely.
 4. **Sports-data rollout** — turn the provider capabilities already built into a safe organizer experience, including choosing and migrating providers. The architecture is ready; the product experience is not.

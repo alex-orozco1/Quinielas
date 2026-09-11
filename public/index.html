@@ -2949,7 +2949,10 @@
       currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
       myPicks = await getPicks(currentUser.id);
       activeTab = "jornada";
-      render();
+      await render();
+      // MON-003: hasta aquí no se sabía quién volvía. Si venía de pagar, éste
+      // es el primer instante en que se puede confirmar su compra.
+      resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
     });
     document.getElementById("qz-session-no").addEventListener("click", async () => {
       trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
@@ -4674,6 +4677,159 @@
     try{ return await planStateInFlight; }
     finally{ planStateInFlight = null; }
   }
+  // ---------- MON-003: el pago ----------
+  //
+  // Esta pantalla no sabe cuánto cuesta Plus, ni qué torneo se está comprando,
+  // ni cómo se verifica el cobro. Pide que se prepare el pago y sigue el
+  // enlace. Todo lo comercial lo pone el servidor, que es lo que impide que
+  // una llamada fabricada compre Plus por un peso.
+  // El pago pendiente de ESTA quiniela, con caducidad. Sin caducidad, un
+  // pendiente que nunca se resolvió haría que cada carga de la página
+  // preguntara por él para siempre.
+  const PENDING_PURCHASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  function pendingPurchaseKey(){ return "qracks_pago_" + (SLUG || "root"); }
+  // Se guarda la VUELTA entera, no sólo el id: una vuelta cancelada también es
+  // algo que hay que contarle al organizador, y también se pierde si la app le
+  // pide identificarse antes de poder decírselo.
+  function writePendingPurchase(id, cancelled){
+    try{
+      window.localStorage.setItem(pendingPurchaseKey(),
+        JSON.stringify({ id: id || null, cancelled: !!cancelled, at: Date.now() }));
+    }catch(e){}
+  }
+  function readPendingPurchase(){
+    try{
+      const raw = window.localStorage.getItem(pendingPurchaseKey());
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      if(!parsed || (!parsed.id && !parsed.cancelled)) return null;
+      if(!Number.isFinite(parsed.at) || Date.now() - parsed.at > PENDING_PURCHASE_MAX_AGE_MS){
+        clearPendingPurchase();
+        return null;
+      }
+      return parsed;
+    }catch(e){ return null; }
+  }
+  function clearPendingPurchase(){
+    try{ window.localStorage.removeItem(pendingPurchaseKey()); }catch(e){}
+  }
+
+  let checkoutInFlight = false;
+  async function startCheckout(){
+    if(ROUTE !== "quiniela" || !SLUG) return { ok: false };
+    // Un segundo clic mientras el primero sigue en vuelo no manda otra
+    // petición. El servidor también lo soporta (reutiliza la compra abierta),
+    // pero no llegar a pedirlo es mejor que depender de que lo resuelva.
+    if(checkoutInFlight) return { ok: false, reason: "in_flight" };
+    checkoutInFlight = true;
+    try{
+      const headers = { "Content-Type": "application/json" };
+      const cred = adminOrOwnerCred();
+      if(cred) headers["X-Qracks-Auth"] = cred;
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/checkout", {
+        method: "POST", headers, credentials: "same-origin", body: "{}"
+      });
+      const data = await res.json().catch(() => ({}));
+      if(res.ok && data && data.checkoutUrl){
+        // Se recuerda qué compra se abrió para poder preguntar por ella al
+        // volver, incluso si el navegador pierde el parámetro de la URL.
+        writePendingPurchase(data.purchaseId);
+        return { ok: true, checkoutUrl: data.checkoutUrl, purchaseId: data.purchaseId };
+      }
+      if(res.status === 503) return { ok: false, reason: "unavailable" };
+      return { ok: false, reason: (data && data.error) || "error" };
+    }catch(e){
+      return { ok: false, reason: "network_error" };
+    }finally{
+      checkoutInFlight = false;
+    }
+  }
+
+  // La vuelta del checkout. NO activa nada: la URL de regreso sólo dice QUÉ
+  // compra mirar, y quien contesta si se cobró es el servidor preguntándole al
+  // proveedor. Un parámetro inventado a mano aquí no consigue nada.
+  const CHECKOUT_POLL_MS = 2000;
+  const CHECKOUT_POLL_ATTEMPTS = 6;
+  async function readCheckoutStatus(purchaseId){
+    const headers = {};
+    const cred = adminOrOwnerCred();
+    if(cred) headers["X-Qracks-Auth"] = cred;
+    const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG)
+      + "/checkout/" + encodeURIComponent(purchaseId), { headers, credentials: "same-origin" });
+    if(!res.ok) return null;
+    return await res.json().catch(() => null);
+  }
+  async function resolveCheckoutReturn(){
+    if(ROUTE !== "quiniela" || !SLUG || !meta) return;
+    let params;
+    try{ params = new URLSearchParams(window.location.search); }catch(e){ params = new URLSearchParams(); }
+    let cancelled = !!params.get("qz_pago_cancelado");
+    let purchaseId = params.get("qz_pago");
+    // Si la URL no trae nada puede seguir habiendo una vuelta pendiente de esta
+    // quiniela: es lo que permite retomarla cuando la app pidió identificarse
+    // antes de poder actuar.
+    if(!purchaseId && !cancelled){
+      const pending = readPendingPurchase();
+      if(!pending) return;
+      purchaseId = pending.id;
+      cancelled = pending.cancelled;
+    }
+    // La vuelta se PERSISTE antes de tocar la URL. Al volver del pago, la app
+    // puede preguntar "¿Eres Ana?" antes de saber quién vuelve; si el
+    // parámetro se consumiera ahí, se perdería para siempre y el organizador
+    // se quedaría pagado y sin Plus, o sin saber que no se le cobró.
+    writePendingPurchase(purchaseId, cancelled);
+    // Y la barra se limpia: no aporta nada al recargar y queda fea si alguien
+    // comparte el enlace.
+    try{
+      const url = new URL(window.location.href);
+      if(url.searchParams.has("qz_pago") || url.searchParams.has("qz_pago_cancelado")){
+        url.searchParams.delete("qz_pago");
+        url.searchParams.delete("qz_pago_cancelado");
+        window.history.replaceState({}, "", url.toString());
+      }
+    }catch(e){}
+    // La credencial en memoria NO sirve de portero aquí: volver del pago es una
+    // navegación completa, y `ownerPasswordCache`/`currentUserPinCache` mueren
+    // con la página. Lo que SÍ sobrevive es la cookie de sesión, que es
+    // exactamente con lo que el servidor autoriza. Gatear por la credencial
+    // dejaba a todo organizador que pagara viendo cómo no pasaba nada.
+    const pareceAdmin = !!adminOrOwnerCred() || !!(currentUser && currentUser.isAdmin);
+    if(!pareceAdmin) return;
+    if(cancelled){
+      clearPendingPurchase();
+      notice("No se hizo ningún cargo. Puedes intentarlo cuando quieras.");
+      return;
+    }
+    if(!purchaseId) return;
+
+    notice("Estamos confirmando tu pago…");
+    // El proveedor puede tardar un momento en avisarnos. Se pregunta unas
+    // pocas veces y se para: quedarse esperando indefinidamente sería peor que
+    // decir que siga en su pantalla.
+    for(let i = 0; i < CHECKOUT_POLL_ATTEMPTS; i++){
+      let status = null;
+      try{ status = await readCheckoutStatus(purchaseId); }catch(e){}
+      if(status && status.status === "paid"){
+        clearPendingPurchase();
+        invalidatePlan();
+        await loadPlan({ force: true });
+        await render();
+        notice(status.needsAttention
+          ? "Tu pago se registró, pero necesitamos revisarlo. Te contactamos."
+          : "✅ ¡Listo! Tu quiniela ya tiene Plus.");
+        return;
+      }
+      if(status && (status.status === "failed" || status.status === "cancelled" || status.status === "expired")){
+        clearPendingPurchase();
+        notice("El pago no se completó. No se hizo ningún cargo.");
+        return;
+      }
+      await new Promise(r => setTimeout(r, CHECKOUT_POLL_MS));
+    }
+    notice("Tu pago sigue en proceso. En cuanto se confirme, Plus se activa solo.");
+  }
+
   // Any write that consumes capacity can change these numbers, so the cached
   // copy is dropped rather than left to go quietly out of date.
   function invalidatePlan(){ planState = null; }
@@ -4871,8 +5027,13 @@
     const c = ctx || {};
     const offer = upgrade && upgrade.available ? upgrade : null;
     const money = (n) => `$${Number(n).toLocaleString("es-MX")} MXN`;
+    // Con torneo, Plus cubre el torneo completo y el número de jornadas no
+    // aplica; sin torneo, sí. La distinción la decide el servidor
+    // (offer.roundLimitApplies), no esta pantalla.
     const unlocks = offer
-      ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
+      ? (offer.roundLimitApplies
+          ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
+          : `Con Plus: hasta ${offer.participantLimit} personas y el torneo completo.`)
       : "";
     // Honest about the mechanism. There is no checkout yet (that is MON-003),
     // so the button must not look like one.
@@ -4917,14 +5078,29 @@
       overlay.querySelector("#qz-upgrade-close").addEventListener("click", () => cleanup(false));
       const cta = overlay.querySelector("#qz-upgrade-cta");
       if(cta){
-        cta.addEventListener("click", () => {
+        cta.addEventListener("click", async () => {
           // `source` is a real column; a field the table has no room for
           // would simply be dropped, which is not instrumentation.
           trackEvent("upgrade_cta_clicked", { source: c.limitType ? "paywall_" + c.limitType : "paywall" });
+          cta.disabled = true;
+          cta.textContent = "Abriendo el pago…";
+          // MON-003: el checkout lo crea el SERVIDOR. Esta pantalla no conoce
+          // el precio que se va a cobrar, ni el torneo, ni el plan — sólo pide
+          // que se prepare el pago y sigue el enlace que le devuelven.
+          const started = await startCheckout();
+          if(started && started.checkoutUrl){
+            cleanup(true);
+            window.location.href = started.checkoutUrl;
+            return;
+          }
+          cta.disabled = false;
+          cta.textContent = "Pasar a Plus";
+          // Sin pasarela disponible NO se finge un cobro: se dice la verdad y
+          // queda el camino de siempre, que sigue funcionando.
           cleanup(true);
-          // Deliberately not a fake checkout: it restates the real next step
-          // so the Admin leaves knowing exactly what happens now.
-          toast(howTo);
+          toast(started && started.reason === "unavailable"
+            ? (howTo || "El pago con tarjeta no está disponible ahora mismo. Escríbenos y lo activamos.")
+            : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
         });
         cta.focus();
       } else {
@@ -7622,7 +7798,7 @@
           </div>
           <div class="row2">
             <div class="field"><label>Plus — personas</label><input type="number" id="qz-c-plus-people" min="1" value="${config.plus.participantLimit}"></div>
-            <div class="field"><label>Plus — jornadas</label><input type="number" id="qz-c-plus-rounds" min="1" value="${config.plus.manualRoundLimit}"></div>
+            <div class="field"><label>Plus — jornadas sin torneo</label><input type="number" id="qz-c-plus-rounds" min="1" value="${config.plus.manualRoundLimit}"></div>
           </div>
           <div class="field"><label>Precio de Plus (MXN)</label><input type="number" id="qz-c-plus-price" min="0" value="${config.plus.priceMXN}"></div>
           <div class="field">
@@ -8195,7 +8371,15 @@
       accessLinkOpenedTracked = true;
       trackEvent("access_link_opened");
     }
-    render();
+    // MON-003: la vuelta del checkout se resuelve DESPUÉS de pintar, y el
+    // `await` es la parte que importa. render() es quien restaura la sesión
+    // (checkSession -> currentUser), así que sin esperarlo la confirmación
+    // arrancaba antes de saber que quien vuelve es el organizador, se daba por
+    // no-admin y se salía en silencio: el pago se cobraba y la pantalla no
+    // decía nada. Pintar primero también evita que el Admin mire una pantalla
+    // en blanco mientras se confirma, y `notice()` sobrevive al re-render.
+    await render();
+    resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
   }
   boot();
 })();

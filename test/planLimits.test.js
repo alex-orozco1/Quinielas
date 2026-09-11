@@ -363,7 +363,7 @@ test("self-register also reads commercial_config fresh and passes it to checkPar
 });
 
 test("commercial_config is classified as a platform-tier key", () => {
-  assert.ok(serverSrc.includes('const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config"]);'));
+  assert.ok(serverSrc.includes('const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config", "platform_payment_intents"]);'));
 });
 
 test("a commercial_config write is validated with isCommercialConfigValid BEFORE being persisted, versioned and stamped", () => {

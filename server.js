@@ -37,6 +37,8 @@ const {
 } = require("./roundsConcurrency");
 const tournamentScope = require("./tournamentScope");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
+const paymentsDomain = require("./payments/paymentsDomain");
+const stripeAdapter = require("./payments/stripeAdapter");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
 
@@ -190,12 +192,32 @@ function isAuthenticatedAsParticipantReq(req, slug, participant) {
   return session.participantId === participant.id && session.pinFp === pinFingerprint(participant.pin);
 }
 
+// MON-003. Una sola definición del path del webhook: la usan el montaje del
+// parser crudo y el handler, y si divergieran el handler recibiría un cuerpo
+// ya parseado y ninguna firma verificaría jamás.
+const STRIPE_WEBHOOK_PATH = "/api/payments/stripe/webhook";
+
 const app = express();
 // Render puts exactly one reverse proxy in front of this app. Trusting only
 // that one hop (instead of blindly trusting any X-Forwarded-For a client
 // sends) is what makes req.ip a real client IP instead of something a client
 // could spoof to dodge rate limiting.
 app.set("trust proxy", 1);
+
+// ---------- MON-003: el cuerpo CRUDO del webhook de Stripe ----------
+//
+// Va aquí arriba, antes del express.json() global, y el orden no es estético:
+// verificar la firma de Stripe exige el cuerpo EXACTO tal y como llegó. En
+// cuanto express.json() lo parsea, el original se pierde, y volver a
+// serializarlo produce bytes distintos (espaciado, orden de claves, escapes)
+// aunque el contenido sea el mismo. Firmar eso es firmar otra cosa.
+//
+// El alcance es esta ruta y sólo esta ruta: `express.raw` con un path exacto
+// no toca el parsing del resto de la API, que sigue siendo JSON como siempre.
+// El límite es pequeño a propósito — un evento de Stripe son unos pocos KB, y
+// no hay razón para aceptar 3 MB en un endpoint sin autenticar.
+app.post(STRIPE_WEBHOOK_PATH, express.raw({ type: "application/json", limit: "1mb" }));
+
 app.use(express.json({ limit: "3mb" }));
 // Every /api/* response is dynamic and often filtered per requester (draft
 // results, open-round picks, platform-only fields) — never safe to cache,
@@ -469,7 +491,7 @@ function rateLimit(name) {
 // Only these exact keys/patterns are recognized. Anything else is rejected —
 // the generic store/read/delete endpoints are for QRACKS's own data shapes,
 // not an arbitrary key-value bucket anyone can stash unrelated things in.
-const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config"]);
+const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config", "platform_payment_intents"]);
 
 function classifyKey(key) {
   if (PLATFORM_KEYS.has(key)) return { kind: "platform" };
@@ -983,7 +1005,12 @@ app.get("/api/kv/:key", async (req, res) => {
         const platformHash = await getPlatformHash();
         const isPlatformAuthed = verifyPassword(providedPlatformAuth, platformHash);
         value = isPlatformAuthed ? value : stripPlatformIndexForPublic(value);
-      } else if (req.params.key === "platform_payment_log") {
+      } else if (req.params.key === "platform_payment_log"
+        || req.params.key === "platform_payment_intents") {
+        // Dinero y compras: sólo plataforma. MON-003 añade los purchase
+        // intents a la misma regla que ya protegía el libro de pagos — llevan
+        // identificadores del proveedor y el historial económico de cada
+        // quiniela, y no son de nadie más.
         const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
         const platformHash = await getPlatformHash();
         if (!verifyPassword(providedPlatformAuth, platformHash)) {
@@ -2822,6 +2849,495 @@ app.post("/api/platform/quinielas/:slug/entitlement", async (req, res) => {
     res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
+  }
+});
+
+// ==========================================================================
+// MON-003 — PAGOS
+//
+// Un pago sólo otorga PLUS cuando el SERVIDOR lo verifica contra el proveedor.
+// Ni la URL de vuelta, ni un parámetro del navegador, ni la metadata que viaja
+// en el propio evento pueden hacerlo por su cuenta.
+//
+// LOCK ORDER, extendido desde el de siempre y respetado por las dos
+// transacciones de abajo:
+//   platform_index -> quiniela meta -> platform_payment_intents -> platform_payment_log
+// ==========================================================================
+
+const PAYMENT_INTENTS_KEY = "platform_payment_intents";
+// Cuánto vive un intento de compra reutilizable. Por debajo de esto, un
+// segundo clic reutiliza el checkout que ya existe; por encima, se empieza uno
+// nuevo. Stripe expira sus sesiones a las 24 h, así que quedarse por debajo
+// evita ofrecer un enlace que el proveedor ya no honra.
+const CHECKOUT_REUSE_WINDOW_MS = 20 * 60 * 60 * 1000;
+
+async function readPaymentIntents(client) {
+  const row = client ? await getRowLocked(PAYMENT_INTENTS_KEY, client) : await getRow(PAYMENT_INTENTS_KEY);
+  if (!row || typeof row !== "object") return { purchases: [], seenEvents: [], audit: [] };
+  // Se conserva la fila ENTERA y sólo se normalizan las listas. Devolver un
+  // objeto nuevo con los dos campos que interesaban hacía que cada escritura
+  // —que es un `{ ...store, ... }`— borrara en silencio todo lo demás, y lo
+  // primero que se perdía era la auditoría de pagos.
+  return {
+    ...row,
+    purchases: Array.isArray(row.purchases) ? row.purchases : [],
+    seenEvents: Array.isArray(row.seenEvents) ? row.seenEvents : [],
+    audit: Array.isArray(row.audit) ? row.audit : [],
+  };
+}
+
+// Observabilidad sin secretos. Nunca la clave, nunca el signing secret, nunca
+// el cuerpo crudo: sólo lo que hace falta para diagnosticar.
+function logPayment(event, fields) {
+  console.log(`payments ${event}`, JSON.stringify(fields || {}));
+}
+
+// El id de compra lo genera el servidor. El navegador no propone ninguno: un
+// id que llega de fuera es un id que se puede repetir a propósito.
+function newPurchaseId() {
+  return "qpur_" + crypto.randomBytes(12).toString("hex");
+}
+
+// ---------- crear (o recuperar) el checkout ----------
+//
+// Devuelve SÓLO la URL del checkout hospedado. Ni scopeId, ni entitlement, ni
+// identificadores internos: la respuesta de /plan ya evita filtrar el scope y
+// ésta mantiene la misma regla.
+app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res) => {
+  const slug = req.params.slug;
+  try {
+    const meta = await getRow(`quiniela:${slug}:meta`);
+    if (!meta) return res.status(404).json({ error: "not_found" });
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+    if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+
+    // Sin Stripe configurado no se finge un checkout: se dice que no está
+    // disponible y el Admin conserva la vía manual, que sigue existiendo.
+    if (!stripeAdapter.isConfigured()) {
+      return res.status(503).json({ error: "payments_unavailable" });
+    }
+
+    // ---- fase 1: reservar la compra bajo lock, sin tocar la red ----
+    let intent = null;
+    let existingUrl = null;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const idx = await getRowLocked("platform_index", client);
+      const entry = idx && Array.isArray(idx.quinielas)
+        ? idx.quinielas.find((q) => q.slug === slug) : null;
+      if (!entry || !entry.entitlement) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "entitlement_unavailable" });
+      }
+      const scope = entry.tournamentScope || null;
+      if (!scope || !scope.id) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "tournament_scope_unavailable" });
+      }
+      // Comprar lo que ya se tiene no es una venta. Se corta aquí y no en el
+      // proveedor, para que no llegue a existir un cobro que habría que
+      // devolver.
+      if (entry.entitlement.plan !== "FREE") {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "already_on_plan", plan: entry.entitlement.plan });
+      }
+
+      const store = await readPaymentIntents(client);
+      const alreadyPaid = paymentsDomain.findPaidIntentForScope(store.purchases, slug, scope.id);
+      if (alreadyPaid) {
+        await client.query("ROLLBACK");
+        // Se cobró pero el plan no está puesto: es una inconsistencia real,
+        // no una invitación a cobrar otra vez.
+        return res.status(409).json({ error: "payment_already_recorded" });
+      }
+
+      const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+      const amountMinor = paymentsDomain.toMinorUnits(
+        commercialConfig && commercialConfig.plus ? commercialConfig.plus.priceMXN : NaN
+      );
+      if (amountMinor == null || amountMinor <= 0) {
+        await client.query("ROLLBACK");
+        logPayment("checkout_creation_failed", { slug, reason: "unusable_price" });
+        return res.status(409).json({ error: "price_unavailable" });
+      }
+
+      const nowMs = Date.now();
+      const now = new Date(nowMs).toISOString();
+      const reusable = paymentsDomain.findReusableIntent(
+        store.purchases, slug, scope.id, nowMs, CHECKOUT_REUSE_WINDOW_MS);
+
+      if (reusable && reusable.expectedAmountMinor === amountMinor && reusable.providerCheckoutUrl) {
+        // Dos taps, dos pestañas: el mismo enlace, cero llamadas de red, cero
+        // compras nuevas.
+        await client.query("COMMIT");
+        logPayment("checkout_reused", { slug, purchaseId: reusable.id });
+        return res.json({ ok: true, checkoutUrl: reusable.providerCheckoutUrl, purchaseId: reusable.id });
+      }
+
+      if (reusable && reusable.expectedAmountMinor === amountMinor) {
+        // Existe, pero su sesión no llegó a guardarse. Se reutiliza el MISMO
+        // id, que es la clave de idempotencia que se le manda al proveedor: su
+        // respuesta será la sesión que ya creó, no una segunda.
+        intent = reusable;
+      } else {
+        intent = paymentsDomain.makePurchaseIntent({
+          purchaseId: newPurchaseId(), slug, scopeId: scope.id,
+          configVersion: commercialConfig.version, expectedAmountMinor: amountMinor,
+          currency: "mxn", provider: "stripe", now,
+        });
+        if (!intent) {
+          await client.query("ROLLBACK");
+          logPayment("checkout_creation_failed", { slug, reason: "invalid_intent" });
+          return res.status(500).json({ error: "server_error" });
+        }
+        const purchases = store.purchases.concat([intent]);
+        await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases }, client);
+      }
+      existingUrl = intent.providerCheckoutUrl || null;
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    if (existingUrl) return res.json({ ok: true, checkoutUrl: existingUrl, purchaseId: intent.id });
+
+    // ---- fase 2: la red, FUERA de la transacción ----
+    //
+    // Deliberado: una llamada a un tercero dentro de una transacción mantiene
+    // filas bloqueadas durante todo su round-trip, y un proveedor lento se
+    // convierte en un bloqueo de la base. Si esta llamada falla, el intent
+    // queda creado y el siguiente intento lo reutiliza.
+    const cfg = stripeAdapter.readConfig();
+    const base = cfg.publicBaseUrl.replace(/\/+$/, "");
+    let created;
+    try {
+      created = await stripeAdapter.createCheckoutSession({
+        amountMinor: intent.expectedAmountMinor,
+        currency: intent.currency,
+        productName: "QRACKS Plus",
+        purchaseId: intent.id, slug, scopeId: intent.scopeId,
+        successUrl: `${base}/q/${encodeURIComponent(slug)}?qz_pago=${encodeURIComponent(intent.id)}`,
+        cancelUrl: `${base}/q/${encodeURIComponent(slug)}?qz_pago_cancelado=1`,
+        // La clave de idempotencia ES el id de compra. Un reintento tras una
+        // respuesta perdida pide exactamente lo mismo y recibe la sesión que
+        // ya existía.
+        idempotencyKey: `checkout:${intent.id}`,
+      });
+    } catch (err) {
+      logPayment("checkout_creation_failed", { slug, purchaseId: intent.id, code: err && err.code });
+      return res.status(502).json({ error: "checkout_unavailable" });
+    }
+
+    // ---- fase 3: guardar la identidad del proveedor ----
+    try {
+      await attachProviderSession(intent.id, created);
+    } catch (err) {
+      // La sesión existe en el proveedor aunque no la hayamos guardado. No se
+      // rompe el flujo: el webhook la localiza por su metadata y la
+      // reconciliación por el id de compra.
+      logPayment("checkout_session_persist_failed", { slug, purchaseId: intent.id });
+    }
+
+    logPayment("checkout_created", { slug, purchaseId: intent.id, amountMinor: intent.expectedAmountMinor });
+    res.json({ ok: true, checkoutUrl: created.url, purchaseId: intent.id });
+  } catch (err) {
+    console.error("checkout creation failed", { slug, message: err && err.message });
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Adjunta la identidad del proveedor a una compra ya creada. Nunca la
+// reescribe: si ya había sesión, la que llega se descarta. Sobrescribirla
+// convertiría este registro en el de otro pago.
+async function attachProviderSession(purchaseId, created) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const store = await readPaymentIntents(client);
+    const purchases = store.purchases.map((p) => (p && p.id === purchaseId
+      ? {
+          ...p,
+          providerSessionId: p.providerSessionId || created.sessionId,
+          providerCheckoutUrl: p.providerCheckoutUrl || created.url,
+          updatedAt: new Date().toISOString(),
+        }
+      : p));
+    await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases }, client);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------- confirmar un pago y otorgar el plan ----------
+//
+// El corazón transaccional de MON-003, y el ÚNICO camino por el que un pago se
+// convierte en PLUS. Lo usan el webhook y la reconciliación, para que no pueda
+// haber dos criterios distintos sobre qué es un pago válido.
+//
+// O se guardan las cuatro cosas —pago confirmado, auditoría, entitlement e
+// historial— o no se guarda ninguna.
+async function confirmPaymentAndGrant({ observed, eventId }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const idx = await getRowLocked("platform_index", client);
+    const store = await readPaymentIntents(client);
+
+    if (eventId && paymentsDomain.hasSeenEvent(store.seenEvents, eventId)) {
+      await client.query("ROLLBACK");
+      return { decision: paymentsDomain.DECISION.REPLAY_EVENT };
+    }
+
+    const intent = paymentsDomain.locateIntent(store.purchases, observed);
+    if (!intent) {
+      // Se registra el evento igualmente: si no, un evento desconocido se
+      // reprocesaría en cada reintento sin llegar nunca a nada.
+      if (eventId) {
+        await putRow(PAYMENT_INTENTS_KEY, {
+          ...store, seenEvents: paymentsDomain.rememberEvent(store.seenEvents, eventId),
+        }, client);
+      }
+      await client.query("COMMIT");
+      return { decision: paymentsDomain.DECISION.UNKNOWN_PURCHASE };
+    }
+
+    const entry = idx && Array.isArray(idx.quinielas)
+      ? idx.quinielas.find((q) => q.slug === intent.slug) : null;
+    // El scope actual sale de la fila BLOQUEADA, nunca del proveedor.
+    const currentScopeId = entry && entry.tournamentScope ? entry.tournamentScope.id : null;
+
+    const decision = paymentsDomain.evaluateConfirmation({ intent, observed, currentScopeId });
+    const now = new Date().toISOString();
+    const nextIntent = paymentsDomain.applyDecision(intent, decision, observed, now);
+
+    let entitlementResult = "none";
+    let nextIndex = null;
+    let nextPaymentLog = null;
+
+    if (decision.decision === paymentsDomain.DECISION.CONFIRM) {
+      if (!entry) {
+        // Se cobró y la quiniela ya no está (se borró entre el checkout y la
+        // confirmación). No hay nada que otorgar, pero el dinero existió: se
+        // registra y se marca, porque un cobro sin contrapartida es
+        // exactamente lo que un humano tiene que ver.
+        entitlementResult = "quiniela_missing";
+        decision.attention = decision.attention || paymentsDomain.ATTENTION.IDENTITY_MISMATCH;
+        decision.detail = "quiniela_missing";
+      } else {
+        const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
+        const entitlement = buildPlusEntitlement(commercialConfig, now, {
+          // Distinguible de un grant manual para siempre: esto SÍ representa
+          // dinero recibido, y un ajuste manual no.
+          source: "stripe_purchase", grantedBy: "stripe",
+          reason: "Compra de Plus confirmada por el proveedor de pagos.",
+        });
+        // El importe que se registra es el que se COBRÓ de verdad, congelado
+        // en el intent al crear la compra — no el precio que la configuración
+        // comercial tenga hoy, que pudo cambiar mientras el Admin pagaba.
+        entitlement.pricePaidMXN = intent.expectedAmountMinor / 100;
+        entitlement.purchaseId = intent.id;
+        const paymentLog = (await getRowLocked("platform_payment_log", client)) || { payments: [] };
+        // El grantId deriva del id de compra: estable entre reintentos, así que
+        // la idempotencia de MON-002B actúa como última red aunque todo lo
+        // demás fallara.
+        const grantId = ("stripe" + intent.id.replace(/[^A-Za-z0-9_-]/g, "")).slice(0, 64);
+        const result = applyEntitlementGrant({
+          index: idx, paymentLog, entitlement, slug: intent.slug,
+          grantId, grantedBy: "stripe",
+          reason: "Compra de Plus confirmada por el proveedor de pagos.", now,
+        });
+        if (!result.ok) {
+          await client.query("ROLLBACK");
+          logPayment("entitlement_grant_failed", { purchaseId: intent.id, error: result.error });
+          return { decision: decision.decision, error: result.error };
+        }
+        entitlementResult = result.applied ? (result.reason || "granted") : (result.reason || "not_applied");
+        nextIndex = result.index;
+        nextPaymentLog = result.paymentLog;
+      }
+    }
+
+    const purchases = store.purchases.map((p) => (p && p.id === intent.id ? nextIntent : p));
+    const audit = store.audit.slice();
+    audit.push(paymentsDomain.buildPaymentAudit(nextIntent, decision.decision, entitlementResult, now));
+    await putRow(PAYMENT_INTENTS_KEY, {
+      ...store, purchases, audit: audit.slice(-1000),
+      seenEvents: eventId ? paymentsDomain.rememberEvent(store.seenEvents, eventId) : store.seenEvents,
+    }, client);
+    if (nextPaymentLog) await putRow("platform_payment_log", nextPaymentLog, client);
+    if (nextIndex) await putRow("platform_index", nextIndex, client);
+    await client.query("COMMIT");
+    return { decision: decision.decision, entitlement: entitlementResult, slug: intent.slug, purchaseId: intent.id };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------- el webhook: la autoridad ----------
+app.post(STRIPE_WEBHOOK_PATH, async (req, res) => {
+  const cfg = stripeAdapter.readConfig();
+  if (!cfg.webhookSecret) {
+    logPayment("webhook_rejected", { reason: "not_configured" });
+    return res.status(503).json({ error: "payments_unavailable" });
+  }
+  // `req.body` aquí es el Buffer crudo que puso express.raw arriba. Si algo lo
+  // hubiera parseado, el adaptador lo rechaza antes de comparar nada.
+  const verified = stripeAdapter.verifyWebhookSignature(
+    req.body, req.get("stripe-signature"), cfg.webhookSecret);
+  if (!verified.ok) {
+    // Falla cerrado y en silencio hacia fuera: el motivo se registra, pero no
+    // se devuelve, para no ir enseñando a un atacante en qué punto falló.
+    logPayment("webhook_invalid_signature", { reason: verified.reason });
+    return res.status(400).json({ error: "invalid_signature" });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.isBuffer(req.body) ? req.body.toString("utf8") : String(req.body));
+  } catch {
+    logPayment("webhook_invalid_signature", { reason: "unparseable_body" });
+    return res.status(400).json({ error: "invalid_payload" });
+  }
+
+  const observed = stripeAdapter.normalizeEvent(parsed);
+  // Un evento que no escuchamos se acepta con 200 y no se procesa: devolver
+  // error haría que el proveedor lo reintentara para siempre sin motivo.
+  if (!observed) return res.json({ received: true, handled: false });
+
+  if (observed.kind === "audit_only") {
+    // Reembolsos y disputas se REGISTRAN y no revocan nada por su cuenta. La
+    // política de revocación es una decisión comercial que este ticket no
+    // inventa; lo que sí hace es dejarla visible en vez de perderla.
+    try {
+      await flagPaymentAttention(observed);
+    } catch (err) {
+      console.error("payment attention flag failed", { message: err && err.message });
+    }
+    return res.json({ received: true, handled: true });
+  }
+
+  try {
+    const result = await confirmPaymentAndGrant({ observed, eventId: observed.eventId });
+    logPayment("webhook_processed", {
+      type: observed.type, decision: result.decision,
+      purchaseId: result.purchaseId || null, entitlement: result.entitlement || null,
+      error: result.error || null,
+    });
+    if (result.error) {
+      // El pago está cobrado en el proveedor y NO se pudo aplicar. La
+      // transacción se deshizo entera, así que no hay nada a medias — pero
+      // contestar 200 aquí le diría al proveedor "resuelto, no reintentes", y
+      // entonces nadie volvería a intentarlo: alguien habría pagado y se
+      // quedaría sin Plus hasta que un humano lo notara. Un 500 es lo que
+      // mantiene vivo el reintento.
+      logPayment("payment_requires_attention", {
+        purchaseId: result.purchaseId || null, code: result.error,
+      });
+      return res.status(500).json({ error: "unapplied_payment" });
+    }
+    // 200 cuando el evento quedó resuelto, incluso si la decisión fue no
+    // otorgar nada (importe que no cuadra, torneo viejo, reentrega): ésos ya
+    // están correctamente decididos y reintentarlos no cambiaría el resultado.
+    res.json({ received: true, handled: true });
+  } catch (err) {
+    console.error("webhook processing failed", { message: err && err.message });
+    // Aquí sí conviene el reintento: falló la infraestructura, no el evento.
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Marca una anomalía económica sobre la compra correspondiente. No cambia el
+// estado del pago ni toca el entitlement.
+async function flagPaymentAttention(observed) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const store = await readPaymentIntents(client);
+    const intent = paymentsDomain.locateIntent(store.purchases, observed);
+    if (!intent) {
+      await client.query("ROLLBACK");
+      logPayment("attention_unknown_purchase", { type: observed.type });
+      return;
+    }
+    const now = new Date().toISOString();
+    const code = observed.attentionHint === "refunded"
+      ? paymentsDomain.ATTENTION.REFUNDED : paymentsDomain.ATTENTION.DISPUTED;
+    const purchases = store.purchases.map((p) => (p && p.id === intent.id
+      ? { ...p, attention: { code, at: now, detail: observed.type }, updatedAt: now } : p));
+    const audit = store.audit.slice();
+    audit.push(paymentsDomain.buildPaymentAudit(
+      { ...intent, attention: { code } }, observed.type, "unchanged", now));
+    await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases, audit: audit.slice(-1000) }, client);
+    await client.query("COMMIT");
+    logPayment("payment_requires_attention", { purchaseId: intent.id, code });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------- estado de una compra, con reconciliación acotada ----------
+//
+// La red de seguridad para cuando un webhook se pierde. El Admin vuelve del
+// checkout, la pantalla pregunta por su compra, y si el proveedor dice que se
+// cobró y nosotros todavía no lo sabíamos, se confirma aquí — sin soporte y
+// sin un segundo cobro.
+//
+// Esto NO es "confiar en la URL de vuelta": la vuelta sólo aporta QUÉ compra
+// mirar. Quien dice si se pagó es el proveedor, preguntado desde el servidor.
+app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), async (req, res) => {
+  const { slug, purchaseId } = req.params;
+  try {
+    const meta = await getRow(`quiniela:${slug}:meta`);
+    if (!meta) return res.status(404).json({ error: "not_found" });
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+    if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+
+    const store = await readPaymentIntents();
+    let intent = paymentsDomain.findIntentById(store.purchases, purchaseId);
+    // Una compra de OTRA quiniela no se describe aquí ni para decir que
+    // existe: para este slug, sencillamente no está.
+    if (!intent || intent.slug !== slug) return res.status(404).json({ error: "purchase_not_found" });
+
+    if (intent.status === paymentsDomain.PURCHASE_STATUS.CREATED
+      && intent.providerSessionId && stripeAdapter.isConfigured()) {
+      try {
+        const observed = await stripeAdapter.retrieveCheckoutSession(intent.providerSessionId);
+        if (observed) {
+          const result = await confirmPaymentAndGrant({ observed, eventId: null });
+          logPayment("reconciled", { purchaseId: intent.id, decision: result.decision });
+          const after = await readPaymentIntents();
+          intent = paymentsDomain.findIntentById(after.purchases, purchaseId) || intent;
+        }
+      } catch (err) {
+        // Reconciliar es un extra: si falla, se contesta con lo que se sabe.
+        logPayment("reconcile_failed", { purchaseId, code: err && err.code });
+      }
+    }
+
+    res.json({
+      ok: true,
+      status: intent.status,
+      // Que haga falta mirarlo es información del Admin; el detalle interno no.
+      needsAttention: !!intent.attention,
+      confirmedAt: intent.confirmedAt || null,
+    });
+  } catch (err) {
+    console.error("checkout status failed", { slug, message: err && err.message });
+    res.status(500).json({ error: "server_error" });
   }
 });
 

@@ -486,13 +486,22 @@ test("UX: the hard paywall answers all five required questions, from the server'
 });
 
 test("UX: the paywall is honest about the mechanism and does not fake a checkout", () => {
+  // MON-003 cambió el mecanismo, no la regla. Antes no había cobro y la
+  // honestidad consistía en no insinuar uno; ahora hay un checkout real y la
+  // honestidad consiste en llevar a él de verdad, y en decir la verdad cuando
+  // no está disponible.
   const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
-  assert.ok(sheet.includes("activamos Plus en esta quiniela"), "it says what actually happens next");
-  assert.ok(sheet.includes("offer.contact"), "using the channel the operator configured");
   const code = stripComments(sheet);
-  for (const fake of ["Pagar ahora", "checkout", "Stripe", "MercadoPago", "tarjeta"]) {
-    assert.ok(!code.includes(fake), `no debe simular un cobro: "${fake}"`);
+  assert.ok(code.includes("startCheckout()"), "el botón abre el checkout de verdad");
+  assert.ok(sheet.includes("offer.contact"), "y conserva el canal manual como respaldo");
+  assert.ok(sheet.includes("activamos Plus en esta quiniela"));
+  assert.ok(code.includes('reason === "unavailable"'),
+    "sin pasarela configurada se dice, en vez de fingir que se cobró");
+  // Lo que sigue prohibido: capturar la tarjeta aquí. El cobro es hospedado.
+  for (const fake of ["card-number", "cardNumber", "cvc", "cvv", "numero de tarjeta"]) {
+    assert.ok(!code.includes(fake), `QRACKS no captura datos de tarjeta: "${fake}"`);
   }
+  assert.ok(!/<input[^>]*card/i.test(sheet), "ni un formulario de tarjeta propio");
 });
 
 test("UX: no dark patterns — no countdown, no scarcity, no hidden price", () => {
@@ -646,7 +655,12 @@ test("SECURITY: enforcement fails closed on a missing entry, a missing entitleme
 
 test("SECURITY: the upgrade offer carries no secret and nothing a participant could misuse", () => {
   const offer = buildUpgradeOffer(FREE, { ...cfg, upgradeContact: "hola@qracks.mx" });
-  assert.deepEqual(Object.keys(offer).sort(), ["available", "contact", "participantLimit", "priceMXN", "roundLimit", "scope"]);
+  // MON-003 añadió roundLimitApplies: dice SI el número de jornadas aplica,
+  // que es lo que evitaba que la pantalla dijera "18 jornadas" a un Plus que
+  // en realidad cubre el torneo entero.
+  assert.deepEqual(Object.keys(offer).sort(),
+    ["available", "contact", "participantLimit", "priceMXN", "roundLimit", "roundLimitApplies", "scope"]);
+  assert.equal(typeof offer.roundLimitApplies, "boolean");
   assert.deepEqual(buildUpgradeOffer(PLUS, cfg), { available: false });
   assert.deepEqual(buildUpgradeOffer(FREE, null), { available: false }, "no config -> no offer, never a guess");
 });
