@@ -331,7 +331,11 @@ async function createCheckoutSession({
   if (!session || typeof session.id !== "string" || typeof session.url !== "string") {
     throw new StripeError("invalid_response", "Stripe returned an unusable session");
   }
-  return { sessionId: session.id, url: session.url };
+  // `observed` viene de la MISMA respuesta. Con una clave de idempotencia
+  // repetida, Stripe devuelve la sesión que ya existía — así que reanudar una
+  // compra cuyo resultado se perdió no necesita una consulta aparte para saber
+  // en qué estado está.
+  return { sessionId: session.id, url: session.url, observed: normalizeSession(session) };
 }
 
 async function retrieveCheckoutSession(sessionId, { env } = {}) {

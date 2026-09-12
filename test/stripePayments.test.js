@@ -570,11 +570,20 @@ test("MON003 · 54 — SERVER: la llamada de red NO ocurre dentro de la transacc
   const src = stripComments(serverSrc);
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout"'));
   const body = co.slice(0, co.indexOf("\n});"));
+  // Correction 03 movió la llamada a createSessionFor(); lo que importa sigue
+  // siendo que NINGUNA transacción del endpoint la contenga.
   const commitAt = body.indexOf('await client.query("COMMIT")');
-  const netAt = body.indexOf("stripeAdapter.createCheckoutSession");
+  const netAt = body.indexOf("createSessionFor(intent, slug)");
   assert.ok(commitAt !== -1 && netAt !== -1);
   assert.ok(commitAt < netAt,
     "un tercero lento dentro de la transacción bloquea filas durante todo su round-trip");
+  // Y ni createSessionFor ni resolveOpenIntent abren transacción propia alrededor
+  // de la red: las escrituras van en funciones aparte.
+  for (const fnName of ["async function createSessionFor(intent, slug)", "async function resolveOpenIntent(intent, currentOffer)"]) {
+    const fn = src.slice(src.indexOf(fnName));
+    const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
+    assert.ok(!fnBody.includes('client.query("BEGIN")'), fnName + " no debe abrir transacción");
+  }
 });
 
 // ==== 14 · la pantalla =====================================================
@@ -873,7 +882,7 @@ test("MON003 · C1.6 — SNAPSHOT: el checkout exige la oferta ENTERA antes de v
   assert.ok(body.includes("return null"), "una oferta incompleta no es una oferta");
   // Los DOS sitios que abren una compra la usan; ninguno lee la config a mano.
   const usos = src.match(/readPlusOffer\(await getRow\("commercial_config", client\)\)/g) || [];
-  assert.equal(usos.length, 2, "checkout y openPurchase, los dos");
+  assert.equal(usos.length, 2, "el endpoint y openPurchase, los dos bajo lock");
   assert.ok(src.includes("participantLimit: offer.participantLimit"));
   assert.ok(src.includes("manualRoundLimit: offer.manualRoundLimit"));
 });
@@ -886,7 +895,7 @@ test("MON003 · C1.7 — SNAPSHOT: sólo se reutiliza un checkout que venda LO M
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
   const cmp = src.slice(src.indexOf("function sameOffer(purchase, offer)"));
-  const cmpBody = cmp.slice(0, cmp.indexOf("async function releaseReplacementClaim"));
+  const cmpBody = cmp.slice(0, cmp.indexOf("async function "));
   assert.ok(cmpBody.includes("purchase.expectedAmountMinor === offer.amountMinor"));
   assert.ok(cmpBody.includes("purchase.purchased.participantLimit === offer.participantLimit"));
   assert.ok(cmpBody.includes("purchase.purchased.manualRoundLimit === offer.manualRoundLimit"));
@@ -1147,41 +1156,50 @@ test("MON003 · C2.2 — el proveedor traduce sus tres estados, y nada más", ()
   assert.equal(ev.lifecycle, "chargeable");
 });
 
-test("MON003 · C2.3 — las candidatas son TODAS las que pueden cobrar, sin filtros de edad", () => {
-  const viejo = intentOf({ id: "a", createdAt: "2020-01-01T00:00:00.000Z", providerSessionId: "cs_a" });
-  const nuevo = intentOf({ id: "b", providerSessionId: "cs_b" });
-  const pagada = intentOf({ id: "c", status: "paid", providerSessionId: "cs_c" });
-  const sinSesion = intentOf({ id: "d" });
-  const otroScope = intentOf({ id: "e", scopeId: OTHER_SCOPE, providerSessionId: "cs_e" });
-  const todas = [viejo, nuevo, pagada, sinSesion, otroScope];
-  const cands = D.chargeableCandidates(todas, "liga", SCOPE).map((c) => c.id);
-  // La edad es NUESTRA contabilidad; la capacidad de cobrar es del proveedor.
-  assert.deepEqual(cands.sort(), ["a", "b"], "el viejo entra igual: su sesión puede seguir viva");
-  assert.ok(!cands.includes("c"), "una ya pagada no es candidata a morir");
-  assert.ok(!cands.includes("e"), "y el invariant es por TORNEO, no por slug");
+test("MON003 · C2.3 — una compra abierta cuenta AUNQUE no sepamos su sesión", () => {
+  // El P1 de Correction 03: exigir providerSessionId hacía invisible a la compra
+  // cuya creación remota se envió y cuya respuesta se perdió. "No tengo guardado
+  // el id" no es "no existe una sesión allá".
+  const sinSesion = intentOf({ id: "a", providerSessionId: null, creationAttemptedAt: NOW });
+  const conSesion = intentOf({ id: "b", providerSessionId: "cs_b" });
+  const vieja = intentOf({ id: "c", createdAt: "2020-01-01T00:00:00.000Z", providerSessionId: "cs_c" });
+  const pagada = intentOf({ id: "d", status: "paid", providerSessionId: "cs_d" });
+  const muerta = intentOf({ id: "e", status: "expired", providerSessionId: "cs_e" });
+  const otroScope = intentOf({ id: "f", scopeId: OTHER_SCOPE, providerSessionId: "cs_f" });
+  const abiertas = D.openIntentsForScope(
+    [sinSesion, conSesion, vieja, pagada, muerta, otroScope], "liga", SCOPE).map((x) => x.id);
+  assert.deepEqual(abiertas.sort(), ["a", "b", "c"],
+    "abiertas es abiertas: con sesión, sin sesión, y vieja también");
+  assert.ok(!abiertas.includes("d"), "una pagada no está abierta");
+  assert.ok(!abiertas.includes("e"), "ni una terminal");
+  assert.ok(!abiertas.includes("f"), "y el invariant es por TORNEO, no por slug");
 });
 
 test("MON003 · C2.4 — no se abre otra si no se puede demostrar que la anterior murió", () => {
-  const a = intentOf({ id: "a", providerSessionId: "cs_a" });
-  assert.equal(D.planCheckoutReplacement([], {}).decision, "proceed", "sin anteriores, adelante");
-  assert.equal(D.planCheckoutReplacement([a], { a: { lifecycle: "dead" } }).decision, "proceed");
-  // Sin respuesta del proveedor -> bloqueado. Fail closed.
-  assert.equal(D.planCheckoutReplacement([a], {}).decision, "blocked");
-  assert.equal(D.planCheckoutReplacement([a], { a: null }).decision, "blocked");
-  // Todavía cobrable tras intentar matarla -> bloqueado.
-  assert.equal(D.planCheckoutReplacement([a], { a: { lifecycle: "chargeable" } }).decision, "blocked");
-  // Ya usada -> hay que confirmarla, no abrir otra.
-  const usada = D.planCheckoutReplacement([a], { a: { lifecycle: "used" } });
-  assert.equal(usada.decision, "confirm_existing");
-  assert.deepEqual(usada.used, ["a"]);
+  const OI = D.OPEN_INTENT;
+  assert.equal(D.classifyOpenIntent({ lifecycle: "dead" }, true), OI.DEAD);
+  assert.equal(D.classifyOpenIntent({ lifecycle: "used" }, true), OI.USED);
+  assert.equal(D.classifyOpenIntent({ paid: true, lifecycle: "dead" }, true), OI.USED,
+    "si cobró, se usó, aunque su ciclo diga otra cosa");
+  // Cobrable y vendiendo lo mismo -> sirve tal cual: se devuelve su enlace.
+  assert.equal(D.classifyOpenIntent({ lifecycle: "chargeable" }, true), OI.USABLE);
+  // Cobrable pero vendiendo otra cosa -> hay que matarla primero.
+  assert.equal(D.classifyOpenIntent({ lifecycle: "chargeable" }, false), OI.MUST_EXPIRE);
+  // Sin respuesta del proveedor -> no se puede demostrar nada. Fail closed.
+  for (const o of [null, undefined, {}, { lifecycle: "algo_nuevo" }]) {
+    assert.equal(D.classifyOpenIntent(o, true), OI.UNRESOLVED, JSON.stringify(o));
+  }
 });
 
-test("MON003 · C2.5 — una usada manda sobre una sin resolver", () => {
-  const a = intentOf({ id: "a", providerSessionId: "cs_a" });
-  const b = intentOf({ id: "b", providerSessionId: "cs_b" });
-  const r = D.planCheckoutReplacement([a, b], { a: null, b: { lifecycle: "used" } });
-  assert.equal(r.decision, "confirm_existing",
-    "abrir otra sería ofrecer un segundo cargo por algo que ya se está pagando");
+test("MON003 · C2.5 — sólo 'muerta' o 'usada' permiten seguir adelante", () => {
+  const OI = D.OPEN_INTENT;
+  // Es el contrato que usa el servidor: cualquier otra cosa bloquea el alta.
+  const permiteSeguir = (o, m) => [OI.DEAD, OI.USED, OI.USABLE].includes(D.classifyOpenIntent(o, m));
+  assert.equal(permiteSeguir({ lifecycle: "dead" }, true), true);
+  assert.equal(permiteSeguir({ lifecycle: "used" }, true), true);
+  assert.equal(permiteSeguir({ lifecycle: "chargeable" }, true), true, "sirve tal cual");
+  assert.equal(permiteSeguir({ lifecycle: "chargeable" }, false), false, "antes hay que matarla");
+  assert.equal(permiteSeguir(null, true), false);
 });
 
 test("MON003 · C2.6 — un pago sobre una compra SUSTITUIDA no otorga nada", () => {
@@ -1217,36 +1235,50 @@ test("MON003 · C2.8 — el turno serializa, y caduca para no bloquear", () => {
 
 // ---- el servidor: el invariant, estructuralmente ----
 
-test("MON003 · C2.9 — SERVER: se demuestra la muerte antes de abrir otra", () => {
+test("MON003 · C2.9 — SERVER: toda compra abierta se resuelve antes de abrir otra", () => {
   const src = stripComments(serverSrc);
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
-  const proveAt = body.indexOf("proveSessionsDead(candidates)");
-  const openAt = body.indexOf("openPurchase(slug, candidates)");
-  const netAt = body.indexOf("stripeAdapter.createCheckoutSession");
-  assert.ok(proveAt !== -1 && openAt !== -1 && netAt !== -1);
-  assert.ok(proveAt < openAt, "primero se mata lo anterior");
+  const resolveAt = body.indexOf("resolveOpenIntent(a, offer, reusable)");
+  const openAt = body.indexOf("openPurchase(slug, dead)");
+  const netAt = body.indexOf("createSessionFor(intent, slug)");
+  assert.ok(resolveAt !== -1 && openAt !== -1 && netAt !== -1);
+  assert.ok(resolveAt < openAt, "primero se resuelve lo abierto");
   assert.ok(openAt < netAt, "y la compra existe antes de pedir la sesión");
-  // Las tres salidas que NO abren nada.
+  // Se itera TODO lo abierto, no sólo lo primero.
+  assert.ok(body.includes("for (const a of open)"));
+  // Y sólo DEAD deja pasar; las otras tres salidas no abren nada.
+  assert.ok(body.includes("OPEN_INTENT.DEAD"));
+  assert.ok(body.includes("OPEN_INTENT.USABLE"));
+  assert.ok(body.includes("OPEN_INTENT.USED"));
   assert.ok(body.includes('error: "payment_in_progress"'));
   assert.ok(body.includes('error: "replacement_in_progress"'));
   assert.ok(body.includes('error: "checkout_unavailable"'));
 });
 
-test("MON003 · C2.10 — SERVER: se consulta antes de expirar, y se verifica después", () => {
+test("MON003 · C2.10 — SERVER: reanudar usa la MISMA clave, y se verifica la muerte", () => {
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("async function proveSessionsDead(candidates)"));
-  const body = fn.slice(0, fn.indexOf("async function openPurchase"));
-  const getAt = body.indexOf("retrieveCheckoutSession");
-  const expAt = body.indexOf("expireCheckoutSession");
-  assert.ok(getAt !== -1 && expAt !== -1);
-  assert.ok(getAt < expAt,
-    "Stripe sólo expira sesiones abiertas: preguntar primero evita depender de sus mensajes de error");
-  assert.ok(body.includes("SESSION_STATE.CHARGEABLE"), "sólo se expira lo que está cobrable");
-  // Y la decisión la toma el dominio con lo OBSERVADO, no con lo supuesto.
-  assert.ok(body.includes("planCheckoutReplacement(candidates, observations)"));
-  // Un error deja la observación en null, que el dominio lee como desconocido.
-  assert.ok(body.includes("observed = null"));
+  const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  // El paso que cierra Correction 03: sin sesión conocida, se REANUDA la creación
+  // con la clave de esa compra en vez de dar por hecho que no existe ninguna.
+  const resumeAt = body.indexOf("createSessionFor(intent, intent.slug)");
+  assert.ok(resumeAt !== -1, "una compra sin sesión guardada se reanuda, no se ignora");
+  assert.ok(body.indexOf("if (!sessionId)") < resumeAt);
+  // Después se consulta la verdad fresca y se clasifica con lo OBSERVADO.
+  assert.ok(body.includes("retrieveCheckoutSession(sessionId)"));
+  assert.ok(body.includes("classifyOpenIntent(observed, matches)"));
+  // Y al expirar se vuelve a clasificar: no se supone que quedó muerta.
+  const expAt = body.indexOf("expireCheckoutSession(sessionId)");
+  assert.ok(expAt !== -1);
+  assert.ok(body.indexOf("classifyOpenIntent(afterExpire, matches)") > expAt);
+  assert.ok(body.includes("OPEN_INTENT.UNRESOLVED"), "si tras expirar no consta muerta, se bloquea");
+  // La clave es el id de compra, y los parámetros son los CONGELADOS.
+  const mk = src.slice(src.indexOf("async function createSessionFor(intent, slug)"));
+  const mkBody = mk.slice(0, mk.indexOf("\nasync function ", 10));
+  assert.ok(mkBody.includes("idempotencyKey: `checkout:${intent.id}`"));
+  assert.ok(mkBody.includes("amountMinor: intent.expectedAmountMinor"));
+  assert.ok(!mkBody.includes("commercial_config"), "nunca la oferta de hoy: sería otra venta");
 });
 
 test("MON003 · C2.11 — SERVER: el turno cubre TODA el alta y se suelta siempre", () => {
@@ -1269,7 +1301,9 @@ test("MON003 · C2.11 — SERVER: el turno cubre TODA el alta y se suelta siempr
 test("MON003 · C2.12 — SERVER: sólo se suelta el turno PROPIO", () => {
   const src = stripComments(serverSrc);
   const fn = src.slice(src.indexOf("async function releaseReplacementClaim(claim)"));
-  const body = fn.slice(0, fn.indexOf("async function proveSessionsDead"));
+  const end = fn.indexOf("\nasync function ", 10);
+  assert.ok(end > 0, "el ancla de fin de función tiene que existir de verdad");
+  const body = fn.slice(0, end);
   assert.ok(body.includes("cur.token !== claim.token"),
     "si otro lo tomó entre medias, no es nuestro para soltarlo");
 });
@@ -1277,7 +1311,7 @@ test("MON003 · C2.12 — SERVER: sólo se suelta el turno PROPIO", () => {
 test("MON003 · C2.13 — SERVER: la compra nueva y las muertas, en UNA transacción", () => {
   const src = stripComments(serverSrc);
   const fn = src.slice(src.indexOf("async function openPurchase(slug, superseded)"));
-  const body = fn.slice(0, fn.indexOf("async function attachProviderSession"));
+  const body = fn.slice(0, fn.indexOf("async function createSessionFor"));
   assert.ok(body.includes('client.query("BEGIN")'));
   assert.ok(body.includes("supersededBy: fresh.id"), "queda dicho quién la sustituyó");
   assert.ok(body.includes("ATTENTION.SUPERSEDED"));
@@ -1330,4 +1364,187 @@ test("MON003 · C2.16 — el orden de decisiones sigue siendo el correcto", () =
   assert.equal(decide(intentOf({ purchased: null }), o, null, true).decision, D.DECISION.SCOPE_UNPROVEN);
   // Con scope legible pero distinto, el torneo viejo.
   assert.equal(decide(intentOf({ purchased: null }), o, OTHER_SCOPE, true).decision, D.DECISION.STALE_SCOPE);
+});
+
+// ==== 17 · Correction 03: una sesión perdida no crea una segunda cobrable ===
+//
+// El agujero era una suposición: "no tengo `providerSessionId` guardado" se leía
+// como "no existe ninguna Session en el proveedor". No es lo mismo. Entre que se
+// envía la creación y que se guarda el id hay una respuesta que puede perderse,
+// una red que puede cortarse y un proceso que puede morir — y en los tres casos
+// allá puede haber una sesión cobrable que aquí era INVISIBLE.
+
+test("MON003 · C3.1 — una compra abierta SIN sesión conocida sigue siendo la barrera", () => {
+  // Es el caso exacto del bug: se pidió la creación (queda constancia), la
+  // respuesta se perdió, no hay id guardado. Antes desaparecía del censo.
+  const perdida = intentOf({ id: "a", providerSessionId: null, providerCheckoutUrl: null,
+    creationAttemptedAt: NOW });
+  const abiertas = D.openIntentsForScope([perdida], "liga", SCOPE);
+  assert.equal(abiertas.length, 1, "existe, y por tanto bloquea");
+  assert.equal(abiertas[0].id, "a");
+});
+
+test("MON003 · C3.2 — ni siquiera hace falta saber si se pidió la creación", () => {
+  // `creationAttemptedAt` es AUDITORÍA. La barrera no depende de él, porque
+  // reanudar con la misma clave es correcto en los dos casos: si allá existe
+  // sesión, la devuelve; si no, la crea. Una sola, de cualquier manera.
+  const nunca = intentOf({ id: "a", providerSessionId: null, creationAttemptedAt: null });
+  const quizas = intentOf({ id: "b", providerSessionId: null, creationAttemptedAt: NOW });
+  assert.equal(D.openIntentsForScope([nunca, quizas], "liga", SCOPE).length, 2);
+});
+
+test("MON003 · C3.3 — una compra nace con la constancia en blanco", () => {
+  const i = intentOf();
+  assert.equal(i.creationAttemptedAt, null);
+  assert.equal(i.providerSessionId, null);
+  assert.equal(i.providerCheckoutUrl, null);
+  // Y el campo NO entra en lo comprado: no es parte de la venta.
+  assert.ok(!("creationAttemptedAt" in i.purchased));
+});
+
+test("MON003 · C3.4 — el proveedor devuelve el estado de la sesión al crearla", () => {
+  // Sin esto, reanudar una compra perdida exigiría una consulta extra; con la
+  // clave repetida la propia respuesta de creación YA es la sesión que existía.
+  const src = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
+  const fn = src.slice(src.indexOf("async function createCheckoutSession({"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(body.includes("observed: normalizeSession(session)"));
+  assert.ok(body.includes("idempotencyKey"), "y la clave viaja al proveedor");
+});
+
+test("MON003 · C3.5 — SERVER: la barrera se vuelve a comprobar BAJO EL CANDADO", () => {
+  // La pregunta del ticket: ¿puede un segundo request tomar el turno caducado
+  // mientras el primero sigue vivo? Sí. El turno es coordinación y caduca. Por
+  // eso la condición se repite en la MISMA transacción que inserta, serializada
+  // sobre platform_index: el segundo no abre nada.
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function openPurchase(slug, superseded)"));
+  const body = fn.slice(0, fn.indexOf("async function createSessionFor"));
+  const lockAt = body.indexOf('getRowLocked("platform_index", client)');
+  const checkAt = body.indexOf("openIntentsForScope(store.purchases, slug, scope.id)");
+  const insertAt = body.indexOf("purchases.concat([fresh])");
+  assert.ok(lockAt !== -1 && checkAt !== -1 && insertAt !== -1);
+  assert.ok(lockAt < checkAt, "se comprueba con el candado tomado, no antes");
+  assert.ok(checkAt < insertAt, "y antes de insertar");
+  // Las que se acaban de demostrar muertas no cuentan: son las que va a matar.
+  assert.ok(body.includes("filter((p) => !deadIds.has(p.id))"));
+  assert.ok(body.includes('error: "replacement_in_progress"'),
+    "el segundo reintenta; encontrará la compra del primero y la reanudará");
+  // Y todo en la misma transacción que el COMMIT del alta.
+  assert.ok(body.indexOf('client.query("BEGIN")') < checkAt);
+});
+
+test("MON003 · C3.6 — SERVER: la compra se persiste ANTES de hablar con el proveedor", () => {
+  // Es lo que hace que morir entre "el proveedor la creó" y "nosotros la
+  // guardamos" sea inofensivo: la compra ya está en la fila, así que el
+  // siguiente intento la ve, la reanuda con su clave y recibe la MISMA sesión.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const openAt = body.indexOf("openPurchase(slug, dead)");
+  const netAt = body.indexOf("createSessionFor(intent, slug)");
+  const attachAt = body.indexOf("attachProviderSession(intent.id, session)");
+  assert.ok(openAt !== -1 && netAt !== -1 && attachAt !== -1);
+  assert.ok(openAt < netAt && netAt < attachAt);
+});
+
+test("MON003 · C3.7 — SERVER: un fallo al guardar la sesión NO rompe el invariant", () => {
+  // La pregunta del ticket: ¿depende la seguridad de que attachProviderSession
+  // nunca falle? No. Su fallo se registra y se sigue: la compra queda abierta
+  // sin sesión conocida, que es precisamente el estado que ahora bloquea y se
+  // reanuda. Lo que NO se hace es cancelarla ni abrir otra.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const tail = body.slice(body.indexOf("attachProviderSession(intent.id, session)"));
+  assert.ok(tail.includes("checkout_session_persist_failed"), "queda registrado");
+  assert.ok(tail.includes("err && err.message"), "y con el motivo, no en silencio");
+  assert.ok(!tail.includes("createSessionFor"), "no se pide otra sesión");
+  assert.ok(!tail.includes("openPurchase"), "ni se abre otra compra");
+});
+
+test("MON003 · C3.8 — SERVER: reanudar guarda la sesión recuperada, sin depender de ello", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(body.includes("attachProviderSession(intent.id, recovered).catch("),
+    "si guardar falla, se sigue: la próxima vez se reanuda otra vez");
+  assert.ok(body.includes("checkout_session_recovered"), "y queda constancia del rescate");
+  // La verdad del estado se pide SIEMPRE fresca, también tras reanudar: la
+  // respuesta de creación pudo ser de una sesión creada hace horas.
+  assert.ok(body.indexOf("retrieveCheckoutSession(sessionId)")
+    > body.indexOf("createSessionFor(intent, intent.slug)"));
+});
+
+test("MON003 · C3.9 — SERVER: la constancia de la creación es auditoría, no lógica", () => {
+  const src = stripComments(serverSrc);
+  // Se escribe antes de la llamada, y su fallo no impide pedir la sesión.
+  const mk = src.slice(src.indexOf("async function createSessionFor(intent, slug)"));
+  const mkBody = mk.slice(0, mk.indexOf("\nasync function ", 10));
+  assert.ok(/markCreationAttempted\(intent\.id\)\.catch\(/.test(mkBody),
+    "su fallo no impide pedir la sesión");
+  assert.ok(mkBody.includes("checkout_attempt_note_failed"), "pero queda registrado");
+  assert.ok(mkBody.indexOf("markCreationAttempted") < mkBody.indexOf("createCheckoutSession"));
+  // Y NADA decide en función de ese campo.
+  const decisions = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout"'));
+  const upTo = decisions.slice(0, decisions.indexOf("async function markCreationAttempted"));
+  assert.ok(!/if\s*\([^)]*creationAttemptedAt/.test(upTo),
+    "la seguridad no puede depender de haber conseguido escribir una nota");
+  // Nunca se reescribe: la primera vez es la que vale.
+  const mark = src.slice(src.indexOf("async function markCreationAttempted(purchaseId)"));
+  assert.ok(mark.slice(0, mark.indexOf("\nasync function ", 10)).includes("!p.creationAttemptedAt"));
+});
+
+test("MON003 · C3.10 — el dominio no exige saber la sesión para contar una compra", () => {
+  // Prueba de regresión del P1: si alguien vuelve a añadir el filtro, esto cae.
+  const src = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "paymentsDomain.js"), "utf8"));
+  const fn = src.slice(src.indexOf("function openIntentsForScope(purchases, slug, scopeId)"));
+  const body = fn.slice(0, fn.indexOf("\nconst OPEN_INTENT"));
+  assert.ok(!body.includes("providerSessionId"),
+    "'no sé su id' no es 'no existe'; exigirlo hacía invisible la sesión perdida");
+  assert.ok(body.includes("PURCHASE_STATUS.CREATED"));
+  assert.ok(body.includes("p.scopeId === scopeId"));
+});
+
+test("MON003 · C3.11 — la clave de idempotencia es la identidad de la COMPRA", () => {
+  // Dos compras distintas -> dos claves distintas -> dos sesiones. Por eso el
+  // invariant tiene que impedir que nazca la segunda COMPRA, no sólo la segunda
+  // sesión: una vez existen dos compras abiertas, ya no hay nada que las una.
+  const src = stripComments(serverSrc);
+  const claves = src.match(/idempotencyKey: `checkout:\$\{intent\.id\}`/g) || [];
+  assert.equal(claves.length, 1, "un solo sitio construye la clave del checkout");
+  // Y ese sitio es el único que crea sesiones de checkout.
+  const creaciones = src.match(/stripeAdapter\.createCheckoutSession\(/g) || [];
+  assert.equal(creaciones.length, 1, "todas las creaciones pasan por createSessionFor");
+});
+
+test("MON003 · C3.12 — el navegador sigue sin aportar la identidad de la compra", () => {
+  // "No confíes en el browser para aportar purchaseId": el servidor lo genera y
+  // lo busca por slug + scope, nunca por lo que llegue de fuera.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(!/req\.body/.test(body) && !/req\.query/.test(body) && !/req\.params\.purchase/.test(body));
+  assert.ok(body.includes("openIntentsForScope(store.purchases, slug, scope.id)"));
+});
+
+test("MON003 · C3.13 — reutilizar tal cual sólo vale si hay UNA compra abierta", () => {
+  // Si coexistieran dos abiertas y cobrables, devolver el enlace de la primera
+  // dejaría la segunda cobrando. El permiso para reutilizar es del llamador.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(body.includes("const reusable = open.length === 1"));
+  // Y el camino rápido aplica la MISMA regla, en memoria y gratis.
+  assert.ok(body.includes("abiertas.length === 1 && sameOffer(reusable, offer)"));
+  assert.ok(body.includes("abiertas[0].id === reusable.id"));
+  assert.ok(body.includes("resolveOpenIntent(a, offer, reusable)"));
+  const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
+  const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(fnBody.includes("reusable && sameOffer(intent, currentOffer)"),
+    "sin permiso, una cobrable se trata como hay que matarla aunque venda lo mismo");
+  // Y en el dominio la equivalencia sigue siendo lo único que decide USABLE.
+  assert.equal(D.classifyOpenIntent({ lifecycle: "chargeable" }, false), D.OPEN_INTENT.MUST_EXPIRE);
 });

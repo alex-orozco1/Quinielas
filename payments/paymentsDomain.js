@@ -161,42 +161,47 @@ function sessionStateOf(observed) {
   }
 }
 
-// Las compras de este torneo que TODAVÍA podrían cobrar. Se buscan por scope,
-// no por slug, porque el invariant es por torneo. Deliberadamente NO se filtra
-// por antigüedad: la edad es nuestra, la capacidad de cobrar es del proveedor.
-function chargeableCandidates(purchases, slug, scopeId) {
+// Las compras ABIERTAS de este torneo: las que todavía no son terminales.
+//
+// Correction 03. Antes esto exigía `providerSessionId`, y ahí estaba el agujero:
+// "no tengo guardado el id de la sesión" NO significa "no existe una sesión en
+// el proveedor". Si se envió la creación y la respuesta se perdió —o el proceso
+// murió entre que el proveedor la creó y que nosotros la guardáramos— allá hay
+// una sesión cobrable que aquí era INVISIBLE, y el reintento abría otra.
+//
+// La barrera durable es la EXISTENCIA de una compra abierta, no lo que sepamos
+// de ella. Una compra abierta se REANUDA con su propia clave de idempotencia,
+// nunca se sustituye por otra hasta demostrarla terminal.
+//
+// Se busca por scope, no por slug, porque el invariant es por torneo. Y no se
+// filtra por antigüedad: la edad es contabilidad nuestra, la capacidad de cobrar
+// es del proveedor.
+function openIntentsForScope(purchases, slug, scopeId) {
   return (Array.isArray(purchases) ? purchases : []).filter((p) =>
     p && p.slug === slug && p.scopeId === scopeId
-    && p.status === PURCHASE_STATUS.CREATED
-    && !!p.providerSessionId);
+    && p.status === PURCHASE_STATUS.CREATED);
 }
 
-// ¿Se puede abrir un checkout nuevo para este torneo?
+// Qué hacer con una compra ABIERTA, una vez que se ha observado su sesión.
 //
-// `observations` es un mapa de id-de-compra -> lo que el proveedor dijo de su
-// sesión (o null si no se pudo preguntar). La respuesta es una de tres, y dos
-// de ellas NO abren nada:
-//
-//   proceed            todas las anteriores están demostradamente muertas
-//   confirm_existing   una ya se usó: hay que confirmarla, no abrir otra
-//   blocked            no se pudo demostrar que alguna esté muerta
-function planCheckoutReplacement(candidates, observations) {
-  const list = Array.isArray(candidates) ? candidates : [];
-  const obs = observations || {};
-  if (!list.length) return { decision: "proceed", used: [], unresolved: [] };
+// `offerMatches` dice si lo que esa compra vende sigue siendo lo que se vende
+// hoy. Función pura: la decisión no depende de la hora ni de la red.
+const OPEN_INTENT = Object.freeze({
+  USABLE: "usable",           // sirve tal cual: se devuelve su enlace
+  MUST_EXPIRE: "must_expire", // cobrable pero vende otra cosa: hay que matarla
+  USED: "used",               // ya se usó: confirmarla, no abrir otra
+  DEAD: "dead",               // demostrada incobrable: se puede abrir otra
+  UNRESOLVED: "unresolved",   // no se pudo demostrar nada: fail closed
+});
 
-  const used = [];
-  const unresolved = [];
-  for (const c of list) {
-    const state = sessionStateOf(obs[c.id]);
-    if (state === SESSION_STATE.USED) used.push(c.id);
-    else if (state !== SESSION_STATE.DEAD) unresolved.push(c.id);
+function classifyOpenIntent(observed, offerMatches) {
+  switch (sessionStateOf(observed)) {
+    case SESSION_STATE.USED: return OPEN_INTENT.USED;
+    case SESSION_STATE.DEAD: return OPEN_INTENT.DEAD;
+    case SESSION_STATE.CHARGEABLE:
+      return offerMatches ? OPEN_INTENT.USABLE : OPEN_INTENT.MUST_EXPIRE;
+    default: return OPEN_INTENT.UNRESOLVED;
   }
-  // Que una se haya usado manda sobre todo: abrir otra sería ofrecer un segundo
-  // cargo por algo que ya se está pagando.
-  if (used.length) return { decision: "confirm_existing", used, unresolved };
-  if (unresolved.length) return { decision: "blocked", used, unresolved };
-  return { decision: "proceed", used, unresolved };
 }
 
 // ---- el turno para reemplazar ---------------------------------------------
@@ -275,6 +280,12 @@ function makePurchaseIntent({
     provider: String(provider),
     providerSessionId: null,
     providerPaymentIntentId: null,
+    // Cuándo se le pidió al proveedor crear la sesión. Es AUDITORÍA, no lógica:
+    // la seguridad no depende de este campo. Da igual si se envió la petición o
+    // no, porque reanudar siempre usa la misma clave de idempotencia, y eso es
+    // correcto en los dos casos. Sirve para que un operador sepa si allá puede
+    // existir un objeto que aquí no se llegó a guardar.
+    creationAttemptedAt: null,
     // La URL del checkout hospedado. Guardarla es lo que hace que un segundo
     // tap no cueste ni una llamada de red: se devuelve la misma.
     providerCheckoutUrl: null,
@@ -593,7 +604,8 @@ function buildPaymentAudit(intent, decision, entitlementResult, now) {
 
 module.exports = {
   PURCHASE_STATUS, STATUS_RANK, ATTENTION, DECISION, SUPPORTED_CURRENCIES,
-  SESSION_STATE, sessionStateOf, chargeableCandidates, planCheckoutReplacement,
+  SESSION_STATE, sessionStateOf, openIntentsForScope,
+  OPEN_INTENT, classifyOpenIntent,
   replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,
   toMinorUnits, normalizeCurrency,
