@@ -343,9 +343,11 @@ async function stripeRequest(method, path, { params, idempotencyKey, env, timeou
   if (method === "POST") {
     headers["Content-Type"] = "application/x-www-form-urlencoded";
     body = formEncode(params || {}).join("&");
-    // La idempotencia del LADO DE STRIPE. La nuestra vive en el purchase
-    // intent; ésta es la segunda red, para que un reintento nuestro sobre una
-    // respuesta perdida no cree una segunda sesión allí tampoco.
+    // La idempotencia del LADO DE STRIPE. NO es la pieza que sostiene la
+    // recuperación —eso es el descubrimiento por listado, porque Stripe documenta
+    // que puede eliminar sus resultados de idempotencia pasadas al menos 24 h—.
+    // Es la segunda red: dentro de esa retención, un reintento nuestro sobre una
+    // respuesta perdida recibe la sesión que ya existía en vez de otra nueva.
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   }
   const controller = new AbortController();
@@ -419,10 +421,10 @@ async function createCheckoutSession({
   if (!session || typeof session.id !== "string" || typeof session.url !== "string") {
     throw new StripeError("invalid_response", "Stripe returned an unusable session");
   }
-  // `observed` viene de la MISMA respuesta. Con una clave de idempotencia
-  // repetida, Stripe devuelve la sesión que ya existía — así que reanudar una
-  // compra cuyo resultado se perdió no necesita una consulta aparte para saber
-  // en qué estado está.
+  // `observed` viene de la MISMA respuesta, así que quien crea sabe en qué estado
+  // nació la sesión sin una consulta aparte. (Con una clave repetida y dentro de
+  // su retención, esta respuesta es además la sesión que ya existía — pero eso es
+  // la segunda red, no la base de la recuperación: ver la cabecera del archivo.)
   return { sessionId: session.id, url: session.url, observed: normalizeSession(session) };
 }
 
@@ -430,6 +432,40 @@ async function retrieveCheckoutSession(sessionId, { env } = {}) {
   if (typeof sessionId !== "string" || !sessionId) return null;
   const session = await stripeRequest("GET", `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { env });
   return normalizeSession(session);
+}
+
+// El rango contractual de vida de una Checkout Session. Del spec: "It can be
+// anywhere from 30 minutes to 24 hours after Checkout Session creation. By
+// default, this value is 24 hours from creation."
+const SESSION_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const SESSION_MIN_LIFETIME_MS = 30 * 60 * 1000;
+// Holgura para que el viaje de la petición no deje el instante por debajo del
+// mínimo que el proveedor admite.
+const EXPIRY_FLOOR_MARGIN_MS = 60 * 1000;
+
+// Cuándo debe dejar de poder cobrar la sesión de una compra.
+//
+// QRACKS elige el techo del rango, 24 h, a propósito: un organizador empieza el
+// pago y lo termina al día siguiente —después de consultarlo con alguien, o de
+// buscar la tarjeta— y acortarlo rompería compras reales sin ganar nada, porque
+// la seguridad no descansa en la expiración sino en el descubrimiento.
+//
+// Se deriva de la fecha de la COMPRA, no de la hora de ahora, y eso importa: un
+// reintento con la misma clave de idempotencia tiene que mandar exactamente los
+// mismos parámetros o el proveedor lo rechaza. Con un `now + 24h` cada intento
+// pediría un instante distinto.
+//
+// El recorte al rango sólo puede activarse cuando la compra es tan vieja que la
+// retención de idempotencia del proveedor ya habría caducado — es decir, justo
+// donde la identidad de los parámetros deja de importar.
+function checkoutExpiresAt(purchaseCreatedAt, nowMs) {
+  const ahora = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const anclado = Date.parse(purchaseCreatedAt);
+  const ancla = Number.isFinite(anclado) ? anclado : ahora;
+  const deseado = ancla + SESSION_MAX_LIFETIME_MS;
+  const suelo = ahora + SESSION_MIN_LIFETIME_MS + EXPIRY_FLOOR_MARGIN_MS;
+  const techo = ahora + SESSION_MAX_LIFETIME_MS;
+  return Math.floor(Math.min(Math.max(deseado, suelo), techo) / 1000);
 }
 
 // Lista las sesiones creadas en un intervalo.
@@ -495,6 +531,7 @@ module.exports = {
   readConfig, isConfigured,
   createCheckoutSession, retrieveCheckoutSession, expireCheckoutSession,
   listCheckoutSessions,
+  checkoutExpiresAt, SESSION_MAX_LIFETIME_MS, SESSION_MIN_LIFETIME_MS,
   SESSION_LIFECYCLE,
   _formEncode: formEncode,
 };

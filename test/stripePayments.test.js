@@ -29,6 +29,24 @@ function stripComments(source) {
     }).join("\n");
 }
 
+// Recorta el cuerpo de una función por su nombre, con las llaves. Existe porque
+// los recortes por ancla de texto se han podrido tres veces en este archivo: un
+// `indexOf` que devuelve -1 produce `slice(0, -1)`, que es CASI todo el fichero,
+// y entonces la aserción pasa midiendo cualquier otra cosa. Aquí un ancla que no
+// existe es un fallo, no un falso positivo.
+function cuerpoDe(src, marker) {
+  const at = src.indexOf(marker);
+  assert.ok(at !== -1, `ancla inexistente: ${marker}`);
+  const abre = src.indexOf("{", at);
+  assert.ok(abre !== -1, `función sin cuerpo: ${marker}`);
+  let depth = 0;
+  for (let i = abre; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (depth === 0) return src.slice(at, i + 1); }
+  }
+  throw new Error(`cuerpo sin cerrar: ${marker}`);
+}
+
 const NOW = "2026-09-10T12:00:00.000Z";
 const SCOPE = "ts:1:football:thesportsdb:4350:e1";
 const OTHER_SCOPE = "ts:1:football:thesportsdb:4350:e2";
@@ -1570,23 +1588,34 @@ test("MON003 · C3.8 — SERVER: reanudar guarda la sesión recuperada, sin depe
   assert.ok(body.indexOf("retrieveCheckoutSession(sessionId)") > createAt);
 });
 
-test("MON003 · C3.9 — SERVER: la constancia de la creación es auditoría, no lógica", () => {
+test("MON003 · C3.9 — la marca de creación es una PRECONDICIÓN, no una nota", () => {
+  // Correction 06 invierte esta prueba a propósito. En C03 el campo era auditoría
+  // y lo correcto era que su fallo no bloqueara nada. En C05 pasó a sostener la
+  // afirmación "sin marca no puede haber sesión", y desde entonces un fallo
+  // silencioso en su escritura es justo lo que abre un segundo cobro.
   const src = stripComments(serverSrc);
-  // Se escribe antes de la llamada, y su fallo no impide pedir la sesión.
-  const mk = src.slice(src.indexOf("async function createSessionFor(intent, slug)"));
-  const mkBody = mk.slice(0, mk.indexOf("\nasync function ", 10));
-  assert.ok(/markCreationAttempted\(intent\.id\)\.catch\(/.test(mkBody),
-    "su fallo no impide pedir la sesión");
-  assert.ok(mkBody.includes("checkout_attempt_note_failed"), "pero queda registrado");
-  assert.ok(mkBody.indexOf("markCreationAttempted") < mkBody.indexOf("createCheckoutSession"));
-  // Y NADA decide en función de ese campo.
-  const decisions = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout"'));
-  const upTo = decisions.slice(0, decisions.indexOf("async function markCreationAttempted"));
-  assert.ok(!/if\s*\([^)]*creationAttemptedAt/.test(upTo),
-    "la seguridad no puede depender de haber conseguido escribir una nota");
-  // Nunca se reescribe: la primera vez es la que vale.
-  const mark = src.slice(src.indexOf("async function markCreationAttempted(purchaseId)"));
-  assert.ok(mark.slice(0, mark.indexOf("\nasync function ", 10)).includes("!p.creationAttemptedAt"));
+  const mkBody = cuerpoDe(src, "async function createSessionFor(intent, slug)");
+  // Se marca ANTES de la red, y SIN red de escape.
+  assert.ok(mkBody.includes("await markCreationAttempted(intent.id);"));
+  assert.ok(!/markCreationAttempted\([^)]*\)\.catch\(/.test(mkBody),
+    "un .catch aquí convierte la afirmación en una mentira posible");
+  assert.ok(mkBody.indexOf("markCreationAttempted") < mkBody.indexOf("createCheckoutSession"),
+    "primero la marca durable, después la petición");
+
+  // Y la propia marca LANZA cuando no consigue quedar escrita, incluido el caso
+  // en que la compra no está en la fila.
+  const mark = cuerpoDe(src, "async function markCreationAttempted(purchaseId)");
+  assert.ok(mark.includes('throw new Error("creation_marker_purchase_missing")'),
+    "marcar algo que no existe no es un éxito");
+  assert.ok(mark.includes('await client.query("COMMIT")'), "y se commitea de verdad");
+  assert.ok(mark.includes("throw err"), "cualquier fallo sube");
+  // Nunca reescribe: la primera marca es la que acota la ventana.
+  assert.ok(mark.includes("if (target.creationAttemptedAt)"));
+
+  // NADA decide en función de ese campo salvo el descubrimiento, que es su razón
+  // de ser.
+  const locate = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
+  assert.ok(locate.includes("intent.creationAttemptedAt"));
 });
 
 test("MON003 · C3.10 — el dominio no exige saber la sesión para contar una compra", () => {
@@ -2010,20 +2039,35 @@ test("MON003 · C5.3 — normalizeSession distingue 'usada' de 'cobrada'", () =>
 
 test("MON003 · C5.4 — SERVER: localizar NUNCA concluye una ausencia que no puede demostrar", () => {
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("async function locateSessionForPurchase(intent, hint)"));
-  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
-  // Las tres respuestas, y cuál lleva a crear.
-  assert.ok(body.includes("return { session: observed, via: \"hint\" }"));
+  const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
+  const decidir = cuerpoDe(src, "function decidirLocalizacion(encontradas, conflict, via)");
+  // Las cuatro respuestas, y cuál lleva a crear.
   assert.ok(body.includes('{ absent: true, via: "never_attempted" }'),
     "sin haber pedido la creación no puede existir nada");
-  assert.ok(body.includes('{ absent: true, via: "list_exhausted" }'));
+  assert.ok(decidir.includes("{ absent: true, via:"));
   assert.ok(body.includes('{ unknown: true, via: "list_truncated" }'),
     "una búsqueda truncada NO demuestra una ausencia");
-  assert.ok(body.includes('{ unknown: true, via: "conflicting_candidate"'),
+  assert.ok(decidir.includes('{ unknown: true, via: "conflicting_candidate"'),
     "una sesión que dice ser nuestra y no cuadra no se ignora");
-  // Y la pista se verifica antes de aceptarse.
+  // Correction 06: UNA es una, VARIAS es una anomalía — y nunca se elige una.
+  assert.ok(decidir.includes("if (todas.length === 1) return { session: todas[0], via }"));
+  assert.ok(decidir.includes("if (todas.length > 1) return { multiple: todas, via }"));
+  assert.ok(!/return \{ session: [^}]*\[0\][^}]*\}/.test(body.replace(decidir, "")),
+    "el cuerpo del descubrimiento no elige ninguna por su cuenta");
+  // Y la pista se verifica y se AÑADE al conjunto, jamás cortocircuita.
   assert.ok(body.includes("verifySessionForPurchase(intent, observed)"));
+  assert.ok(body.includes("encontradas.set(observed.sessionId, observed)"));
   assert.ok(body.includes("session_hint_rejected"));
+  const hintAt = body.indexOf("encontradas.set(observed.sessionId, observed)");
+  const listAt = body.indexOf("listCheckoutSessions(");
+  assert.ok(hintAt !== -1 && listAt !== -1 && hintAt < listAt);
+  assert.ok(!/if \(hint\)[\s\S]{0,600}return \{ session/.test(body),
+    "aceptar la pista y volver a casa dejaría invisible cualquier otra sesión");
+  // Se recorren TODAS las páginas antes de decidir: ningún return dentro del bucle.
+  const bucle = body.slice(body.indexOf("for (let page = 0"));
+  const finBucle = bucle.indexOf("\n  }");
+  assert.ok(!/\breturn\b/.test(bucle.slice(0, finBucle)),
+    "un return dentro del paginado deja páginas sin leer");
   // Buscar no es vender.
   assert.ok(!body.includes("createCheckoutSession"));
   assert.ok(!body.includes("createSessionFor"));
@@ -2031,24 +2075,22 @@ test("MON003 · C5.4 — SERVER: localizar NUNCA concluye una ausencia que no pu
 
 test("MON003 · C5.5 — SERVER: la ventana de búsqueda sale de un dato NUESTRO", () => {
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("async function locateSessionForPurchase(intent, hint)"));
-  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
   assert.ok(body.includes("Date.parse(intent.creationAttemptedAt)"),
     "la ventana la fija el instante en que PEDIMOS la creación");
   assert.ok(body.includes("SESSION_LOOKUP_MARGIN_MS"));
   assert.ok(body.includes("SESSION_LOOKUP_MAX_PAGES"));
   // Un sello ilegible no se rellena con la hora de ahora: se admite no saber.
   assert.ok(body.includes('{ unknown: true, via: "unreadable_attempt_time" }'));
-  // Y `creationAttemptedAt` deja de ser sólo auditoría: ahora sostiene esto.
-  const mark = src.slice(src.indexOf("async function markCreationAttempted(purchaseId)"));
-  assert.ok(mark.slice(0, mark.indexOf("\nasync function ", 10)).includes("!p.creationAttemptedAt"),
-    "y se escribe una sola vez: la primera es la que acota la ventana");
+  // Y `creationAttemptedAt` no es auditoría: sostiene esto, y se escribe una sola
+  // vez porque la primera marca es la que acota la ventana.
+  const mark = cuerpoDe(src, "async function markCreationAttempted(purchaseId)");
+  assert.ok(mark.includes("if (target.creationAttemptedAt)"));
 });
 
 test("MON003 · C5.6 — SERVER: reanudar localiza primero y crea sólo ante una ausencia probada", () => {
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
-  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  const body = cuerpoDe(src, "async function resolveOpenIntent(intent, currentOffer, reusable = true)");
   const locateAt = body.indexOf("locateSessionForPurchase(intent, null)");
   const absentAt = body.indexOf("found.absent");
   const createAt = body.indexOf("createSessionFor(intent, intent.slug)");
@@ -2206,8 +2248,7 @@ test("MON003 · C5.10 — SERVER: la observación vieja no puede degradar un cob
 
 test("MON003 · C5.11 — la vuelta del navegador acepta la pista, y sólo eso", () => {
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("function readSessionHint(raw)"));
-  const body = fn.slice(0, fn.indexOf("\n// ¿Existe en el proveedor"));
+  const body = cuerpoDe(src, "function readSessionHint(raw)");
   assert.ok(/\^cs_\[A-Za-z0-9_\]\{1,200\}\$/.test(body), "se filtra la forma");
   assert.ok(body.includes("return null"), "y lo que no la cumple no viaja a ninguna parte");
   // El success_url pide la pista al proveedor, junto a NUESTRO id de compra.
@@ -2219,8 +2260,7 @@ test("MON003 · C5.11 — la vuelta del navegador acepta la pista, y sólo eso",
 
 test("MON003 · C5.12 — ninguna respuesta manda al navegador a un enlace que no lo es", () => {
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("function usableCheckoutUrl(url)"));
-  const body = fn.slice(0, fn.indexOf("\n//", 10));
+  const body = cuerpoDe(src, "function usableCheckoutUrl(url)");
   assert.ok(body.includes("typeof url !== \"string\""));
   assert.ok(/\^https:/.test(body), "sólo https");
   // Y la pantalla tampoco navega a algo que no sea un enlace.
@@ -2250,4 +2290,296 @@ test("MON003 · C5.13 — un cobro en curso es un estado de RECUPERACIÓN, no un
   // El mensaje de 'sigue en proceso' dice explícitamente que no hace falta
   // reintentar: es lo que evita un segundo cargo por impaciencia.
   assert.ok(/No hace falta que lo intentes de nuevo/.test(indexSrc));
+});
+
+// ==== 20 · Correction 06: marca durable, multiplicidad y expiración explícita ==
+//
+// El contrato, en orden y sin atajos:
+//   marca de intento DURABLE -> descubrimiento completo -> identidad verificada
+//   -> verdad del pago.
+
+test("MON003 · C6.1 — la marca se escribe ANTES de la red y sin red de escape", () => {
+  const src = stripComments(serverSrc);
+  const body = cuerpoDe(src, "async function createSessionFor(intent, slug)");
+  assert.ok(body.includes("await markCreationAttempted(intent.id);"));
+  // Un `.catch` aquí es justamente el agujero: convierte "sin marca no puede
+  // haber sesión" en una afirmación que puede ser falsa.
+  assert.ok(!/markCreationAttempted\([^)]*\)\s*\.catch/.test(body));
+  assert.ok(!/markCreationAttempted[\s\S]{0,200}?try\s*\{/.test(body),
+    "ni un try/catch que se la tragüe");
+  const markAt = body.indexOf("markCreationAttempted");
+  const netAt = body.indexOf("stripeAdapter.createCheckoutSession");
+  assert.ok(markAt !== -1 && netAt !== -1 && markAt < netAt);
+  // Y no hay ninguna otra vía que pida una sesión salteándose la marca.
+  assert.equal((src.match(/stripeAdapter\.createCheckoutSession\(/g) || []).length, 1);
+});
+
+test("MON003 · C6.2 — marcar algo que no existe NO es un éxito", () => {
+  const src = stripComments(serverSrc);
+  const body = cuerpoDe(src, "async function markCreationAttempted(purchaseId)");
+  assert.ok(body.includes('throw new Error("creation_marker_purchase_missing")'));
+  // El orden importa: se busca la compra ANTES de escribir.
+  assert.ok(body.indexOf("store.purchases.find") < body.indexOf("putRow("));
+  // Una marca previa no se reescribe, y no es un error.
+  assert.ok(body.includes("if (target.creationAttemptedAt)"));
+  // Todo fallo sube, y la transacción se cierra.
+  assert.ok(body.includes("throw err"));
+  assert.ok(body.includes('await client.query("COMMIT")'));
+  assert.ok(body.includes('client.query("ROLLBACK")'));
+});
+
+test("MON003 · C6.3 — VARIAS sesiones de una compra: el veredicto no depende del orden", () => {
+  const SS = D.SESSION_SET;
+  const paid = (id) => ({ sessionId: id, paid: true, lifecycle: "used" });
+  const viva = (id) => ({ sessionId: id, paid: false, lifecycle: "chargeable" });
+  const muerta = (id) => ({ sessionId: id, paid: false, lifecycle: "dead" });
+  const usada = (id) => ({ sessionId: id, paid: false, lifecycle: "used" });
+  const desconocida = (id) => ({ sessionId: id, paid: false, lifecycle: "vete_a_saber" });
+
+  const casos = [
+    [[muerta("a"), viva("b")], SS.ONE_LIVE],
+    [[muerta("a"), paid("b")], SS.PAID_ALONE],
+    [[viva("a"), paid("b")], SS.PAID_WITH_OPEN],
+    [[paid("a"), paid("b")], SS.DOUBLE_CHARGE],
+    [[desconocida("a"), paid("b")], SS.PAID_WITH_OPEN],
+    [[viva("a"), viva("b")], SS.MANY_LIVE],
+    [[muerta("a"), muerta("b")], SS.ALL_DEAD],
+    // Una sesión CONSUMIDA sin pago declarado no es una sesión muerta: un pago
+    // asíncrono iniciado antes puede liquidarse después, así que no se puede
+    // vender encima. Meterla en el mismo cajón que una expirada fue un fallo de
+    // la primera versión de esta función, y lo cazó la sonda de permutaciones.
+    [[usada("a"), muerta("b")], SS.CONSUMED],
+    [[usada("a"), usada("b")], SS.CONSUMED],
+    [[usada("a"), paid("b")], SS.PAID_WITH_OPEN],
+    [[desconocida("a"), muerta("b")], SS.UNRESOLVED],
+    // tres mezcladas
+    [[muerta("a"), viva("b"), paid("c")], SS.PAID_WITH_OPEN],
+    [[muerta("a"), muerta("b"), paid("c")], SS.PAID_ALONE],
+    [[paid("a"), paid("b"), viva("c")], SS.DOUBLE_CHARGE],
+    [[desconocida("a"), viva("b"), muerta("c")], SS.UNRESOLVED],
+    [[muerta("a"), usada("b"), viva("c")], SS.ONE_LIVE],
+  ];
+  for (const [set, esperado] of casos) {
+    const vistos = new Set(permutaciones(set).map((p) => JSON.stringify(D.decideSessionSet(p))));
+    assert.equal(vistos.size, 1,
+      `el orden cambió el veredicto de ${JSON.stringify(set.map((x) => x.sessionId))}`);
+    const r = D.decideSessionSet(set);
+    assert.equal(r.kind, esperado, JSON.stringify(set));
+  }
+  assert.equal(D.decideSessionSet([]).kind, SS.NONE);
+  assert.equal(D.decideSessionSet(null).kind, SS.NONE);
+});
+
+test("MON003 · C6.4 — PROPIEDAD: un cobro nunca queda invisible, en ningún orden", () => {
+  // Espacio completo de conjuntos de hasta 4 sesiones con los cinco estados, en
+  // todas sus permutaciones: si hay un cobro declarado, el veredicto SIEMPRE lo
+  // nombra, y nunca puede leerse como "todas muertas" ni como "una viva".
+  const formas = [
+    { paid: true, lifecycle: "used" },
+    { paid: false, lifecycle: "chargeable" },
+    { paid: false, lifecycle: "dead" },
+    { paid: false, lifecycle: "used" },
+    { paid: false, lifecycle: "???" },
+  ];
+  const combos = (n) => (n === 0 ? [[]]
+    : combos(n - 1).flatMap((resto) => formas.map((f) => resto.concat([f]))));
+  let conjuntos = 0;
+  for (let largo = 1; largo <= 4; largo++) {
+    for (const combo of combos(largo)) {
+      const set = combo.map((f, i) => ({ sessionId: "s" + i, ...f }));
+      const cobros = set.filter((x) => x.paid === true).map((x) => x.sessionId).sort();
+      const vistos = new Set(permutaciones(set).map((p) => JSON.stringify(D.decideSessionSet(p))));
+      assert.equal(vistos.size, 1, `orden relevante en ${JSON.stringify(combo)}`);
+      const r = D.decideSessionSet(set);
+      conjuntos++;
+      if (cobros.length) {
+        assert.deepEqual(r.paid, cobros, "el cobro tiene que estar nombrado");
+        assert.notEqual(r.kind, D.SESSION_SET.ALL_DEAD);
+        assert.notEqual(r.kind, D.SESSION_SET.ONE_LIVE);
+        assert.notEqual(r.kind, D.SESSION_SET.MANY_LIVE);
+        assert.notEqual(r.kind, D.SESSION_SET.NONE);
+        if (cobros.length > 1) assert.equal(r.kind, D.SESSION_SET.DOUBLE_CHARGE);
+      }
+      // Y "todas muertas" sólo puede decirse si de verdad no queda nada vivo.
+      if (r.kind === D.SESSION_SET.ALL_DEAD) {
+        // "Todas muertas" es la ÚNICA respuesta que autoriza vender encima, así
+        // que tiene que ser estricta: ni cobros, ni vivas, ni consumidas, ni
+        // desconocidas.
+        assert.equal(r.paid.length, 0);
+        assert.equal(r.live.length, 0);
+        assert.equal(r.consumed.length, 0, "una consumida puede liquidarse todavía");
+        assert.equal(r.unknown.length, 0);
+        assert.equal(r.dead.length, set.length, "todas, y demostradas");
+      }
+      // Y un cobro con algo sin cerrar al lado nunca puede leerse como "el cobro
+      // está solo".
+      if (r.kind === D.SESSION_SET.PAID_ALONE) {
+        assert.equal(r.paid.length, 1);
+        assert.equal(r.live.length + r.consumed.length + r.unknown.length, 0);
+      }
+    }
+  }
+  assert.equal(conjuntos, 5 + 25 + 125 + 625);
+});
+
+test("MON003 · C6.5 — SERVER: la pista se UNE al conjunto, nunca lo cortocircuita", () => {
+  const src = stripComments(serverSrc);
+  const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
+  // La pista añade a un Map y el descubrimiento sigue.
+  assert.ok(body.includes("encontradas.set(observed.sessionId, observed)"));
+  const hintAt = body.indexOf("encontradas.set(observed.sessionId, observed)");
+  const listAt = body.indexOf("listCheckoutSessions(");
+  assert.ok(hintAt !== -1 && listAt !== -1 && hintAt < listAt,
+    "la pista se recoge antes, pero NO evita el listado");
+  // Ningún return entre aceptar la pista y empezar a listar, salvo el de
+  // 'nunca se intentó' — que además contempla la contradicción.
+  const entre = body.slice(hintAt, listAt);
+  const returns = entre.match(/\breturn\b/g) || [];
+  assert.ok(returns.length <= 3, "demasiadas salidas antes del descubrimiento: " + returns.length);
+  assert.ok(entre.includes("session_found_without_marker"),
+    "una pista válida sin marca es una contradicción que se registra, no se ignora");
+  // Un Map por id: la misma sesión vista dos veces cuenta una.
+  assert.ok(body.includes("new Map()"));
+});
+
+test("MON003 · C6.6 — SERVER: la multiplicidad se audita, se cura si puede, y si no bloquea", () => {
+  const src = stripComments(serverSrc);
+  const body = cuerpoDe(src, "async function resolveMultipleSessions(intent, sessions)");
+  // Se audita ANTES de tocar nada.
+  const auditAt = body.indexOf("flagOpenSetAttention(intent.slug");
+  const expireAt = body.indexOf("expireCheckoutSession(");
+  assert.ok(auditAt !== -1 && expireAt !== -1 && auditAt < expireAt,
+    "si la curación falla, el hecho ya quedó escrito");
+  assert.ok(body.includes("INCIDENT.MANY_SESSIONS"));
+  assert.ok(body.includes("INCIDENT.DOUBLE_CHARGE"));
+  // Dos cobros no se curan.
+  assert.ok(body.indexOf("SESSION_SET.DOUBLE_CHARGE") < expireAt);
+  // Tras matar se vuelve a PREGUNTAR, no se supone.
+  assert.ok(body.includes("retrieveCheckoutSession(o.sessionId)"));
+  assert.ok(body.includes("decideSessionSet(despues)"));
+  // Sólo dos salidas permiten seguir, y ninguna elige "la primera".
+  assert.ok(body.includes("SESSION_SET.PAID_ALONE"));
+  assert.ok(body.includes("sessions.find((o) => o.paid === true)"),
+    "cuando hay un cobro, la elegida es la que TIENE el dinero");
+  assert.ok(body.includes("SESSION_SET.ALL_DEAD"));
+  assert.ok(body.includes("SESSION_SET.CONSUMED"),
+    "una consumida sin pago no se sustituye: se conserva para confirmar");
+  assert.ok(body.includes("OPEN_INTENT.UNRESOLVED"));
+  // NINGUNA elección es posicional: cuando hay que señalar una, se ordena por id.
+  assert.ok(!/sessions\[0\]/.test(body), "elegir por posición es depender del orden");
+  assert.ok(body.includes("localeCompare"), "se señala por un criterio estable");
+  // Y el veredicto se devuelve como FINAL: quien llama no vuelve a clasificar.
+  assert.ok(body.includes("decided: true"));
+  // Y nunca crea nada.
+  assert.ok(!body.includes("createSessionFor"));
+  assert.ok(!body.includes("createCheckoutSession"));
+  // La curación puede REVELAR un cargo doble —una que iba a matarse acababa de
+  // cobrar— y ese hecho tampoco puede quedarse sin auditar.
+  assert.ok(body.includes("session_double_charge_revealed"));
+  assert.ok(body.includes('via: "double_charge_revealed"'));
+  const revelado = body.indexOf("double_charge_revealed");
+  assert.ok(revelado > body.indexOf("decideSessionSet(despues)"),
+    "se comprueba DESPUES de volver a preguntar");
+  assert.ok(body.slice(revelado).includes("anotar([D.INCIDENT.DOUBLE_CHARGE])"));
+});
+
+test("MON003 · C6.7 — SERVER: las DOS rutas que descubren manejan multiplicidad", () => {
+  const src = stripComments(serverSrc);
+  // El checkout.
+  const resolve = cuerpoDe(src, "async function resolveOpenIntent(intent, currentOffer, reusable = true)");
+  assert.ok(resolve.includes("if (found.multiple)"));
+  assert.ok(resolve.includes("resolveMultipleSessions(intent, found.multiple)"));
+  assert.ok(resolve.indexOf("found.multiple") < resolve.indexOf("found.absent"),
+    "la multiplicidad se resuelve ANTES de poder concluir una ausencia");
+  // El veredicto del conjunto se devuelve tal cual: volver a clasificar a partir
+  // de la sesión señalada tiraría lo que se sabe del resto.
+  assert.ok(resolve.includes("checkout_session_multiplicity_resolved"));
+  const multAt = resolve.indexOf("resolveMultipleSessions(intent, found.multiple)");
+  const classifyAt = resolve.indexOf("classifyOpenIntent(observed, matches)");
+  const returnAt = resolve.indexOf("return { outcome: r.outcome, url, sessionId,");
+  assert.ok(returnAt !== -1 && returnAt > multAt && returnAt < classifyAt,
+    "la rama de multiplicidad sale con su propio veredicto");
+  // Y la reconciliación.
+  const status = src.slice(src.indexOf('app.get("/api/quinielas/:slug/checkout/:purchaseId"'));
+  const stBody = status.slice(0, status.indexOf("\n});"));
+  assert.ok(stBody.includes("if (found.multiple)"));
+  assert.ok(stBody.includes("resolveMultipleSessions(intent, found.multiple)"));
+  assert.ok(stBody.includes("reconcile_multiplicity"));
+  // La reconciliación sigue sin poder crear nada.
+  assert.ok(!stBody.includes("createSessionFor"));
+});
+
+test("MON003 · C6.8 — la expiración es explícita, determinista y dentro del rango", () => {
+  const src = stripComments(serverSrc);
+  // El caller la pasa SIEMPRE.
+  const mk = cuerpoDe(src, "async function createSessionFor(intent, slug)");
+  assert.ok(mk.includes("expiresAt: stripeAdapter.checkoutExpiresAt(intent.createdAt, Date.now())"));
+  // Y el adaptador la manda.
+  const adapter = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
+  // `expiresAt` es un parámetro declarado de la creación…
+  assert.ok(cuerpoDe(adapter, "async function createCheckoutSession(").includes("expiresAt"));
+  // …y se traduce a `expires_at` en un único sitio del archivo.
+  assert.equal((adapter.match(/params\.expires_at = expiresAt/g) || []).length, 1);
+
+  // Y el cálculo se prueba con números, no leyendo su código.
+  const A = require("../payments/stripeAdapter");
+  const DIA = 24 * 60 * 60 * 1000;
+  const MEDIA = 30 * 60 * 1000;
+  assert.equal(A.SESSION_MAX_LIFETIME_MS, DIA, "el techo contractual");
+  assert.equal(A.SESSION_MIN_LIFETIME_MS, MEDIA, "el suelo contractual");
+  const ahora = Date.parse("2026-09-15T12:00:00.000Z");
+  const de = (h) => new Date(ahora - h * 3600 * 1000).toISOString();
+
+  // Una compra recién creada: el techo, 24 h.
+  assert.equal(A.checkoutExpiresAt(de(0), ahora) * 1000, ahora + DIA);
+  // Una de hace una hora: 23 h, porque se ancla en la COMPRA.
+  assert.equal(A.checkoutExpiresAt(de(1), ahora) * 1000, ahora + DIA - 3600 * 1000);
+
+  // DETERMINISMO, que es lo que permite reintentar con la misma clave: el mismo
+  // `createdAt` da el mismo instante aunque se pida en momentos distintos.
+  for (const h of [0, 1, 5, 12, 20]) {
+    assert.equal(A.checkoutExpiresAt(de(h), ahora), A.checkoutExpiresAt(de(h), ahora + 60 * 1000),
+      "un reintento con la misma clave debe pedir los MISMOS parámetros");
+  }
+
+  // Y SIEMPRE dentro del rango contractual, para cualquier antigüedad y para una
+  // fecha ilegible.
+  for (const createdAt of [de(0), de(1), de(23), de(23.5), de(24), de(48), de(500),
+    "no-es-fecha", null, undefined, ""]) {
+    const v = A.checkoutExpiresAt(createdAt, ahora) * 1000;
+    assert.ok(v >= ahora + MEDIA, `por debajo del suelo con ${createdAt}: ${new Date(v).toISOString()}`);
+    assert.ok(v <= ahora + DIA, `por encima del techo con ${createdAt}`);
+  }
+  // Una compra tan vieja que el instante deseado ya pasó: se recorta al suelo, no
+  // se manda una fecha pasada que el proveedor rechazaría.
+  assert.ok(A.checkoutExpiresAt(de(500), ahora) * 1000 > ahora);
+  // Y se devuelve en SEGUNDOS enteros, que es lo que el proveedor espera.
+  assert.ok(Number.isSafeInteger(A.checkoutExpiresAt(de(1), ahora)));
+  assert.ok(A.checkoutExpiresAt(de(1), ahora) < 1e12, "segundos, no milisegundos");
+});
+
+test("MON003 · C6.9 — los comentarios ya no afirman lo que dejó de ser cierto", () => {
+  const server = serverSrc;
+  const adapter = fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8");
+  // Las tres afirmaciones que Correction 06 volvió falsas, literalmente.
+  for (const obsoleto of [
+    "Es AUDITORÍA, no lógica",
+    "Es AUDITORÍA:",
+    "la lógica no depende de este campo",
+    "ésa es la pieza que sostiene",
+    "Su fallo no impide nada (es auditoría)",
+  ]) {
+    assert.ok(!server.includes(obsoleto), `comentario obsoleto en server.js: "${obsoleto}"`);
+  }
+  assert.ok(!adapter.includes("La nuestra vive en el purchase"),
+    "el adaptador ya no presenta la clave como la idempotencia principal");
+  // Y el contrato nuevo está escrito donde vive el invariant.
+  assert.ok(server.includes("marca de intento DURABLE"));
+  assert.ok(server.includes("descubrimiento completo"));
+  assert.ok(server.includes("identidad verificada"));
+  assert.ok(server.includes("verdad del pago"));
+  assert.ok(adapter.includes("NO es la pieza que sostiene la"));
+  // La marca se describe como precondición, no como nota.
+  assert.ok(server.includes("LA PRECONDICIÓN DE TODO"));
 });

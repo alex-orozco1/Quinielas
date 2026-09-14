@@ -62,6 +62,11 @@ const ATTENTION = Object.freeze({
   // Sin eso no se puede demostrar que el plan vaya al torneo que se compró.
   // Tiene su propio código: no es un torneo VIEJO, es un torneo ILEGIBLE.
   SCOPE_UNPROVEN: "current_tournament_unreadable",
+  // El proveedor tiene VARIAS sesiones para UNA sola compra. El invariant es "un
+  // objeto cobrable por quiniela y torneo", así que esto es material aunque
+  // acabe curándose: significa que en algún momento salieron dos peticiones de
+  // creación para la misma compra.
+  MANY_SESSIONS: "several_provider_checkouts_for_one_purchase",
   // Más de una sesión del torneo consta usada y UNA de ellas cobró. No es un
   // cargo doble —sólo hay un cobro declarado— pero tampoco se puede vender nada
   // más: el dinero ya entró por una puerta.
@@ -284,6 +289,72 @@ function verifySessionForPurchase(intent, observed) {
   return { ok: true, reason: SESSION_MATCH.OK };
 }
 
+// ---- varias sesiones del proveedor para UNA sola compra --------------------
+//
+// Correction 06. El descubrimiento devolvía la PRIMERA sesión verificada que
+// encontraba, y eso daba por supuesta la unicidad justo donde hay que
+// demostrarla: si el listado sacaba primero una expirada, una hermana abierta
+// —o pagada— quedaba invisible, la compra parecía muerta, y el sistema abría
+// otra venta al lado de algo que podía cobrar o que ya había cobrado. El
+// resultado dependía del orden del listado del proveedor.
+//
+// Esta función mira TODAS y dice qué se puede afirmar. Pura y sin orden: se
+// ordenan los ids que devuelve.
+const SESSION_SET = Object.freeze({
+  DOUBLE_CHARGE: "double_charge",     // dos o más cobraron: hay algo que devolver
+  PAID_WITH_OPEN: "paid_with_open",   // una cobró y algo más sigue sin estar cerrado
+  PAID_ALONE: "paid_alone",           // una cobró y TODO lo demás está demostrado muerto
+  CONSUMED: "consumed",               // ninguna cobró, pero alguna se consumió: no se sustituye
+  MANY_LIVE: "many_live",             // dos o más pueden cobrar
+  ONE_LIVE: "one_live",               // una puede cobrar y el resto está muerto
+  ALL_DEAD: "all_dead",               // todas demostradas incobrables
+  UNRESOLVED: "unresolved",           // hay alguna que no se pudo clasificar
+  NONE: "none",                       // no había ninguna
+});
+
+function decideSessionSet(observed) {
+  const list = (Array.isArray(observed) ? observed : []).filter(Boolean);
+  const idOf = (o) => str(o.sessionId);
+  const ids = (xs) => xs.map(idOf).filter(Boolean).sort();
+  if (!list.length) {
+    return { kind: SESSION_SET.NONE, paid: [], live: [], consumed: [], dead: [], unknown: [] };
+  }
+
+  // "Cobró" es SÓLO que el proveedor lo diga. Una sesión consumida sin pago
+  // declarado no es dinero (la misma regla que el resto del dominio).
+  const paid = list.filter((o) => o.paid === true);
+  const resto = list.filter((o) => o.paid !== true);
+  const live = resto.filter((o) => sessionStateOf(o) === SESSION_STATE.CHARGEABLE);
+  // CONSUMIDA, no muerta. Una sesión que el proveedor da por usada pero sin pago
+  // declarado no es un objeto inofensivo: un pago asíncrono iniciado antes puede
+  // liquidarse después. Por eso `classifyOpenIntent` nunca la sustituye, y por eso
+  // aquí NO cuenta como demostradamente muerta — meterla en el mismo cajón que
+  // una expirada decía "se puede vender otra vez encima", que es falso.
+  const consumed = resto.filter((o) => sessionStateOf(o) === SESSION_STATE.USED);
+  const dead = resto.filter((o) => sessionStateOf(o) === SESSION_STATE.DEAD);
+  const unknown = resto.filter((o) => sessionStateOf(o) === SESSION_STATE.UNKNOWN);
+
+  const base = {
+    paid: ids(paid), live: ids(live), consumed: ids(consumed),
+    dead: ids(dead), unknown: ids(unknown),
+  };
+  if (paid.length > 1) return { kind: SESSION_SET.DOUBLE_CHARGE, ...base };
+  if (paid.length === 1) {
+    // Un cobro sólo está "solo" si TODO lo demás está demostrado muerto. Una viva
+    // es la puerta al segundo cargo; una consumida o una desconocida son dinero
+    // sin determinar. En los tres casos el invariant NO está restaurado.
+    const sinCerrar = live.length + consumed.length + unknown.length;
+    return { kind: sinCerrar ? SESSION_SET.PAID_WITH_OPEN : SESSION_SET.PAID_ALONE, ...base };
+  }
+  if (unknown.length) return { kind: SESSION_SET.UNRESOLVED, ...base };
+  if (live.length > 1) return { kind: SESSION_SET.MANY_LIVE, ...base };
+  if (live.length === 1) return { kind: SESSION_SET.ONE_LIVE, ...base };
+  // Sin cobros, sin vivas y sin desconocidas: si alguna se consumió, no se puede
+  // vender encima; si no, todas están demostradas muertas.
+  if (consumed.length) return { kind: SESSION_SET.CONSUMED, ...base };
+  return { kind: SESSION_SET.ALL_DEAD, ...base };
+}
+
 // ¿Qué hacer con el CONJUNTO de compras abiertas, una vez clasificadas todas?
 //
 // Correction 04. Antes esto se decidía dentro del bucle, con un `return` en
@@ -311,6 +382,7 @@ const OPEN_SET = Object.freeze({
 // porque encima de ella haya otra preventiva.
 const INCIDENT = Object.freeze({
   DOUBLE_CHARGE: "double_charge",                 // dos cobros declarados: hay algo que devolver
+  MANY_SESSIONS: "many_sessions_for_one_purchase", // el proveedor tiene varias de una compra
   USED_BESIDE_PAID: "used_beside_paid",           // varias usadas y UNA cobrada
   USED_UNPAID: "many_used_without_payment",       // dos sesiones usadas, ningún cobro declarado
   USABLE_BESIDE_USED: "usable_beside_used",       // una cobrable junto a una ya cobrada
@@ -318,12 +390,14 @@ const INCIDENT = Object.freeze({
   UNRESOLVED: "unresolved",                       // no se pudo demostrar qué pasó
 });
 const INCIDENT_SEVERITY = Object.freeze({
-  double_charge: 6, used_beside_paid: 5, usable_beside_used: 4, many_usable: 3,
+  double_charge: 6, used_beside_paid: 5, usable_beside_used: 4,
+  many_sessions_for_one_purchase: 4, many_usable: 3,
   many_used_without_payment: 2, unresolved: 1,
 });
 const INCIDENT_ATTENTION = Object.freeze({
   double_charge: ATTENTION.DOUBLE_CHARGE,
   used_beside_paid: ATTENTION.USED_BESIDE_PAID,
+  many_sessions_for_one_purchase: ATTENTION.MANY_SESSIONS,
   many_used_without_payment: ATTENTION.TWO_SESSIONS_USED_UNPAID,
   usable_beside_used: ATTENTION.OPEN_SET_UNRESOLVED,
   many_usable: ATTENTION.OPEN_SET_UNRESOLVED,
@@ -827,6 +901,7 @@ module.exports = {
   OPEN_INTENT, classifyOpenIntent,
   OPEN_SET, decideOpenSet, INCIDENT, INCIDENT_SEVERITY, INCIDENT_ATTENTION,
   SESSION_MATCH, verifySessionForPurchase,
+  SESSION_SET, decideSessionSet,
   replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,
   toMinorUnits, normalizeCurrency,

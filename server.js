@@ -2897,11 +2897,10 @@ const SESSION_LOOKUP_MARGIN_MS = 15 * 60 * 1000;
 // Tope de páginas. Si se agota SIN encontrarla, la respuesta es "no se sabe",
 // nunca "no existe": una búsqueda truncada no demuestra una ausencia.
 const SESSION_LOOKUP_MAX_PAGES = 20;
-// El techo CONTRACTUAL de vida de una sesión: su documentación dice que
-// `expires_at` va de 30 minutos a 24 h desde la creación, y que por defecto son
-// 24 h. Se manda explícito al crear, así que pasado esto una sesión no puede
-// cobrar. Sirve para explicar un bloqueo, no para autorizar una venta: "ya no
-// puede cobrar" no es "nunca cobró".
+// El techo CONTRACTUAL de vida de una sesión, también aquí: sirve para explicar
+// un bloqueo ("pasado esto ya no puede cobrar"), nunca para autorizar una venta,
+// porque "ya no puede cobrar" no es "nunca cobró". El cálculo de la expiración que
+// se manda al crear vive en el adaptador, que es donde está el contrato.
 const SESSION_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
 async function readPaymentIntents(client) {
@@ -2968,8 +2967,19 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     // en vez de crear una segunda.
     //
     // El turno (claim) es COORDINACIÓN, no la barrera: caduca, y dos peticiones
-    // pueden creerse dueñas a la vez. Las dos reanudarían la MISMA compra con la
-    // MISMA clave y recibirían la MISMA sesión, así que no importa.
+    // pueden creerse dueñas a la vez. Las dos resolverían la MISMA compra por el
+    // mismo camino y llegarían a la MISMA sesión, así que no importa.
+    //
+    // EL CONTRATO, en orden y sin atajos (Correction 06):
+    //
+    //   1. marca de intento DURABLE   ->  sin ella no sale ninguna petición
+    //   2. descubrimiento completo    ->  todas las páginas, todas las sesiones
+    //   3. identidad verificada       ->  compra, quiniela, torneo, importe, moneda
+    //   4. verdad del pago            ->  sólo `paid` del proveedor es dinero
+    //
+    // Cada paso depende del anterior y ninguno se puede saltar. La clave de
+    // idempotencia del proveedor NO aparece en esa cadena: es una red secundaria
+    // con fecha de caducidad, no una identidad.
     // ======================================================================
 
     // ---- fase 1: camino rápido, o tomar el turno ----
@@ -3551,18 +3561,44 @@ async function openPurchase(slug, superseded) {
 
 // Pide al proveedor la sesión de ESTA compra.
 //
-// La clave de idempotencia es el id de compra, y ésa es la pieza que sostiene
-// todo Correction 03: pedir dos veces lo mismo devuelve la MISMA sesión. Los
-// parámetros salen del snapshot congelado de la compra, no de la configuración
-// de hoy — con la misma clave y parámetros distintos el proveedor rechazaría, y
-// con razón: sería otra venta.
+// Los parámetros salen del snapshot CONGELADO de la compra, nunca de la
+// configuración de hoy: con la misma clave de idempotencia y parámetros distintos
+// el proveedor rechazaría, y con razón, porque sería otra venta. Por eso también
+// la expiración se deriva de la compra y no de la hora de ahora.
+//
+// La clave de idempotencia se manda, pero NO es lo que sostiene la recuperación:
+// eso es la marca durable de intento más el descubrimiento (Correction 06). El
+// proveedor documenta que puede eliminar sus resultados de idempotencia pasadas al
+// menos 24 h, así que apoyarse en ella tendría fecha de caducidad.
 async function createSessionFor(intent, slug) {
   const cfg = stripeAdapter.readConfig();
   const base = cfg.publicBaseUrl.replace(/\/+$/, "");
-  // Su fallo no impide nada (es auditoría), pero no se traga en silencio.
-  await markCreationAttempted(intent.id).catch((err) => {
-    logPayment("checkout_attempt_note_failed", { purchaseId: intent.id, message: err && err.message });
-  });
+
+  // ======================================================================
+  // LA PRECONDICIÓN DE TODO (Correction 06).
+  //
+  // `creationAttemptedAt` dejó de ser una nota de auditoría en Correction 05:
+  // ahora es la afirmación sobre la que se apoya el descubrimiento. Si es null,
+  // se concluye que NUNCA salió una petición de creación y por tanto que no
+  // puede existir ninguna sesión — y sobre esa conclusión se crea una.
+  //
+  // Mientras esta escritura era best-effort, esa afirmación podía ser mentira:
+  // la marca fallaba, la petición salía igual, el proveedor creaba la sesión, y
+  // la fila quedaba diciendo "nunca se intentó" con una sesión cobrable al otro
+  // lado. El reintento la creaba otra vez. Dos sesiones, un torneo.
+  //
+  // Así que no hay red de escape. Si la marca no queda COMMITTED, no sale nada
+  // hacia el proveedor: el error sube y el llamador falla cerrado. Un reintento
+  // posterior es perfectamente válido, y entonces sí se marca primero.
+  //
+  // El caso ambiguo cae del lado seguro: si el COMMIT llegó a la base pero la
+  // respuesta se perdió, aquí se lanza y no se crea nada — y la marca SÍ quedó,
+  // así que el siguiente intento hará descubrimiento en vez de dar por hecho que
+  // no hay nada. Una marca de más sólo amplía la búsqueda; una de menos es la
+  // que abre un segundo cobro.
+  // ======================================================================
+  await markCreationAttempted(intent.id);
+
   return stripeAdapter.createCheckoutSession({
     amountMinor: intent.expectedAmountMinor,
     currency: intent.currency,
@@ -3570,26 +3606,52 @@ async function createSessionFor(intent, slug) {
     purchaseId: intent.id, slug, scopeId: intent.scopeId,
     // `qz_pago` es NUESTRO id de compra, que es lo único que hace falta para
     // reconciliar. `qz_sess` lo rellena el proveedor con el id de la sesión: es
-    // una PISTA que ahorra un listado, nunca una autoridad — el servidor la
+    // una PISTA que ahorra descubrimiento, nunca una autoridad — el servidor la
     // verifica contra la compra y funciona igual si no llega.
     successUrl: `${base}/q/${encodeURIComponent(slug)}`
       + `?qz_pago=${encodeURIComponent(intent.id)}&qz_sess={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}/q/${encodeURIComponent(slug)}?qz_pago_cancelado=1`,
+    // Cuándo deja de poder cobrar, explícito y DETERMINISTA (Correction 06).
+    expiresAt: stripeAdapter.checkoutExpiresAt(intent.createdAt, Date.now()),
+    // La clave de idempotencia. Ya NO es la pieza que sostiene la recuperación
+    // —eso es el descubrimiento— porque el proveedor documenta que puede
+    // eliminarla pasadas al menos 24 h. Se manda como segunda red: dentro de esa
+    // retención, un reintento sobre una respuesta perdida recibe la sesión que ya
+    // existía en vez de una nueva.
     idempotencyKey: `checkout:${intent.id}`,
   });
 }
 
-// Deja constancia de que se le pidió al proveedor crear la sesión. Es AUDITORÍA:
-// la lógica no depende de este campo, porque reanudar usa la misma clave se haya
-// enviado o no. Sirve para que un operador sepa si allá puede existir un objeto
-// que aquí no se llegó a guardar.
+// Deja constancia DURABLE de que se le va a pedir al proveedor crear la sesión.
+//
+// No es auditoría: es la precondición de `createSessionFor`, y lo único que
+// permite afirmar después que una compra sin marca no puede tener sesión. Por eso
+// esta función LANZA en vez de callar cuando no consigue dejar la marca —
+// incluido el caso en que la compra no está en la fila, que antes se resolvía
+// commiteando sin haber escrito nada y devolviendo éxito.
+//
+// Nunca reescribe una marca anterior: la primera es la que acota la ventana de
+// descubrimiento.
 async function markCreationAttempted(purchaseId) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const store = await readPaymentIntents(client);
+    const target = store.purchases.find((p) => p && p.id === purchaseId);
+    if (!target) {
+      await client.query("ROLLBACK");
+      // Marcar algo que no existe no es un éxito silencioso: es que el llamador
+      // está a punto de pedir una sesión para una compra que no está guardada.
+      throw new Error("creation_marker_purchase_missing");
+    }
+    if (target.creationAttemptedAt) {
+      // Ya marcada por un intento anterior. Nada que escribir, y la marca ya es
+      // durable: se puede seguir.
+      await client.query("ROLLBACK");
+      return;
+    }
     const now = new Date().toISOString();
-    const purchases = store.purchases.map((p) => (p && p.id === purchaseId && !p.creationAttemptedAt
+    const purchases = store.purchases.map((p) => (p && p.id === purchaseId
       ? { ...p, creationAttemptedAt: now } : p));
     await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases }, client);
     await client.query("COMMIT");
@@ -3622,44 +3684,74 @@ function readSessionHint(raw) {
   return /^cs_[A-Za-z0-9_]{1,200}$/.test(v) ? v : null;
 }
 
-// ¿Existe en el proveedor una sesión de ESTA compra, y cuál es?
+// ¿Qué sesiones tiene el proveedor para ESTA compra?
 //
-// El corazón de Correction 05. Responde sin conocer su id y sin depender de que
-// el proveedor conserve nuestra clave de idempotencia. Tres respuestas posibles,
-// y la diferencia entre las dos últimas es la que evita un segundo cobro:
+// El corazón de Correction 05, corregido en Correction 06. Responde sin conocer
+// ningún id y sin depender de que el proveedor conserve nuestra clave de
+// idempotencia. Cuatro respuestas, y las diferencias entre ellas son lo que evita
+// un segundo cobro:
 //
-//   { session }   se encontró y se VERIFICÓ que es de esta compra
-//   { absent }    se puede AFIRMAR que no existe ninguna
-//   { unknown }   no se pudo demostrar nada -> fail closed
+//   { session }    hay EXACTAMENTE una, y se verificó que es de esta compra
+//   { multiple }   hay VARIAS: anomalía material, decide quien llama
+//   { absent }     se puede AFIRMAR que no existe ninguna
+//   { unknown }    no se pudo demostrar nada -> fail closed
+//
+// LO QUE CAMBIÓ EN CORRECTION 06: antes esto devolvía la primera sesión
+// verificada que encontraba, y con eso daba por supuesta la unicidad justo donde
+// hay que demostrarla. Si el listado sacaba primero una expirada, una hermana
+// abierta —o PAGADA— quedaba invisible y el sistema abría otra venta a su lado.
+// El resultado dependía del orden del listado del proveedor. Ahora se recorren
+// TODAS las páginas y se acumulan TODAS las coincidencias antes de decidir nada.
+//
+// Y LA PISTA DEL NAVEGADOR SE UNE, NUNCA CORTOCIRCUITA. Es la otra mitad del
+// mismo error: aceptar la pista y volver a casa habría dejado invisible cualquier
+// otra sesión de la misma compra, que es exactamente el agujero. Así que la pista
+// sólo puede AÑADIR un elemento al conjunto. Su valor real no es ahorrar una
+// llamada: es encontrar una sesión que el listado no puede ver —creada fuera de
+// la ventana por un desfase de reloj, o en una página que no se llegó a leer—.
 //
 // Nunca crea nada. Buscar no es vender.
 async function locateSessionForPurchase(intent, hint) {
-  // 1. La pista del navegador, si vino. Es una sola llamada y ahorra el listado
-  //    en el caso normal; si no cuadra se descarta y se sigue por el camino que
-  //    sí es una garantía. Que el navegador mienta no cambia nada.
+  // Por id de sesión, para que la misma sesión vista dos veces (la pista y el
+  // listado, o dos páginas que se solapan) cuente UNA.
+  const encontradas = new Map();
+  let conflict = null;
+
+  // 1. La pista, si vino. Se verifica y se AÑADE al conjunto.
   if (hint) {
     try {
       const observed = await stripeAdapter.retrieveCheckoutSession(hint);
       const v = paymentsDomain.verifySessionForPurchase(intent, observed);
-      if (v.ok) return { session: observed, via: "hint" };
-      logPayment("session_hint_rejected", { purchaseId: intent.id, reason: v.reason });
+      if (v.ok) encontradas.set(observed.sessionId, observed);
+      else logPayment("session_hint_rejected", { purchaseId: intent.id, reason: v.reason });
     } catch (err) {
       logPayment("session_hint_failed", { purchaseId: intent.id, code: err && err.code });
     }
   }
 
-  // 2. Si nunca se le pidió al proveedor crear nada, no puede existir nada. Es
-  //    la única ausencia que se afirma sin preguntar, y se apoya en un dato
-  //    nuestro escrito ANTES de la llamada.
-  if (!intent.creationAttemptedAt) return { absent: true, via: "never_attempted" };
+  // 2. Sin marca durable de intento, NINGUNA petición de creación salió de
+  //    QRACKS, así que no puede existir ninguna sesión. La marca se escribe y se
+  //    commitea ANTES de la llamada (ver createSessionFor), que es lo único que
+  //    hace esta afirmación cierta.
+  if (!intent.creationAttemptedAt) {
+    if (encontradas.size) {
+      // Contradicción: alguien creó una sesión sin marca. No debería poder pasar
+      // desde Correction 06, pero una fila antigua sí puede traerlo. Manda la
+      // evidencia, no la suposición.
+      logPayment("session_found_without_marker", {
+        purchaseId: intent.id, sessions: [...encontradas.keys()].sort() });
+      return decidirLocalizacion(encontradas, null, "hint_without_marker");
+    }
+    return { absent: true, via: "never_attempted" };
+  }
   const attempted = Date.parse(intent.creationAttemptedAt);
   if (!Number.isFinite(attempted)) return { unknown: true, via: "unreadable_attempt_time" };
 
-  // 3. El listado, acotado a la ventana en la que pudo nacer.
+  // 3. El listado, acotado a la ventana en la que pudo nacer. TODAS las páginas.
   const gte = Math.floor((attempted - SESSION_LOOKUP_MARGIN_MS) / 1000);
   const lte = Math.ceil((attempted + SESSION_LOOKUP_MARGIN_MS) / 1000);
   let startingAfter = null;
-  let conflict = null;
+  let agotado = false;
   for (let page = 0; page < SESSION_LOOKUP_MAX_PAGES; page++) {
     const res = await stripeAdapter.listCheckoutSessions({
       createdGte: gte, createdLte: lte, limit: 100, startingAfter,
@@ -3669,22 +3761,137 @@ async function locateSessionForPurchase(intent, hint) {
       // ventas y no se tocan ni se leen más allá de su identidad.
       if (candidate.purchaseId !== intent.id) continue;
       const v = paymentsDomain.verifySessionForPurchase(intent, candidate);
-      if (v.ok) return { session: candidate, via: "list" };
-      // Dice ser nuestra y NO cuadra. Eso no se ignora: si se ignorara, el
-      // siguiente paso concluiría "no existe ninguna" y crearía otra.
+      if (v.ok) {
+        encontradas.set(candidate.sessionId, candidate);
+        continue;
+      }
+      // Dice ser nuestra y NO cuadra. Eso no se ignora: si se ignorara, el paso
+      // siguiente concluiría "no existe ninguna" y crearía otra.
       conflict = v.reason;
       logPayment("session_candidate_rejected", {
         purchaseId: intent.id, sessionId: candidate.sessionId, reason: v.reason });
     }
-    if (!res.hasMore || !res.lastId) {
-      return conflict
-        ? { unknown: true, via: "conflicting_candidate", reason: conflict }
-        : { absent: true, via: "list_exhausted" };
-    }
+    if (!res.hasMore || !res.lastId) { agotado = true; break; }
     startingAfter = res.lastId;
   }
-  // Ventana agotada sin respuesta: no se sabe. Nunca "no existe".
-  return { unknown: true, via: "list_truncated" };
+  if (!agotado) {
+    // Ventana truncada. Si la pista encontró algo, eso sigue valiendo; lo que NO
+    // se puede es afirmar una ausencia ni descartar que haya más.
+    if (encontradas.size) {
+      return { multiple: [...encontradas.values()], via: "list_truncated_with_matches" };
+    }
+    return { unknown: true, via: "list_truncated" };
+  }
+  return decidirLocalizacion(encontradas, conflict, "list");
+}
+
+// Traduce el conjunto encontrado a la respuesta del descubrimiento. Aparte para
+// que la regla "una es una, varias son una anomalía" esté escrita una sola vez.
+function decidirLocalizacion(encontradas, conflict, via) {
+  const todas = [...encontradas.values()];
+  if (todas.length === 1) return { session: todas[0], via };
+  if (todas.length > 1) return { multiple: todas, via };
+  return conflict
+    ? { unknown: true, via: "conflicting_candidate", reason: conflict }
+    : { absent: true, via: via === "list" ? "list_exhausted" : via };
+}
+
+// Varias sesiones del proveedor para UNA compra: qué se puede afirmar, y qué se
+// puede arreglar.
+//
+// Correction 06. Aquí no se elige "la primera" jamás. Se mira el conjunto entero
+// y, cuando el único obstáculo es que algo sigue vivo, se intenta CURAR —matar lo
+// que puede cobrar y volver a comprobarlo— en vez de bloquear para siempre. Curar
+// importa: si no se cura y el webhook nunca llega, el cobro de esa persona se
+// queda sin recuperar.
+//
+// La multiplicidad se audita SIEMPRE, incluso cuando se cura: significa que en
+// algún momento salieron dos peticiones de creación para la misma compra, y eso
+// es material aunque hoy no cueste dinero.
+async function resolveMultipleSessions(intent, sessions) {
+  const D = paymentsDomain;
+  let veredicto = D.decideSessionSet(sessions);
+  logPayment("session_multiplicity", {
+    slug: intent.slug, purchaseId: intent.id, n: sessions.length,
+    kind: veredicto.kind, paid: veredicto.paid, live: veredicto.live });
+
+  // Queda constancia antes de tocar nada: si lo que viene falla, el hecho ya está
+  // escrito. Dos cobros se anotan como cargo doble; el resto, como multiplicidad.
+  const anotar = async (kinds) => {
+    const incidents = kinds.map((kind) => ({ kind, purchaseIds: [intent.id] }));
+    await flagOpenSetAttention(intent.slug, { reason: incidents[0].kind, incidents }).catch((err) => {
+      logPayment("checkout_attention_failed", { slug: intent.slug, message: err && err.message });
+    });
+  };
+  await anotar(veredicto.kind === D.SESSION_SET.DOUBLE_CHARGE
+    ? [D.INCIDENT.DOUBLE_CHARGE, D.INCIDENT.MANY_SESSIONS]
+    : [D.INCIDENT.MANY_SESSIONS]);
+
+  // Dos cobros ya ocurridos no se curan: se paran y se miran.
+  if (veredicto.kind === D.SESSION_SET.DOUBLE_CHARGE) {
+    return { outcome: D.OPEN_INTENT.UNRESOLVED, via: "double_charge" };
+  }
+
+  // Si algo puede cobrar, se mata — y se COMPRUEBA que quedó muerto.
+  if (veredicto.live.length) {
+    const vivos = new Set(veredicto.live);
+    const despues = [];
+    for (const o of sessions) {
+      if (!vivos.has(o.sessionId)) { despues.push(o); continue; }
+      const matada = await stripeAdapter.expireCheckoutSession(o.sessionId).catch(() => null);
+      // Sin confirmación de muerte NO se supone: se vuelve a preguntar.
+      const fresca = matada || await stripeAdapter.retrieveCheckoutSession(o.sessionId).catch(() => null);
+      despues.push(fresca || o);
+    }
+    const antes = veredicto.kind;
+    veredicto = D.decideSessionSet(despues);
+    logPayment("session_multiplicity_healed", {
+      slug: intent.slug, purchaseId: intent.id, de: antes, a: veredicto.kind });
+    sessions = despues;
+    // La curación puede REVELAR un cargo doble: una sesión que iba a matarse
+    // resulta que acababa de cobrar, y ya había otra cobrada. Ese hecho no puede
+    // quedarse sin auditar por haberse descubierto un instante después.
+    if (veredicto.kind === D.SESSION_SET.DOUBLE_CHARGE && antes !== D.SESSION_SET.DOUBLE_CHARGE) {
+      logPayment("session_double_charge_revealed", { slug: intent.slug, purchaseId: intent.id });
+      await anotar([D.INCIDENT.DOUBLE_CHARGE]);
+      return { outcome: D.OPEN_INTENT.UNRESOLVED, via: "double_charge_revealed" };
+    }
+  }
+
+  // Y ahora, sólo con lo que se puede demostrar. El veredicto es del CONJUNTO, y
+  // se devuelve como resultado final: quien llama NO vuelve a clasificar a partir
+  // de una sola sesión, porque eso tiraría lo que se acaba de averiguar del resto
+  // y haría que el resultado dependiera de cuál se eligiera.
+  //
+  // Cuando hay que señalar una sesión concreta, se elige por un CRITERIO, nunca
+  // por su posición en el array.
+  const porId = (xs) => xs.slice().sort((x, y) =>
+    String(x.sessionId).localeCompare(String(y.sessionId)));
+
+  if (veredicto.kind === D.SESSION_SET.PAID_ALONE) {
+    // La elegida es la que TIENE el dinero. No es "la primera": es la única con un
+    // pago declarado.
+    const pagada = sessions.find((o) => o.paid === true);
+    return { outcome: D.OPEN_INTENT.USED, session: pagada, decided: true, via: "paid_alone" };
+  }
+  if (veredicto.kind === D.SESSION_SET.CONSUMED) {
+    // Nadie cobró, pero alguna se consumió y un pago asíncrono podría liquidarse
+    // todavía. No se sustituye: se conserva para confirmar, igual que haría una
+    // sola sesión consumida. La señalada es determinista por id.
+    const consumidas = porId(sessions.filter((o) => o.paid !== true
+      && D.sessionStateOf(o) === D.SESSION_STATE.USED));
+    return { outcome: D.OPEN_INTENT.USED, session: consumidas[0] || null, decided: true,
+      via: "consumed" };
+  }
+  if (veredicto.kind === D.SESSION_SET.ALL_DEAD) {
+    // Todas demostradas incobrables: la compra puede sustituirse. Se señala una
+    // por id, sólo para que la fila conserve una referencia auditable.
+    return { outcome: D.OPEN_INTENT.DEAD, session: porId(sessions)[0] || null, decided: true,
+      via: "all_dead" };
+  }
+  // Cualquier otra cosa —sigue habiendo algo vivo, algo consumido junto a un
+  // cobro, algo desconocido, o dos cobros— deja el invariant SIN restaurar.
+  return { outcome: D.OPEN_INTENT.UNRESOLVED, via: veredicto.kind };
 }
 
 // Resuelve una compra ABIERTA hasta un estado en el que se pueda decidir.
@@ -3714,7 +3921,33 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
     // la barrera.
     // ======================================================================
     const found = await locateSessionForPurchase(intent, null);
-    if (found.session) {
+    if (found.multiple) {
+      // Varias sesiones para esta compra. NO se elige una y NO se crea otra.
+      const r = await resolveMultipleSessions(intent, found.multiple);
+      if (r.outcome === paymentsDomain.OPEN_INTENT.UNRESOLVED) {
+        logPayment("checkout_session_multiplicity_blocked", {
+          slug: intent.slug, purchaseId: intent.id, via: r.via });
+        return { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED, url: null, sessionId: null,
+          paid: false, via: r.via };
+      }
+      // Resuelta. El veredicto ya se tomó con el conjunto ENTERO y con estado
+      // fresco —se acaba de preguntar por cada una—, así que se devuelve tal cual.
+      // Volver a clasificar a partir de la sesión señalada tiraría lo que se sabe
+      // del resto y reintroduciría la dependencia del orden.
+      sessionId = r.session ? r.session.sessionId : null;
+      observed = r.session || null;
+      url = usableCheckoutUrl(r.session && r.session.url) || null;
+      if (sessionId) {
+        await attachProviderSession(intent.id, { sessionId, url }).catch((err) => {
+          logPayment("checkout_session_persist_failed", {
+            slug: intent.slug, purchaseId: intent.id, message: err && err.message });
+        });
+      }
+      logPayment("checkout_session_multiplicity_resolved", {
+        slug: intent.slug, purchaseId: intent.id, outcome: r.outcome, via: r.via });
+      return { outcome: r.outcome, url, sessionId,
+        paid: !!(observed && observed.paid === true), via: r.via };
+    } else if (found.session) {
       sessionId = found.session.sessionId;
       observed = found.session;
       url = found.session.url || url;
@@ -4074,8 +4307,18 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
         } else {
           const hint = readSessionHint(req.query && req.query.sess);
           const found = await locateSessionForPurchase(intent, hint);
-          if (found.session) {
-            observed = found.session;
+          // Correction 06: varias sesiones para esta compra también aquí. No se
+          // elige una; se resuelve el conjunto, y sólo si queda una verdad —el
+          // cobro, con todo lo demás demostrado muerto— se reconcilia.
+          let candidata = found.session || null;
+          if (found.multiple) {
+            const r = await resolveMultipleSessions(intent, found.multiple);
+            candidata = (r.outcome === paymentsDomain.OPEN_INTENT.UNRESOLVED) ? null : (r.session || null);
+            logPayment("reconcile_multiplicity", {
+              purchaseId: intent.id, via: r.via, resuelto: !!candidata });
+          }
+          if (candidata) {
+            observed = candidata;
             // Se adjunta la identidad que faltaba. Nunca reescribe una anterior.
             await attachProviderSession(intent.id, {
               sessionId: observed.sessionId, url: observed.url || null,
@@ -4084,7 +4327,8 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
                 slug, purchaseId: intent.id, message: err && err.message });
             });
             logPayment("reconcile_located_session", {
-              purchaseId: intent.id, via: found.via, hinted: !!hint });
+              purchaseId: intent.id, via: found.via, hinted: !!hint,
+              multiple: !!found.multiple });
           } else {
             logPayment("reconcile_no_session", {
               purchaseId: intent.id, via: found.via, hinted: !!hint });
