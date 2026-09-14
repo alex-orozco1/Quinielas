@@ -1240,17 +1240,20 @@ test("MON003 · C2.9 — SERVER: toda compra abierta se resuelve antes de abrir 
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
   const resolveAt = body.indexOf("resolveOpenIntent(a, offer, reusable)");
+  const decideAt = body.indexOf("decideOpenSet(resolved)");
   const openAt = body.indexOf("openPurchase(slug, dead)");
   const netAt = body.indexOf("createSessionFor(intent, slug)");
-  assert.ok(resolveAt !== -1 && openAt !== -1 && netAt !== -1);
-  assert.ok(resolveAt < openAt, "primero se resuelve lo abierto");
+  assert.ok(resolveAt !== -1 && decideAt !== -1 && openAt !== -1 && netAt !== -1);
+  assert.ok(resolveAt < decideAt, "primero se clasifica TODO lo abierto");
+  assert.ok(decideAt < openAt, "y sólo entonces se decide");
   assert.ok(openAt < netAt, "y la compra existe antes de pedir la sesión");
   // Se itera TODO lo abierto, no sólo lo primero.
   assert.ok(body.includes("for (const a of open)"));
-  // Y sólo DEAD deja pasar; las otras tres salidas no abren nada.
+  // Y las cuatro salidas están contempladas.
+  assert.ok(body.includes("OPEN_SET.REUSE"));
+  assert.ok(body.includes("OPEN_SET.CONFIRM_EXISTING"));
+  assert.ok(body.includes("OPEN_SET.OPEN_NEW"));
   assert.ok(body.includes("OPEN_INTENT.DEAD"));
-  assert.ok(body.includes("OPEN_INTENT.USABLE"));
-  assert.ok(body.includes("OPEN_INTENT.USED"));
   assert.ok(body.includes('error: "payment_in_progress"'));
   assert.ok(body.includes('error: "replacement_in_progress"'));
   assert.ok(body.includes('error: "checkout_unavailable"'));
@@ -1547,4 +1550,279 @@ test("MON003 · C3.13 — reutilizar tal cual sólo vale si hay UNA compra abier
     "sin permiso, una cobrable se trata como hay que matarla aunque venda lo mismo");
   // Y en el dominio la equivalencia sigue siendo lo único que decide USABLE.
   assert.equal(D.classifyOpenIntent({ lifecycle: "chargeable" }, false), D.OPEN_INTENT.MUST_EXPIRE);
+});
+
+// ==== 18 · Correction 04: el conjunto entero, antes de responder =============
+//
+// El P1: la fase 2 respondía DENTRO del bucle. Con A=USED y B=cobrable, `[A, B]`
+// devolvía "payment_in_progress" y B nunca se inspeccionaba ni se mataba;
+// `[B, A]` sí mataba B. El invariant dependía del orden de `store.purchases`,
+// que no es una entrada de negocio: es el orden en que se escribieron las filas.
+
+const OI = D.OPEN_INTENT;
+const OS = D.OPEN_SET;
+const rr = (id, outcome) => ({ id, outcome });
+// Todas las permutaciones de un array, para que "independiente del orden" sea
+// una afirmación comprobada y no una intención.
+function permutaciones(xs) {
+  if (xs.length <= 1) return [xs.slice()];
+  const out = [];
+  for (let i = 0; i < xs.length; i++) {
+    const resto = xs.slice(0, i).concat(xs.slice(i + 1));
+    for (const p of permutaciones(resto)) out.push([xs[i]].concat(p));
+  }
+  return out;
+}
+// Aplica decideOpenSet a TODAS las permutaciones y devuelve el conjunto de
+// respuestas distintas, comparadas como texto.
+function bajoTodoOrden(entradas) {
+  const vistos = new Map();
+  for (const perm of permutaciones(entradas)) {
+    const r = D.decideOpenSet(perm);
+    vistos.set(JSON.stringify(r), (vistos.get(JSON.stringify(r)) || 0) + 1);
+  }
+  return { distintas: [...vistos.keys()], n: permutaciones(entradas).length };
+}
+
+test("MON003 · C4.1 — [USED, CHARGEABLE] y [CHARGEABLE, USED] acaban IGUAL", () => {
+  // El servidor no marca nada USABLE cuando hay más de una abierta: una cobrable
+  // se expira y llega aquí como DEAD. Éste es el escenario del ticket.
+  const a = bajoTodoOrden([rr("a", OI.USED), rr("b", OI.DEAD)]);
+  assert.equal(a.distintas.length, 1, "una sola respuesta para los dos órdenes");
+  const r = JSON.parse(a.distintas[0]);
+  assert.equal(r.action, OS.CONFIRM_EXISTING);
+  assert.equal(r.purchaseId, "a", "se conserva la que cobró, para confirmarla");
+  assert.deepEqual(r.dead, ["b"], "y la otra quedó demostrada incobrable ANTES de responder");
+});
+
+test("MON003 · C4.2 — [USED, UNKNOWN]: fail closed, en cualquier orden", () => {
+  const a = bajoTodoOrden([rr("a", OI.USED), rr("b", OI.UNRESOLVED)]);
+  assert.equal(a.distintas.length, 1);
+  const r = JSON.parse(a.distintas[0]);
+  assert.equal(r.action, OS.BLOCKED, "no se puede descartar que B siga cobrando");
+  assert.equal(r.reason, "unresolved");
+  assert.deepEqual(r.unresolved, ["b"]);
+  assert.deepEqual(r.needsAttention, ["b"], "y queda para que lo mire una persona");
+  // Que exista una USED no rebaja el bloqueo: sin resolver B no hay invariant.
+  assert.deepEqual(r.used, ["a"]);
+});
+
+test("MON003 · C4.3 — [USED, DEAD]: se confirma la usada, en cualquier orden", () => {
+  for (const perm of permutaciones([rr("a", OI.USED), rr("b", OI.DEAD)])) {
+    const r = D.decideOpenSet(perm);
+    assert.equal(r.action, OS.CONFIRM_EXISTING);
+    assert.equal(r.purchaseId, "a");
+  }
+});
+
+test("MON003 · C4.4 — [CHARGEABLE, CHARGEABLE]: ninguna se reutiliza", () => {
+  // Dos cobrables a la vez es exactamente lo que no puede sobrevivir a la
+  // respuesta. Con dos abiertas el servidor no marca ninguna USABLE, así que
+  // llegan como DEAD y se abre una nueva.
+  const a = bajoTodoOrden([rr("a", OI.DEAD), rr("b", OI.DEAD)]);
+  assert.equal(a.distintas.length, 1);
+  const r = JSON.parse(a.distintas[0]);
+  assert.equal(r.action, OS.OPEN_NEW);
+  assert.deepEqual(r.dead, ["a", "b"], "las dos se sustituyen");
+  // Y si por un fallo llegaran DOS marcadas como reutilizables, se bloquea:
+  // devolver una dejaría la otra cobrando.
+  const dos = D.decideOpenSet([rr("a", OI.USABLE), rr("b", OI.USABLE)]);
+  assert.equal(dos.action, OS.BLOCKED);
+  assert.equal(dos.reason, "many_usable");
+  assert.deepEqual(dos.needsAttention, ["a", "b"]);
+});
+
+test("MON003 · C4.5 — [USED, CHARGEABLE, DEAD] y sus 6 permutaciones", () => {
+  const a = bajoTodoOrden([rr("a", OI.USED), rr("b", OI.DEAD), rr("c", OI.DEAD)]);
+  assert.equal(a.n, 6, "las seis permutaciones");
+  assert.equal(a.distintas.length, 1, "una sola respuesta");
+  const r = JSON.parse(a.distintas[0]);
+  assert.equal(r.action, OS.CONFIRM_EXISTING);
+  assert.equal(r.purchaseId, "a");
+  assert.deepEqual(r.dead, ["b", "c"], "los ids van ordenados: ni el log depende del orden");
+});
+
+test("MON003 · C4.6 — INDEPENDENCIA DEL ORDEN: todos los conjuntos, todas las permutaciones", () => {
+  // La pregunta del ticket: si cambio el orden de store.purchases, ¿cambia el
+  // resultado? Aquí se comprueba a lo bruto sobre todo el espacio de conjuntos
+  // de hasta 4 compras con las cuatro etiquetas posibles.
+  const etiquetas = [OI.USED, OI.USABLE, OI.DEAD, OI.UNRESOLVED];
+  let conjuntos = 0;
+  const combinaciones = (largo) => {
+    if (largo === 0) return [[]];
+    const out = [];
+    for (const resto of combinaciones(largo - 1)) {
+      for (const e of etiquetas) out.push(resto.concat([e]));
+    }
+    return out;
+  };
+  for (let largo = 1; largo <= 4; largo++) {
+    for (const combo of combinaciones(largo)) {
+      const entradas = combo.map((e, i) => rr("p" + i, e));
+      const { distintas } = bajoTodoOrden(entradas);
+      conjuntos++;
+      assert.equal(distintas.length, 1,
+        `el orden cambió el resultado para ${JSON.stringify(combo)}: ${JSON.stringify(distintas)}`);
+    }
+  }
+  assert.equal(conjuntos, 4 + 16 + 64 + 256, "se cubrió el espacio entero");
+});
+
+test("MON003 · C4.7 — el número de cobrables que sobreviven NO depende del orden", () => {
+  // La misma pregunta, formulada como el invariant: ¿cuántas capacidades de
+  // cobro quedan vivas al responder? Se modela la consecuencia de cada acción.
+  //   confirm_existing -> sobrevive la USED (ya cobró, ya no cobra otra vez)
+  //   reuse            -> sobrevive UNA, la reutilizada
+  //   open_new         -> sobrevive UNA, la nueva
+  //   blocked          -> no se crea ninguna; sobreviven las que no se pudieron matar
+  const cobrablesQueSobreviven = (r, entradas) => {
+    if (r.action === OS.OPEN_NEW) return 1;
+    if (r.action === OS.REUSE) return 1;
+    if (r.action === OS.CONFIRM_EXISTING) return 0;   // la usada ya no puede cobrar
+    return entradas.filter((e) => e.outcome === OI.UNRESOLVED || e.outcome === OI.USABLE).length;
+  };
+  const etiquetas = [OI.USED, OI.USABLE, OI.DEAD, OI.UNRESOLVED];
+  for (const e1 of etiquetas) for (const e2 of etiquetas) for (const e3 of etiquetas) {
+    const entradas = [rr("a", e1), rr("b", e2), rr("c", e3)];
+    const cuentas = new Set(permutaciones(entradas)
+      .map((perm) => cobrablesQueSobreviven(D.decideOpenSet(perm), perm)));
+    assert.equal(cuentas.size, 1,
+      `el orden cambió cuántas cobrables sobreviven en ${JSON.stringify([e1, e2, e3])}`);
+    // Y nunca queda más de una viva salvo que el propio proveedor no contestara.
+    const desconocidas = entradas.filter((x) => x.outcome === OI.UNRESOLVED).length;
+    const n = [...cuentas][0];
+    assert.ok(n <= Math.max(1, desconocidas + entradas.filter((x) => x.outcome === OI.USABLE).length),
+      `quedaron ${n} cobrables con ${JSON.stringify([e1, e2, e3])}`);
+  }
+});
+
+test("MON003 · C4.8 — dos que YA cobraron es un cargo doble, no un riesgo", () => {
+  const a = bajoTodoOrden([rr("a", OI.USED), rr("b", OI.USED)]);
+  assert.equal(a.distintas.length, 1);
+  const r = JSON.parse(a.distintas[0]);
+  assert.equal(r.action, OS.BLOCKED);
+  assert.equal(r.reason, "double_charge");
+  assert.deepEqual(r.needsAttention, ["a", "b"], "las dos se marcan: hay algo que devolver");
+  assert.equal(D.ATTENTION.DOUBLE_CHARGE, "two_checkouts_were_paid_for_one_tournament");
+  // Y no se elige una para confirmar: elegir sería tapar la mitad del problema.
+  assert.ok(!r.purchaseId);
+});
+
+test("MON003 · C4.9 — una etiqueta desconocida cuenta como SIN RESOLVER", () => {
+  // Fail closed por defecto, no por enumeración: una etiqueta futura no puede
+  // colarse como "todo en orden".
+  for (const raro of [undefined, null, "", "algo_nuevo", 0, false, {}]) {
+    const r = D.decideOpenSet([rr("a", OI.DEAD), rr("b", raro)]);
+    assert.equal(r.action, OS.BLOCKED, JSON.stringify(String(raro)));
+    assert.deepEqual(r.unresolved, ["b"]);
+  }
+  // Y una entrada vacía o basura no rompe la función.
+  assert.equal(D.decideOpenSet([]).action, OS.OPEN_NEW);
+  assert.equal(D.decideOpenSet(null).action, OS.OPEN_NEW);
+  assert.equal(D.decideOpenSet([null, undefined]).action, OS.OPEN_NEW);
+});
+
+test("MON003 · C4.10 — una cobrable junto a una ya cobrada se bloquea", () => {
+  // No debería poder pasar —con más de una abierta el servidor no marca nada
+  // USABLE— pero si pasara, sería la segunda capacidad de cobro que todo esto
+  // existe para impedir. Se bloquea en vez de confiar en que no pase.
+  const r = D.decideOpenSet([rr("a", OI.USED), rr("b", OI.USABLE)]);
+  assert.equal(r.action, OS.BLOCKED);
+  assert.equal(r.reason, "usable_beside_used");
+  assert.deepEqual(r.needsAttention, ["a", "b"]);
+});
+
+test("MON003 · C4.11 — SERVER: NINGÚN return dentro del bucle de compras abiertas", () => {
+  // La pregunta obligatoria del ticket, convertida en prueba: ¿hay algún return
+  // dentro del procesamiento de la colección que pueda dejar otra sin mirar?
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const desde = body.indexOf("for (const a of open) {");
+  assert.ok(desde !== -1);
+  // El cuerpo del bucle, acotado por su propio cierre en la misma indentación.
+  const fin = body.indexOf("\n    }", desde);
+  const bucle = body.slice(desde, fin);
+  assert.ok(!/\breturn\b/.test(bucle),
+    "un return aquí deja sin inspeccionar lo que venga después en el array");
+  assert.ok(!/res\.(json|status)\(/.test(bucle), "ni se responde a medias");
+  assert.ok(bucle.includes("resolved.push("), "sólo se acumula");
+  // Y la decisión llega después, con el conjunto completo.
+  assert.ok(body.indexOf("decideOpenSet(resolved)") > fin);
+});
+
+test("MON003 · C4.12 — SERVER: se responde SÓLO desde el plan del conjunto", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const decideAt = body.indexOf("decideOpenSet(resolved)");
+  // payment_in_progress y el enlace reutilizado sólo existen DESPUÉS de decidir.
+  for (const salida of ['error: "payment_in_progress"', "checkoutUrl: it.url"]) {
+    const at = body.indexOf(salida);
+    assert.ok(at !== -1 && at > decideAt, salida + " no puede decidirse antes del conjunto");
+  }
+  // Y la compra nueva se abre sólo con la acción OPEN_NEW.
+  const openAt = body.indexOf("openPurchase(slug, dead)");
+  assert.ok(body.lastIndexOf("OPEN_SET.OPEN_NEW", openAt) > decideAt);
+  assert.ok(body.includes('r.outcome === paymentsDomain.OPEN_INTENT.DEAD'),
+    "y sustituye exactamente a las demostradas muertas");
+});
+
+test("MON003 · C4.13 — SERVER: el conjunto ambiguo queda ANOTADO, no sólo rechazado", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  assert.ok(body.includes("flagOpenSetAttention(slug, plan)"));
+  assert.ok(body.includes("open.length > 1"), "sólo cuando el conjunto era ambiguo de verdad");
+  assert.ok(body.includes('error: "checkout_unavailable"'));
+  const fn = src.slice(src.indexOf("async function flagOpenSetAttention(slug, plan)"));
+  const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(fnBody.includes("ATTENTION.OPEN_SET_UNRESOLVED"));
+  assert.ok(fnBody.includes("ATTENTION.DOUBLE_CHARGE"));
+  assert.ok(fnBody.includes("buildPaymentAudit"), "y queda en la auditoría");
+  // No toca el estado: la compra tiene que poder seguir confirmándose por webhook.
+  assert.ok(!fnBody.includes("status:"), "anotar no es cambiar el estado de un cobro");
+  assert.ok(fnBody.includes("if (p.attention) return p"), "y no pisa una razón anterior");
+});
+
+test("MON003 · C4.14 — los códigos nuevos describen problemas distintos", () => {
+  const codigos = Object.values(D.ATTENTION);
+  assert.equal(new Set(codigos).size, codigos.length, "ningún código repetido");
+  assert.equal(D.ATTENTION.OPEN_SET_UNRESOLVED, "open_checkout_could_not_be_resolved");
+  assert.notEqual(D.ATTENTION.OPEN_SET_UNRESOLVED, D.ATTENTION.SUPERSEDED);
+  assert.notEqual(D.ATTENTION.DOUBLE_CHARGE, D.ATTENTION.OPEN_SET_UNRESOLVED);
+});
+
+test("MON003 · C4.15 — las hermanas muertas se RETIRAN, no se dejan a medias", () => {
+  // El P2 que salió en esta misma iteración: al devolver "hay un pago en curso"
+  // las hermanas quedaban en `created` sin `supersededBy`, así que un cobro que
+  // apareciera sobre ellas otorgaba PLUS y registraba un SEGUNDO pago del mismo
+  // torneo. La protección de Correction 02 no cubría este camino.
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  const retireAt = body.indexOf("retireDeadSiblings(slug, plan.dead || [], plan.purchaseId)");
+  const respondAt = body.indexOf('error: "payment_in_progress"');
+  assert.ok(retireAt !== -1 && respondAt !== -1);
+  assert.ok(retireAt < respondAt, "se retiran ANTES de responder");
+  // También en la rama que reutiliza: si hubiera hermanas muertas, se retiran.
+  assert.equal((body.match(/retireDeadSiblings\(/g) || []).length, 2);
+
+  const fn = src.slice(src.indexOf("async function retireDeadSiblings(slug, deadIds, winnerId)"));
+  const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(fnBody.includes("supersededBy: winnerId"), "lo que bloquea un grant tardío");
+  assert.ok(fnBody.includes("PURCHASE_STATUS.EXPIRED"));
+  assert.ok(fnBody.includes("ATTENTION.RETIRED_FOR_PAID_SIBLING"));
+  assert.ok(fnBody.includes('buildPaymentAudit(retired, "retired_for_paid_sibling"'));
+  // Nunca se retira la que se conserva, ni algo que ya es terminal.
+  assert.ok(fnBody.includes("id !== winnerId"));
+  assert.ok(fnBody.includes("p.status !== paymentsDomain.PURCHASE_STATUS.CREATED"));
+
+  // Y el dominio ya sabía bloquear un cobro sobre una retirada: es el mismo
+  // mecanismo, ahora también por este camino.
+  const d = decide(intentOf({ supersededBy: "qpur_ganadora" }), observedOf());
+  assert.equal(d.decision, D.DECISION.SUPERSEDED_PURCHASE);
+  assert.ok(!d.nextStatus, "no se toca el estado: no se inventa dinero");
+  assert.equal(D.ATTENTION.RETIRED_FOR_PAID_SIBLING, "retired_because_another_checkout_was_paid");
+  assert.notEqual(D.ATTENTION.RETIRED_FOR_PAID_SIBLING, D.ATTENTION.SUPERSEDED);
 });

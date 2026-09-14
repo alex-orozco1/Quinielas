@@ -3026,46 +3026,86 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       client.release();
     }
 
-    // ---- fase 2: resolver TODA compra abierta antes de pensar en otra ----
+    // ---- fase 2: clasificar TODAS, y sólo entonces decidir ----
     //
-    // Reutilizar tal cual sólo vale si hay UNA. Si por lo que sea coexistieran
-    // dos abiertas —una fila antigua, un fallo pasado—, devolver el enlace de la
-    // primera dejaría la segunda cobrando: se matan las dos y se abre una nueva.
+    // Aquí NO hay ningún `return`. Correction 04: antes se respondía dentro del
+    // bucle en cuanto una compra daba USED o no se podía resolver, y lo que
+    // venía después en el array no se miraba nunca. Con A=USED y B=cobrable,
+    // `[A, B]` respondía "hay un pago en curso" y dejaba B viva; `[B, A]` sí
+    // mataba B. El invariant dependía del orden en que se habían escrito las
+    // filas, que no es una entrada de negocio.
+    //
+    // Reutilizar tal cual sólo vale si hay UNA abierta: con dos, devolver el
+    // enlace de una dejaría la otra cobrando, así que las cobrables se matan.
     const reusable = open.length === 1;
-    const dead = [];
+    const resolved = [];
     for (const a of open) {
-      let resolved;
+      let r;
       try {
-        resolved = await resolveOpenIntent(a, offer, reusable);
+        r = await resolveOpenIntent(a, offer, reusable);
       } catch (err) {
         // El mensaje va SIEMPRE: un error de programación no tiene `code`, y sin
         // el mensaje se disfrazaba de "el proveedor no contesta".
         logPayment("checkout_resume_failed", {
           slug, purchaseId: a.id, code: err && err.code, message: err && err.message });
-        resolved = { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED };
+        r = { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED };
       }
-      if (resolved.outcome === paymentsDomain.OPEN_INTENT.USABLE) {
-        // Sirve tal cual: vende lo mismo y sigue cobrable. Se devuelve su
-        // enlace en vez de abrir otra — que es justo lo que había que evitar
-        // cuando la respuesta de creación se perdió.
-        logPayment("checkout_resumed", { slug, purchaseId: a.id });
-        return res.json({ ok: true, checkoutUrl: resolved.url, purchaseId: a.id });
-      }
-      if (resolved.outcome === paymentsDomain.OPEN_INTENT.USED) {
-        // Ya se usó. Abrir otra sería ofrecer un segundo cargo por algo que ya
-        // se está pagando: se devuelve ésa para que la pantalla la confirme.
-        logPayment("checkout_found_used", { slug, purchaseId: a.id });
-        return res.status(409).json({ error: "payment_in_progress", purchaseId: a.id });
-      }
-      if (resolved.outcome !== paymentsDomain.OPEN_INTENT.DEAD) {
-        // Fail closed. Mientras no se demuestre que esa compra ya no puede
-        // cobrar, no nace ninguna otra. Un enlace de menos es un problema; dos
-        // cargos, otro.
-        logPayment("checkout_blocked_unresolved", { slug, purchaseId: a.id });
-        return res.status(503).json({ error: "checkout_unavailable" });
-      }
-      dead.push(a);
+      resolved.push({ id: a.id, outcome: r.outcome, url: r.url || null });
     }
+
+    // La decisión la toma el dominio con el conjunto COMPLETO. Función pura:
+    // mismas etiquetas, misma respuesta, en cualquier orden.
+    const plan = paymentsDomain.decideOpenSet(resolved);
+
+    if (plan.action === paymentsDomain.OPEN_SET.REUSE) {
+      // Sirve tal cual: vende lo mismo, sigue cobrable y las demás están
+      // demostradas muertas. Se devuelve su enlace en vez de abrir otra — que es
+      // justo lo que había que evitar cuando la respuesta de creación se perdió.
+      const it = resolved.find((r) => r.id === plan.purchaseId);
+      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId).catch((err) => {
+        logPayment("checkout_retire_failed", { slug, message: err && err.message });
+      });
+      logPayment("checkout_resumed", { slug, purchaseId: plan.purchaseId });
+      return res.json({ ok: true, checkoutUrl: it.url, purchaseId: plan.purchaseId });
+    }
+
+    if (plan.action === paymentsDomain.OPEN_SET.CONFIRM_EXISTING) {
+      // Ya se usó, y todas las demás quedaron incobrables ANTES de responder.
+      // Abrir otra sería ofrecer un segundo cargo por algo que ya se está
+      // pagando: se devuelve ésa para que la pantalla la confirme.
+      // Las hermanas demostradas muertas se RETIRAN antes de responder.
+      //
+      // No es cosmético: mientras una siga en `created` sin `supersededBy`, un
+      // cobro que apareciera sobre ella otorgaría PLUS y registraría un segundo
+      // pago del mismo torneo — la protección que Correction 02 construyó para
+      // los reemplazos no cubría este camino. Si la escritura falla no se rompe
+      // nada (sus sesiones ya están muertas allá), pero se dice.
+      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId).catch((err) => {
+        logPayment("checkout_retire_failed", { slug, message: err && err.message });
+      });
+      logPayment("checkout_found_used", {
+        slug, purchaseId: plan.purchaseId, dead: (plan.dead || []).length });
+      return res.status(409).json({ error: "payment_in_progress", purchaseId: plan.purchaseId });
+    }
+
+    if (plan.action !== paymentsDomain.OPEN_SET.OPEN_NEW) {
+      // Fail closed. Mientras no se demuestre que ninguna de las anteriores
+      // puede cobrar, no nace otra. Un enlace de menos es un problema; dos
+      // cargos, otro. Y si el conjunto era ambiguo —más de una abierta y alguna
+      // sin clasificar— queda anotado para que lo mire una persona: eso es una
+      // capacidad de cobro que no se ha podido descartar, no un tropiezo.
+      logPayment("checkout_blocked_unresolved", {
+        slug, reason: plan.reason, unresolved: plan.unresolved.length, open: open.length });
+      if (open.length > 1 && (plan.needsAttention || []).length) {
+        await flagOpenSetAttention(slug, plan).catch((err) => {
+          logPayment("checkout_attention_failed", { slug, message: err && err.message });
+        });
+      }
+      return res.status(503).json({ error: "checkout_unavailable" });
+    }
+
+    // Regla 3: todas demostradas muertas. Son las que la compra nueva sustituye.
+    const dead = resolved.filter((r) => r.outcome === paymentsDomain.OPEN_INTENT.DEAD);
 
     // ---- fase 3: crear la compra, con todo lo anterior demostrado muerto ----
     const opened = await openPurchase(slug, dead);
@@ -3173,6 +3213,94 @@ async function releaseReplacementClaim(claim) {
   }
 }
 
+// Retira las compras cuya sesión se demostró incobrable, cuando NO se abre una
+// nueva que las sustituya.
+//
+// `supersededBy` es lo que impide que un cobro tardío sobre ellas otorgue nada:
+// dejarlas en `created` habría permitido un segundo pago registrado del mismo
+// torneo. Apunta a la compra que se queda viva, que es la verdad de lo ocurrido:
+// ésta se retiró porque el dinero va por la otra.
+async function retireDeadSiblings(slug, deadIds, winnerId) {
+  const retirar = new Set((deadIds || []).filter((id) => id && id !== winnerId));
+  if (!retirar.size) return;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const store = await readPaymentIntents(client);
+    const now = new Date().toISOString();
+    const audit = store.audit.slice();
+    let n = 0;
+    const purchases = store.purchases.map((p) => {
+      // Sólo lo que sigue abierto: una terminal ya tiene su historia escrita.
+      if (!p || !retirar.has(p.id) || p.status !== paymentsDomain.PURCHASE_STATUS.CREATED) return p;
+      n++;
+      const retired = {
+        ...p, status: paymentsDomain.PURCHASE_STATUS.EXPIRED, updatedAt: now,
+        attention: { code: paymentsDomain.ATTENTION.RETIRED_FOR_PAID_SIBLING, at: now, detail: winnerId },
+        supersededBy: winnerId,
+      };
+      audit.push(paymentsDomain.buildPaymentAudit(retired, "retired_for_paid_sibling", "none", now));
+      return retired;
+    });
+    if (!n) {
+      await client.query("ROLLBACK");
+      return;
+    }
+    await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases, audit: audit.slice(-1000) }, client);
+    await client.query("COMMIT");
+    logPayment("checkout_retired_siblings", { slug, n, winner: winnerId });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Anota que un conjunto de compras abiertas quedó sin poder demostrarse seguro.
+//
+// No cambia ningún estado ni otorga nada: sólo deja dicho, en la propia compra y
+// en la auditoría, que ahí hay una capacidad de cobro que no se pudo descartar.
+// Existe porque el caso peligroso es silencioso: el organizador ve "vuelve a
+// intentarlo" y nadie se enteraría de que hay dos sesiones y una no se sabe.
+async function flagOpenSetAttention(slug, plan) {
+  const code = plan.reason === "double_charge"
+    ? paymentsDomain.ATTENTION.DOUBLE_CHARGE
+    : paymentsDomain.ATTENTION.OPEN_SET_UNRESOLVED;
+  const marcar = new Set(plan.needsAttention || []);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const store = await readPaymentIntents(client);
+    const now = new Date().toISOString();
+    const audit = store.audit.slice();
+    let n = 0;
+    const purchases = store.purchases.map((p) => {
+      if (!p || !marcar.has(p.id)) return p;
+      // Una anotación previa no se pisa: la primera razón es la que explica cómo
+      // se llegó aquí. Y el estado NO se toca — esta compra puede seguir siendo
+      // confirmable por webhook, que es justo lo que hay que dejar pasar.
+      if (p.attention) return p;
+      n++;
+      const flagged = { ...p, attention: { code, at: now, detail: plan.reason }, updatedAt: now };
+      audit.push(paymentsDomain.buildPaymentAudit(flagged, "open_set_" + plan.reason, "none", now));
+      return flagged;
+    });
+    if (!n) {
+      await client.query("ROLLBACK");
+      return;
+    }
+    await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases, audit: audit.slice(-1000) }, client);
+    await client.query("COMMIT");
+    logPayment("payment_requires_attention", { slug, code, purchases: n });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // Crea la compra nueva y, en la MISMA transacción, marca como sustituidas las
 // que acaban de quedar demostradamente incobrables. No hay un instante en el que
 // existan dos compras abiertas para el mismo torneo.
@@ -3221,8 +3349,11 @@ async function openPurchase(slug, superseded) {
       .filter((p) => !deadIds.has(p.id));
     if (stillOpen.length) {
       await client.query("ROLLBACK");
+      // El id que se registra va ordenado: la DECISIÓN nunca dependió del orden
+      // del array —depende de que haya alguna— pero un log que sí dependiera
+      // haría creer a quien lo lea que la lógica también.
       logPayment("checkout_open_purchase_exists", {
-        slug, purchaseId: stillOpen[0].id, n: stillOpen.length,
+        slug, purchaseId: stillOpen.map((p2) => p2.id).sort()[0], n: stillOpen.length,
       });
       return { error: "replacement_in_progress", status: 409 };
     }

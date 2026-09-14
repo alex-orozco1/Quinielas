@@ -62,6 +62,20 @@ const ATTENTION = Object.freeze({
   // Sin eso no se puede demostrar que el plan vaya al torneo que se compró.
   // Tiene su propio código: no es un torneo VIEJO, es un torneo ILEGIBLE.
   SCOPE_UNPROVEN: "current_tournament_unreadable",
+  // Había varias compras abiertas para el mismo torneo y al menos una no se
+  // pudo clasificar. Tiene su propio código porque describe un riesgo distinto
+  // de todos los demás: aquí no hay dinero mal aplicado, hay una capacidad de
+  // cobro que no se ha podido descartar. Pide una persona ANTES de que alguien
+  // pague dos veces, no después.
+  OPEN_SET_UNRESOLVED: "open_checkout_could_not_be_resolved",
+  // Dos compras del mismo torneo llegaron a cobrar. Eso ya es un cargo doble:
+  // no hay nada que prevenir, hay algo que devolver.
+  DOUBLE_CHARGE: "two_checkouts_were_paid_for_one_tournament",
+  // Esta compra se retiró porque OTRA del mismo torneo ya cobró. No es "una más
+  // nueva la sustituyó": es que el dinero entró por otra puerta. Con su propio
+  // código porque, si algún día llegara un cobro sobre ésta, quien lo lea tiene
+  // que saber que había un pago hermano, no un reemplazo rutinario.
+  RETIRED_FOR_PAID_SIBLING: "retired_because_another_checkout_was_paid",
   // Esta compra se sustituyó por otra: su sesión quedó inutilizada a propósito.
   SUPERSEDED: "superseded_by_a_newer_checkout",
 });
@@ -202,6 +216,78 @@ function classifyOpenIntent(observed, offerMatches) {
       return offerMatches ? OPEN_INTENT.USABLE : OPEN_INTENT.MUST_EXPIRE;
     default: return OPEN_INTENT.UNRESOLVED;
   }
+}
+
+// ¿Qué hacer con el CONJUNTO de compras abiertas, una vez clasificadas todas?
+//
+// Correction 04. Antes esto se decidía dentro del bucle, con un `return` en
+// cuanto una compra daba USED, USABLE o UNRESOLVED — y lo que venía después del
+// array no se miraba. Con A=USED y B=CHARGEABLE, `[A, B]` respondía
+// "payment_in_progress" y dejaba B cobrando; `[B, A]` sí mataba B antes. El
+// resultado dependía del ORDEN del array, que no es una entrada de negocio: es
+// el orden en que se fueron escribiendo filas.
+//
+// Así que la decisión se toma con el conjunto COMPLETO ya clasificado, y esta
+// función es pura: mismas etiquetas, misma respuesta, en cualquier orden. Lo
+// único que se ordena son los ids que se devuelven, para que ni los mensajes ni
+// la auditoría dependan del orden de entrada.
+const OPEN_SET = Object.freeze({
+  CONFIRM_EXISTING: "confirm_existing", // una ya cobró: confirmarla, no abrir otra
+  REUSE: "reuse",                       // una sirve tal cual y las demás están muertas
+  OPEN_NEW: "open_new",                 // todas muertas: puede nacer otra
+  BLOCKED: "blocked",                   // no se puede demostrar el invariant: fail closed
+});
+
+function decideOpenSet(resolved) {
+  const list = (Array.isArray(resolved) ? resolved : []).filter(Boolean);
+  const ids = (xs) => xs.map((r) => r.id).sort();
+  const of = (outcome) => list.filter((r) => r.outcome === outcome);
+
+  const used = of(OPEN_INTENT.USED);
+  const usable = of(OPEN_INTENT.USABLE);
+  const dead = of(OPEN_INTENT.DEAD);
+  // Todo lo que no es una de las tres etiquetas conocidas cuenta como sin
+  // resolver, incluido un `undefined` o una etiqueta futura: fail closed por
+  // defecto, no por enumeración.
+  const unresolved = list.filter((r) => r.outcome !== OPEN_INTENT.USED
+    && r.outcome !== OPEN_INTENT.USABLE && r.outcome !== OPEN_INTENT.DEAD);
+
+  // Regla 4, y va PRIMERO: mientras quede una sin clasificar no se abre nada ni
+  // se declara restaurado el invariant, aunque el resto esté impecable.
+  if (unresolved.length) {
+    return { action: OPEN_SET.BLOCKED, reason: "unresolved",
+      unresolved: ids(unresolved), used: ids(used), needsAttention: ids(unresolved) };
+  }
+  // Dos que ya cobraron no es un riesgo: es un cargo doble consumado.
+  if (used.length > 1) {
+    return { action: OPEN_SET.BLOCKED, reason: "double_charge",
+      unresolved: [], used: ids(used), needsAttention: ids(used) };
+  }
+  if (used.length === 1) {
+    // Una cobrable junto a una ya cobrada sería la segunda capacidad de cobro
+    // que todo esto existe para impedir. No debería poder pasar —el servidor no
+    // marca nada USABLE cuando hay más de una abierta— pero si pasara, se
+    // bloquea en vez de confiar en que no pase.
+    if (usable.length) {
+      return { action: OPEN_SET.BLOCKED, reason: "usable_beside_used",
+        unresolved: [], used: ids(used), needsAttention: ids(used).concat(ids(usable)) };
+    }
+    // Regla 1: se conserva para confirmar, y las demás ya están demostradas
+    // incobrables porque sólo quedan DEAD.
+    return { action: OPEN_SET.CONFIRM_EXISTING, purchaseId: used[0].id,
+      unresolved: [], used: ids(used), dead: ids(dead) };
+  }
+  // Regla 2: exactamente una sirve, y todas las demás están DEAD — que es lo que
+  // queda por eliminación, porque aquí ya no hay USED ni sin resolver.
+  if (usable.length === 1) {
+    return { action: OPEN_SET.REUSE, purchaseId: usable[0].id, unresolved: [], dead: ids(dead) };
+  }
+  if (usable.length > 1) {
+    return { action: OPEN_SET.BLOCKED, reason: "many_usable",
+      unresolved: [], used: [], needsAttention: ids(usable) };
+  }
+  // Regla 3: todas muertas (o no había ninguna abierta).
+  return { action: OPEN_SET.OPEN_NEW, unresolved: [], dead: ids(dead) };
 }
 
 // ---- el turno para reemplazar ---------------------------------------------
@@ -606,6 +692,7 @@ module.exports = {
   PURCHASE_STATUS, STATUS_RANK, ATTENTION, DECISION, SUPPORTED_CURRENCIES,
   SESSION_STATE, sessionStateOf, openIntentsForScope,
   OPEN_INTENT, classifyOpenIntent,
+  OPEN_SET, decideOpenSet,
   replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,
   toMinorUnits, normalizeCurrency,
