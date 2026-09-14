@@ -2874,6 +2874,35 @@ const CHECKOUT_REUSE_WINDOW_MS = 20 * 60 * 60 * 1000;
 // llamadas al proveedor con holgura, y ser lo bastante corto para que una
 // petición que murió a medias no bloquee el torneo mucho tiempo.
 const REPLACEMENT_CLAIM_TTL_MS = 90 * 1000;
+// ==========================================================================
+// CORRECTION 05 — localizar una sesión SIN conocer su id
+//
+// La clave de idempotencia del proveedor NO es una identidad eterna. Su
+// documentación dice que los resultados pueden eliminarse pasadas al menos 24 h,
+// y que reutilizar una clave podada genera una petición NUEVA. Así que apoyar la
+// recuperación en "reanudar con la misma clave devuelve la misma sesión" tiene
+// fecha de caducidad, y pasada esa fecha reanudar podría crear una SEGUNDA
+// sesión cobrable junto a una que ya cobró.
+//
+// Por eso la recuperación no se apoya en la idempotencia, sino en preguntar:
+// el listado de sesiones acotado por fecha de creación. Nosotros anotamos
+// `creationAttemptedAt` al pedir la creación, así que la ventana donde pudo
+// nacer esa sesión es diminuta y conocida. Lo que se busca dentro es nuestra
+// propia identidad, que sembramos en dos campos independientes.
+//
+// El margen cubre latencia de red y desfase de reloj entre el proveedor y
+// nosotros. Generoso a propósito: una ventana de más cuesta una página de
+// listado; una ventana de menos puede dejar de encontrar una sesión que existe.
+const SESSION_LOOKUP_MARGIN_MS = 15 * 60 * 1000;
+// Tope de páginas. Si se agota SIN encontrarla, la respuesta es "no se sabe",
+// nunca "no existe": una búsqueda truncada no demuestra una ausencia.
+const SESSION_LOOKUP_MAX_PAGES = 20;
+// El techo CONTRACTUAL de vida de una sesión: su documentación dice que
+// `expires_at` va de 30 minutos a 24 h desde la creación, y que por defecto son
+// 24 h. Se manda explícito al crear, así que pasado esto una sesión no puede
+// cobrar. Sirve para explicar un bloqueo, no para autorizar una venta: "ya no
+// puede cobrar" no es "nunca cobró".
+const SESSION_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
 async function readPaymentIntents(client) {
   const row = client ? await getRowLocked(PAYMENT_INTENTS_KEY, client) : await getRow(PAYMENT_INTENTS_KEY);
@@ -2995,7 +3024,8 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       // todas. Es una comprobación en memoria sobre datos ya leídos.
       const abiertas = paymentsDomain.openIntentsForScope(store.purchases, slug, scope.id);
 
-      if (abiertas.length === 1 && sameOffer(reusable, offer) && reusable.providerCheckoutUrl
+      if (abiertas.length === 1 && sameOffer(reusable, offer)
+        && usableCheckoutUrl(reusable.providerCheckoutUrl)
         && abiertas[0].id === reusable.id) {
         // Dos taps, dos pestañas: el mismo enlace, cero llamadas de red, cero
         // compras nuevas, ninguna sesión que reemplazar y ningún turno que
@@ -3050,7 +3080,7 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
           slug, purchaseId: a.id, code: err && err.code, message: err && err.message });
         r = { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED };
       }
-      resolved.push({ id: a.id, outcome: r.outcome, url: r.url || null });
+      resolved.push({ id: a.id, outcome: r.outcome, url: r.url || null, paid: r.paid === true });
     }
 
     // La decisión la toma el dominio con el conjunto COMPLETO. Función pura:
@@ -3062,11 +3092,20 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       // demostradas muertas. Se devuelve su enlace en vez de abrir otra — que es
       // justo lo que había que evitar cuando la respuesta de creación se perdió.
       const it = resolved.find((r) => r.id === plan.purchaseId);
-      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId).catch((err) => {
+      const reuseUrl = usableCheckoutUrl(it && it.url);
+      if (!reuseUrl) {
+        // Sirve para cobrar pero no tenemos a dónde mandar a nadie. No se
+        // inventa un enlace y no se abre otra compra: se pide reintentar.
+        logPayment("checkout_reuse_without_url", { slug, purchaseId: plan.purchaseId });
+        return res.status(503).json({ error: "checkout_unavailable" });
+      }
+      // Reutilizar NO es cobrar: `plan.winnerPaid` es false en esta rama, así que
+      // el motivo que se escribe dice exactamente eso.
+      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid).catch((err) => {
         logPayment("checkout_retire_failed", { slug, message: err && err.message });
       });
       logPayment("checkout_resumed", { slug, purchaseId: plan.purchaseId });
-      return res.json({ ok: true, checkoutUrl: it.url, purchaseId: plan.purchaseId });
+      return res.json({ ok: true, checkoutUrl: reuseUrl, purchaseId: plan.purchaseId });
     }
 
     if (plan.action === paymentsDomain.OPEN_SET.CONFIRM_EXISTING) {
@@ -3080,7 +3119,7 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       // pago del mismo torneo — la protección que Correction 02 construyó para
       // los reemplazos no cubría este camino. Si la escritura falla no se rompe
       // nada (sus sesiones ya están muertas allá), pero se dice.
-      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId).catch((err) => {
+      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid).catch((err) => {
         logPayment("checkout_retire_failed", { slug, message: err && err.message });
       });
       logPayment("checkout_found_used", {
@@ -3115,11 +3154,17 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     }
     const intent = opened.intent;
 
-    // ---- fase 4: pedir la sesión, con la clave de ESTA compra ----
+    // ---- fase 4: pedir la sesión de ESTA compra ----
     //
-    // La compra ya está persistida, así que si esta llamada se pierde —o el
-    // proceso muere aquí mismo— el siguiente intento la encuentra abierta y la
-    // reanuda con esta misma clave. No puede nacer una segunda sesión.
+    // Crear aquí es seguro sin preguntar nada: esta compra nació hace
+    // microsegundos con un id que no existía antes, así que no puede haber una
+    // sesión suya en el proveedor. Es el ÚNICO sitio donde crear a ciegas es
+    // correcto, y lo es por construcción, no por suerte.
+    //
+    // Si esta llamada se pierde —o el proceso muere aquí mismo— la compra ya está
+    // persistida y con su `creationAttemptedAt` puesto ANTES de la llamada: el
+    // siguiente intento la encuentra abierta y LOCALIZA su sesión por listado
+    // dentro de esa ventana (Correction 05). No puede nacer una segunda.
     let session;
     try {
       session = await createSessionFor(intent, slug);
@@ -3144,8 +3189,15 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       });
     }
 
+    const newUrl = usableCheckoutUrl(session.url);
+    if (!newUrl) {
+      // La compra queda abierta y con su sesión: el siguiente intento la reanuda.
+      // Lo que no se hace es mandar al navegador a ningún sitio inventado.
+      logPayment("checkout_created_without_url", { slug, purchaseId: intent.id });
+      return res.status(503).json({ error: "checkout_unavailable" });
+    }
     logPayment("checkout_created", { slug, purchaseId: intent.id, amountMinor: intent.expectedAmountMinor });
-    res.json({ ok: true, checkoutUrl: session.url, purchaseId: intent.id });
+    res.json({ ok: true, checkoutUrl: newUrl, purchaseId: intent.id });
   } catch (err) {
     console.error("checkout creation failed", { slug, message: err && err.message });
     res.status(500).json({ error: "server_error" });
@@ -3220,9 +3272,20 @@ async function releaseReplacementClaim(claim) {
 // dejarlas en `created` habría permitido un segundo pago registrado del mismo
 // torneo. Apunta a la compra que se queda viva, que es la verdad de lo ocurrido:
 // ésta se retiró porque el dinero va por la otra.
-async function retireDeadSiblings(slug, deadIds, winnerId) {
+async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid) {
   const retirar = new Set((deadIds || []).filter((id) => id && id !== winnerId));
   if (!retirar.size) return;
+  // CORRECTION 05 (P2-2): el motivo describe lo que DE VERDAD pasó.
+  //
+  // Esta función se llama desde dos ramas. En una, la compra que se conserva ya
+  // cobró; en la otra, sólo es la que sigue activa y nadie ha pagado nada.
+  // Escribir "otra compra fue pagada" en el segundo caso es historia financiera
+  // falsa: soporte leería un cobro donde sólo hubo una elección de checkout.
+  const pagó = winnerPaid === true;
+  const code = pagó
+    ? paymentsDomain.ATTENTION.RETIRED_FOR_PAID_SIBLING
+    : paymentsDomain.ATTENTION.RETIRED_FOR_ACTIVE_SIBLING;
+  const decision = pagó ? "retired_for_paid_sibling" : "retired_for_active_sibling";
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -3236,10 +3299,10 @@ async function retireDeadSiblings(slug, deadIds, winnerId) {
       n++;
       const retired = {
         ...p, status: paymentsDomain.PURCHASE_STATUS.EXPIRED, updatedAt: now,
-        attention: { code: paymentsDomain.ATTENTION.RETIRED_FOR_PAID_SIBLING, at: now, detail: winnerId },
+        attention: { code, at: now, detail: winnerId },
         supersededBy: winnerId,
       };
-      audit.push(paymentsDomain.buildPaymentAudit(retired, "retired_for_paid_sibling", "none", now));
+      audit.push(paymentsDomain.buildPaymentAudit(retired, decision, "none", now));
       return retired;
     });
     if (!n) {
@@ -3248,7 +3311,7 @@ async function retireDeadSiblings(slug, deadIds, winnerId) {
     }
     await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases, audit: audit.slice(-1000) }, client);
     await client.query("COMMIT");
-    logPayment("checkout_retired_siblings", { slug, n, winner: winnerId });
+    logPayment("checkout_retired_siblings", { slug, n, winner: winnerId, paid: pagó });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
@@ -3264,35 +3327,77 @@ async function retireDeadSiblings(slug, deadIds, winnerId) {
 // Existe porque el caso peligroso es silencioso: el organizador ve "vuelve a
 // intentarlo" y nadie se enteraría de que hay dos sesiones y una no se sabe.
 async function flagOpenSetAttention(slug, plan) {
-  const code = plan.reason === "double_charge"
-    ? paymentsDomain.ATTENTION.DOUBLE_CHARGE
-    : paymentsDomain.ATTENTION.OPEN_SET_UNRESOLVED;
-  const marcar = new Set(plan.needsAttention || []);
+  // ======================================================================
+  // CORRECTION 05 (P2-3 y P2-5) — la auditoría registra TODOS los incidentes.
+  //
+  // Antes esta función saltaba cualquier compra que ya tuviera una `attention`
+  // previa, y si todas la tenían no escribía nada en absoluto: `n === 0`,
+  // rollback, y un cargo doble consumado desaparecía del historial. El campo
+  // `attention` es singular y su política sigue siendo conservar la PRIMERA
+  // razón —quien llegó primero explica cómo se llegó aquí—, pero el rastro de
+  // auditoría no es singular y no puede perder un hecho material.
+  //
+  // Y se recorren TODOS los incidentes del conjunto, no sólo el más grave: un
+  // cargo doble ya ocurrido no se tapa porque además haya una sesión sin
+  // resolver (P2-5).
+  // ======================================================================
+  const incidents = Array.isArray(plan.incidents) && plan.incidents.length
+    ? plan.incidents
+    // Compatibilidad hacia atrás: si un plan viniera sin desglose, se anota lo
+    // que dijo, en vez de no anotar nada.
+    : [{ kind: plan.reason, purchaseIds: plan.needsAttention || [] }];
+  if (!incidents.length) return;
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const store = await readPaymentIntents(client);
     const now = new Date().toISOString();
     const audit = store.audit.slice();
-    let n = 0;
+    const porId = new Map(store.purchases.filter(Boolean).map((p) => [p.id, p]));
+    // Qué compra recibe qué razón en su campo singular: la del incidente más
+    // grave que la afecta, y sólo si no tenía ninguna.
+    const razonPara = new Map();
+    let entradas = 0;
+
+    for (const inc of incidents) {
+      const kind = inc && inc.kind ? String(inc.kind) : "unknown";
+      const code = paymentsDomain.INCIDENT_ATTENTION[kind]
+        || paymentsDomain.ATTENTION.OPEN_SET_UNRESOLVED;
+      const decision = "open_set_" + kind;
+      for (const id of (inc.purchaseIds || [])) {
+        const p = porId.get(id);
+        if (!p) continue;
+        // Un mismo incidente sobre una misma compra se anota UNA vez: el
+        // organizador puede reintentar cien veces y eso no es cien incidentes.
+        const yaAuditado = store.audit.some((x) => x
+          && x.purchaseId === id && x.decision === decision);
+        if (!yaAuditado) {
+          audit.push(paymentsDomain.buildPaymentAudit(
+            { ...p, attention: { code } }, decision, "none", now));
+          entradas++;
+        }
+        if (!p.attention && !razonPara.has(id)) razonPara.set(id, { code, detail: kind });
+      }
+    }
+
+    // El campo singular sólo se rellena donde estaba vacío. NUNCA se pisa una
+    // razón anterior, y el estado del cobro no se toca: la compra tiene que
+    // poder seguir confirmándose por webhook.
     const purchases = store.purchases.map((p) => {
-      if (!p || !marcar.has(p.id)) return p;
-      // Una anotación previa no se pisa: la primera razón es la que explica cómo
-      // se llegó aquí. Y el estado NO se toca — esta compra puede seguir siendo
-      // confirmable por webhook, que es justo lo que hay que dejar pasar.
-      if (p.attention) return p;
-      n++;
-      const flagged = { ...p, attention: { code, at: now, detail: plan.reason }, updatedAt: now };
-      audit.push(paymentsDomain.buildPaymentAudit(flagged, "open_set_" + plan.reason, "none", now));
-      return flagged;
+      if (!p || !razonPara.has(p.id) || p.attention) return p;
+      const r = razonPara.get(p.id);
+      return { ...p, attention: { code: r.code, at: now, detail: r.detail }, updatedAt: now };
     });
-    if (!n) {
+
+    if (!entradas && !razonPara.size) {
       await client.query("ROLLBACK");
       return;
     }
     await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases, audit: audit.slice(-1000) }, client);
     await client.query("COMMIT");
-    logPayment("payment_requires_attention", { slug, code, purchases: n });
+    logPayment("payment_requires_attention", {
+      slug, incidents: incidents.map((x) => x.kind), auditEntries: entradas, flagged: razonPara.size });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
@@ -3330,6 +3435,46 @@ async function openPurchase(slug, superseded) {
     }
     const store = await readPaymentIntents(client);
     const deadIds = new Set((superseded || []).map((c) => c.id));
+
+    // ======================================================================
+    // CORRECTION 05 (P2-1) — la observación de la fase 2 es VIEJA.
+    //
+    // Entre observar el proveedor y llegar aquí pasa una transacción y varias
+    // llamadas de red. En ese hueco un webhook o una reconciliación pueden haber
+    // movido cualquiera de estas compras, PAID incluido. Marcar a EXPIRED por el
+    // solo hecho de estar en la lista de candidatas destruiría verdad económica
+    // durable: es exactamente lo que `canAdvance` existe para impedir.
+    //
+    // Así que se vuelve a comprobar, bajo el candado, que cada candidata siga
+    // siendo elegible. Si el mundo cambió, no se arregla a mano: se falla cerrado
+    // y el siguiente intento vuelve a observar desde cero.
+    // ======================================================================
+    const porId = new Map(store.purchases.filter(Boolean).map((p) => [p.id, p]));
+    const yaNoElegibles = [...deadIds].filter((id) => {
+      const p = porId.get(id);
+      return !p
+        || p.status !== paymentsDomain.PURCHASE_STATUS.CREATED
+        || !!p.supersededBy;
+    });
+    if (yaNoElegibles.length) {
+      await client.query("ROLLBACK");
+      logPayment("checkout_stale_observation", {
+        slug, purchaseIds: yaNoElegibles.sort(),
+        states: yaNoElegibles.sort().map((id) => (porId.get(id) || {}).status || "gone"),
+      });
+      return { error: "checkout_stale_observation", status: 409 };
+    }
+
+    // Y la comprobación que de verdad impide una segunda venta: si mientras
+    // hablábamos con el proveedor alguna compra de este torneo pasó a PAID, aquí
+    // no se abre nada. La fase 1 ya lo comprueba, pero la fase 1 ocurrió antes de
+    // la red.
+    const yaPagada = paymentsDomain.findPaidIntentForScope(store.purchases, slug, scope.id);
+    if (yaPagada) {
+      await client.query("ROLLBACK");
+      logPayment("checkout_already_paid_under_lock", { slug, purchaseId: yaPagada.id });
+      return { error: "payment_already_recorded", status: 409 };
+    }
 
     // LA BARRERA, aquí y bajo el candado (Correction 03).
     //
@@ -3374,7 +3519,10 @@ async function openPurchase(slug, superseded) {
 
     const audit = store.audit.slice();
     const purchases = store.purchases.map((p) => {
-      if (!p || !deadIds.has(p.id)) return p;
+      // La condición de estado se repite AQUÍ además de comprobarse arriba: si
+      // alguien añadiera un camino que se salte la comprobación, este map sigue
+      // sin poder degradar nada que no esté abierto.
+      if (!p || !deadIds.has(p.id) || p.status !== paymentsDomain.PURCHASE_STATUS.CREATED) return p;
       const dead = {
         ...p, status: paymentsDomain.PURCHASE_STATUS.EXPIRED, updatedAt: now,
         // Auditable: por qué murió, y quién la sustituyó. `supersededBy` es
@@ -3420,7 +3568,12 @@ async function createSessionFor(intent, slug) {
     currency: intent.currency,
     productName: "QRACKS Plus",
     purchaseId: intent.id, slug, scopeId: intent.scopeId,
-    successUrl: `${base}/q/${encodeURIComponent(slug)}?qz_pago=${encodeURIComponent(intent.id)}`,
+    // `qz_pago` es NUESTRO id de compra, que es lo único que hace falta para
+    // reconciliar. `qz_sess` lo rellena el proveedor con el id de la sesión: es
+    // una PISTA que ahorra un listado, nunca una autoridad — el servidor la
+    // verifica contra la compra y funciona igual si no llega.
+    successUrl: `${base}/q/${encodeURIComponent(slug)}`
+      + `?qz_pago=${encodeURIComponent(intent.id)}&qz_sess={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}/q/${encodeURIComponent(slug)}?qz_pago_cancelado=1`,
     idempotencyKey: `checkout:${intent.id}`,
   });
@@ -3448,6 +3601,92 @@ async function markCreationAttempted(purchaseId) {
   }
 }
 
+// ¿Es esto un enlace de checkout al que se pueda mandar a alguien?
+//
+// El contrato del proveedor dice que la URL de una sesión "sólo está presente
+// mientras la sesión está activa", y que el campo es nullable. Así que devolver
+// lo que venga sin mirar puede acabar con el navegador yendo a la cadena "null".
+// Un 503 y un reintento es un inconveniente; una pantalla en blanco después de
+// pulsar "Pasar a Plus" es una venta perdida y un usuario que no entiende nada.
+function usableCheckoutUrl(url) {
+  if (typeof url !== "string" || !url) return null;
+  return /^https:\/\/[^\s]+$/.test(url) ? url : null;
+}
+
+// Un id de sesión que llega de FUERA (la URL de vuelta del pago). No es una
+// autoridad: es una pista. Sólo se filtra la forma, para no meter basura en una
+// URL de la API; quien decide si vale es la verificación contra la compra.
+function readSessionHint(raw) {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  return /^cs_[A-Za-z0-9_]{1,200}$/.test(v) ? v : null;
+}
+
+// ¿Existe en el proveedor una sesión de ESTA compra, y cuál es?
+//
+// El corazón de Correction 05. Responde sin conocer su id y sin depender de que
+// el proveedor conserve nuestra clave de idempotencia. Tres respuestas posibles,
+// y la diferencia entre las dos últimas es la que evita un segundo cobro:
+//
+//   { session }   se encontró y se VERIFICÓ que es de esta compra
+//   { absent }    se puede AFIRMAR que no existe ninguna
+//   { unknown }   no se pudo demostrar nada -> fail closed
+//
+// Nunca crea nada. Buscar no es vender.
+async function locateSessionForPurchase(intent, hint) {
+  // 1. La pista del navegador, si vino. Es una sola llamada y ahorra el listado
+  //    en el caso normal; si no cuadra se descarta y se sigue por el camino que
+  //    sí es una garantía. Que el navegador mienta no cambia nada.
+  if (hint) {
+    try {
+      const observed = await stripeAdapter.retrieveCheckoutSession(hint);
+      const v = paymentsDomain.verifySessionForPurchase(intent, observed);
+      if (v.ok) return { session: observed, via: "hint" };
+      logPayment("session_hint_rejected", { purchaseId: intent.id, reason: v.reason });
+    } catch (err) {
+      logPayment("session_hint_failed", { purchaseId: intent.id, code: err && err.code });
+    }
+  }
+
+  // 2. Si nunca se le pidió al proveedor crear nada, no puede existir nada. Es
+  //    la única ausencia que se afirma sin preguntar, y se apoya en un dato
+  //    nuestro escrito ANTES de la llamada.
+  if (!intent.creationAttemptedAt) return { absent: true, via: "never_attempted" };
+  const attempted = Date.parse(intent.creationAttemptedAt);
+  if (!Number.isFinite(attempted)) return { unknown: true, via: "unreadable_attempt_time" };
+
+  // 3. El listado, acotado a la ventana en la que pudo nacer.
+  const gte = Math.floor((attempted - SESSION_LOOKUP_MARGIN_MS) / 1000);
+  const lte = Math.ceil((attempted + SESSION_LOOKUP_MARGIN_MS) / 1000);
+  let startingAfter = null;
+  let conflict = null;
+  for (let page = 0; page < SESSION_LOOKUP_MAX_PAGES; page++) {
+    const res = await stripeAdapter.listCheckoutSessions({
+      createdGte: gte, createdLte: lte, limit: 100, startingAfter,
+    });
+    for (const candidate of (res.sessions || [])) {
+      // Sólo se miran las que dicen ser de esta compra. Las demás son de otras
+      // ventas y no se tocan ni se leen más allá de su identidad.
+      if (candidate.purchaseId !== intent.id) continue;
+      const v = paymentsDomain.verifySessionForPurchase(intent, candidate);
+      if (v.ok) return { session: candidate, via: "list" };
+      // Dice ser nuestra y NO cuadra. Eso no se ignora: si se ignorara, el
+      // siguiente paso concluiría "no existe ninguna" y crearía otra.
+      conflict = v.reason;
+      logPayment("session_candidate_rejected", {
+        purchaseId: intent.id, sessionId: candidate.sessionId, reason: v.reason });
+    }
+    if (!res.hasMore || !res.lastId) {
+      return conflict
+        ? { unknown: true, via: "conflicting_candidate", reason: conflict }
+        : { absent: true, via: "list_exhausted" };
+    }
+    startingAfter = res.lastId;
+  }
+  // Ventana agotada sin respuesta: no se sabe. Nunca "no existe".
+  return { unknown: true, via: "list_truncated" };
+}
+
 // Resuelve una compra ABIERTA hasta un estado en el que se pueda decidir.
 //
 // El paso clave es el primero: si no se conoce su sesión, se REANUDA la creación
@@ -3461,22 +3700,60 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
   let url = intent.providerCheckoutUrl || null;
 
   if (!sessionId) {
-    const recovered = await createSessionFor(intent, intent.slug);
-    sessionId = recovered.sessionId;
-    url = recovered.url;
-    observed = recovered.observed;
-    // Se guarda ya: la próxima vez no hará falta ni siquiera reanudar.
-    await attachProviderSession(intent.id, recovered).catch((err) => {
-      logPayment("checkout_session_persist_failed", {
-        slug: intent.slug, purchaseId: intent.id, message: err && err.message,
+    // ======================================================================
+    // CORRECTION 05 — localizar ANTES de crear, siempre.
+    //
+    // Correction 03 reanudaba aquí con la misma clave de idempotencia, y eso es
+    // correcto sólo mientras el proveedor la conserve. Su documentación dice que
+    // puede eliminarla pasadas al menos 24 h, y que una clave podada produce una
+    // petición NUEVA: es decir, una SEGUNDA sesión cobrable junto a una que pudo
+    // haber cobrado ya. Así que primero se pregunta qué existe, y sólo se crea
+    // cuando se puede AFIRMAR que no existe nada.
+    //
+    // La clave de idempotencia se sigue mandando, pero como segunda red, no como
+    // la barrera.
+    // ======================================================================
+    const found = await locateSessionForPurchase(intent, null);
+    if (found.session) {
+      sessionId = found.session.sessionId;
+      observed = found.session;
+      url = found.session.url || url;
+      // Se guarda ya: la próxima vez no hará falta ni buscarla.
+      await attachProviderSession(intent.id, { sessionId, url }).catch((err) => {
+        logPayment("checkout_session_persist_failed", {
+          slug: intent.slug, purchaseId: intent.id, message: err && err.message,
+        });
       });
-    });
-    logPayment("checkout_session_recovered", { slug: intent.slug, purchaseId: intent.id });
+      logPayment("checkout_session_recovered", {
+        slug: intent.slug, purchaseId: intent.id, via: found.via });
+    } else if (found.absent) {
+      // Demostrado que no hay nada que duplicar.
+      const created = await createSessionFor(intent, intent.slug);
+      sessionId = created.sessionId;
+      url = created.url;
+      observed = created.observed;
+      await attachProviderSession(intent.id, created).catch((err) => {
+        logPayment("checkout_session_persist_failed", {
+          slug: intent.slug, purchaseId: intent.id, message: err && err.message,
+        });
+      });
+      logPayment("checkout_session_created_after_lookup", {
+        slug: intent.slug, purchaseId: intent.id, via: found.via });
+    } else {
+      // No se pudo demostrar nada. No se crea, no se da por muerta: se bloquea.
+      logPayment("checkout_session_unlocatable", {
+        slug: intent.slug, purchaseId: intent.id, via: found.via, reason: found.reason || null });
+      return { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED, url: null, sessionId: null,
+        paid: false, unlocatable: true, via: found.via };
+    }
   }
 
-  // La verdad fresca, siempre: la respuesta de creación pudo ser de hace rato.
+  // La verdad fresca, siempre: lo que se localizó pudo observarse hace rato.
   const fresh = await stripeAdapter.retrieveCheckoutSession(sessionId);
-  if (fresh) observed = fresh;
+  if (fresh) {
+    observed = fresh;
+    url = fresh.url || url;
+  }
 
   // `reusable` es el permiso del llamador para devolver esta sesión tal cual.
   // Sin él, una sesión cobrable se trata como hay que matarla, aunque venda lo
@@ -3488,6 +3765,7 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
     // Cobrable, pero vende otra cosa. Se mata y se COMPRUEBA que quedó muerta,
     // en vez de suponerlo.
     const afterExpire = await stripeAdapter.expireCheckoutSession(sessionId).catch(() => null);
+    if (afterExpire) observed = afterExpire;
     outcome = paymentsDomain.classifyOpenIntent(afterExpire, matches);
     // Sólo "muerta" sirve: si tras expirar sigue cobrable o no se sabe, se
     // bloquea.
@@ -3496,7 +3774,9 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
       outcome = paymentsDomain.OPEN_INTENT.UNRESOLVED;
     }
   }
-  return { outcome, url, sessionId };
+  // `paid` sube al conjunto porque "usada" no es "cobrada" (Correction 05,
+  // P2-4): sólo el proveedor diciendo que se pagó cuenta como dinero.
+  return { outcome, url, sessionId, paid: !!(observed && observed.paid === true) };
 }
 
 // Adjunta la identidad del proveedor a una compra ya creada. Nunca la
@@ -3770,11 +4050,49 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
     // existe: para este slug, sencillamente no está.
     if (!intent || intent.slug !== slug) return res.status(404).json({ error: "purchase_not_found" });
 
-    if (intent.status === paymentsDomain.PURCHASE_STATUS.CREATED
-      && intent.providerSessionId && stripeAdapter.isConfigured()) {
+    // ======================================================================
+    // CORRECTION 05 (P1-1) — un cobro conocido se recupera aunque el id de la
+    // sesión nunca se haya guardado.
+    //
+    // Antes esta puerta exigía `intent.providerSessionId`, y ahí estaba el
+    // agujero: si `attachProviderSession` falló, el usuario pagó y el webhook se
+    // perdió, esta ruta no preguntaba NADA y la pantalla acababa diciendo "en
+    // cuanto se confirme, Plus se activa solo" sin que existiera ninguna vía por
+    // la que eso pudiera ocurrir. Un cobro real quedaba irrecuperable salvo
+    // volviendo a comprar.
+    //
+    // Ahora, si no consta el id, se LOCALIZA. Y la vuelta del navegador puede
+    // traer una pista que lo acelera, pero no decide nada: se verifica contra la
+    // compra antes de adjuntarla. Este endpoint nunca crea una sesión — un GET
+    // no vende.
+    // ======================================================================
+    if (intent.status === paymentsDomain.PURCHASE_STATUS.CREATED && stripeAdapter.isConfigured()) {
       try {
-        const observed = await stripeAdapter.retrieveCheckoutSession(intent.providerSessionId);
+        let observed = null;
+        if (intent.providerSessionId) {
+          observed = await stripeAdapter.retrieveCheckoutSession(intent.providerSessionId);
+        } else {
+          const hint = readSessionHint(req.query && req.query.sess);
+          const found = await locateSessionForPurchase(intent, hint);
+          if (found.session) {
+            observed = found.session;
+            // Se adjunta la identidad que faltaba. Nunca reescribe una anterior.
+            await attachProviderSession(intent.id, {
+              sessionId: observed.sessionId, url: observed.url || null,
+            }).catch((err) => {
+              logPayment("checkout_session_persist_failed", {
+                slug, purchaseId: intent.id, message: err && err.message });
+            });
+            logPayment("reconcile_located_session", {
+              purchaseId: intent.id, via: found.via, hinted: !!hint });
+          } else {
+            logPayment("reconcile_no_session", {
+              purchaseId: intent.id, via: found.via, hinted: !!hint });
+          }
+        }
         if (observed) {
+          // Quien decide si se cobró sigue siendo el mismo camino que el webhook,
+          // con sus mismas comprobaciones de importe, moneda, torneo y quiniela.
           const result = await confirmPaymentAndGrant({ observed, eventId: null });
           logPayment("reconciled", { purchaseId: intent.id, decision: result.decision });
           const after = await readPaymentIntents();
@@ -3782,7 +4100,7 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
         }
       } catch (err) {
         // Reconciliar es un extra: si falla, se contesta con lo que se sabe.
-        logPayment("reconcile_failed", { purchaseId, code: err && err.code });
+        logPayment("reconcile_failed", { purchaseId, code: err && err.code, message: err && err.message });
       }
     }
 

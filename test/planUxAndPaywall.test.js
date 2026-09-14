@@ -495,8 +495,18 @@ test("UX: the paywall is honest about the mechanism and does not fake a checkout
   assert.ok(code.includes("startCheckout()"), "el botón abre el checkout de verdad");
   assert.ok(sheet.includes("offer.contact"), "y conserva el canal manual como respaldo");
   assert.ok(sheet.includes("activamos Plus en esta quiniela"));
-  assert.ok(code.includes('reason === "unavailable"'),
+  assert.ok(code.includes('motivo === "unavailable"'),
     "sin pasarela configurada se dice, en vez de fingir que se cobró");
+  // Correction 05 (P1-3): un cobro en curso NO se trata como un error del que
+  // reintentar. Se confirma, que es lo que el servidor pedía al devolver el id.
+  assert.ok(code.includes('motivo === "payment_in_progress" && started.purchaseId'),
+    "el id de la compra que manda el servidor no se tira");
+  assert.ok(code.includes("runCheckoutRecovery(started.purchaseId"),
+    "y se pasa a confirmar ese cobro en vez de abrir otro checkout");
+  const enCurso = code.indexOf('motivo === "payment_in_progress"');
+  const invita = code.indexOf("No pudimos abrir el pago");
+  assert.ok(enCurso !== -1 && invita !== -1 && enCurso < invita,
+    "el camino de recuperación se toma ANTES del mensaje genérico de reintento");
   // Lo que sigue prohibido: capturar la tarjeta aquí. El cobro es hospedado.
   for (const fake of ["card-number", "cardNumber", "cvc", "cvv", "numero de tarjeta"]) {
     assert.ok(!code.includes(fake), `QRACKS no captura datos de tarjeta: "${fake}"`);

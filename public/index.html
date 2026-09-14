@@ -4691,10 +4691,12 @@
   // Se guarda la VUELTA entera, no sólo el id: una vuelta cancelada también es
   // algo que hay que contarle al organizador, y también se pierde si la app le
   // pide identificarse antes de poder decírselo.
-  function writePendingPurchase(id, cancelled){
+  function writePendingPurchase(id, cancelled, sessionHint){
     try{
       window.localStorage.setItem(pendingPurchaseKey(),
-        JSON.stringify({ id: id || null, cancelled: !!cancelled, at: Date.now() }));
+        JSON.stringify({ id: id || null, cancelled: !!cancelled,
+          sess: (typeof sessionHint === "string" && sessionHint) ? sessionHint : null,
+          at: Date.now() }));
     }catch(e){}
   }
   function readPendingPurchase(){
@@ -4737,7 +4739,18 @@
         return { ok: true, checkoutUrl: data.checkoutUrl, purchaseId: data.purchaseId };
       }
       if(res.status === 503) return { ok: false, reason: "unavailable" };
-      return { ok: false, reason: (data && data.error) || "error" };
+      // CORRECTION 05 (P1-3). El servidor devuelve `purchaseId` a propósito
+      // cuando hay un cobro en curso: es la compra que hay que CONFIRMAR, no un
+      // error del que reintentar. Antes se tiraba, la pantalla decía "no pudimos
+      // abrir el pago, inténtalo otra vez" e invitaba a reintentar sobre algo que
+      // podía estar ya cobrado. Se conserva y se persiste como compra pendiente,
+      // que es lo que hace que la recuperación arranque sola.
+      const recuperable = data && typeof data.purchaseId === "string" && data.purchaseId;
+      if(recuperable){
+        writePendingPurchase(data.purchaseId);
+      }
+      return { ok: false, reason: (data && data.error) || "error",
+        purchaseId: recuperable || null };
     }catch(e){
       return { ok: false, reason: "network_error" };
     }finally{
@@ -4750,66 +4763,38 @@
   // proveedor. Un parámetro inventado a mano aquí no consigue nada.
   const CHECKOUT_POLL_MS = 2000;
   const CHECKOUT_POLL_ATTEMPTS = 6;
-  async function readCheckoutStatus(purchaseId){
+  async function readCheckoutStatus(purchaseId, sessionHint){
     const headers = {};
     const cred = adminOrOwnerCred();
     if(cred) headers["X-Qracks-Auth"] = cred;
+    // La pista del id de sesión, si el proveedor la puso en la URL de vuelta. El
+    // servidor la VERIFICA contra la compra antes de usarla para nada, así que
+    // mandarla sólo puede acelerar el rescate; inventarla no consigue nada.
+    const qs = (typeof sessionHint === "string" && sessionHint)
+      ? "?sess=" + encodeURIComponent(sessionHint) : "";
     const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG)
-      + "/checkout/" + encodeURIComponent(purchaseId), { headers, credentials: "same-origin" });
+      + "/checkout/" + encodeURIComponent(purchaseId) + qs, { headers, credentials: "same-origin" });
     if(!res.ok) return null;
     return await res.json().catch(() => null);
   }
-  async function resolveCheckoutReturn(){
-    if(ROUTE !== "quiniela" || !SLUG || !meta) return;
-    let params;
-    try{ params = new URLSearchParams(window.location.search); }catch(e){ params = new URLSearchParams(); }
-    let cancelled = !!params.get("qz_pago_cancelado");
-    let purchaseId = params.get("qz_pago");
-    // Si la URL no trae nada puede seguir habiendo una vuelta pendiente de esta
-    // quiniela: es lo que permite retomarla cuando la app pidió identificarse
-    // antes de poder actuar.
-    if(!purchaseId && !cancelled){
-      const pending = readPendingPurchase();
-      if(!pending) return;
-      purchaseId = pending.id;
-      cancelled = pending.cancelled;
-    }
-    // La vuelta se PERSISTE antes de tocar la URL. Al volver del pago, la app
-    // puede preguntar "¿Eres Ana?" antes de saber quién vuelve; si el
-    // parámetro se consumiera ahí, se perdería para siempre y el organizador
-    // se quedaría pagado y sin Plus, o sin saber que no se le cobró.
-    writePendingPurchase(purchaseId, cancelled);
-    // Y la barra se limpia: no aporta nada al recargar y queda fea si alguien
-    // comparte el enlace.
-    try{
-      const url = new URL(window.location.href);
-      if(url.searchParams.has("qz_pago") || url.searchParams.has("qz_pago_cancelado")){
-        url.searchParams.delete("qz_pago");
-        url.searchParams.delete("qz_pago_cancelado");
-        window.history.replaceState({}, "", url.toString());
-      }
-    }catch(e){}
-    // La credencial en memoria NO sirve de portero aquí: volver del pago es una
-    // navegación completa, y `ownerPasswordCache`/`currentUserPinCache` mueren
-    // con la página. Lo que SÍ sobrevive es la cookie de sesión, que es
-    // exactamente con lo que el servidor autoriza. Gatear por la credencial
-    // dejaba a todo organizador que pagara viendo cómo no pasaba nada.
-    const pareceAdmin = !!adminOrOwnerCred() || !!(currentUser && currentUser.isAdmin);
-    if(!pareceAdmin) return;
-    if(cancelled){
-      clearPendingPurchase();
-      notice("No se hizo ningún cargo. Puedes intentarlo cuando quieras.");
-      return;
-    }
+  // El bucle de recuperación de un cobro, en un solo sitio.
+  //
+  // CORRECTION 05 (P1-3): lo usan las DOS entradas — volver del checkout, y que
+  // el servidor conteste "hay un pago en curso" al pulsar el botón. Antes lo
+  // segundo caía en un error genérico que invitaba a reintentar sobre algo que
+  // podía estar ya cobrado.
+  //
+  // Nada de esto ACTIVA nada: sólo pregunta. Quien decide si se cobró es el
+  // servidor preguntándole al proveedor.
+  async function runCheckoutRecovery(purchaseId, sessionHint){
     if(!purchaseId) return;
-
     notice("Estamos confirmando tu pago…");
     // El proveedor puede tardar un momento en avisarnos. Se pregunta unas
     // pocas veces y se para: quedarse esperando indefinidamente sería peor que
     // decir que siga en su pantalla.
     for(let i = 0; i < CHECKOUT_POLL_ATTEMPTS; i++){
       let status = null;
-      try{ status = await readCheckoutStatus(purchaseId); }catch(e){}
+      try{ status = await readCheckoutStatus(purchaseId, sessionHint); }catch(e){}
       if(status && status.status === "paid"){
         clearPendingPurchase();
         invalidatePlan();
@@ -4827,7 +4812,64 @@
       }
       await new Promise(r => setTimeout(r, CHECKOUT_POLL_MS));
     }
-    notice("Tu pago sigue en proceso. En cuanto se confirme, Plus se activa solo.");
+    // La compra pendiente NO se borra: sigue habiendo un cobro por resolver y al
+    // volver a entrar se retoma. Y el mensaje no invita a comprar otra vez.
+    notice("Tu pago sigue en proceso. En cuanto se confirme, Plus se activa solo. "
+      + "No hace falta que lo intentes de nuevo.");
+  }
+
+  async function resolveCheckoutReturn(){
+    if(ROUTE !== "quiniela" || !SLUG || !meta) return;
+    let params;
+    try{ params = new URLSearchParams(window.location.search); }catch(e){ params = new URLSearchParams(); }
+    let cancelled = !!params.get("qz_pago_cancelado");
+    let purchaseId = params.get("qz_pago");
+    // La pista del id de sesión que rellena el proveedor en la URL de vuelta.
+    // Acelera el rescate cuando el id nunca se llegó a guardar aquí; el servidor
+    // la verifica y funciona igual si no llega.
+    let sessionHint = params.get("qz_sess");
+    if(typeof sessionHint === "string" && !/^cs_[A-Za-z0-9_]{1,200}$/.test(sessionHint)){
+      sessionHint = null;
+    }
+    // Si la URL no trae nada puede seguir habiendo una vuelta pendiente de esta
+    // quiniela: es lo que permite retomarla cuando la app pidió identificarse
+    // antes de poder actuar.
+    if(!purchaseId && !cancelled){
+      const pending = readPendingPurchase();
+      if(!pending) return;
+      purchaseId = pending.id;
+      cancelled = pending.cancelled;
+      if(!sessionHint && typeof pending.sess === "string") sessionHint = pending.sess;
+    }
+    // La vuelta se PERSISTE antes de tocar la URL. Al volver del pago, la app
+    // puede preguntar "¿Eres Ana?" antes de saber quién vuelve; si el
+    // parámetro se consumiera ahí, se perdería para siempre y el organizador
+    // se quedaría pagado y sin Plus, o sin saber que no se le cobró.
+    writePendingPurchase(purchaseId, cancelled, sessionHint);
+    // Y la barra se limpia: no aporta nada al recargar y queda fea si alguien
+    // comparte el enlace.
+    try{
+      const url = new URL(window.location.href);
+      let tocada = false;
+      for(const k of ["qz_pago", "qz_pago_cancelado", "qz_sess"]){
+        if(url.searchParams.has(k)){ url.searchParams.delete(k); tocada = true; }
+      }
+      if(tocada) window.history.replaceState({}, "", url.toString());
+    }catch(e){}
+    // La credencial en memoria NO sirve de portero aquí: volver del pago es una
+    // navegación completa, y `ownerPasswordCache`/`currentUserPinCache` mueren
+    // con la página. Lo que SÍ sobrevive es la cookie de sesión, que es
+    // exactamente con lo que el servidor autoriza. Gatear por la credencial
+    // dejaba a todo organizador que pagara viendo cómo no pasaba nada.
+    const pareceAdmin = !!adminOrOwnerCred() || !!(currentUser && currentUser.isAdmin);
+    if(!pareceAdmin) return;
+    if(cancelled){
+      clearPendingPurchase();
+      notice("No se hizo ningún cargo. Puedes intentarlo cuando quieras.");
+      return;
+    }
+    if(!purchaseId) return;
+    await runCheckoutRecovery(purchaseId, sessionHint);
   }
 
   // Any write that consumes capacity can change these numbers, so the cached
@@ -5088,7 +5130,12 @@
           // el precio que se va a cobrar, ni el torneo, ni el plan — sólo pide
           // que se prepare el pago y sigue el enlace que le devuelven.
           const started = await startCheckout();
-          if(started && started.checkoutUrl){
+          // Un enlace tiene que ser un enlace. Sin esta comprobación,
+          // `location.href = null` manda al navegador a la cadena "null" y el
+          // organizador acaba en una página que no existe tras pulsar "Pasar a
+          // Plus". El servidor ya no lo devuelve nulo; esto es el cinturón.
+          if(started && typeof started.checkoutUrl === "string"
+            && /^https:\/\/[^\s]+$/.test(started.checkoutUrl)){
             cleanup(true);
             window.location.href = started.checkoutUrl;
             return;
@@ -5098,12 +5145,36 @@
           // Sin pasarela disponible NO se finge un cobro: se dice la verdad y
           // queda el camino de siempre, que sigue funcionando.
           cleanup(true);
+
+          const motivo = started && started.reason;
+          // CORRECTION 05 (P1-3). "Hay un pago en curso" NO es un error del que
+          // reintentar: es un cobro que puede estar hecho ya. Se cierra la hoja y
+          // se pasa a CONFIRMARLO, que es lo que el servidor pedía al devolver el
+          // id de la compra. Invitar a abrir otro checkout aquí era invitar a un
+          // segundo cargo.
+          if(motivo === "payment_in_progress" && started.purchaseId){
+            await runCheckoutRecovery(started.purchaseId, null);
+            return;
+          }
+          // Lo mismo si el cobro ya quedó registrado y sólo falta que se refleje.
+          if(motivo === "payment_already_recorded"){
+            const pend = readPendingPurchase();
+            if(pend && pend.id){
+              await runCheckoutRecovery(pend.id, pend.sess || null);
+              return;
+            }
+            invalidatePlan();
+            await loadPlan({ force: true });
+            await render();
+            toast("Tu pago ya está registrado. Si no ves Plus, escríbenos.");
+            return;
+          }
           // "Ya se está preparando" no es un error: es otra pestaña —o el clic
           // anterior— en mitad del proceso. El servidor sólo permite un alta a
           // la vez por torneo, que es lo que impide dos cobros.
-          toast(started && started.reason === "unavailable"
+          toast(motivo === "unavailable"
             ? (howTo || "El pago con tarjeta no está disponible ahora mismo. Escríbenos y lo activamos.")
-            : started && started.reason === "replacement_in_progress"
+            : (motivo === "replacement_in_progress" || motivo === "checkout_stale_observation")
               ? "Ya estamos preparando tu pago. Espera unos segundos y vuelve a intentarlo."
               : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
         });

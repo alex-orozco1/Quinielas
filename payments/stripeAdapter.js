@@ -10,7 +10,64 @@
 // HMAC de veinte líneas. Añadir un SDK entero por eso engorda el despliegue y
 // esconde detrás de una capa justamente la parte que hay que poder auditar.
 // El contrato implementado abajo está tomado de la fuente primaria: el propio
-// SDK oficial de Stripe (stripe@22.6.2, cjs/Webhooks.js y cjs/RequestSender.js).
+// SDK oficial de Stripe (stripe@22.6.2, cjs/Webhooks.js y cjs/RequestSender.js)
+// y su especificación OpenAPI publicada (stripe/openapi, spec3.sdk.json,
+// info.version 2026-08-26.dahlia), que es el artefacto del que Stripe genera sus
+// SDKs y su documentación.
+//
+// ==========================================================================
+// LAS PROPIEDADES EXTERNAS EN LAS QUE SE APOYA MON-003, y por qué son contrato
+//
+// Cada una está citada del spec, no de "Stripe normalmente…". Si alguna deja de
+// ser cierta, lo que se rompe está escrito aquí al lado.
+//
+//  1. `payment_status` ∈ {paid, unpaid, no_payment_required}, y el spec dice de
+//     él: "You can use this value to decide when to fulfill your customer's
+//     order". ES LA ÚNICA SEÑAL DE DINERO. `status: complete` no lo es.
+//     -> de aquí sale `paid` y toda la distinción usada/cobrada.
+//
+//  2. `expires_at` "can be anywhere from 30 minutes to 24 hours after Checkout
+//     Session creation. By default, this value is 24 hours from creation."
+//     -> techo contractual de cuánto puede cobrar una sesión. Se manda explícito.
+//
+//  3. `url` es nullable: "This value is only present when the session is
+//     active."
+//     -> por eso ninguna respuesta la reenvía sin comprobarla.
+//
+//  4. `client_reference_id`: "A unique string to reference the Checkout Session
+//     […] can be used to reconcile the Session with your internal systems."
+//     -> segundo portador de la identidad de la compra, junto a `metadata`.
+//
+//  5. `payment_intent_data[metadata]` existe como parámetro de creación.
+//     -> el CARGO queda rastreable hasta la compra aunque nunca conozcamos la
+//        sesión.
+//
+//  6. `GET /v1/checkout/sessions` admite `created[gte]`/`created[lte]`,
+//     `limit` (1-100), `starting_after` y devuelve `has_more`, con los objetos
+//     completos. NO lleva advertencia de consistencia.
+//     -> es lo que permite AFIRMAR que una sesión no existe. Ver el punto 7.
+//
+//  7. `GET /v1/payment_intents/search` sí la lleva, y es una advertencia
+//     explícita: "Don't use search in read-after-write flows where strict
+//     consistency is necessary […] propagation of new or updated data can be up
+//     to an hour behind during outages."
+//     -> POR ESO NO SE USA la búsqueda para demostrar una ausencia. Un resultado
+//        vacío de `search` no prueba nada; uno de `list` sí.
+//
+// Lo que NO se apoya en nada de esto, a propósito:
+//
+//   - La retención de la clave de idempotencia. Stripe documenta que puede
+//     eliminarla pasadas al menos 24 h, así que Correction 05 dejó de usarla
+//     como identidad: la sesión se LOCALIZA. La clave se sigue mandando como
+//     segunda red.
+//   - El calendario de reintentos de webhooks. No está en el contrato legible
+//     por máquina al que se tiene acceso, así que la recuperación funciona con
+//     el webhook llegando tarde, llegando dos veces, o no llegando nunca.
+//   - `{CHECKOUT_SESSION_ID}` en el `success_url`. No aparece en el spec, así
+//     que NO sostiene ninguna garantía: es un acelerador. Todo el rescate
+//     funciona igual si ese parámetro no llega o llega inventado, porque lo que
+//     decide es el listado y la verificación contra la compra.
+// ==========================================================================
 
 const crypto = require("crypto");
 
@@ -195,17 +252,36 @@ function normalizeSession(session) {
   // si ESTA sesión todavía puede cobrar. Se traduce aquí, una vez, y aguas
   // arriba nadie vuelve a ver la palabra "open".
   const lifecycle = (typeof session.status === "string" && SESSION_LIFECYCLE[session.status]) || "unknown";
+  // La identidad de la compra viaja en DOS sitios independientes que ponemos
+  // nosotros al crear: `metadata` y `client_reference_id` —que el spec describe
+  // literalmente como el campo "para reconciliar la Session con tus sistemas
+  // internos"—. Si uno se pierde, el otro sigue identificándola. Que coincidan
+  // no se asume: quien reconcilia lo comprueba.
+  const ref = typeof session.client_reference_id === "string" ? session.client_reference_id : null;
   return {
     lifecycle,
     eventId: null, type: "reconciliation", kind: "checkout",
-    purchaseId: meta.qracks_purchase_id || null,
+    purchaseId: meta.qracks_purchase_id || ref || null,
+    clientReferenceId: ref,
+    metadataPurchaseId: meta.qracks_purchase_id || null,
     slugHint: meta.qracks_slug || null,
     scopeHint: meta.qracks_scope_id || null,
     sessionId: asId(session.id),
+    // El enlace hospedado, cuando el proveedor lo da: permite devolver el
+    // checkout de una sesión localizada sin haberla guardado nunca.
+    url: typeof session.url === "string" ? session.url : null,
     paymentIntentId: asId(session.payment_intent),
+    // `payment_status` es lo ÚNICO que dice si hay dinero. El spec lo declara
+    // así: "You can use this value to decide when to fulfill your customer's
+    // order". `status: complete` NO es un cobro.
     paid: session.payment_status === "paid",
+    paymentStatus: typeof session.payment_status === "string" ? session.payment_status : null,
     amountMinor: Number.isSafeInteger(session.amount_total) ? session.amount_total : null,
     currency: typeof session.currency === "string" ? session.currency : null,
+    // El reloj del PROVEEDOR, no el nuestro: es lo que acota una búsqueda por
+    // fecha y lo que permite razonar sobre cuándo deja de poder cobrar.
+    createdAt: Number.isSafeInteger(session.created) ? session.created : null,
+    expiresAt: Number.isSafeInteger(session.expires_at) ? session.expires_at : null,
     terminalStatus,
   };
 }
@@ -322,10 +398,22 @@ async function createCheckoutSession({
     "metadata[qracks_purchase_id]": purchaseId,
     "metadata[qracks_slug]": slug,
     "metadata[qracks_scope_id]": scopeId,
-    // Se propaga al PaymentIntent para poder reconciliar también desde el
-    // lado del cargo, no sólo desde la sesión.
+    // El campo que el spec describe para esto mismo: "A unique string to
+    // reference the Checkout Session […] can be used to reconcile the Session
+    // with your internal systems". Segundo portador de la identidad, por si la
+    // metadata faltara.
+    client_reference_id: purchaseId,
+    // Y lo mismo en el PaymentIntent: así el CARGO es rastreable hasta la compra
+    // aunque nunca lleguemos a conocer el id de la sesión.
     "payment_intent_data[metadata][qracks_purchase_id]": purchaseId,
+    "payment_intent_data[metadata][qracks_slug]": slug,
+    "payment_intent_data[metadata][qracks_scope_id]": scopeId,
   };
+  // La expiración se manda SIEMPRE, explícita. El spec: "It can be anywhere
+  // from 30 minutes to 24 hours after Checkout Session creation. By default,
+  // this value is 24 hours from creation." Fijarla nosotros convierte el
+  // horizonte en el que una sesión deja de poder cobrar en un número que
+  // conocemos, en vez de un valor por defecto que podría cambiar.
   if (Number.isSafeInteger(expiresAt)) params.expires_at = expiresAt;
   const session = await stripeRequest("POST", "/v1/checkout/sessions", { params, idempotencyKey, env });
   if (!session || typeof session.id !== "string" || typeof session.url !== "string") {
@@ -342,6 +430,41 @@ async function retrieveCheckoutSession(sessionId, { env } = {}) {
   if (typeof sessionId !== "string" || !sessionId) return null;
   const session = await stripeRequest("GET", `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { env });
   return normalizeSession(session);
+}
+
+// Lista las sesiones creadas en un intervalo.
+//
+// ESTA es la pieza que sostiene Correction 05. Cuando una compra existe aquí
+// pero su `providerSessionId` nunca se pudo guardar, la pregunta "¿creó el
+// proveedor una sesión para esta compra?" tiene que poder responderse SIN
+// conocer su id y SIN depender de que el proveedor conserve nuestra clave de
+// idempotencia. Se responde con el listado, acotado por fecha:
+//
+//   GET /v1/checkout/sessions?created[gte]=…&created[lte]=…&limit=100
+//
+// Por qué el listado y no la búsqueda: el spec de `/v1/payment_intents/search`
+// dice literalmente "Don't use search in read-after-write flows where strict
+// consistency is necessary […] propagation of new or updated data can be up to
+// an hour behind during outages". Con esa advertencia, un resultado vacío de la
+// búsqueda NO demuestra que no exista nada. El listado no lleva esa advertencia,
+// así que es lo único con lo que se puede AFIRMAR una ausencia.
+//
+// Devuelve las sesiones ya normalizadas, más lo necesario para paginar.
+async function listCheckoutSessions({ createdGte, createdLte, limit, startingAfter, env } = {}) {
+  const qs = [];
+  if (Number.isSafeInteger(createdGte)) qs.push(`created[gte]=${createdGte}`);
+  if (Number.isSafeInteger(createdLte)) qs.push(`created[lte]=${createdLte}`);
+  qs.push(`limit=${Math.min(Number.isSafeInteger(limit) ? limit : 100, 100)}`);
+  if (typeof startingAfter === "string" && startingAfter) {
+    qs.push(`starting_after=${encodeURIComponent(startingAfter)}`);
+  }
+  const page = await stripeRequest("GET", `/v1/checkout/sessions?${qs.join("&")}`, { env });
+  const data = (page && Array.isArray(page.data)) ? page.data : [];
+  return {
+    sessions: data.map(normalizeSession).filter(Boolean),
+    hasMore: !!(page && page.has_more),
+    lastId: data.length && typeof data[data.length - 1].id === "string" ? data[data.length - 1].id : null,
+  };
 }
 
 // Deja una sesión definitivamente incobrable.
@@ -371,6 +494,7 @@ module.exports = {
   normalizeEvent, normalizeSession,
   readConfig, isConfigured,
   createCheckoutSession, retrieveCheckoutSession, expireCheckoutSession,
+  listCheckoutSessions,
   SESSION_LIFECYCLE,
   _formEncode: formEncode,
 };

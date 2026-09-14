@@ -62,6 +62,17 @@ const ATTENTION = Object.freeze({
   // Sin eso no se puede demostrar que el plan vaya al torneo que se compró.
   // Tiene su propio código: no es un torneo VIEJO, es un torneo ILEGIBLE.
   SCOPE_UNPROVEN: "current_tournament_unreadable",
+  // Más de una sesión del torneo consta usada y UNA de ellas cobró. No es un
+  // cargo doble —sólo hay un cobro declarado— pero tampoco se puede vender nada
+  // más: el dinero ya entró por una puerta.
+  USED_BESIDE_PAID: "another_checkout_was_used_beside_a_paid_one",
+  // Dos sesiones del mismo torneo constan COMPLETADAS, pero el proveedor no
+  // afirma que ninguna haya cobrado. No es un cargo doble —no hay dinero
+  // declarado— y tampoco es normal: pide una persona sin inventar una cifra.
+  TWO_SESSIONS_USED_UNPAID: "two_checkouts_were_used_without_reported_payment",
+  // Esta compra se retiró porque otra del mismo torneo es la que sigue activa.
+  // NO hubo pago: decirlo así sería escribir historia financiera falsa.
+  RETIRED_FOR_ACTIVE_SIBLING: "retired_because_another_checkout_is_the_active_one",
   // Había varias compras abiertas para el mismo torneo y al menos una no se
   // pudo clasificar. Tiene su propio código porque describe un riesgo distinto
   // de todos los demás: aquí no hay dinero mal aplicado, hay una capacidad de
@@ -218,6 +229,61 @@ function classifyOpenIntent(observed, offerMatches) {
   }
 }
 
+// ---- ¿es ESTA sesión del proveedor la de ESTA compra? ----------------------
+//
+// Correction 05. Una sesión puede llegar por tres vías: la teníamos guardada, la
+// encontró un listado por fecha, o la sugirió el navegador al volver del pago.
+// La tercera NO es de fiar —el navegador puede escribir lo que quiera en su
+// URL—, así que ninguna de las tres se acepta por su procedencia: las tres pasan
+// por aquí, y aquí se comparan contra lo que congelamos al crear la compra.
+//
+// Función pura y exhaustiva a propósito: cada campo que NO se comprobara sería
+// una forma de colar el cobro de otra persona, de otra quiniela o de otro
+// importe. Devuelve el motivo del rechazo para que quede auditado.
+const SESSION_MATCH = Object.freeze({
+  OK: "ok",
+  NO_SESSION: "no_session",
+  NO_IDENTITY: "session_carries_no_purchase_id",
+  OTHER_PURCHASE: "session_belongs_to_another_purchase",
+  OTHER_SLUG: "session_belongs_to_another_quiniela",
+  OTHER_SCOPE: "session_belongs_to_another_tournament",
+  AMOUNT: "amount_does_not_match",
+  CURRENCY: "currency_does_not_match",
+});
+
+function verifySessionForPurchase(intent, observed) {
+  if (!intent) return { ok: false, reason: SESSION_MATCH.NO_SESSION };
+  const o = observed || null;
+  if (!o || typeof o !== "object") return { ok: false, reason: SESSION_MATCH.NO_SESSION };
+  if (typeof o.sessionId !== "string" || !o.sessionId) {
+    return { ok: false, reason: SESSION_MATCH.NO_SESSION };
+  }
+  // Sin identidad no hay nada que comparar. Una sesión ajena sin metadata NO
+  // se adopta: se rechaza, que es lo contrario de "no consta, pues adelante".
+  const claimed = str(o.purchaseId);
+  if (!claimed) return { ok: false, reason: SESSION_MATCH.NO_IDENTITY };
+  if (claimed !== intent.id) return { ok: false, reason: SESSION_MATCH.OTHER_PURCHASE };
+  // Si los DOS portadores vienen y no coinciden entre sí, tampoco se adopta.
+  const ref = str(o.clientReferenceId);
+  const metaId = str(o.metadataPurchaseId);
+  if (ref && metaId && ref !== metaId) return { ok: false, reason: SESSION_MATCH.OTHER_PURCHASE };
+  if (str(o.slugHint) && str(o.slugHint) !== intent.slug) {
+    return { ok: false, reason: SESSION_MATCH.OTHER_SLUG };
+  }
+  if (str(o.scopeHint) && str(o.scopeHint) !== intent.scopeId) {
+    return { ok: false, reason: SESSION_MATCH.OTHER_SCOPE };
+  }
+  // El importe y la moneda se comparan contra lo CONGELADO, no contra la
+  // configuración de hoy: es la misma regla que usa la confirmación.
+  if (!Number.isSafeInteger(o.amountMinor) || o.amountMinor !== intent.expectedAmountMinor) {
+    return { ok: false, reason: SESSION_MATCH.AMOUNT };
+  }
+  if (normalizeCurrency(o.currency) !== normalizeCurrency(intent.currency)) {
+    return { ok: false, reason: SESSION_MATCH.CURRENCY };
+  }
+  return { ok: true, reason: SESSION_MATCH.OK };
+}
+
 // ¿Qué hacer con el CONJUNTO de compras abiertas, una vez clasificadas todas?
 //
 // Correction 04. Antes esto se decidía dentro del bucle, con un `return` en
@@ -238,6 +304,32 @@ const OPEN_SET = Object.freeze({
   BLOCKED: "blocked",                   // no se puede demostrar el invariant: fail closed
 });
 
+// Los incidentes materiales que un conjunto puede revelar, de más grave a menos.
+// El orden NO es cosmético: decide qué razón queda en el campo `attention`, que
+// es singular. La AUDITORÍA registra todos, siempre (Correction 05, P2-3/P2-5):
+// una anomalía financiera ya consumada no puede desaparecer del historial
+// porque encima de ella haya otra preventiva.
+const INCIDENT = Object.freeze({
+  DOUBLE_CHARGE: "double_charge",                 // dos cobros declarados: hay algo que devolver
+  USED_BESIDE_PAID: "used_beside_paid",           // varias usadas y UNA cobrada
+  USED_UNPAID: "many_used_without_payment",       // dos sesiones usadas, ningún cobro declarado
+  USABLE_BESIDE_USED: "usable_beside_used",       // una cobrable junto a una ya cobrada
+  MANY_USABLE: "many_usable",                     // dos cobrables a la vez
+  UNRESOLVED: "unresolved",                       // no se pudo demostrar qué pasó
+});
+const INCIDENT_SEVERITY = Object.freeze({
+  double_charge: 6, used_beside_paid: 5, usable_beside_used: 4, many_usable: 3,
+  many_used_without_payment: 2, unresolved: 1,
+});
+const INCIDENT_ATTENTION = Object.freeze({
+  double_charge: ATTENTION.DOUBLE_CHARGE,
+  used_beside_paid: ATTENTION.USED_BESIDE_PAID,
+  many_used_without_payment: ATTENTION.TWO_SESSIONS_USED_UNPAID,
+  usable_beside_used: ATTENTION.OPEN_SET_UNRESOLVED,
+  many_usable: ATTENTION.OPEN_SET_UNRESOLVED,
+  unresolved: ATTENTION.OPEN_SET_UNRESOLVED,
+});
+
 function decideOpenSet(resolved) {
   const list = (Array.isArray(resolved) ? resolved : []).filter(Boolean);
   const ids = (xs) => xs.map((r) => r.id).sort();
@@ -252,42 +344,83 @@ function decideOpenSet(resolved) {
   const unresolved = list.filter((r) => r.outcome !== OPEN_INTENT.USED
     && r.outcome !== OPEN_INTENT.USABLE && r.outcome !== OPEN_INTENT.DEAD);
 
-  // Regla 4, y va PRIMERO: mientras quede una sin clasificar no se abre nada ni
-  // se declara restaurado el invariant, aunque el resto esté impecable.
-  if (unresolved.length) {
-    return { action: OPEN_SET.BLOCKED, reason: "unresolved",
-      unresolved: ids(unresolved), used: ids(used), needsAttention: ids(unresolved) };
-  }
-  // Dos que ya cobraron no es un riesgo: es un cargo doble consumado.
+  // LA DISTINCIÓN DE Correction 05 (P2-4): "usada" no es "cobrada".
+  //
+  // El proveedor declara dos cosas distintas: que su objeto ya se consumió y que
+  // hay dinero. Una sesión puede constar completada con el pago sin confirmar.
+  // Antes se anotaban dos "usadas" como un cargo doble, afirmando dinero que
+  // nadie había declarado. Sólo `paid === true` cuenta como cobro.
+  const paidUsed = used.filter((r) => r.paid === true);
+  const unpaidUsed = used.filter((r) => r.paid !== true);
+
+  // Se reúnen TODOS los incidentes antes de elegir la acción, para que ninguno
+  // quede tapado por otro (P2-5).
+  const incidents = [];
+  const add = (kind, affected) => {
+    if (affected.length) incidents.push({ kind, purchaseIds: ids(affected) });
+  };
+  // Más de una USADA es SIEMPRE un incidente. La mezcla de cobradas y no
+  // cobradas sólo cambia CÓMO se llama, nunca si bloquea: la primera versión de
+  // esto partía por `paid` y dejaba caer el caso mixto —dos usadas, una cobrada—
+  // hasta "abrir una nueva", que es una tercera venta junto a un cobro hecho.
+  // Las tres ramas cubren `used.length > 1` por completo, a propósito.
   if (used.length > 1) {
-    return { action: OPEN_SET.BLOCKED, reason: "double_charge",
-      unresolved: [], used: ids(used), needsAttention: ids(used) };
+    if (paidUsed.length > 1) add(INCIDENT.DOUBLE_CHARGE, paidUsed);
+    else if (paidUsed.length === 1) add(INCIDENT.USED_BESIDE_PAID, used);
+    else add(INCIDENT.USED_UNPAID, used);
   }
+  if (used.length && usable.length) add(INCIDENT.USABLE_BESIDE_USED, used.concat(usable));
+  if (usable.length > 1) add(INCIDENT.MANY_USABLE, usable);
+  add(INCIDENT.UNRESOLVED, unresolved);
+  incidents.sort((a, b) => (INCIDENT_SEVERITY[b.kind] || 0) - (INCIDENT_SEVERITY[a.kind] || 0)
+    || String(a.kind).localeCompare(String(b.kind)));
+
+  // La acción: cualquier incidente bloquea. La razón que se reporta es la del
+  // incidente MÁS GRAVE, no la del primero que se detectó.
+  if (incidents.length) {
+    const worst = incidents[0];
+    return {
+      action: OPEN_SET.BLOCKED,
+      reason: worst.kind,
+      incidents,
+      unresolved: ids(unresolved),
+      used: ids(used),
+      paid: ids(paidUsed),
+      needsAttention: worst.purchaseIds,
+    };
+  }
+
+  // RED DE SEGURIDAD, no redundancia. Si alguna compra abierta declara un cobro,
+  // aquí no se abre nada por ninguna vía, pase lo que pase con la enumeración de
+  // arriba. Es lo que convierte "creo que cubrí todos los casos" en "no se puede
+  // vender encima de un cobro".
+  if (paidUsed.length && !incidents.length && used.length !== 1) {
+    return { action: OPEN_SET.BLOCKED, reason: INCIDENT.DOUBLE_CHARGE,
+      incidents: [{ kind: INCIDENT.DOUBLE_CHARGE, purchaseIds: ids(paidUsed) }],
+      unresolved: [], used: ids(used), paid: ids(paidUsed), needsAttention: ids(paidUsed) };
+  }
+
+  // Sin incidentes: como máximo hay una usada y como máximo una cobrable, y no
+  // pueden coexistir.
   if (used.length === 1) {
-    // Una cobrable junto a una ya cobrada sería la segunda capacidad de cobro
-    // que todo esto existe para impedir. No debería poder pasar —el servidor no
-    // marca nada USABLE cuando hay más de una abierta— pero si pasara, se
-    // bloquea en vez de confiar en que no pase.
-    if (usable.length) {
-      return { action: OPEN_SET.BLOCKED, reason: "usable_beside_used",
-        unresolved: [], used: ids(used), needsAttention: ids(used).concat(ids(usable)) };
-    }
     // Regla 1: se conserva para confirmar, y las demás ya están demostradas
     // incobrables porque sólo quedan DEAD.
     return { action: OPEN_SET.CONFIRM_EXISTING, purchaseId: used[0].id,
-      unresolved: [], used: ids(used), dead: ids(dead) };
+      // Si el proveedor declaró el cobro, quien lea la auditoría tiene que poder
+      // distinguirlo de "la sesión se usó y no sabemos si hubo dinero".
+      winnerPaid: used[0].paid === true,
+      incidents: [], unresolved: [], used: ids(used), paid: ids(paidUsed), dead: ids(dead) };
   }
   // Regla 2: exactamente una sirve, y todas las demás están DEAD — que es lo que
   // queda por eliminación, porque aquí ya no hay USED ni sin resolver.
   if (usable.length === 1) {
-    return { action: OPEN_SET.REUSE, purchaseId: usable[0].id, unresolved: [], dead: ids(dead) };
-  }
-  if (usable.length > 1) {
-    return { action: OPEN_SET.BLOCKED, reason: "many_usable",
-      unresolved: [], used: [], needsAttention: ids(usable) };
+    return { action: OPEN_SET.REUSE, purchaseId: usable[0].id,
+      // Reutilizar no es cobrar: nadie ha pagado nada por esta vía.
+      winnerPaid: false,
+      incidents: [], unresolved: [], dead: ids(dead) };
   }
   // Regla 3: todas muertas (o no había ninguna abierta).
-  return { action: OPEN_SET.OPEN_NEW, unresolved: [], dead: ids(dead) };
+  return { action: OPEN_SET.OPEN_NEW, incidents: [], unresolved: [], dead: ids(dead) };
 }
 
 // ---- el turno para reemplazar ---------------------------------------------
@@ -692,7 +825,8 @@ module.exports = {
   PURCHASE_STATUS, STATUS_RANK, ATTENTION, DECISION, SUPPORTED_CURRENCIES,
   SESSION_STATE, sessionStateOf, openIntentsForScope,
   OPEN_INTENT, classifyOpenIntent,
-  OPEN_SET, decideOpenSet,
+  OPEN_SET, decideOpenSet, INCIDENT, INCIDENT_SEVERITY, INCIDENT_ATTENTION,
+  SESSION_MATCH, verifySessionForPurchase,
   replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,
   toMinorUnits, normalizeCurrency,

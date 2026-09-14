@@ -504,9 +504,69 @@ test("MON003 · 47 — SERVER: el success_url no otorga NADA", () => {
   const body = status.slice(0, status.indexOf("\n});"));
   // La ruta de estado sólo puede confirmar preguntándole al proveedor.
   assert.ok(body.includes("retrieveCheckoutSession"), "confirma preguntando, no creyendo");
-  assert.ok(!/req\.query/.test(body), "no lee nada de la query del navegador");
   assert.ok(body.includes("confirmPaymentAndGrant"),
     "y usa el MISMO camino de confirmación que el webhook, no uno más laxo");
+
+  // Correction 05: ahora SÍ se lee algo de la query — una PISTA del id de sesión.
+  // El invariante no es "no se lee la query", que era sólo una forma cómoda de
+  // comprobarlo: es que nada de lo que venga del navegador pueda decidir. Se
+  // fija eso directamente.
+  const leidos = [...body.matchAll(/req\.query(?:\s*&&\s*req\.query)?\.([A-Za-z_$][\w$]*)/g)]
+    .map((m) => m[1]);
+  assert.deepEqual([...new Set(leidos)], ["sess"],
+    "lo ÚNICO que se lee del navegador es la pista del id de sesión");
+  // Y esa pista pasa por el filtro de forma y por la verificación contra la
+  // compra antes de que nadie la adjunte.
+  const hintAt = body.indexOf("readSessionHint(req.query && req.query.sess)");
+  assert.ok(hintAt !== -1, "la pista se filtra, no se usa cruda");
+  const locateAt = body.indexOf("locateSessionForPurchase(intent, hint)");
+  assert.ok(locateAt > hintAt, "y se resuelve por el camino que la verifica");
+  assert.ok(body.indexOf("attachProviderSession") > locateAt,
+    "sólo se adjunta DESPUÉS de localizar y verificar");
+  // El importe, el plan y el estado no pueden venir de la query por ninguna vía.
+  for (const prohibido of ["req.query.amount", "req.query.status", "req.query.plan",
+    "req.query.paid", "req.query.purchase"]) {
+    assert.ok(!body.includes(prohibido), prohibido + " jamás");
+  }
+  // Y este endpoint NO vende: un GET no puede crear una sesión.
+  assert.ok(!body.includes("createSessionFor"), "un GET no crea checkouts");
+  assert.ok(!body.includes("createCheckoutSession"));
+});
+
+test("MON003 · 47b — la pista del navegador se verifica CONTRA la compra", () => {
+  // Correction 05. La pista puede ser inventada, de otra compra, de otra
+  // quiniela, de otro torneo o de otro importe. Ninguna de esas adjunta nada.
+  const intent = intentOf();
+  const buena = {
+    sessionId: "cs_ok", purchaseId: intent.id, clientReferenceId: intent.id,
+    metadataPurchaseId: intent.id, slugHint: intent.slug, scopeHint: intent.scopeId,
+    amountMinor: intent.expectedAmountMinor, currency: "mxn",
+  };
+  const M = D.SESSION_MATCH;
+  assert.equal(D.verifySessionForPurchase(intent, buena).reason, M.OK);
+  const casos = [
+    [{ purchaseId: null, clientReferenceId: null, metadataPurchaseId: null }, M.NO_IDENTITY],
+    [{ purchaseId: "qpur_otra", clientReferenceId: "qpur_otra", metadataPurchaseId: "qpur_otra" }, M.OTHER_PURCHASE],
+    [{ clientReferenceId: "qpur_otra" }, M.OTHER_PURCHASE],
+    [{ slugHint: "otra-quiniela" }, M.OTHER_SLUG],
+    [{ scopeHint: OTHER_SCOPE }, M.OTHER_SCOPE],
+    [{ amountMinor: 100 }, M.AMOUNT],
+    [{ amountMinor: null }, M.AMOUNT],
+    [{ currency: "usd" }, M.CURRENCY],
+    [{ currency: null }, M.CURRENCY],
+    [{ sessionId: "" }, M.NO_SESSION],
+    [{ sessionId: null }, M.NO_SESSION],
+  ];
+  for (const [over, esperado] of casos) {
+    assert.equal(D.verifySessionForPurchase(intent, { ...buena, ...over }).reason, esperado,
+      JSON.stringify(over));
+  }
+  // Ni una sesión inexistente ni basura.
+  for (const nada of [null, undefined, {}, "cs_x", 0, []]) {
+    assert.equal(D.verifySessionForPurchase(intent, nada).ok, false, JSON.stringify(nada));
+  }
+  // Y sin compra no se verifica nada.
+  assert.equal(D.verifySessionForPurchase(null, buena).ok, false);
 });
 
 test("MON003 · 48 — SERVER: el precio y el torneo salen del servidor, nunca del cuerpo", () => {
@@ -603,13 +663,33 @@ test("MON003 · 56 — UI: sin pasarela configurada NO se finge un cobro", () =>
     "se dice la verdad y queda la vía manual");
 });
 
-test("MON003 · 57 — UI: la vuelta del checkout confirma contra el servidor", () => {
+// Correction 05 partió la vuelta en dos: `resolveCheckoutReturn` decide QUÉ
+// compra mirar y `runCheckoutRecovery` la confirma. Las dos son la misma
+// historia, así que los invariantes de la vuelta se comprueban sobre el par.
+function vueltaSrc() {
   const ui = stripComments(indexSrc);
-  const fn = ui.slice(ui.indexOf("async function resolveCheckoutReturn"));
-  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+  const uno = ui.slice(ui.indexOf("async function resolveCheckoutReturn"));
+  const dos = ui.slice(ui.indexOf("async function runCheckoutRecovery"));
+  return uno.slice(0, uno.indexOf("\n  }\n")) + "\n" + dos.slice(0, dos.indexOf("\n  }\n"));
+}
+
+test("MON003 · 57 — UI: la vuelta del checkout confirma contra el servidor", () => {
+  const body = vueltaSrc();
   assert.ok(body.includes("readCheckoutStatus"), "pregunta al servidor");
-  assert.ok(!/session_id/.test(body), "no usa ningún identificador del proveedor de la URL");
   assert.ok(/Estamos confirmando tu pago/.test(indexSrc));
+  // La pantalla NUNCA decide que se pagó: lo único que mira es el estado que
+  // devuelve el servidor.
+  assert.ok(body.includes('status.status === "paid"'));
+  assert.ok(!/qz_sess[^)]*paid|paid\s*=\s*true/.test(body),
+    "ningún parámetro de la URL declara un pago");
+  // Correction 05: la vuelta puede traer una PISTA del id de sesión, y se pasa
+  // al servidor como tal. Que el navegador la ponga no la convierte en verdad:
+  // el servidor la verifica (ver MON003 · 47 y 47b).
+  assert.ok(body.includes('params.get("qz_sess")'), "se recoge la pista");
+  assert.ok(/\/\^cs_\[A-Za-z0-9_\]\{1,200\}\$\//.test(body),
+    "y se filtra su forma antes de mandarla");
+  assert.ok(body.includes("readCheckoutStatus(purchaseId, sessionHint)"),
+    "viaja al servidor, que es quien puede comprobarla");
 });
 
 // ==== 15 · Quick Win 1: el panel dejaba entender "PLUS = 18 jornadas" ======
@@ -730,13 +810,13 @@ test("MON003 · 67 — VUELTA: se resuelve DESPUÉS de que render restaure la se
 test("MON003 · 68 — VUELTA: la señal se persiste ANTES de limpiar la URL", () => {
   // La app puede preguntar "¿Eres Ana?" antes de poder actuar. Si el parámetro
   // se consume ahí, se pierde para siempre: pagado y sin Plus.
-  const ui = stripComments(indexSrc);
-  const fn = ui.slice(ui.indexOf("async function resolveCheckoutReturn"));
-  const body = fn.slice(0, fn.indexOf("\n  }\n"));
-  const persistAt = body.indexOf("writePendingPurchase(purchaseId, cancelled)");
+  const body = vueltaSrc();
+  const persistAt = body.indexOf("writePendingPurchase(purchaseId, cancelled, sessionHint)");
   const cleanAt = body.indexOf("window.history.replaceState");
   assert.ok(persistAt !== -1 && cleanAt !== -1);
   assert.ok(persistAt < cleanAt, "primero se guarda, después se limpia");
+  // Y se limpian los TRES parámetros, incluida la pista nueva.
+  assert.ok(body.includes('"qz_pago", "qz_pago_cancelado", "qz_sess"'));
 });
 
 test("MON003 · 69 — VUELTA: se reintenta al confirmar la identidad", () => {
@@ -759,10 +839,15 @@ test("MON003 · 71 — VUELTA: el pendiente caduca y se limpia en cada final", (
   const ui = stripComments(indexSrc);
   assert.ok(ui.includes("PENDING_PURCHASE_MAX_AGE_MS"),
     "sin caducidad, un pendiente irresoluble se preguntaría en cada carga para siempre");
-  const fn = ui.slice(ui.indexOf("async function resolveCheckoutReturn"));
-  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+  const body = vueltaSrc();
   assert.equal((body.match(/clearPendingPurchase\(\)/g) || []).length, 3,
     "se limpia en los tres finales: pagado, fallido y cancelado");
+  // Y NO se limpia cuando el cobro sigue en proceso: ahí queda algo por
+  // resolver y borrarlo perdería la única pista para retomarlo.
+  const enProceso = body.indexOf("Tu pago sigue en proceso");
+  assert.ok(enProceso !== -1);
+  assert.ok(!body.slice(enProceso).includes("clearPendingPurchase"),
+    "un cobro sin resolver no se olvida");
 });
 
 // ==== 19 · orden de locks ==================================================
@@ -1471,13 +1556,18 @@ test("MON003 · C3.8 — SERVER: reanudar guarda la sesión recuperada, sin depe
   const src = stripComments(serverSrc);
   const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
   const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
-  assert.ok(body.includes("attachProviderSession(intent.id, recovered).catch("),
-    "si guardar falla, se sigue: la próxima vez se reanuda otra vez");
+  assert.ok(/attachProviderSession\(intent\.id, \{ sessionId, url \}\)\.catch\(/.test(body),
+    "si guardar falla, se sigue: la próxima vez se vuelve a localizar");
   assert.ok(body.includes("checkout_session_recovered"), "y queda constancia del rescate");
-  // La verdad del estado se pide SIEMPRE fresca, también tras reanudar: la
-  // respuesta de creación pudo ser de una sesión creada hace horas.
-  assert.ok(body.indexOf("retrieveCheckoutSession(sessionId)")
-    > body.indexOf("createSessionFor(intent, intent.slug)"));
+  // Correction 05: PRIMERO se localiza, y sólo se crea si se demostró que no
+  // existe nada. Crear a ciegas es lo que dependía de la retención de la clave.
+  const locateAt = body.indexOf("locateSessionForPurchase(intent, null)");
+  const createAt = body.indexOf("createSessionFor(intent, intent.slug)");
+  assert.ok(locateAt !== -1 && createAt !== -1);
+  assert.ok(locateAt < createAt, "localizar antes de crear");
+  assert.ok(body.includes("found.absent"), "y crear SÓLO ante una ausencia demostrada");
+  // La verdad del estado se pide SIEMPRE fresca.
+  assert.ok(body.indexOf("retrieveCheckoutSession(sessionId)") > createAt);
 });
 
 test("MON003 · C3.9 — SERVER: la constancia de la creación es auditoría, no lógica", () => {
@@ -1697,7 +1787,9 @@ test("MON003 · C4.7 — el número de cobrables que sobreviven NO depende del o
 });
 
 test("MON003 · C4.8 — dos que YA cobraron es un cargo doble, no un riesgo", () => {
-  const a = bajoTodoOrden([rr("a", OI.USED), rr("b", OI.USED)]);
+  // Correction 05 (P2-4): hacen falta dos COBRADAS, no dos "usadas".
+  const a = bajoTodoOrden([{ id: "a", outcome: OI.USED, paid: true },
+    { id: "b", outcome: OI.USED, paid: true }]);
   assert.equal(a.distintas.length, 1);
   const r = JSON.parse(a.distintas[0]);
   assert.equal(r.action, OS.BLOCKED);
@@ -1757,7 +1849,7 @@ test("MON003 · C4.12 — SERVER: se responde SÓLO desde el plan del conjunto",
   const body = co.slice(0, co.indexOf("\n});"));
   const decideAt = body.indexOf("decideOpenSet(resolved)");
   // payment_in_progress y el enlace reutilizado sólo existen DESPUÉS de decidir.
-  for (const salida of ['error: "payment_in_progress"', "checkoutUrl: it.url"]) {
+  for (const salida of ['error: "payment_in_progress"', "checkoutUrl: reuseUrl"]) {
     const at = body.indexOf(salida);
     assert.ok(at !== -1 && at > decideAt, salida + " no puede decidirse antes del conjunto");
   }
@@ -1766,6 +1858,15 @@ test("MON003 · C4.12 — SERVER: se responde SÓLO desde el plan del conjunto",
   assert.ok(body.lastIndexOf("OPEN_SET.OPEN_NEW", openAt) > decideAt);
   assert.ok(body.includes('r.outcome === paymentsDomain.OPEN_INTENT.DEAD'),
     "y sustituye exactamente a las demostradas muertas");
+  // Correction 05: un enlace nulo no se devuelve como si fuera un enlace. El
+  // contrato del proveedor dice que la url "sólo está presente mientras la
+  // sesión está activa", así que puede faltar.
+  assert.ok(body.includes("usableCheckoutUrl(it && it.url)"));
+  assert.ok(body.includes("checkout_reuse_without_url"));
+  assert.ok(body.includes("usableCheckoutUrl(session.url)"));
+  assert.ok(body.includes("checkout_created_without_url"));
+  assert.ok(!/checkoutUrl:\s*(session\.url|it\.url)\b/.test(body),
+    "ninguna respuesta devuelve la url del proveedor sin comprobarla");
 });
 
 test("MON003 · C4.13 — SERVER: el conjunto ambiguo queda ANOTADO, no sólo rechazado", () => {
@@ -1777,12 +1878,23 @@ test("MON003 · C4.13 — SERVER: el conjunto ambiguo queda ANOTADO, no sólo re
   assert.ok(body.includes('error: "checkout_unavailable"'));
   const fn = src.slice(src.indexOf("async function flagOpenSetAttention(slug, plan)"));
   const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
-  assert.ok(fnBody.includes("ATTENTION.OPEN_SET_UNRESOLVED"));
-  assert.ok(fnBody.includes("ATTENTION.DOUBLE_CHARGE"));
+  // El código de cada incidente sale del mapa del dominio, no de un if a mano.
+  assert.ok(fnBody.includes("paymentsDomain.INCIDENT_ATTENTION[kind]"));
   assert.ok(fnBody.includes("buildPaymentAudit"), "y queda en la auditoría");
   // No toca el estado: la compra tiene que poder seguir confirmándose por webhook.
-  assert.ok(!fnBody.includes("status:"), "anotar no es cambiar el estado de un cobro");
-  assert.ok(fnBody.includes("if (p.attention) return p"), "y no pisa una razón anterior");
+  assert.ok(!/status:\s*paymentsDomain\.PURCHASE_STATUS/.test(fnBody),
+    "anotar no es cambiar el estado de un cobro");
+  assert.ok(fnBody.includes("!p.attention"), "y no pisa una razón anterior");
+  // Correction 05 (P2-3/P2-5): se recorren TODOS los incidentes, y la auditoría
+  // se escribe aunque el campo singular ya estuviera ocupado.
+  assert.ok(fnBody.includes("for (const inc of incidents)"), "todos los incidentes");
+  const auditAt = fnBody.indexOf("audit.push(");
+  const singularAt = fnBody.indexOf("if (!p.attention && !razonPara.has(id))");
+  assert.ok(auditAt !== -1 && singularAt !== -1);
+  assert.ok(auditAt < singularAt,
+    "auditar no está condicionado a poder rellenar el campo singular");
+  assert.ok(fnBody.includes("if (!entradas && !razonPara.size)"),
+    "sólo se aborta si NO hay nada que auditar NI que anotar");
 });
 
 test("MON003 · C4.14 — los códigos nuevos describen problemas distintos", () => {
@@ -1801,19 +1913,22 @@ test("MON003 · C4.15 — las hermanas muertas se RETIRAN, no se dejan a medias"
   const src = stripComments(serverSrc);
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
-  const retireAt = body.indexOf("retireDeadSiblings(slug, plan.dead || [], plan.purchaseId)");
+  const retireAt = body.indexOf("retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid)");
   const respondAt = body.indexOf('error: "payment_in_progress"');
   assert.ok(retireAt !== -1 && respondAt !== -1);
   assert.ok(retireAt < respondAt, "se retiran ANTES de responder");
   // También en la rama que reutiliza: si hubiera hermanas muertas, se retiran.
   assert.equal((body.match(/retireDeadSiblings\(/g) || []).length, 2);
 
-  const fn = src.slice(src.indexOf("async function retireDeadSiblings(slug, deadIds, winnerId)"));
+  const fn = src.slice(src.indexOf("async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid)"));
   const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
   assert.ok(fnBody.includes("supersededBy: winnerId"), "lo que bloquea un grant tardío");
   assert.ok(fnBody.includes("PURCHASE_STATUS.EXPIRED"));
+  // Correction 05 (P2-2): el motivo depende de si la que se conserva COBRÓ.
   assert.ok(fnBody.includes("ATTENTION.RETIRED_FOR_PAID_SIBLING"));
-  assert.ok(fnBody.includes('buildPaymentAudit(retired, "retired_for_paid_sibling"'));
+  assert.ok(fnBody.includes("ATTENTION.RETIRED_FOR_ACTIVE_SIBLING"));
+  assert.ok(fnBody.includes("winnerPaid === true"), "y de un hecho, no del contexto");
+  assert.ok(fnBody.includes('buildPaymentAudit(retired, decision'));
   // Nunca se retira la que se conserva, ni algo que ya es terminal.
   assert.ok(fnBody.includes("id !== winnerId"));
   assert.ok(fnBody.includes("p.status !== paymentsDomain.PURCHASE_STATUS.CREATED"));
@@ -1825,4 +1940,314 @@ test("MON003 · C4.15 — las hermanas muertas se RETIRAN, no se dejan a medias"
   assert.ok(!d.nextStatus, "no se toca el estado: no se inventa dinero");
   assert.equal(D.ATTENTION.RETIRED_FOR_PAID_SIBLING, "retired_because_another_checkout_was_paid");
   assert.notEqual(D.ATTENTION.RETIRED_FOR_PAID_SIBLING, D.ATTENTION.SUPERSEDED);
+});
+
+// ==== 19 · Correction 05: recuperación durable y verdad monetaria ============
+//
+// Tres blockers y cuatro P2. El que manda el diseño es el segundo: la clave de
+// idempotencia del proveedor NO es una identidad eterna, así que la recuperación
+// no puede descansar en ella.
+
+test("MON003 · C5.1 — el adaptador siembra la identidad en DOS sitios y en el cargo", () => {
+  const src = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
+  const fn = src.slice(src.indexOf("async function createCheckoutSession({"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  // En la sesión: metadata y el campo que el proveedor describe para reconciliar.
+  assert.ok(body.includes('"metadata[qracks_purchase_id]": purchaseId'));
+  assert.ok(body.includes("client_reference_id: purchaseId"));
+  // Y en el PaymentIntent, para que el CARGO sea rastreable sin la sesión.
+  assert.ok(body.includes('"payment_intent_data[metadata][qracks_purchase_id]": purchaseId'));
+  assert.ok(body.includes('"payment_intent_data[metadata][qracks_slug]": slug'));
+  assert.ok(body.includes('"payment_intent_data[metadata][qracks_scope_id]": scopeId'));
+  // La expiración se manda explícita: el horizonte de muerte es un número que
+  // conocemos, no un valor por defecto que podría cambiar.
+  assert.ok(body.includes("params.expires_at = expiresAt"));
+});
+
+test("MON003 · C5.2 — el listado existe, está acotado y se pagina", () => {
+  const src = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
+  const fn = src.slice(src.indexOf("async function listCheckoutSessions("));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(body.includes("created[gte]") && body.includes("created[lte]"),
+    "acotado por fecha: la ventana en la que pudo nacer es diminuta y conocida");
+  assert.ok(body.includes("starting_after"), "y se pagina");
+  assert.ok(body.includes("hasMore"));
+  assert.ok(body.includes("Math.min"), "el límite se acota al máximo del proveedor");
+  assert.ok(body.includes("normalizeSession"), "y sube ya traducido");
+});
+
+test("MON003 · C5.3 — normalizeSession distingue 'usada' de 'cobrada'", () => {
+  const { normalizeSession } = require("../payments/stripeAdapter");
+  const base = {
+    id: "cs_1", amount_total: 19900, currency: "mxn", created: 1000, expires_at: 2000,
+    client_reference_id: "qpur_a", metadata: { qracks_purchase_id: "qpur_a" },
+  };
+  const completaPagada = normalizeSession({ ...base, status: "complete", payment_status: "paid" });
+  const completaSinPagar = normalizeSession({ ...base, status: "complete", payment_status: "unpaid" });
+  assert.equal(completaPagada.lifecycle, "used");
+  assert.equal(completaSinPagar.lifecycle, "used", "el ciclo de vida es el mismo");
+  assert.equal(completaPagada.paid, true);
+  assert.equal(completaSinPagar.paid, false, "pero el dinero NO");
+  assert.equal(completaSinPagar.paymentStatus, "unpaid");
+  // `no_payment_required` tampoco es un cobro.
+  assert.equal(normalizeSession({ ...base, status: "complete", payment_status: "no_payment_required" }).paid, false);
+  // Y el reloj del proveedor sube, que es lo que acota una búsqueda.
+  assert.equal(completaPagada.createdAt, 1000);
+  assert.equal(completaPagada.expiresAt, 2000);
+  // Los dos portadores de identidad, por separado.
+  assert.equal(completaPagada.clientReferenceId, "qpur_a");
+  assert.equal(completaPagada.metadataPurchaseId, "qpur_a");
+  // Sin metadata, el otro portador sigue identificándola.
+  const soloRef = normalizeSession({ ...base, status: "open", payment_status: "unpaid", metadata: {} });
+  assert.equal(soloRef.purchaseId, "qpur_a");
+  assert.equal(soloRef.metadataPurchaseId, null);
+  // La url es nullable por contrato: "only present when the session is active".
+  assert.equal(normalizeSession({ ...base, status: "expired", url: null }).url, null);
+  assert.equal(normalizeSession({ ...base, status: "open", url: "https://x/y" }).url, "https://x/y");
+});
+
+test("MON003 · C5.4 — SERVER: localizar NUNCA concluye una ausencia que no puede demostrar", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function locateSessionForPurchase(intent, hint)"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  // Las tres respuestas, y cuál lleva a crear.
+  assert.ok(body.includes("return { session: observed, via: \"hint\" }"));
+  assert.ok(body.includes('{ absent: true, via: "never_attempted" }'),
+    "sin haber pedido la creación no puede existir nada");
+  assert.ok(body.includes('{ absent: true, via: "list_exhausted" }'));
+  assert.ok(body.includes('{ unknown: true, via: "list_truncated" }'),
+    "una búsqueda truncada NO demuestra una ausencia");
+  assert.ok(body.includes('{ unknown: true, via: "conflicting_candidate"'),
+    "una sesión que dice ser nuestra y no cuadra no se ignora");
+  // Y la pista se verifica antes de aceptarse.
+  assert.ok(body.includes("verifySessionForPurchase(intent, observed)"));
+  assert.ok(body.includes("session_hint_rejected"));
+  // Buscar no es vender.
+  assert.ok(!body.includes("createCheckoutSession"));
+  assert.ok(!body.includes("createSessionFor"));
+});
+
+test("MON003 · C5.5 — SERVER: la ventana de búsqueda sale de un dato NUESTRO", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function locateSessionForPurchase(intent, hint)"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  assert.ok(body.includes("Date.parse(intent.creationAttemptedAt)"),
+    "la ventana la fija el instante en que PEDIMOS la creación");
+  assert.ok(body.includes("SESSION_LOOKUP_MARGIN_MS"));
+  assert.ok(body.includes("SESSION_LOOKUP_MAX_PAGES"));
+  // Un sello ilegible no se rellena con la hora de ahora: se admite no saber.
+  assert.ok(body.includes('{ unknown: true, via: "unreadable_attempt_time" }'));
+  // Y `creationAttemptedAt` deja de ser sólo auditoría: ahora sostiene esto.
+  const mark = src.slice(src.indexOf("async function markCreationAttempted(purchaseId)"));
+  assert.ok(mark.slice(0, mark.indexOf("\nasync function ", 10)).includes("!p.creationAttemptedAt"),
+    "y se escribe una sola vez: la primera es la que acota la ventana");
+});
+
+test("MON003 · C5.6 — SERVER: reanudar localiza primero y crea sólo ante una ausencia probada", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
+  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  const locateAt = body.indexOf("locateSessionForPurchase(intent, null)");
+  const absentAt = body.indexOf("found.absent");
+  const createAt = body.indexOf("createSessionFor(intent, intent.slug)");
+  assert.ok(locateAt !== -1 && absentAt !== -1 && createAt !== -1);
+  assert.ok(locateAt < absentAt && absentAt < createAt,
+    "localizar -> demostrar la ausencia -> sólo entonces crear");
+  // Y si no se sabe, no se crea NI se da por muerta.
+  assert.ok(body.includes("OPEN_INTENT.UNRESOLVED"));
+  assert.ok(body.includes("unlocatable: true"));
+  assert.ok(body.includes("checkout_session_unlocatable"));
+  // El dato de dinero sube al conjunto.
+  assert.ok(body.includes("paid: !!(observed && observed.paid === true)"));
+});
+
+test("MON003 · C5.7 — el conjunto no llama cargo doble a lo que no lo es", () => {
+  const paid = (id) => ({ id, outcome: OI.USED, paid: true });
+  const usadaSinPago = (id) => ({ id, outcome: OI.USED, paid: false });
+  // Dos cobradas SÍ.
+  const dos = D.decideOpenSet([paid("a"), paid("b")]);
+  assert.equal(dos.reason, D.INCIDENT.DOUBLE_CHARGE);
+  assert.deepEqual(dos.paid, ["a", "b"]);
+  // Dos usadas sin cobro declarado NO: fail closed con otro nombre.
+  const sin = D.decideOpenSet([usadaSinPago("a"), usadaSinPago("b")]);
+  assert.equal(sin.action, OS.BLOCKED, "sigue fallando cerrado");
+  assert.equal(sin.reason, D.INCIDENT.USED_UNPAID);
+  assert.deepEqual(sin.paid, [], "y no se afirma dinero que nadie declaró");
+  assert.equal(D.INCIDENT_ATTENTION[D.INCIDENT.USED_UNPAID], D.ATTENTION.TWO_SESSIONS_USED_UNPAID);
+  assert.equal(D.ATTENTION.TWO_SESSIONS_USED_UNPAID,
+    "two_checkouts_were_used_without_reported_payment");
+  // Una cobrada y una sin cobro: no es cargo doble, pero BLOQUEA igual. Este era
+  // el caso que se me cayó al partir por `paid`: caía en "abrir una nueva", que
+  // habría sido una tercera venta junto a un cobro ya hecho.
+  const mixto = D.decideOpenSet([paid("a"), usadaSinPago("b")]);
+  assert.equal(mixto.action, OS.BLOCKED, "no se vende encima de un cobro");
+  assert.equal(mixto.reason, D.INCIDENT.USED_BESIDE_PAID);
+  assert.deepEqual(mixto.paid, ["a"]);
+  assert.deepEqual(mixto.needsAttention, ["a", "b"]);
+  assert.equal(D.ATTENTION.USED_BESIDE_PAID, "another_checkout_was_used_beside_a_paid_one");
+});
+
+test("MON003 · C5.7b — PROPIEDAD: jamás se abre una venta encima de un cobro", () => {
+  // La prueba que habría cazado el agujero de arriba, y que lo seguirá cazando
+  // sea cual sea la enumeración de incidentes: se recorre el espacio COMPLETO de
+  // conjuntos de hasta 4 compras con las cinco etiquetas posibles, y se exige que
+  // ninguna combinación con un cobro declarado pueda acabar en una venta nueva,
+  // ni en reutilizar un checkout, en ningún orden.
+  const etiquetas = [
+    { outcome: OI.USED, paid: true }, { outcome: OI.USED, paid: false },
+    { outcome: OI.USABLE }, { outcome: OI.DEAD }, { outcome: OI.UNRESOLVED },
+  ];
+  const combos = (n) => (n === 0 ? [[]]
+    : combos(n - 1).flatMap((resto) => etiquetas.map((e) => resto.concat([e]))));
+  let revisados = 0;
+  let conCobro = 0;
+  for (let largo = 1; largo <= 4; largo++) {
+    for (const combo of combos(largo)) {
+      const entradas = combo.map((e, i) => ({ id: "p" + i, ...e }));
+      const hayCobro = entradas.some((e) => e.paid === true);
+      const hayVarias = entradas.filter((e) => e.outcome === OI.USED).length > 1;
+      for (const perm of permutaciones(entradas)) {
+        const r = D.decideOpenSet(perm);
+        revisados++;
+        if (hayCobro) {
+          conCobro++;
+          assert.notEqual(r.action, OS.OPEN_NEW,
+            `venta nueva sobre un cobro: ${JSON.stringify(combo)}`);
+          assert.notEqual(r.action, OS.REUSE,
+            `checkout reutilizado sobre un cobro: ${JSON.stringify(combo)}`);
+          // Lo único permitido: confirmar ESE cobro, o bloquear.
+          if (r.action === OS.CONFIRM_EXISTING) {
+            assert.equal(entradas.filter((e) => e.outcome === OI.USED).length, 1,
+              "sólo se confirma cuando hay UNA usada");
+            assert.equal(r.winnerPaid, true);
+          }
+        }
+        // Y más de una usada SIEMPRE bloquea, cobrada o no.
+        if (hayVarias) {
+          assert.equal(r.action, OS.BLOCKED,
+            `varias usadas sin bloquear: ${JSON.stringify(combo)}`);
+          assert.ok(r.incidents.length >= 1, "y con su incidente registrado");
+        }
+      }
+    }
+  }
+  assert.ok(revisados > 3000, "se recorrió el espacio de verdad: " + revisados);
+  assert.ok(conCobro > 1000, "y con cobro declarado en " + conCobro + " casos");
+});
+
+test("MON003 · C5.8 — un cargo doble consumado NO se tapa con uno preventivo", () => {
+  const set = [
+    { id: "a", outcome: OI.USED, paid: true },
+    { id: "b", outcome: OI.USED, paid: true },
+    { id: "c", outcome: OI.UNRESOLVED },
+  ];
+  // En cualquier orden: los DOS hechos, y el más grave manda la razón.
+  for (const perm of permutaciones(set)) {
+    const r = D.decideOpenSet(perm);
+    assert.equal(r.action, OS.BLOCKED);
+    assert.equal(r.reason, D.INCIDENT.DOUBLE_CHARGE, "lo consumado manda sobre lo preventivo");
+    const kinds = r.incidents.map((x) => x.kind);
+    assert.ok(kinds.includes(D.INCIDENT.DOUBLE_CHARGE));
+    assert.ok(kinds.includes(D.INCIDENT.UNRESOLVED), "y el preventivo NO desaparece");
+    assert.equal(kinds[0], D.INCIDENT.DOUBLE_CHARGE, "ordenados por gravedad");
+    assert.deepEqual(r.incidents.find((x) => x.kind === D.INCIDENT.UNRESOLVED).purchaseIds, ["c"]);
+  }
+  // La gravedad es un orden total y explícito, no el orden de detección.
+  const sev = D.INCIDENT_SEVERITY;
+  assert.ok(sev[D.INCIDENT.DOUBLE_CHARGE] > sev[D.INCIDENT.USABLE_BESIDE_USED]);
+  assert.ok(sev[D.INCIDENT.USABLE_BESIDE_USED] > sev[D.INCIDENT.MANY_USABLE]);
+  assert.ok(sev[D.INCIDENT.MANY_USABLE] > sev[D.INCIDENT.USED_UNPAID]);
+  assert.ok(sev[D.INCIDENT.USED_UNPAID] > sev[D.INCIDENT.UNRESOLVED]);
+});
+
+test("MON003 · C5.9 — la independencia del orden sobrevive a la semántica nueva", () => {
+  // El mismo barrido de C4.6, ahora con la dimensión `paid`.
+  const etiquetas = [
+    { outcome: OI.USED, paid: true }, { outcome: OI.USED, paid: false },
+    { outcome: OI.USABLE }, { outcome: OI.DEAD }, { outcome: OI.UNRESOLVED },
+  ];
+  let conjuntos = 0;
+  const combos = (n) => (n === 0 ? [[]]
+    : combos(n - 1).flatMap((resto) => etiquetas.map((e) => resto.concat([e]))));
+  for (let largo = 1; largo <= 3; largo++) {
+    for (const combo of combos(largo)) {
+      const entradas = combo.map((e, i) => ({ id: "p" + i, ...e }));
+      const vistas = new Set(permutaciones(entradas).map((perm) => JSON.stringify(D.decideOpenSet(perm))));
+      conjuntos++;
+      assert.equal(vistas.size, 1,
+        `el orden cambió el resultado para ${JSON.stringify(combo)}`);
+    }
+  }
+  assert.equal(conjuntos, 5 + 25 + 125, "el espacio entero de hasta tres compras");
+});
+
+test("MON003 · C5.10 — SERVER: la observación vieja no puede degradar un cobro", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("async function openPurchase(slug, superseded)"));
+  const body = fn.slice(0, fn.indexOf("async function createSessionFor"));
+  const lockAt = body.indexOf('getRowLocked("platform_index", client)');
+  const checkAt = body.indexOf("yaNoElegibles");
+  const writeAt = body.indexOf("purchases.concat([fresh])");
+  assert.ok(lockAt !== -1 && checkAt !== -1 && writeAt !== -1);
+  assert.ok(lockAt < checkAt && checkAt < writeAt, "se recomprueba bajo el candado, antes de escribir");
+  assert.ok(body.includes("p.status !== paymentsDomain.PURCHASE_STATUS.CREATED"));
+  assert.ok(body.includes("!!p.supersededBy"), "ni se pisa lo que otro worker ya escribió");
+  assert.ok(body.includes('error: "checkout_stale_observation"'), "si el mundo cambió, fail closed");
+  // Y la segunda red: si alguna compra del torneo pasó a PAID, no se vende.
+  assert.ok(body.includes("findPaidIntentForScope(store.purchases, slug, scope.id)"));
+  assert.ok(body.includes("checkout_already_paid_under_lock"));
+  // El map tampoco puede degradar por su cuenta.
+  assert.ok(body.includes("!deadIds.has(p.id) || p.status !== paymentsDomain.PURCHASE_STATUS.CREATED"));
+  // Y la monotonía del dominio sigue siendo la que decide un avance de estado.
+  assert.equal(D.STATUS_RANK.paid > D.STATUS_RANK.expired, true);
+});
+
+test("MON003 · C5.11 — la vuelta del navegador acepta la pista, y sólo eso", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("function readSessionHint(raw)"));
+  const body = fn.slice(0, fn.indexOf("\n// ¿Existe en el proveedor"));
+  assert.ok(/\^cs_\[A-Za-z0-9_\]\{1,200\}\$/.test(body), "se filtra la forma");
+  assert.ok(body.includes("return null"), "y lo que no la cumple no viaja a ninguna parte");
+  // El success_url pide la pista al proveedor, junto a NUESTRO id de compra.
+  assert.ok(src.includes("qz_pago=${encodeURIComponent(intent.id)}"),
+    "nuestro id, que es lo único necesario para reconciliar");
+  assert.ok(src.includes("qz_sess={CHECKOUT_SESSION_ID}"),
+    "y la pista del proveedor, que sólo acelera");
+});
+
+test("MON003 · C5.12 — ninguna respuesta manda al navegador a un enlace que no lo es", () => {
+  const src = stripComments(serverSrc);
+  const fn = src.slice(src.indexOf("function usableCheckoutUrl(url)"));
+  const body = fn.slice(0, fn.indexOf("\n//", 10));
+  assert.ok(body.includes("typeof url !== \"string\""));
+  assert.ok(/\^https:/.test(body), "sólo https");
+  // Y la pantalla tampoco navega a algo que no sea un enlace.
+  const ui = stripComments(indexSrc);
+  const at = ui.indexOf("window.location.href = started.checkoutUrl");
+  assert.ok(at !== -1);
+  const antes = ui.slice(Math.max(0, at - 400), at);
+  assert.ok(/typeof started\.checkoutUrl === "string"/.test(antes));
+  assert.ok(/\^https:/.test(antes));
+});
+
+test("MON003 · C5.13 — un cobro en curso es un estado de RECUPERACIÓN, no un error", () => {
+  const ui = stripComments(indexSrc);
+  // El id que manda el servidor se conserva y se persiste.
+  const sc = ui.slice(ui.indexOf("async function startCheckout()"));
+  const scBody = sc.slice(0, sc.indexOf("\n  }\n"));
+  assert.ok(scBody.includes("data.purchaseId"), "el id del 409 no se tira");
+  assert.ok(scBody.includes("writePendingPurchase(data.purchaseId)"), "y se persiste");
+  assert.ok(scBody.includes("purchaseId: recuperable || null"), "y sube a quien decide");
+  // Y la hoja pasa a confirmarlo en vez de invitar a otro checkout.
+  const sheet = ui.slice(ui.indexOf("function showUpgradeSheet(upgrade, ctx)"));
+  const sheetBody = sheet.slice(0, sheet.indexOf("\n  function showPlanBlock"));
+  assert.ok(sheetBody.includes('motivo === "payment_in_progress" && started.purchaseId'));
+  assert.ok(sheetBody.includes("runCheckoutRecovery(started.purchaseId"));
+  assert.ok(sheetBody.includes('motivo === "payment_already_recorded"'),
+    "y un cobro ya registrado tampoco invita a comprar otra vez");
+  // El mensaje de 'sigue en proceso' dice explícitamente que no hace falta
+  // reintentar: es lo que evita un segundo cargo por impaciencia.
+  assert.ok(/No hace falta que lo intentes de nuevo/.test(indexSrc));
 });
