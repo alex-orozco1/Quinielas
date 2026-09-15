@@ -289,6 +289,124 @@ function verifySessionForPurchase(intent, observed) {
   return { ok: true, reason: SESSION_MATCH.OK };
 }
 
+// ---- los INTENTOS de creación, y las ventanas donde pudo nacer una sesión ---
+//
+// Correction 07. Hasta aquí había UNA marca, la del primer intento, y el
+// descubrimiento buscaba sólo alrededor de ella. Eso sólo sería correcto si todas
+// las sesiones posibles de una compra pudieran nacer alrededor de ese primer
+// instante, y no es cierto: el primer intento puede fallar ANTES de crear nada, y
+// el segundo ocurrir veintitrés horas después. La sesión de ese segundo intento
+// quedaba fuera de la ventana por construcción, invisible para siempre.
+//
+// Así que cada intento que puede haber producido una sesión se registra, con:
+//
+//   at              cuándo se emitió -> acota la ventana donde buscar la suya
+//   idempotencyKey  la identidad de ESE intento ante el proveedor
+//   expiresAt       cuándo deja de poder cobrar la sesión de ESE intento, CONGELADO
+//
+// Congelar `expiresAt` por intento es lo que permite reintentar con la misma clave:
+// el proveedor declara `idempotency_error` como tipo de error, y reutilizar una
+// clave con parámetros distintos es la forma de provocarlo. Antes `expires_at` se
+// derivaba de la fecha de la compra y, para una compra vieja, quedaba recortado al
+// suelo del rango y por tanto dependía de la hora de AHORA: dos reintentos de la
+// misma clave pedían instantes distintos.
+//
+// La lista está acotada. No se poda nunca —olvidar una ventana es perder la única
+// forma de encontrar un cobro que ocurriera en ella— así que al llegar al tope se
+// falla cerrado y se pide una persona. Veinticuatro intentos fallidos sobre una
+// misma compra ya no son un reintento: son algo que hay que mirar.
+const MAX_CREATION_ATTEMPTS = 24;
+
+// Los intentos registrados, en forma normalizada y ordenados por fecha. Una compra
+// anterior a Correction 07 sólo tiene `creationAttemptedAt`: se lee como el primer
+// intento, para que su ventana siga buscándose.
+function creationAttemptsOf(intent) {
+  const out = [];
+  const lista = (intent && Array.isArray(intent.attempts)) ? intent.attempts : [];
+  for (const a of lista) {
+    const at = Date.parse(a && a.at);
+    if (!Number.isFinite(at)) continue;
+    out.push({
+      seq: isSafeCount(a.seq) ? a.seq : out.length + 1,
+      at: a.at,
+      atMs: at,
+      idempotencyKey: str(a.idempotencyKey),
+      expiresAt: Number.isSafeInteger(a.expiresAt) ? a.expiresAt : null,
+    });
+  }
+  if (!out.length && intent && intent.creationAttemptedAt) {
+    const at = Date.parse(intent.creationAttemptedAt);
+    if (Number.isFinite(at)) {
+      // Legado: no se conocen su clave ni su expiración, pero SÍ su ventana, que es
+      // lo que hace falta para no perder su sesión.
+      out.push({ seq: 1, at: intent.creationAttemptedAt, atMs: at, idempotencyKey: null, expiresAt: null, legacy: true });
+    }
+  }
+  return out.sort((a, b) => a.atMs - b.atMs || a.seq - b.seq);
+}
+
+// ¿Sirve todavía este intento para volver a pedir con SU clave?
+//
+// Sólo si su expiración congelada sigue lo bastante en el futuro para ser un
+// parámetro válido. Cuando deja de serlo hay que abrir otro intento — y eso es
+// seguro precisamente porque la expiración ya pasó: cualquier sesión que hubiera
+// nacido de este intento ya no puede cobrar, lo demuestre el descubrimiento o no.
+function isAttemptReusable(attempt, nowMs, minLifetimeMs) {
+  if (!attempt || !attempt.idempotencyKey || !Number.isSafeInteger(attempt.expiresAt)) return false;
+  return attempt.expiresAt * 1000 - nowMs > minLifetimeMs;
+}
+
+// Las ventanas donde buscar, fusionadas. Los reintentos se agrupan, así que lo
+// normal es que veinte intentos quepan en una o dos consultas.
+function discoveryWindows(intent, marginMs) {
+  const m = Number.isFinite(marginMs) && marginMs > 0 ? marginMs : 0;
+  const crudas = creationAttemptsOf(intent)
+    .map((a) => ({ from: a.atMs - m, to: a.atMs + m }))
+    .sort((x, y) => x.from - y.from);
+  const out = [];
+  for (const w of crudas) {
+    const ult = out[out.length - 1];
+    if (ult && w.from <= ult.to) ult.to = Math.max(ult.to, w.to);
+    else out.push({ ...w });
+  }
+  return out;
+}
+
+// ---- cuándo basta con la sesión que ya tenemos guardada ---------------------
+//
+// Correction 07. El descubrimiento sólo corría cuando NO había sesión guardada, y
+// eso dejaba invisible a cualquier hermana en cuanto una se hubiera persistido
+// primero. Pero listar el proveedor en cada petición normal no aporta nada: con un
+// solo intento y una unicidad ya comprobada, la guardada es la única que puede
+// existir.
+//
+// Así que la política es explícita: hace falta descubrir cuando no se sabe nada,
+// cuando ya consta multiplicidad, cuando hubo más de un intento capaz de crear, o
+// cuando la comprobación de unicidad no existe o quedó obsoleta.
+function knownSessionIdsOf(intent) {
+  const out = [];
+  const uno = str(intent && intent.providerSessionId);
+  if (uno) out.push(uno);
+  const varios = (intent && Array.isArray(intent.providerSessionIds)) ? intent.providerSessionIds : [];
+  for (const id of varios) {
+    const v = str(id);
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out.sort();
+}
+
+function needsSessionDiscovery(intent) {
+  if (!intent) return false;
+  if (!str(intent.providerSessionId)) return true;
+  if (knownSessionIdsOf(intent).length > 1) return true;
+  const intentos = creationAttemptsOf(intent).length;
+  if (intentos > 1) return true;
+  const v = intent.sessionSetVerified;
+  if (!v || !isSafeCount(v.attempts)) return true;
+  if (v.attempts < intentos) return true;
+  return false;
+}
+
 // ---- varias sesiones del proveedor para UNA sola compra --------------------
 //
 // Correction 06. El descubrimiento devolvía la PRIMERA sesión verificada que
@@ -730,17 +848,69 @@ function evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists
   const o = observed || {};
   if (!intent) return { decision: DECISION.UNKNOWN_PURCHASE };
 
-  // La metadata dijo un intent y la identidad del proveedor apunta a otro. No
-  // se elige uno: no se otorga nada. Es la forma exacta que tendría un intento
-  // de reutilizar un pago ajeno.
+  // ========================================================================
+  // IDENTIDAD: impostora, o HERMANA (Correction 07)
+  //
+  // Hasta aquí, cualquier sesión cuyo id no fuera el guardado se rechazaba como
+  // identidad ajena. Eso protege del caso real que hay que proteger —una
+  // confirmación que dice ser de esta compra pero cuyo objeto de pago pertenece a
+  // otra— pero confundía con él un caso muy distinto: una HERMANA, otra sesión del
+  // MISMO purchase, que existe cuando un reintento llegó a crear dos.
+  //
+  // Y la diferencia vale dinero: una hermana pagada se rechazaba como impostora, y
+  // el cobro quedaba sin otorgar aunque fuera legítimo y verificable.
+  //
+  // Lo que decide es de quién dice ser, no cuál guardamos primero:
+  //
+  //   - si trae identidad propia y NO es de esta compra -> impostora, se rechaza;
+  //   - si trae identidad propia y SÍ es de esta compra -> es nuestra. Un id
+  //     distinto del guardado es multiplicidad, no fraude: se otorga si todo lo
+  //     demás cuadra, y se anota que hubo varias;
+  //   - si NO trae identidad propia, sólo se acepta si coincide con lo guardado —
+  //     ahí el id ES la única identidad que hay.
+  // ========================================================================
   const sid = str(o.sessionId);
   const pid = str(o.paymentIntentId);
-  if (sid && intent.providerSessionId && sid !== intent.providerSessionId) {
+  const declarada = str(o.purchaseId);
+  if (declarada && declarada !== intent.id) {
     return { decision: DECISION.IDENTITY_MISMATCH, attention: ATTENTION.IDENTITY_MISMATCH };
   }
-  if (pid && intent.providerPaymentIntentId && pid !== intent.providerPaymentIntentId) {
+  // LOS DOS PORTADORES TIENEN QUE DECIR LO MISMO.
+  //
+  // Al crear una sesión se escribe la identidad de la compra en dos sitios
+  // independientes, así que en una sesión legítima —hermana incluida— ambos
+  // coinciden siempre. Que discrepen sólo puede significar que alguien reetiquetó
+  // uno: es exactamente la forma de un pago ajeno presentado como propio.
+  //
+  // El descubrimiento ya lo comprobaba (`verifySessionForPurchase`), pero por el
+  // webhook no pasa nada por ahí, y confiar sólo en la metadata dejaba esta puerta
+  // abierta a quien pudiera construir el cuerpo. Que hoy eso exija el signing
+  // secret no es razón para no comprobarlo: cuesta nada y no rechaza nada legítimo.
+  const ref = str(o.clientReferenceId);
+  const metaId = str(o.metadataPurchaseId);
+  if (ref && metaId && ref !== metaId) {
     return { decision: DECISION.IDENTITY_MISMATCH, attention: ATTENTION.IDENTITY_MISMATCH };
   }
+  // La quiniela que declara el objeto tiene que ser la de esta compra. Antes esto
+  // lo frenaba de rebote el chequeo por id de sesión; al admitir hermanas hace
+  // falta decirlo explícitamente, o una sesión que dijera ser de otra quiniela
+  // pasaría sólo por llevar nuestro id de compra.
+  if (str(o.slugHint) && str(o.slugHint) !== intent.slug) {
+    return { decision: DECISION.IDENTITY_MISMATCH, attention: ATTENTION.IDENTITY_MISMATCH };
+  }
+  const conocidas = knownSessionIdsOf(intent);
+  if (!declarada) {
+    if (sid && intent.providerSessionId && !conocidas.includes(sid)) {
+      return { decision: DECISION.IDENTITY_MISMATCH, attention: ATTENTION.IDENTITY_MISMATCH };
+    }
+    if (pid && intent.providerPaymentIntentId && pid !== intent.providerPaymentIntentId) {
+      return { decision: DECISION.IDENTITY_MISMATCH, attention: ATTENTION.IDENTITY_MISMATCH };
+    }
+  }
+  // Una hermana: dice ser de esta compra y su id no es el que teníamos guardado.
+  // No cambia si se otorga; cambia que quede dicho que hubo más de una.
+  const hermana = !!(declarada && sid && intent.providerSessionId
+    && !conocidas.includes(sid));
 
   if (o.paid !== true) {
     // No se pagó (todavía, o nunca). Sólo puede registrar un estado terminal,
@@ -771,6 +941,14 @@ function evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists
   // llegue a tiempo (dos entregas concurrentes, un id de evento nuevo para el
   // mismo pago, una reconciliación que corre a la vez que el webhook).
   if (intent.status === PURCHASE_STATUS.PAID) {
+    // Pero con un PaymentIntent DISTINTO del registrado no es una reentrega: son
+    // dos cobros liquidados para una sola compra. No se otorga nada —ya está
+    // otorgado— y deja de ser un duplicado inofensivo para pasar a ser algo que
+    // hay que devolver (Correction 07).
+    if (pid && intent.providerPaymentIntentId && pid !== intent.providerPaymentIntentId) {
+      return { decision: DECISION.ALREADY_PAID, attention: ATTENTION.DOUBLE_CHARGE,
+        sibling: sid || null };
+    }
     return { decision: DECISION.ALREADY_PAID };
   }
 
@@ -821,7 +999,13 @@ function evaluateConfirmation({ intent, observed, currentScopeId, quinielaExists
     };
   }
 
-  return { decision: DECISION.CONFIRM, nextStatus: PURCHASE_STATUS.PAID };
+  // Se cobró, todo cuadra y hay a quién otorgárselo. Si además vino por una
+  // hermana, se otorga IGUAL —el dinero es real y es de esta compra— y queda
+  // anotado que existieron varias sesiones, que es lo que una persona debe mirar.
+  return hermana
+    ? { decision: DECISION.CONFIRM, nextStatus: PURCHASE_STATUS.PAID,
+        attention: ATTENTION.MANY_SESSIONS, sibling: sid }
+    : { decision: DECISION.CONFIRM, nextStatus: PURCHASE_STATUS.PAID };
 }
 
 // Aplica una decisión sobre el intent y devuelve uno NUEVO. No muta la
@@ -837,6 +1021,15 @@ function applyDecision(intent, decision, observed, now) {
   if (!next.providerSessionId && str(o.sessionId)) next.providerSessionId = str(o.sessionId);
   if (!next.providerPaymentIntentId && str(o.paymentIntentId)) {
     next.providerPaymentIntentId = str(o.paymentIntentId);
+  }
+  // Correction 07: si esta confirmación vino por una HERMANA, su id se GUARDA. No
+  // sustituye a la primera —eso convertiría el registro en el de otro pago— sino
+  // que se suma: a partir de aquí el sistema sabe que esta compra tuvo varias
+  // sesiones, y ninguna de ellas puede volver a ser invisible.
+  if (str(decision.sibling)) {
+    const ids = knownSessionIdsOf(next);
+    if (!ids.includes(str(decision.sibling))) ids.push(str(decision.sibling));
+    next.providerSessionIds = ids.sort();
   }
   if (decision.attention) {
     next.attention = { code: decision.attention, at, detail: decision.detail || null };
@@ -902,6 +1095,8 @@ module.exports = {
   OPEN_SET, decideOpenSet, INCIDENT, INCIDENT_SEVERITY, INCIDENT_ATTENTION,
   SESSION_MATCH, verifySessionForPurchase,
   SESSION_SET, decideSessionSet,
+  MAX_CREATION_ATTEMPTS, creationAttemptsOf, isAttemptReusable, discoveryWindows,
+  knownSessionIdsOf, needsSessionDiscovery,
   replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,
   toMinorUnits, normalizeCurrency,

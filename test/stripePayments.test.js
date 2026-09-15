@@ -144,18 +144,88 @@ test("MON003 · 7 — FRAUDE: otra moneda por el mismo número no cuela", () => 
 });
 
 test("MON003 · 8 — FRAUDE: un pago de OTRA compra no puede reutilizarse", () => {
-  // La sesión que se observa no es la que este intent tiene guardada. Aunque
-  // la metadata diga que sí, la identidad del proveedor manda sobre la pista.
+  // Correction 07 afina esta prueba en vez de relajarla.
+  //
+  // Lo que había que impedir sigue impedido: una confirmación cuyo objeto de pago
+  // pertenece a OTRA compra. Lo que ya no se confunde con eso es una HERMANA —otra
+  // sesión del MISMO purchase, que existe de verdad cuando un reintento llegó a
+  // crear dos—, porque tratarla como impostora perdía cobros legítimos y
+  // verificables (reproducido contra eaa071b).
+  //
+  // La procedencia la da la metadata, y la metadata sólo la escribimos nosotros al
+  // crear la sesión: por el webhook llega firmada con nuestro signing secret, y por
+  // la reconciliación llega de un retrieve nuestro. Nadie de fuera puede escribirla
+  // sin la clave secreta, y con la clave secreta este control no sería la defensa.
   const mine = intentOf({ providerSessionId: "cs_mine" });
-  const d = decide(mine, observedOf({ sessionId: "cs_someone_else" }));
-  assert.equal(d.decision, D.DECISION.IDENTITY_MISMATCH);
-  assert.equal(d.attention, D.ATTENTION.IDENTITY_MISMATCH);
+
+  // 1. Dice ser de OTRA compra -> impostora.
+  const ajena = decide(mine, observedOf({ purchaseId: "qpur_otra", sessionId: "cs_otra" }));
+  assert.equal(ajena.decision, D.DECISION.IDENTITY_MISMATCH);
+  assert.equal(ajena.attention, D.ATTENTION.IDENTITY_MISMATCH);
+
+  // 2. Dice ser de OTRA quiniela -> impostora, aunque lleve nuestro id de compra.
+  const otroSlug = decide(mine, observedOf({ sessionId: "cs_otra", slugHint: "otra-quiniela" }));
+  assert.equal(otroSlug.decision, D.DECISION.IDENTITY_MISMATCH);
+
+  // 3. NO declara de quién es, y su id no es ninguno de los que conocemos ->
+  //    impostora: ahí el id es la única identidad que hay.
+  const anonima = decide(mine, observedOf({ purchaseId: null, sessionId: "cs_otra" }));
+  assert.equal(anonima.decision, D.DECISION.IDENTITY_MISMATCH);
+
+  // 4. Una HERMANA legítima sí confirma —el dinero es real y es de esta compra— y
+  //    queda anotado que hubo varias sesiones.
+  const hermana = decide(mine, observedOf({ sessionId: "cs_hermana" }));
+  assert.equal(hermana.decision, D.DECISION.CONFIRM);
+  assert.equal(hermana.attention, D.ATTENTION.MANY_SESSIONS);
+  assert.equal(hermana.sibling, "cs_hermana");
+
+  // 5. Y una hermana NO puede colar otro importe, otra moneda ni otro torneo: esos
+  //    controles corren igual y son los que protegen el dinero.
+  assert.equal(decide(mine, observedOf({ sessionId: "cs_hermana", amountMinor: 1 })).decision,
+    D.DECISION.AMOUNT_MISMATCH);
+  assert.equal(decide(mine, observedOf({ sessionId: "cs_hermana", currency: "usd" })).decision,
+    D.DECISION.CURRENCY_MISMATCH);
+  assert.equal(decide(mine, observedOf({ sessionId: "cs_hermana" }), OTHER_SCOPE).decision,
+    D.DECISION.STALE_SCOPE);
 });
 
-test("MON003 · 9 — FRAUDE: un PaymentIntent reutilizado tampoco", () => {
-  const mine = intentOf({ providerPaymentIntentId: "pi_mine" });
-  assert.equal(decide(mine, observedOf({ paymentIntentId: "pi_otro" })).decision,
+test("MON003 · 9 — FRAUDE: un segundo PaymentIntent no otorga, y se marca", () => {
+  // Una hermana legítima tiene su PROPIO PaymentIntent, así que un `pi` distinto ya
+  // no es por sí mismo una impostora. Lo que sí es: dos `pi` LIQUIDADOS para una
+  // sola compra. Eso no otorga nada —ya está otorgado— y se anota como cargo doble,
+  // que es lo que hay que devolver.
+  const pagada = intentOf({ status: "paid", providerSessionId: "cs_mine", providerPaymentIntentId: "pi_mine" });
+  const segundo = decide(pagada, observedOf({ sessionId: "cs_hermana", paymentIntentId: "pi_otro" }));
+  assert.equal(segundo.decision, D.DECISION.ALREADY_PAID, "no se otorga dos veces");
+  assert.equal(segundo.attention, D.ATTENTION.DOUBLE_CHARGE);
+  assert.equal(segundo.sibling, "cs_hermana", "y la hermana se recuerda");
+
+  // Una reentrega del MISMO pago sigue siendo un duplicado inofensivo.
+  const reentrega = decide(pagada, observedOf({ sessionId: "cs_mine", paymentIntentId: "pi_mine" }));
+  assert.equal(reentrega.decision, D.DECISION.ALREADY_PAID);
+  assert.ok(!reentrega.attention, "una reentrega normal no es una anomalía");
+
+  // Y sin identidad propia, un `pi` distinto sigue siendo impostora.
+  const anonima = intentOf({ providerPaymentIntentId: "pi_mine" });
+  assert.equal(decide(anonima, observedOf({ purchaseId: null, paymentIntentId: "pi_otro" })).decision,
     D.DECISION.IDENTITY_MISMATCH);
+});
+
+test("MON003 · 9b — la hermana se GUARDA, para que no vuelva a ser invisible", () => {
+  const mine = intentOf({ providerSessionId: "cs_mine" });
+  const d = decide(mine, observedOf({ sessionId: "cs_hermana" }));
+  const next = D.applyDecision(mine, d, observedOf({ sessionId: "cs_hermana" }), NOW);
+  assert.equal(next.providerSessionId, "cs_mine", "la primera NO se sustituye");
+  assert.deepEqual(next.providerSessionIds, ["cs_hermana", "cs_mine"],
+    "las dos quedan registradas, ordenadas");
+  assert.equal(next.status, D.PURCHASE_STATUS.PAID, "y el cobro se registra");
+  assert.equal(next.attention.code, D.ATTENTION.MANY_SESSIONS);
+  // Y a partir de ahí el sistema SABE que hubo varias, así que exige descubrimiento.
+  assert.equal(D.needsSessionDiscovery(next), true);
+  // Una tercera se suma sin perder las anteriores.
+  const tercera = D.applyDecision(next, { decision: "confirm", sibling: "cs_tercera" },
+    observedOf({ sessionId: "cs_tercera" }), NOW);
+  assert.deepEqual(tercera.providerSessionIds, ["cs_hermana", "cs_mine", "cs_tercera"]);
 });
 
 test("MON003 · 10 — FRAUDE: una compra que no existe no otorga nada", () => {
@@ -521,7 +591,12 @@ test("MON003 · 47 — SERVER: el success_url no otorga NADA", () => {
   const status = src.slice(src.indexOf('app.get("/api/quinielas/:slug/checkout/:purchaseId"'));
   const body = status.slice(0, status.indexOf("\n});"));
   // La ruta de estado sólo puede confirmar preguntándole al proveedor.
-  assert.ok(body.includes("retrieveCheckoutSession"), "confirma preguntando, no creyendo");
+  // Confirma PREGUNTANDO, no creyendo: el descubrimiento es el que pregunta, y
+  // dentro de él cada candidata se consulta al proveedor.
+  assert.ok(body.includes("locateSessionForPurchase(intent, hint)"),
+    "confirma preguntando, no creyendo");
+  const loc = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
+  assert.ok(loc.includes("retrieveCheckoutSession(sessionId)"));
   assert.ok(body.includes("confirmPaymentAndGrant"),
     "y usa el MISMO camino de confirmación que el webhook, no uno más laxo");
 
@@ -539,6 +614,10 @@ test("MON003 · 47 — SERVER: el success_url no otorga NADA", () => {
   assert.ok(hintAt !== -1, "la pista se filtra, no se usa cruda");
   const locateAt = body.indexOf("locateSessionForPurchase(intent, hint)");
   assert.ok(locateAt > hintAt, "y se resuelve por el camino que la verifica");
+  // Correction 07: esta ruta OTORGA, así que descubre siempre — nunca se queda con
+  // el id guardado, que no demuestra que no exista una hermana con el dinero.
+  assert.ok(!/retrieveCheckoutSession\(intent\.providerSessionId\)/.test(body),
+    "un id guardado no puede cortocircuitar el descubrimiento en la ruta que otorga");
   assert.ok(body.indexOf("attachProviderSession") > locateAt,
     "sólo se adjunta DESPUÉS de localizar y verificar");
   // El importe, el plan y el estado no pueden venir de la query por ninguna vía.
@@ -1382,7 +1461,8 @@ test("MON003 · C2.10 — SERVER: reanudar usa la MISMA clave, y se verifica la 
   // La clave es el id de compra, y los parámetros son los CONGELADOS.
   const mk = src.slice(src.indexOf("async function createSessionFor(intent, slug)"));
   const mkBody = mk.slice(0, mk.indexOf("\nasync function ", 10));
-  assert.ok(mkBody.includes("idempotencyKey: `checkout:${intent.id}`"));
+  assert.ok(mkBody.includes("idempotencyKey: attempt.idempotencyKey"),
+    "la clave sale del INTENTO, congelada con sus parametros");
   assert.ok(mkBody.includes("amountMinor: intent.expectedAmountMinor"));
   assert.ok(!mkBody.includes("commercial_config"), "nunca la oferta de hoy: sería otra venta");
 });
@@ -1395,7 +1475,7 @@ test("MON003 · C2.11 — SERVER: el turno cubre TODA el alta y se suelta siempr
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
   const claimAt = body.indexOf("isClaimActive(claims[key]");
-  const attachAt = body.indexOf("attachProviderSession(intent.id, session)");
+  const attachAt = body.indexOf("attachProviderSession(intent.id, session,");
   const releaseAt = body.indexOf("releaseReplacementClaim(claim)");
   assert.ok(claimAt !== -1 && attachAt !== -1 && releaseAt !== -1);
   assert.ok(claimAt < attachAt, "el turno se toma antes de decidir nada");
@@ -1550,7 +1630,7 @@ test("MON003 · C3.6 — SERVER: la compra se persiste ANTES de hablar con el pr
   const body = co.slice(0, co.indexOf("\n});"));
   const openAt = body.indexOf("openPurchase(slug, dead)");
   const netAt = body.indexOf("createSessionFor(intent, slug)");
-  const attachAt = body.indexOf("attachProviderSession(intent.id, session)");
+  const attachAt = body.indexOf("attachProviderSession(intent.id, session,");
   assert.ok(openAt !== -1 && netAt !== -1 && attachAt !== -1);
   assert.ok(openAt < netAt && netAt < attachAt);
 });
@@ -1563,7 +1643,7 @@ test("MON003 · C3.7 — SERVER: un fallo al guardar la sesión NO rompe el inva
   const src = stripComments(serverSrc);
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
-  const tail = body.slice(body.indexOf("attachProviderSession(intent.id, session)"));
+  const tail = body.slice(body.indexOf("attachProviderSession(intent.id, session,"));
   assert.ok(tail.includes("checkout_session_persist_failed"), "queda registrado");
   assert.ok(tail.includes("err && err.message"), "y con el motivo, no en silencio");
   assert.ok(!tail.includes("createSessionFor"), "no se pide otra sesión");
@@ -1574,8 +1654,10 @@ test("MON003 · C3.8 — SERVER: reanudar guarda la sesión recuperada, sin depe
   const src = stripComments(serverSrc);
   const fn = src.slice(src.indexOf("async function resolveOpenIntent(intent, currentOffer, reusable = true)"));
   const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
-  assert.ok(/attachProviderSession\(intent\.id, \{ sessionId, url \}\)\.catch\(/.test(body),
+  assert.ok(/attachProviderSession\(intent\.id, \{ sessionId, url \},/.test(body),
     "si guardar falla, se sigue: la próxima vez se vuelve a localizar");
+  assert.ok(body.includes("verifiedAttempts"),
+    "y se anota con cuántos intentos se demostró la unicidad");
   assert.ok(body.includes("checkout_session_recovered"), "y queda constancia del rescate");
   // Correction 05: PRIMERO se localiza, y sólo se crea si se demostró que no
   // existe nada. Crear a ciegas es lo que dependía de la retención de la clave.
@@ -1596,26 +1678,32 @@ test("MON003 · C3.9 — la marca de creación es una PRECONDICIÓN, no una nota
   const src = stripComments(serverSrc);
   const mkBody = cuerpoDe(src, "async function createSessionFor(intent, slug)");
   // Se marca ANTES de la red, y SIN red de escape.
-  assert.ok(mkBody.includes("await markCreationAttempted(intent.id);"));
-  assert.ok(!/markCreationAttempted\([^)]*\)\.catch\(/.test(mkBody),
+  assert.ok(mkBody.includes("await recordCreationAttempt(intent.id, Date.now());"));
+  assert.ok(!/recordCreationAttempt\([^)]*\)\.catch\(/.test(mkBody),
     "un .catch aquí convierte la afirmación en una mentira posible");
-  assert.ok(mkBody.indexOf("markCreationAttempted") < mkBody.indexOf("createCheckoutSession"),
+  assert.ok(mkBody.indexOf("recordCreationAttempt") < mkBody.indexOf("createCheckoutSession"),
     "primero la marca durable, después la petición");
 
   // Y la propia marca LANZA cuando no consigue quedar escrita, incluido el caso
   // en que la compra no está en la fila.
-  const mark = cuerpoDe(src, "async function markCreationAttempted(purchaseId)");
+  const mark = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
   assert.ok(mark.includes('throw new Error("creation_marker_purchase_missing")'),
     "marcar algo que no existe no es un éxito");
   assert.ok(mark.includes('await client.query("COMMIT")'), "y se commitea de verdad");
   assert.ok(mark.includes("throw err"), "cualquier fallo sube");
   // Nunca reescribe: la primera marca es la que acota la ventana.
-  assert.ok(mark.includes("if (target.creationAttemptedAt)"));
+  assert.ok(mark.includes("isAttemptReusable(\n"), "se comprueba si la identidad anterior sirve");
 
   // NADA decide en función de ese campo salvo el descubrimiento, que es su razón
   // de ser.
   const locate = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
-  assert.ok(locate.includes("intent.creationAttemptedAt"));
+  // Correction 07: el descubrimiento ya no lee el campo a mano, usa las ventanas de
+  // intento que el dominio deriva de él (y del legado).
+  assert.ok(locate.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS)"));
+  const dom = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "paymentsDomain.js"), "utf8"));
+  assert.ok(cuerpoDe(dom, "function creationAttemptsOf(intent)").includes("intent.creationAttemptedAt"),
+    "el campo legado sigue contando como el primer intento");
 });
 
 test("MON003 · C3.10 — el dominio no exige saber la sesión para contar una compra", () => {
@@ -1635,8 +1723,12 @@ test("MON003 · C3.11 — la clave de idempotencia es la identidad de la COMPRA"
   // invariant tiene que impedir que nazca la segunda COMPRA, no sólo la segunda
   // sesión: una vez existen dos compras abiertas, ya no hay nada que las una.
   const src = stripComments(serverSrc);
-  const claves = src.match(/idempotencyKey: `checkout:\$\{intent\.id\}`/g) || [];
-  assert.equal(claves.length, 1, "un solo sitio construye la clave del checkout");
+  // Correction 07: una identidad por INTENTO, no por compra. Dos peticiones con
+  // parametros distintos no pueden compartir clave.
+  const claves = src.match(/`checkout:\$\{purchaseId\}:\$\{seq\}`/g) || [];
+  assert.equal(claves.length, 1, "un solo sitio construye la clave de un intento nuevo");
+  assert.ok(src.includes("idempotencyKey: attempt.idempotencyKey"),
+    "y la creacion usa exactamente esa");
   // Y ese sitio es el único que crea sesiones de checkout.
   const creaciones = src.match(/stripeAdapter\.createCheckoutSession\(/g) || [];
   assert.equal(creaciones.length, 1, "todas las creaciones pasan por createSessionFor");
@@ -2057,17 +2149,29 @@ test("MON003 · C5.4 — SERVER: localizar NUNCA concluye una ausencia que no pu
   // Y la pista se verifica y se AÑADE al conjunto, jamás cortocircuita.
   assert.ok(body.includes("verifySessionForPurchase(intent, observed)"));
   assert.ok(body.includes("encontradas.set(observed.sessionId, observed)"));
-  assert.ok(body.includes("session_hint_rejected"));
-  const hintAt = body.indexOf("encontradas.set(observed.sessionId, observed)");
+  assert.ok(body.includes("session_candidate_rejected"),
+    "lo que no verifica queda registrado, no ignorado");
+  const hintAt = body.indexOf('mirar(hint, "hint")');
   const listAt = body.indexOf("listCheckoutSessions(");
   assert.ok(hintAt !== -1 && listAt !== -1 && hintAt < listAt);
-  assert.ok(!/if \(hint\)[\s\S]{0,600}return \{ session/.test(body),
+  assert.ok(!/if \(hint[\s\S]{0,400}return \{ session/.test(body),
     "aceptar la pista y volver a casa dejaría invisible cualquier otra sesión");
+  // Correction 07: las guardadas entran SIEMPRE en el conjunto, antes que la pista.
+  assert.ok(body.includes('knownSessionIdsOf(intent)) await mirar(id, "stored")'));
+  assert.ok(body.indexOf('mirar(id, "stored")') < hintAt);
   // Se recorren TODAS las páginas antes de decidir: ningún return dentro del bucle.
-  const bucle = body.slice(body.indexOf("for (let page = 0"));
-  const finBucle = bucle.indexOf("\n  }");
-  assert.ok(!/\breturn\b/.test(bucle.slice(0, finBucle)),
+  // El recorte va por llaves y no por indentación, porque el bucle está anidado
+  // dentro del de ventanas desde Correction 07.
+  const bucle = cuerpoDe(body, "for (let page = 0");
+  assert.ok(!/\breturn\b/.test(bucle),
     "un return dentro del paginado deja páginas sin leer");
+  // Y lo mismo con el bucle de VENTANAS: salir a media lista de ventanas dejaría
+  // sin mirar la ventana de un intento posterior, que es el agujero de C07.
+  const ventanas = cuerpoDe(body, "for (const w of ventanas)");
+  const salidas = ventanas.match(/\breturn\b/g) || [];
+  assert.ok(salidas.length <= 2, "sólo las dos salidas de truncamiento: " + salidas.length);
+  assert.ok(/agotado[\s\S]{0,200}list_truncated/.test(ventanas),
+    "y ambas son por no poder demostrar nada, nunca por haber encontrado algo");
   // Buscar no es vender.
   assert.ok(!body.includes("createCheckoutSession"));
   assert.ok(!body.includes("createSessionFor"));
@@ -2076,16 +2180,22 @@ test("MON003 · C5.4 — SERVER: localizar NUNCA concluye una ausencia que no pu
 test("MON003 · C5.5 — SERVER: la ventana de búsqueda sale de un dato NUESTRO", () => {
   const src = stripComments(serverSrc);
   const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
-  assert.ok(body.includes("Date.parse(intent.creationAttemptedAt)"),
-    "la ventana la fija el instante en que PEDIMOS la creación");
-  assert.ok(body.includes("SESSION_LOOKUP_MARGIN_MS"));
+  // Correction 07: hay UNA ventana POR INTENTO, no una sola anclada al primero.
+  assert.ok(body.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS)"),
+    "las ventanas las fijan los instantes en que PEDIMOS cada creación");
+  assert.ok(body.includes("for (const w of ventanas)"), "se recorren todas");
   assert.ok(body.includes("SESSION_LOOKUP_MAX_PAGES"));
-  // Un sello ilegible no se rellena con la hora de ahora: se admite no saber.
-  assert.ok(body.includes('{ unknown: true, via: "unreadable_attempt_time" }'));
+  // Sin ningún intento registrado no puede existir ninguna sesión.
+  assert.ok(body.includes('{ absent: true, via: "never_attempted" }'));
+  // Y un instante ilegible no cuenta como ventana: el dominio lo descarta en vez de
+  // rellenarlo con la hora de ahora.
+  const dom2 = stripComments(
+    fs.readFileSync(path.join(__dirname, "..", "payments", "paymentsDomain.js"), "utf8"));
+  assert.ok(cuerpoDe(dom2, "function creationAttemptsOf(intent)").includes("if (!Number.isFinite(at)) continue"));
   // Y `creationAttemptedAt` no es auditoría: sostiene esto, y se escribe una sola
   // vez porque la primera marca es la que acota la ventana.
-  const mark = cuerpoDe(src, "async function markCreationAttempted(purchaseId)");
-  assert.ok(mark.includes("if (target.creationAttemptedAt)"));
+  const mark = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
+  assert.ok(mark.includes("isAttemptReusable(\n"), "se comprueba si la identidad anterior sirve");
 });
 
 test("MON003 · C5.6 — SERVER: reanudar localiza primero y crea sólo ante una ausencia probada", () => {
@@ -2301,13 +2411,13 @@ test("MON003 · C5.13 — un cobro en curso es un estado de RECUPERACIÓN, no un
 test("MON003 · C6.1 — la marca se escribe ANTES de la red y sin red de escape", () => {
   const src = stripComments(serverSrc);
   const body = cuerpoDe(src, "async function createSessionFor(intent, slug)");
-  assert.ok(body.includes("await markCreationAttempted(intent.id);"));
+  assert.ok(body.includes("await recordCreationAttempt(intent.id, Date.now());"));
   // Un `.catch` aquí es justamente el agujero: convierte "sin marca no puede
   // haber sesión" en una afirmación que puede ser falsa.
-  assert.ok(!/markCreationAttempted\([^)]*\)\s*\.catch/.test(body));
-  assert.ok(!/markCreationAttempted[\s\S]{0,200}?try\s*\{/.test(body),
+  assert.ok(!/recordCreationAttempt\([^)]*\)\s*\.catch/.test(body));
+  assert.ok(!/recordCreationAttempt[\s\S]{0,200}?try\s*\{/.test(body),
     "ni un try/catch que se la tragüe");
-  const markAt = body.indexOf("markCreationAttempted");
+  const markAt = body.indexOf("recordCreationAttempt");
   const netAt = body.indexOf("stripeAdapter.createCheckoutSession");
   assert.ok(markAt !== -1 && netAt !== -1 && markAt < netAt);
   // Y no hay ninguna otra vía que pida una sesión salteándose la marca.
@@ -2316,12 +2426,22 @@ test("MON003 · C6.1 — la marca se escribe ANTES de la red y sin red de escape
 
 test("MON003 · C6.2 — marcar algo que no existe NO es un éxito", () => {
   const src = stripComments(serverSrc);
-  const body = cuerpoDe(src, "async function markCreationAttempted(purchaseId)");
+  const body = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
   assert.ok(body.includes('throw new Error("creation_marker_purchase_missing")'));
   // El orden importa: se busca la compra ANTES de escribir.
   assert.ok(body.indexOf("store.purchases.find") < body.indexOf("putRow("));
   // Una marca previa no se reescribe, y no es un error.
-  assert.ok(body.includes("if (target.creationAttemptedAt)"));
+  // Correction 07: CADA emisión deja su fila —su ventana— y lo que se hereda,
+  // cuando todavía sirve, son la clave y la expiración.
+  assert.ok(body.includes("isAttemptReusable("), "se comprueba si la identidad anterior sirve");
+  assert.ok(body.includes("idempotencyKey: reutilizable ? ultimo.idempotencyKey"),
+    "misma clave mientras sus parámetros sigan siendo válidos");
+  assert.ok(body.includes("expiresAt: reutilizable ? ultimo.expiresAt"),
+    "y la MISMA expiración con esa misma clave");
+  assert.ok(body.includes("concat([attempt])"), "pero la fila de la emisión se añade siempre");
+  assert.ok(body.includes("MAX_CREATION_ATTEMPTS"),
+    "y la lista está acotada: al tope se falla cerrado, no se olvida una ventana");
+  assert.ok(body.includes("creation_attempts_exhausted"));
   // Todo fallo sube, y la transacción se cierra.
   assert.ok(body.includes("throw err"));
   assert.ok(body.includes('await client.query("COMMIT")'));
@@ -2435,7 +2555,10 @@ test("MON003 · C6.5 — SERVER: la pista se UNE al conjunto, nunca lo cortocirc
   // 'nunca se intentó' — que además contempla la contradicción.
   const entre = body.slice(hintAt, listAt);
   const returns = entre.match(/\breturn\b/g) || [];
-  assert.ok(returns.length <= 3, "demasiadas salidas antes del descubrimiento: " + returns.length);
+  assert.ok(returns.length <= 5, "demasiadas salidas antes del descubrimiento: " + returns.length);
+  // Y ninguna de esas salidas puede ser un "no existe nada" cuando SÍ se encontró
+  // algo: eso es lo que dejaría una hermana invisible.
+  assert.ok(!/encontradas\.size[\s\S]{0,120}absent: true/.test(entre));
   assert.ok(entre.includes("session_found_without_marker"),
     "una pista válida sin marca es una contradicción que se registra, no se ignora");
   // Un Map por id: la misma sesión vista dos veces cuenta una.
@@ -2513,7 +2636,8 @@ test("MON003 · C6.8 — la expiración es explícita, determinista y dentro del
   const src = stripComments(serverSrc);
   // El caller la pasa SIEMPRE.
   const mk = cuerpoDe(src, "async function createSessionFor(intent, slug)");
-  assert.ok(mk.includes("expiresAt: stripeAdapter.checkoutExpiresAt(intent.createdAt, Date.now())"));
+  assert.ok(mk.includes("expiresAt: attempt.expiresAt"),
+    "congelada con el intento, no recalculada");
   // Y el adaptador la manda.
   const adapter = stripComments(
     fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
@@ -2582,4 +2706,245 @@ test("MON003 · C6.9 — los comentarios ya no afirman lo que dejó de ser ciert
   assert.ok(adapter.includes("NO es la pieza que sostiene la"));
   // La marca se describe como precondición, no como nota.
   assert.ok(server.includes("LA PRECONDICIÓN DE TODO"));
+});
+
+// ==== 21 · Correction 07: intentos en el tiempo, y hermanas visibles ==========
+//
+// El contrato, ampliado: CADA emisión deja su ventana durable; los parámetros son
+// estables por clave; y un id guardado no demuestra que no exista otra sesión.
+
+test("MON003 · C7.1 — cada emisión deja su ventana, y las ventanas se fusionan", () => {
+  const w = (at) => ({ seq: 1, at, idempotencyKey: "k", expiresAt: 1 });
+  const M = 15 * 60 * 1000;
+  // Un solo intento: una ventana centrada en él.
+  const uno = D.discoveryWindows({ attempts: [w("2026-09-15T12:00:00.000Z")] }, M);
+  assert.equal(uno.length, 1);
+  assert.equal(uno[0].from, Date.parse("2026-09-15T11:45:00.000Z"));
+  assert.equal(uno[0].to, Date.parse("2026-09-15T12:15:00.000Z"));
+
+  // Dos intentos separados 23 h 40: DOS ventanas. Éste es el caso del ticket — la
+  // sesión del segundo quedaba fuera por construcción.
+  const lejos = D.discoveryWindows({ attempts: [
+    { ...w("2026-09-15T12:00:00.000Z"), seq: 1 },
+    { ...w("2026-09-16T11:40:00.000Z"), seq: 2 }] }, M);
+  assert.equal(lejos.length, 2);
+  assert.ok(lejos[1].from > lejos[0].to, "y no se solapan");
+
+  // Dos intentos juntos: UNA ventana fusionada, para no gastar dos consultas.
+  const juntos = D.discoveryWindows({ attempts: [
+    { ...w("2026-09-15T12:00:00.000Z"), seq: 1 },
+    { ...w("2026-09-15T12:05:00.000Z"), seq: 2 }] }, M);
+  assert.equal(juntos.length, 1);
+
+  // El orden de la lista no cambia las ventanas.
+  const alReves = D.discoveryWindows({ attempts: [
+    { ...w("2026-09-16T11:40:00.000Z"), seq: 2 },
+    { ...w("2026-09-15T12:00:00.000Z"), seq: 1 }] }, M);
+  assert.deepEqual(alReves, lejos);
+
+  // Legado: sólo `creationAttemptedAt` cuenta como el primer intento, para que su
+  // ventana siga buscándose.
+  const legado = D.discoveryWindows({ creationAttemptedAt: "2026-09-15T12:00:00.000Z" }, M);
+  assert.deepEqual(legado, uno);
+  // Y sin ninguna marca no hay ventana: no se pudo emitir nada.
+  assert.deepEqual(D.discoveryWindows({}, M), []);
+  // Una fecha ilegible no inventa una ventana.
+  assert.deepEqual(D.discoveryWindows({ attempts: [w("no-es-fecha")] }, M), []);
+});
+
+test("MON003 · C7.2 — una identidad se reutiliza mientras sus parámetros sirvan", () => {
+  const ahora = Date.parse("2026-09-15T12:00:00.000Z");
+  const MEDIA = 30 * 60 * 1000;
+  const att = (horasRestantes) => ({ seq: 1, at: "x", idempotencyKey: "k",
+    expiresAt: Math.floor((ahora + horasRestantes * 3600 * 1000) / 1000) });
+  // Con holgura de sobra, se reutiliza: misma clave, mismos parámetros.
+  assert.equal(D.isAttemptReusable(att(20), ahora, MEDIA), true);
+  assert.equal(D.isAttemptReusable(att(1), ahora, MEDIA), true);
+  // Por debajo del suelo contractual, ya no: hay que estrenar identidad.
+  assert.equal(D.isAttemptReusable(att(0.4), ahora, MEDIA), false);
+  assert.equal(D.isAttemptReusable(att(-1), ahora, MEDIA), false);
+  // Y un intento sin clave o sin expiración —el legado— nunca se reutiliza: no se
+  // sabe con qué parámetros se pidió.
+  assert.equal(D.isAttemptReusable({ seq: 1, at: "x" }, ahora, MEDIA), false);
+  assert.equal(D.isAttemptReusable({ seq: 1, at: "x", idempotencyKey: "k" }, ahora, MEDIA), false);
+  assert.equal(D.isAttemptReusable(null, ahora, MEDIA), false);
+});
+
+test("MON003 · C7.3 — SERVER: cada emisión se registra, y la identidad se hereda", () => {
+  const src = stripComments(serverSrc);
+  const body = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
+  // La fila se añade SIEMPRE: la ventana la fija el instante de la emisión, no el de
+  // la primera. Reutilizar el registro entero era el agujero por otra puerta.
+  assert.ok(body.includes("concat([attempt])"));
+  assert.ok(body.includes("idempotencyKey: reutilizable ? ultimo.idempotencyKey"));
+  assert.ok(body.includes("expiresAt: reutilizable ? ultimo.expiresAt"));
+  // Se commitea antes de devolver, y cualquier fallo sube.
+  assert.ok(body.includes('await client.query("COMMIT")'));
+  assert.ok(body.includes("throw err"));
+  assert.ok(body.includes('throw new Error("creation_marker_purchase_missing")'));
+  // El tope no poda ninguna ventana: falla cerrado.
+  assert.ok(body.includes("MAX_CREATION_ATTEMPTS"));
+  assert.ok(body.includes('throw new Error("creation_attempts_exhausted")'));
+  assert.ok(!body.includes("slice(-"), "no se descarta ninguna ventana");
+  // Y la marca legada se conserva: es la que sostiene 'sin marca, cero emisiones'.
+  assert.ok(body.includes("creationAttemptedAt: p.creationAttemptedAt || at"));
+});
+
+test("MON003 · C7.4 — SERVER: el descubrimiento recorre TODAS las ventanas", () => {
+  const src = stripComments(serverSrc);
+  const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
+  assert.ok(body.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS)"));
+  assert.ok(body.includes("for (const w of ventanas)"));
+  // Y las sesiones ya GUARDADAS entran siempre en el conjunto, antes que nada.
+  const storedAt = body.indexOf('mirar(id, "stored")');
+  const hintAt = body.indexOf('mirar(hint, "hint")');
+  const listAt = body.indexOf("listCheckoutSessions(");
+  assert.ok(storedAt !== -1 && hintAt !== -1 && listAt !== -1);
+  assert.ok(storedAt < hintAt && hintAt < listAt,
+    "guardadas, pista, listado: y ninguna puede tapar a otra");
+  // Una guardada que no se puede leer NO es una ausencia.
+  assert.ok(body.includes('conflict = conflict || "stored_session_unreadable"'));
+  assert.ok(body.includes('{ unknown: true, via: "stored_unreadable"'));
+});
+
+test("MON003 · C7.5 — un id guardado no demuestra que no haya hermanas", () => {
+  const conUno = { id: "qpur_a", providerSessionId: "cs_a",
+    attempts: [{ seq: 1, at: "2026-09-15T12:00:00.000Z", idempotencyKey: "k", expiresAt: 1 }],
+    sessionSetVerified: { at: "2026-09-15T12:00:00.000Z", attempts: 1 } };
+  // Con una emisión y la unicidad comprobada, no hace falta preguntar.
+  assert.equal(D.needsSessionDiscovery(conUno), false);
+  // Pero en cuanto aparece otra emisión, la comprobación caduca.
+  assert.equal(D.needsSessionDiscovery({ ...conUno,
+    attempts: conUno.attempts.concat([{ seq: 2, at: "2026-09-16T12:00:00.000Z", idempotencyKey: "k2", expiresAt: 2 }]) }), true);
+  // Y con multiplicidad conocida, siempre.
+  assert.equal(D.needsSessionDiscovery({ ...conUno, providerSessionIds: ["cs_a", "cs_b"] }), true);
+  // Sin sesión guardada, siempre.
+  assert.equal(D.needsSessionDiscovery({ ...conUno, providerSessionId: null }), true);
+  // Una fila legada, sin comprobación, siempre.
+  assert.equal(D.needsSessionDiscovery({ id: "qpur_a", providerSessionId: "cs_a",
+    creationAttemptedAt: "2026-09-15T12:00:00.000Z" }), true);
+  // Y los ids conocidos incluyen los dos campos, sin duplicar y ordenados.
+  assert.deepEqual(D.knownSessionIdsOf({ providerSessionId: "cs_b",
+    providerSessionIds: ["cs_a", "cs_b", null, ""] }), ["cs_a", "cs_b"]);
+});
+
+test("MON003 · C7.6 — SERVER: el camino rápido no decide, y su ceguera está acotada", () => {
+  const src = stripComments(serverSrc);
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
+  const body = co.slice(0, co.indexOf("\n});"));
+  // Sólo sirve un enlace que ya existe: no otorga, no mata nada y no abre ventas.
+  const rapido = body.slice(body.indexOf("const fresca ="), body.indexOf("const key = paymentsDomain.replacementKey"));
+  assert.ok(!rapido.includes("openPurchase"));
+  assert.ok(!rapido.includes("createSessionFor"));
+  assert.ok(!rapido.includes("expireCheckoutSession"));
+  assert.ok(!rapido.includes("confirmPaymentAndGrant"));
+  // Y pide unicidad establecida + frescura, que es lo que acota cuánto puede estar
+  // desactualizado lo que devuelve.
+  assert.ok(body.includes("!paymentsDomain.needsSessionDiscovery(reusable)"));
+  assert.ok(body.includes("CHECKOUT_FASTPATH_WINDOW_MS"));
+  assert.ok(src.includes("const CHECKOUT_FASTPATH_WINDOW_MS = 10 * 60 * 1000"));
+  // Los caminos que SÍ deciden descubren siempre.
+  const resolve = cuerpoDe(src, "async function resolveOpenIntent(intent, currentOffer, reusable = true)");
+  assert.ok(!/if \(!sessionId\)/.test(resolve), "ya no se salta el descubrimiento por tener un id");
+  assert.ok(resolve.includes("locateSessionForPurchase(intent, null)"));
+});
+
+test("MON003 · C7.7 — la expiración se congela por emisión, y en rango", () => {
+  const A = require("../payments/stripeAdapter");
+  const DIA = 24 * 3600 * 1000;
+  const MEDIA = 30 * 60 * 1000;
+  const ahora = Date.parse("2026-09-15T12:00:00.000Z");
+  // Se pide con el instante de LA EMISIÓN, así que siempre sale el techo.
+  const at = new Date(ahora).toISOString();
+  assert.equal(A.checkoutExpiresAt(at, ahora) * 1000, ahora + DIA);
+  // Y es estable: el mismo instante de emisión da el mismo valor, se pida cuando se
+  // pida. Es lo que permite repetir con la misma clave.
+  assert.equal(A.checkoutExpiresAt(at, ahora), A.checkoutExpiresAt(at, ahora + 5 * 60 * 1000));
+  // Siempre en rango contractual respecto a `nowMs`.
+  for (const h of [0, 1, 12, 23, 25, 200]) {
+    const emision = new Date(ahora - h * 3600 * 1000).toISOString();
+    const v = A.checkoutExpiresAt(emision, ahora) * 1000;
+    assert.ok(v >= ahora + MEDIA && v <= ahora + DIA, `fuera de rango con ${h}h`);
+  }
+});
+
+test("MON003 · C7.8 — un pago ajeno REETIQUETADO no habilita otra quiniela", () => {
+  // Hallazgo propio de Correction 07. Al admitir hermanas, la identidad la daba la
+  // metadata — y un pago real de otra compra con la metadata reescrita cumplía todos
+  // los controles: mismo importe, misma moneda, mismo torneo.
+  //
+  // Lo cierra que la identidad viaja en DOS portadores independientes que nosotros
+  // escribimos al crear: en una sesión legítima siempre coinciden, así que discrepar
+  // sólo puede ser un reetiquetado. Hoy eso exigiría el signing secret; comprobarlo
+  // cuesta nada y no rechaza nada legítimo.
+  const mine = intentOf({ providerSessionId: "cs_mine" });
+  const reetiquetado = observedOf({
+    sessionId: "cs_de_otra_venta",
+    purchaseId: mine.id,            // la metadata dice que es nuestro…
+    metadataPurchaseId: mine.id,
+    clientReferenceId: "qpur_de_otra_venta",   // …pero el otro portador no
+  });
+  const d = decide(mine, reetiquetado);
+  assert.equal(d.decision, D.DECISION.IDENTITY_MISMATCH);
+  assert.equal(d.attention, D.ATTENTION.IDENTITY_MISMATCH);
+
+  // Y al revés: reetiquetar el `client_reference_id` tampoco cuela.
+  assert.equal(decide(mine, observedOf({
+    sessionId: "cs_x", purchaseId: "qpur_otra", metadataPurchaseId: "qpur_otra",
+    clientReferenceId: mine.id })).decision, D.DECISION.IDENTITY_MISMATCH);
+
+  // Una hermana legítima lleva los DOS portadores coherentes, y sí confirma.
+  const hermana = decide(mine, observedOf({
+    sessionId: "cs_hermana", purchaseId: mine.id,
+    metadataPurchaseId: mine.id, clientReferenceId: mine.id }));
+  assert.equal(hermana.decision, D.DECISION.CONFIRM);
+  assert.equal(hermana.attention, D.ATTENTION.MANY_SESSIONS);
+
+  // Con un solo portador presente se sigue aceptando: una sesión antigua puede no
+  // llevar los dos, y ahí manda el que haya.
+  assert.equal(decide(mine, observedOf({
+    sessionId: "cs_mine", purchaseId: mine.id,
+    metadataPurchaseId: mine.id, clientReferenceId: null })).decision, D.DECISION.CONFIRM);
+  assert.equal(decide(mine, observedOf({
+    sessionId: "cs_mine", purchaseId: mine.id,
+    metadataPurchaseId: null, clientReferenceId: mine.id })).decision, D.DECISION.CONFIRM);
+});
+
+test("MON003 · C7.9 — las DOS normalizaciones exponen la MISMA identidad", () => {
+  // La razón estructural por la que C7.8 pudo existir: el chequeo de los dos
+  // portadores vivía en el dominio, pero `normalizeEvent` no los subía, así que el
+  // webhook —que es LA autoridad— era la vía más laxa de las dos.
+  //
+  // Esta prueba impide que vuelvan a divergir.
+  const stripeA = require("../payments/stripeAdapter");
+  const base = {
+    id: "cs_1", amount_total: 19900, currency: "mxn", status: "complete",
+    payment_status: "paid", payment_intent: "pi_1",
+    created: 1000, expires_at: 2000, url: null,
+    client_reference_id: "qpur_a",
+    metadata: { qracks_purchase_id: "qpur_a", qracks_slug: "liga", qracks_scope_id: SCOPE },
+  };
+  const porSesion = stripeA.normalizeSession(base);
+  const porEvento = stripeA.normalizeEvent({
+    id: "evt_1", type: "checkout.session.completed", data: { object: base } });
+
+  // Todo lo que el dominio usa para decidir tiene que existir y coincidir en ambas.
+  for (const campo of ["purchaseId", "clientReferenceId", "metadataPurchaseId",
+    "slugHint", "scopeHint", "sessionId", "paymentIntentId", "paid",
+    "amountMinor", "currency", "lifecycle"]) {
+    assert.deepEqual(porEvento[campo], porSesion[campo], `divergen en ${campo}`);
+  }
+
+  // Y con los portadores discrepando, las DOS vías lo exponen igual.
+  const reetiquetado = { ...base, client_reference_id: "qpur_otra" };
+  assert.equal(stripeA.normalizeSession(reetiquetado).clientReferenceId, "qpur_otra");
+  assert.equal(stripeA.normalizeEvent({ id: "e", type: "checkout.session.completed",
+    data: { object: reetiquetado } }).clientReferenceId, "qpur_otra");
+  // Y el dominio las rechaza por igual.
+  const mine = intentOf({ providerSessionId: "cs_1" });
+  for (const o of [stripeA.normalizeSession(reetiquetado),
+    stripeA.normalizeEvent({ id: "e", type: "checkout.session.completed", data: { object: reetiquetado } })]) {
+    assert.equal(D.evaluateConfirmation({ intent: mine, observed: o,
+      currentScopeId: SCOPE, quinielaExists: true }).decision, D.DECISION.IDENTITY_MISMATCH);
+  }
 });

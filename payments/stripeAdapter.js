@@ -50,16 +50,39 @@
 //  7. `GET /v1/payment_intents/search` sí la lleva, y es una advertencia
 //     explícita: "Don't use search in read-after-write flows where strict
 //     consistency is necessary […] propagation of new or updated data can be up
-//     to an hour behind during outages."
-//     -> POR ESO NO SE USA la búsqueda para demostrar una ausencia. Un resultado
-//        vacío de `search` no prueba nada; uno de `list` sí.
+//     to an hour behind during outages." La advertencia aparece en los siete
+//     endpoints `/search` del spec y en NINGÚN `list`.
+//     -> POR ESO NO SE USA la búsqueda para demostrar una ausencia.
+//
+//  8. Y una CORRECCIÓN a lo que este archivo afirmó en Correction 05: que el
+//     listado no lleve la advertencia NO es un contrato de consistencia
+//     read-after-write. Es una distinción deliberada de Stripe —anota search y no
+//     anota list— y por tanto evidencia, no garantía. Así que la seguridad no
+//     descansa en ella. Lo que la sostiene son dos redes superpuestas:
+//
+//       a) mientras los parámetros de un intento siguen siendo válidos, se repite
+//          con SU MISMA clave de idempotencia. Si el listado no viera una sesión
+//          que existe, la clave devuelve esa misma sesión en vez de crear otra.
+//       b) cuando los parámetros dejan de valer y hay que estrenar clave, es
+//          porque la expiración congelada de aquel intento YA PASÓ — y eso sí es
+//          contractual (punto 2). Una sesión pasada de su `expires_at` no puede
+//          cobrar, la viera el listado o no.
+//
+//     Es decir: un listado que se equivocara podría costar una consulta de más o
+//     un enlace de menos, nunca un segundo cobro. Lo único que un listado
+//     incompleto puede retrasar es ENCONTRAR un cobro para recuperarlo — y para
+//     eso están el webhook y las ventanas, que no se podan nunca.
 //
 // Lo que NO se apoya en nada de esto, a propósito:
 //
-//   - La retención de la clave de idempotencia. Stripe documenta que puede
-//     eliminarla pasadas al menos 24 h, así que Correction 05 dejó de usarla
-//     como identidad: la sesión se LOCALIZA. La clave se sigue mandando como
-//     segunda red.
+//   - La retención de la clave de idempotencia. Se documenta que puede eliminarse
+//     pasadas al menos 24 h, así que Correction 05 dejó de usarla como identidad:
+//     la sesión se LOCALIZA. La clave se sigue mandando como segunda red, y para
+//     que esa red funcione los parámetros de una misma clave son estables
+//     (Correction 07): el spec declara `idempotency_error` como tipo de error
+//     propio, y reutilizar una clave con parámetros distintos es la forma de
+//     provocarlo. Ni la retención ni ese rechazo son necesarios para la
+//     corrección: sólo para el ahorro.
 //   - El calendario de reintentos de webhooks. No está en el contrato legible
 //     por máquina al que se tiene acceso, así que la recuperación funciona con
 //     el webhook llegando tarde, llegando dos veces, o no llegando nunca.
@@ -194,6 +217,8 @@ function normalizeEvent(parsedBody) {
     return {
       eventId: id, type, kind: "audit_only",
       purchaseId: meta.qracks_purchase_id || null,
+      clientReferenceId: null,
+      metadataPurchaseId: meta.qracks_purchase_id || null,
       sessionId: null,
       paymentIntentId: asId(obj.payment_intent),
       paid: false, amountMinor: null, currency: null, terminalStatus: null,
@@ -216,7 +241,16 @@ function normalizeEvent(parsedBody) {
     lifecycle: (typeof obj.status === "string" && SESSION_LIFECYCLE[obj.status]) || "unknown",
     // Pista para localizar el registro durable. NO es autoridad: quien decide
     // es el intent guardado (ver paymentsDomain.locateIntent).
-    purchaseId: meta.qracks_purchase_id || null,
+    //
+    // Los DOS portadores suben por separado, igual que en normalizeSession: el
+    // dominio comprueba que digan lo mismo, y esa comprobación es justo la que
+    // impide que un pago ajeno con la metadata reescrita pase por propio. Si aquí
+    // faltaran, el webhook —que es la autoridad— sería la vía MÁS laxa de las dos.
+    purchaseId: meta.qracks_purchase_id
+      || (typeof obj.client_reference_id === "string" ? obj.client_reference_id : null)
+      || null,
+    clientReferenceId: typeof obj.client_reference_id === "string" ? obj.client_reference_id : null,
+    metadataPurchaseId: meta.qracks_purchase_id || null,
     slugHint: meta.qracks_slug || null,
     scopeHint: meta.qracks_scope_id || null,
     sessionId: asId(obj.id),
