@@ -700,7 +700,10 @@ test("C09 · la oferta dice CÓMO se compra, y el servidor lo decide en TODOS lo
   // El helper: tarjeta si la pasarela está configurada; si no, manual SÓLO si
   // nada del torneo puede estar cobrando; ante la duda, bloqueado.
   const fn = blockFrom(src, "async function checkoutModeFor(slug, scopeId)");
-  assert.ok(fn.includes('if (stripeAdapter.isConfigured()) return "card";'));
+  // Correction 10: la MISMA readiness que el checkout; mal configurado no es manual.
+  assert.ok(fn.includes("const estado = paymentsReadiness().state;"));
+  assert.ok(fn.includes('if (estado === stripeAdapter.PAYMENTS_STATE.READY) return "card";'));
+  assert.ok(fn.includes('if (estado === stripeAdapter.PAYMENTS_STATE.MISCONFIGURED) return "unavailable";'));
   assert.ok(fn.includes("openIntentsForScope(") && fn.includes("identityBlockers("));
   assert.ok(fn.includes('return "manual";'));
   assert.ok(/catch \(err\) \{[\s\S]*return "blocked";/.test(fn), "si no se puede leer, bloqueado");
@@ -711,7 +714,7 @@ test("C09 · la oferta dice CÓMO se compra, y el servidor lo decide en TODOS lo
   assert.equal((src.match(/checkout: await checkoutModeFor\(/g) || []).length, 3, "402 x2 + /plan");
   // El checkout sin pasarela: manual sólo si nada puede cobrar.
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout"'));
-  const sinPasarela = co.slice(co.indexOf("if (!stripeAdapter.isConfigured())"), co.indexOf("EL INVARIANT"));
+  const sinPasarela = co.slice(co.indexOf("if (readiness.state !== stripeAdapter.PAYMENTS_STATE.READY)"), co.indexOf("EL INVARIANT"));
   assert.ok(sinPasarela.includes('modo === "manual" ? "payments_unavailable" : "checkout_unavailable"'));
 });
 
@@ -719,7 +722,7 @@ test("C09 · la hoja: botón de pago SÓLO con tarjeta; contacto SÓLO en modo m
   const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
   const code = stripComments(sheet);
   // Modo desconocido -> tarjeta, nunca manual por omisión.
-  assert.ok(code.includes('const mode = offer ? (["card", "manual", "blocked"].includes(offer.checkout) ? offer.checkout : "card") : null;'));
+  assert.ok(code.includes('const mode = offer ? (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card") : null;'));
   // El botón existe sólo con tarjeta.
   assert.ok(code.includes('${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}'));
   // El texto de tarjeta no invita a escribir.

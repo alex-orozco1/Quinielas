@@ -474,10 +474,12 @@ const PLAN_LABELS = Object.freeze({
 //   "blocked"  la pasarela no está disponible y PUEDE haber un pago anterior
 //              abierto: ni checkout ni contacto — pagar por otro canal sería
 //              arriesgar un segundo cobro.
+//   "unavailable"  (Correction 10) la pasarela está MAL CONFIGURADA: un error
+//              de despliegue, no una decisión comercial. Ni checkout ni contacto.
 //
 // Sin `opts.checkout` la oferta sale como "card": la pantalla nunca debe caer en
 // el copy manual por omisión, que es justo la regresión que esto corrige.
-const CHECKOUT_MODES = Object.freeze(["card", "manual", "blocked"]);
+const CHECKOUT_MODES = Object.freeze(["card", "manual", "blocked", "unavailable"]);
 function buildUpgradeOffer(entitlement, commercialConfig, opts) {
   if (!entitlement || entitlement.plan !== "FREE") return { available: false };
   const plus = commercialConfig && commercialConfig.plus;

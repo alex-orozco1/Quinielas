@@ -769,7 +769,8 @@ test("MON003 · 56 — UI: sin pasarela configurada NO se finge un cobro", () =>
   // Correction 08: el 503 se parte por su motivo. Sólo "sin pasarela" es
   // `unavailable` (y ofrece la vía manual); "no se puede abrir uno NUEVO todavía"
   // tiene su propio motivo y NO invita a pagar por otro canal.
-  assert.ok(ui.includes('data.error === "checkout_unavailable") ? "checkout_unavailable" : "unavailable"'));
+  // Correction 10: y `payments_misconfigured` tampoco es "sin pasarela".
+  assert.ok(ui.includes('return { ok: false, reason: e503 === "checkout_unavailable" ? "checkout_unavailable"\n          : e503 === "payments_misconfigured" ? "payments_misconfigured" : "unavailable" };'));
   assert.ok(/El pago con tarjeta no está disponible/.test(indexSrc),
     "se dice la verdad y queda la vía manual");
   const sc = ui.slice(ui.indexOf('motivo === "checkout_unavailable"'));

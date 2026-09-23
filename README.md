@@ -444,14 +444,57 @@ QRACKS is currently deployed on Render, configured through `render.yaml`.
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret, used to verify that an event really came from Stripe. |
 | `PUBLIC_BASE_URL` | The public origin (e.g. `https://qracks.net`), used to build the return URLs a checkout comes back to. |
 
-The three Stripe variables are required **together**: with only some of them the
-product would be able to start a charge it could never verify, so payments stay
-switched off unless all three are present. When they are absent, the upgrade
-path falls back to the manual one and says so — it never shows a checkout that
-cannot charge. The manual fallback is offered only when nothing for that pool's
-tournament could still be charging; if an earlier checkout might still be open,
-the screen offers no alternative channel at all. While Stripe is configured, the
-Plus screen never tells an organizer to write in to buy.
+`PORT` (default `3000`) and `PG_POOL_MAX` (default `10`) are optional. `THESPORTSDB_API_KEY` and
+`SPORTMONKS_API_TOKEN` belong to the sports-data integration, not to payments. Currency (MXN), the
+Stripe API version and the webhook path are fixed in code; the Plus price and limits come from the
+Platform Panel (`commercial_config`), never from the environment.
+
+The server evaluates the three Stripe variables **once, at startup**, into one of three states that
+every payment path shares — the Plus screen, checkout, the webhook and reconciliation:
+
+| State | When | What organizers see |
+|---|---|---|
+| `READY` | All three present and valid, and Stripe accepts the key | Card checkout |
+| `DISABLED` | **No** Stripe credential at all — payments deliberately off | The manual fallback (only when nothing for that tournament could still be charging) |
+| `MISCONFIGURED` | Any Stripe credential present but something missing or wrong | Card payment "not available right now". No checkout, no webhook processing, **no** manual fallback — it is a deployment error, not a commercial choice |
+
+A partial configuration never opens a checkout it could not confirm, and never looks like a
+deliberate shutdown. While Stripe is `READY`, the Plus screen never tells an organizer to write in to buy.
+
+### MON-003 / Stripe deployment checklist
+
+**Sandbox** (Stripe *test mode* → QRACKS sandbox)
+
+- `PUBLIC_BASE_URL=https://qracks-mon003-sandbox.onrender.com`
+- `STRIPE_SECRET_KEY` = the **test-mode** secret key
+- Webhook destination URL: `https://qracks-mon003-sandbox.onrender.com/api/payments/stripe/webhook`
+- `STRIPE_WEBHOOK_SECRET` = the signing secret **of that sandbox destination**
+
+**Production** (Stripe *live mode* → qracks.net)
+
+- `PUBLIC_BASE_URL=https://qracks.net`
+- `STRIPE_SECRET_KEY` = the **live-mode** secret key
+- Webhook destination URL: `https://qracks.net/api/payments/stripe/webhook`
+- `STRIPE_WEBHOOK_SECRET` = the signing secret **of that production destination**
+
+**Both**
+
+- `PUBLIC_BASE_URL` is the bare origin: `https://`, no path, no trailing `?`/`#` (a trailing `/` is fine). It is
+  where Stripe sends the customer back, so it is never taken from the browser or the `Host` header.
+- Webhook events — exactly these six: `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+  `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created`.
+- Create the webhook destination with API version `2026-08-26.dahlia` (the one pinned in code).
+- **Never mix modes.** A test key with a live signing secret (or the reverse) is not detectable from the
+  environment alone: a signing secret carries no mode. Every webhook would then fail its signature — the
+  Platform Panel shows those rejections. A signing secret belongs to **one** destination: rotating or
+  recreating the destination means updating `STRIPE_WEBHOOK_SECRET` and restarting.
+- **Confirm before any end-to-end test.** Right after a deploy, the log has one line:
+  - `payments_readiness {"when":"startup","state":"ready","mode":"test","host":"qracks-mon003-sandbox.onrender.com","webhookUrl":"…/api/payments/stripe/webhook",…}` — good to go. Check that `mode` and `host` are the ones you expect.
+  - `PAYMENTS MISCONFIGURED {…"problems":["missing:PUBLIC_BASE_URL"]…}` — fix what `problems` names, then restart.
+  - `payments_readiness {…"state":"disabled"…}` — no Stripe credentials: payments are off on purpose.
+
+  The same diagnosis, in words and with the exact webhook URL to register, is on the Platform Panel under
+  **Pagos (Stripe)**. No value of any credential is ever logged or shown.
 
 Production: 🌐 **https://qracks.net**
 

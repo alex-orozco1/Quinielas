@@ -10,3 +10,12 @@ services:
         sync: false
       - key: PLATFORM_PASSWORD
         sync: false
+      # MON-003 Payments. Las tres juntas o ninguna (ninguna = pagos desactivados
+      # a propósito; algunas = MISCONFIGURED, falla cerrado). Valores sólo en el
+      # dashboard de Render, nunca aquí. Ver "Stripe deployment checklist" en el README.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false

@@ -1319,6 +1319,19 @@
       return data.health || empty;
     }catch(e){ console.error("getPlatformSportsHealth failed", e); return empty; }
   }
+  // MON-003 Correction 10: el estado de Payments tal y como lo evalúa el
+  // servidor. Un fallo de red o de credencial aquí no rompe el panel: se pinta
+  // como DESCONOCIDO, nunca como listo.
+  async function getPlatformPaymentsReadiness(){
+    try{
+      const res = await fetch("/api/platform/payments-readiness", {
+        headers: { "X-Qracks-Platform-Auth": platformPasswordCache || "" }, cache: "no-store"
+      });
+      const data = await res.json().catch(() => ({}));
+      if(!res.ok || !data.ok) return null;
+      return data.payments || null;
+    }catch(e){ console.error("getPlatformPaymentsReadiness failed", e); return null; }
+  }
   // Self-service: anyone can register a brand-new quiniela in the platform index
   // (that's how /crear and "move to my own link" work) — no platform password needed,
   // it only ever adds one new entry, it can't touch or remove anyone else's.
@@ -4748,7 +4761,11 @@
       // esa persona a "escríbenos y lo activamos" era invitarla a pagar por otro
       // canal mientras el checkout con tarjeta seguía vivo.
       if(res.status === 503){
-        return { ok: false, reason: (data && data.error === "checkout_unavailable") ? "checkout_unavailable" : "unavailable" };
+        // Correction 10: `payments_misconfigured` es un error de despliegue, no
+        // "sin pasarela": tampoco ofrece el camino manual.
+        const e503 = data && data.error;
+        return { ok: false, reason: e503 === "checkout_unavailable" ? "checkout_unavailable"
+          : e503 === "payments_misconfigured" ? "payments_misconfigured" : "unavailable" };
       }
       // CORRECTION 05 (P1-3). El servidor devuelve `purchaseId` a propósito
       // cuando hay un cobro en curso: es la compra que hay que CONFIRMAR, no un
@@ -5107,7 +5124,9 @@
     //              arriesgar un segundo cobro.
     // Un valor desconocido se trata como tarjeta: nunca se cae en el copy manual
     // por omisión.
-    const mode = offer ? (["card", "manual", "blocked"].includes(offer.checkout) ? offer.checkout : "card") : null;
+    //   unavailable -> (Correction 10) la pasarela está mal configurada: no es
+    //              una decisión comercial, así que ni botón ni contacto.
+    const mode = offer ? (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card") : null;
     // Sin oferta. Si la quiniela YA tiene un plan por encima de Gratis, no hay
     // nada más que comprar y lo honesto es la conversación ("escríbenos" para un
     // grupo más grande). Si sigue en Gratis, que no haya oferta sólo puede ser que
@@ -5122,6 +5141,8 @@
           : "Escríbenos y activamos Plus en esta quiniela.");
     const howTo = !offer ? ""
       : mode === "manual" ? manualHowTo
+      : mode === "unavailable"
+        ? "El pago con tarjeta no está disponible en este momento. Vuelve a intentarlo más tarde."
       : mode === "blocked"
         ? "Ahora mismo no podemos abrir un pago nuevo: puede haber uno anterior todavía abierto. Si ya empezaste uno, termínalo en esa pestaña; si no, vuelve a intentarlo más tarde."
         : "Pagas con tarjeta en la página segura de Stripe. Plus se activa en esta quiniela en cuanto se confirma el pago.";
@@ -5227,6 +5248,8 @@
             ? manualHowTo
             : (motivo === "replacement_in_progress" || motivo === "checkout_stale_observation")
               ? "Ya estamos preparando tu pago. Espera unos segundos y vuelve a intentarlo."
+              : motivo === "payments_misconfigured"
+                ? "El pago con tarjeta no está disponible en este momento. Vuelve a intentarlo más tarde."
               : motivo === "checkout_unavailable"
                 // Sin invitar a pagar por otro lado: puede haber un pago abierto.
                 ? "Todavía no podemos abrir un pago nuevo. Si ya empezaste uno, termínalo en esa pestaña; si no, vuelve a intentarlo más tarde."
@@ -7668,6 +7691,54 @@
     const days = Math.floor(hours / 24);
     return `hace ${days} día${days === 1 ? "" : "s"}`;
   }
+  // Qué le falta a Payments, en palabras. Los códigos vienen del servidor y
+  // nunca llevan valores de credenciales.
+  function paymentsProblemText(code){
+    const [kind, v, why] = String(code).split(":");
+    const vars = { STRIPE_SECRET_KEY: "la clave secreta de Stripe (STRIPE_SECRET_KEY)",
+      STRIPE_WEBHOOK_SECRET: "el signing secret del webhook (STRIPE_WEBHOOK_SECRET)",
+      PUBLIC_BASE_URL: "la URL pública (PUBLIC_BASE_URL)" };
+    const nom = vars[v] || v || "";
+    const razones = {
+      contains_whitespace: "tiene espacios dentro", looks_like_publishable_key: "parece una clave publicable (pk_), no la secreta",
+      looks_like_webhook_secret: "parece el signing secret del webhook", looks_like_api_key: "parece una clave de API, no el signing secret",
+      same_as_secret_key: "es igual a la clave secreta", unparseable: "no es una URL válida",
+      not_http_or_https: "no empieza por https://", has_credentials: "lleva usuario o contraseña",
+      has_path: "lleva una ruta: debe ser sólo el origen, p. ej. https://qracks.net",
+      has_query_or_fragment: "lleva ? o #", http_only_for_localhost: "debe ser https (http sólo en localhost)",
+      live_key_needs_public_https: "con claves live debe ser https y pública",
+    };
+    if(kind === "missing") return "Falta " + nom + ".";
+    if(kind === "blank") return nom.charAt(0).toUpperCase() + nom.slice(1) + " está en blanco.";
+    if(kind === "malformed" || kind === "invalid") return nom.charAt(0).toUpperCase() + nom.slice(1) + ": " + (razones[why] || why) + ".";
+    if(kind === "provider_rejected") return "Stripe rechazó " + nom + ".";
+    if(kind === "provider_mode_mismatch") return "El modo (test/live) de " + nom + " no coincide con lo que dice Stripe.";
+    return String(code);
+  }
+  function paymentsReadinessHtml(p){
+    if(!p){
+      return `<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">❔</span><strong>Desconocido</strong></div>
+        <p class="muted" style="margin:6px 0 0;font-size:13px;">No se pudo leer el estado de los pagos. Recarga el panel.</p>`;
+    }
+    const titulo = p.state === "ready" ? ["✅", "Listo para cobrar"]
+      : p.state === "disabled" ? ["⏸️", "Desactivado (sin credenciales de Stripe)"]
+      : ["⛔", "Mal configurado — no se cobra nada"];
+    const lineas = [];
+    if(p.mode) lineas.push("Modo: <strong>" + esc(p.mode === "live" ? "live (dinero real)" : p.mode === "test" ? "test (sandbox)" : "desconocido") + "</strong>");
+    if(p.returnBase) lineas.push("El pago vuelve a: <strong>" + esc(p.returnBase) + "</strong>");
+    if(p.webhookUrl) lineas.push("URL del webhook en Stripe: <code>" + esc(p.webhookUrl) + "</code>");
+    if(p.state === "ready" && p.provider) lineas.push("Clave comprobada con Stripe: " + esc(
+      p.provider.status === "ok" ? "sí" : p.provider.status === "unreachable" ? "Stripe no respondió al arrancar" : "pendiente"));
+    if(p.webhook && (p.webhook.verified || p.webhook.rejected)){
+      lineas.push("Webhooks: " + esc(String(p.webhook.verified)) + " verificados, " + esc(String(p.webhook.rejected)) + " con firma inválida"
+        + (p.webhook.rejected && !p.webhook.verified ? " — revisa que el signing secret sea el de ESTE destino" : ""));
+    }
+    return `<div style="display:flex;align-items:center;gap:8px;" data-payments-state="${esc(p.state)}"><span style="font-size:18px;">${titulo[0]}</span><strong>${esc(titulo[1])}</strong></div>
+      ${(p.problems || []).length ? `<ul style="margin:8px 0 0 18px;font-size:13px;">${p.problems.map(c => `<li>${esc(paymentsProblemText(c))}</li>`).join("")}</ul>` : ``}
+      ${lineas.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;line-height:1.6;">${lineas.join("<br>")}</p>` : ``}
+      ${p.state === "disabled" ? `<p class="muted" style="margin:6px 0 0;font-size:13px;">Los organizadores ven el contacto de respaldo. Para cobrar con tarjeta configura las tres variables del README.</p>` : ``}`;
+  }
+
   function sportsDataHealthHtml(health){
     if(!health || !health.lastOutcome){
       return `
@@ -7717,8 +7788,9 @@
       return;
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
-    const [idx, settings, config, analytics, sportsHealth] = await Promise.all([
-      getPlatformIndex(), getPlatformSettings(), getCommercialConfig(), getPlatformAnalytics(), getPlatformSportsHealth()
+    const [idx, settings, config, analytics, sportsHealth, paymentsReady] = await Promise.all([
+      getPlatformIndex(), getPlatformSettings(), getCommercialConfig(), getPlatformAnalytics(), getPlatformSportsHealth(),
+      getPlatformPaymentsReadiness()
     ]);
     const rows = idx.quinielas.map(q => {
       // Counts now live on the index entry itself (kept fresh whenever that
@@ -7907,6 +7979,10 @@
             </table>
           </div>
           <p class="muted" style="margin-top:10px;font-size:12px;">Cada etapa muestra el total de eventos en esa ventana de tiempo. Estos conteos no representan un embudo de conversión — las etapas no comparten una unidad consistente entre sí, así que no se muestra ningún porcentaje entre ellas.</p>
+        </div>
+        <div class="card" id="qz-payments-readiness">
+          <div class="eyebrow">Pagos (Stripe)</div>
+          ${paymentsReadinessHtml(paymentsReady)}
         </div>
         <div class="card">
           <div class="eyebrow">Sports Data</div>

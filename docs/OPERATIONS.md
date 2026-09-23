@@ -100,8 +100,20 @@ hay que cambiar el otro.
 - El precio se lee de `commercial_config`, no del código. Cambiarlo en Panel
   Plataforma cambia lo que se cobra en el siguiente checkout; las compras ya
   hechas conservan lo que pagaron.
-- Con las variables ausentes, "Pasar a Plus" dice que el pago con tarjeta no
-  está disponible y deja la vía manual. Eso es lo correcto, no un fallo.
+- Al arrancar, el log dice el estado de los pagos en UNA línea, sin secretos:
+  `payments_readiness {"when":"startup","state":"ready",...}`, o bien
+  `PAYMENTS MISCONFIGURED {..."problems":[...]}` con el nombre de lo que falta.
+  El mismo diagnóstico, con la URL exacta del webhook, está en Panel Plataforma →
+  **Pagos (Stripe)**. Mirarlo ANTES de cualquier prueba de punta a punta.
+- Sin NINGUNA variable de Stripe (`disabled`), "Pasar a Plus" dice que el pago
+  con tarjeta no está disponible y deja la vía manual. Eso es lo correcto.
+- Con ALGUNA pero no todas, o alguna mal (`misconfigured`), no se abre ningún
+  checkout, el webhook contesta 503 (Stripe reintenta) y la pantalla NO ofrece
+  la vía manual: es un error de despliegue. Al corregirlo y reiniciar, los pagos
+  pendientes se confirman solos.
+- Ver la checklist "MON-003 / Stripe deployment checklist" del README: sandbox
+  con claves test, producción con claves live, y cada signing secret con SU
+  destino.
 
 ### Qué mirar cuando algo va mal
 
@@ -112,7 +124,11 @@ En los logs, sin secretos (nunca se escribe ninguna clave):
 | `payments checkout_created` | se abrió un checkout |
 | `payments checkout_reused` | un segundo intento reutilizó el anterior, no se duplicó |
 | `payments checkout_creation_failed` | no se pudo crear; el `code` dice por qué |
-| `payments webhook_invalid_signature` | llegó algo que no venía de Stripe, o el signing secret no coincide |
+| `payments_readiness` / `PAYMENTS MISCONFIGURED` | el estado de los pagos al arrancar; `problems` dice qué falta |
+| `payments checkout_refused_misconfigured` | se pulsó "Pasar a Plus" con los pagos mal configurados; no se creó nada |
+| `payments webhook_rejected` | llegó un evento con los pagos sin configurar (`not_configured`) o mal configurados (`misconfigured`); 503, Stripe reintenta |
+| `payments webhook_invalid_signature` | llegó algo que no venía de Stripe, o el signing secret no es el de ESTE destino (test/live cruzados) |
+| `payments webhook_api_version_differs` | el destino del webhook usa otra versión de API; crear el destino con la fijada |
 | `payments webhook_processed` | evento evaluado; `decision` dice qué se hizo |
 | `payments reconciled` | un pago se recuperó sin webhook, al volver el Admin |
 | `payments payment_requires_attention` | hay un cobro que un humano tiene que mirar |

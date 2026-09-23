@@ -120,9 +120,10 @@ const STRIPE_API_BASE = "https://api.stripe.com";
 // que cobra dinero es un cambio de comportamiento que nadie desplegó.
 const STRIPE_API_VERSION = "2026-08-26.dahlia";
 
-// Los cuatro eventos de un Checkout de pago único, tal y como los declara el
-// SDK oficial. No se escucha nada más: cada evento extra es una vía más por la
-// que algo podría otorgar un plan.
+// Los eventos que escucha QRACKS: los cuatro de un Checkout de pago único, tal y
+// como los declara el SDK oficial, más dos de sólo auditoría. No se escucha nada
+// más: cada evento extra es una vía más por la que algo podría otorgar un plan.
+// Son EXACTAMENTE los que hay que seleccionar en el destino del webhook.
 const EVENT = Object.freeze({
   COMPLETED: "checkout.session.completed",
   ASYNC_SUCCEEDED: "checkout.session.async_payment_succeeded",
@@ -366,12 +367,152 @@ function readConfig(env) {
   return { secretKey, webhookSecret, publicBaseUrl };
 }
 
-// Configurado significa: se puede cobrar Y se puede verificar el cobro. Tener
-// sólo la mitad es peor que no tener nada — se podría crear un checkout cuya
-// confirmación jamás se aceptaría — así que las dos claves se exigen juntas.
+// ==========================================================================
+// MON-003 Correction 10 — EL CONTRATO DE ENTORNO, en un solo sitio.
+//
+// Antes esto era un booleano (`isConfigured`): las tres variables o nada. El
+// problema no era la exigencia sino la respuesta — "no configurado" se leía
+// igual si faltaba TODO (una desactivación deliberada, con su respaldo manual
+// legítimo) que si faltaba UNA (un despliegue a medias). En el sandbox faltó una
+// y la pantalla ofreció "escríbenos" como si los pagos estuvieran apagados a
+// propósito. Ahora hay tres estados y cada uno se trata distinto:
+//
+//   READY          se puede cobrar Y verificar el cobro. Checkout con tarjeta.
+//   DISABLED       no hay NINGUNA credencial de Stripe: desactivación deliberada.
+//                  Respaldo manual (si nada del torneo puede estar cobrando).
+//   MISCONFIGURED  hay intención de cobrar pero algo falta o está mal. FAIL
+//                  CLOSED: ni checkout, ni webhook, ni reconciliación, ni
+//                  respaldo manual — no es una decisión comercial, es un error de
+//                  despliegue, y se dice con el nombre de lo que falta.
+//
+// Nunca se devuelve ni se registra el VALOR de una credencial: sólo qué
+// variable, y qué le pasa.
+// ==========================================================================
+const PAYMENTS_STATE = Object.freeze({
+  READY: "ready", DISABLED: "disabled", MISCONFIGURED: "misconfigured",
+});
+const WEBHOOK_PATH = "/api/payments/stripe/webhook";
+
+// Formas de credencial. OJO: los prefijos (`sk_test_`, `sk_live_`, `rk_…`,
+// `pk_…`, `whsec_…`) son la convención que usa el propio SDK oficial en sus
+// ejemplos, pero NO aparecen en el spec OpenAPI: no son contrato verificado. Por
+// eso sólo se usan para detectar un error POSITIVO —pegar una clave publicable
+// donde va la secreta, o intercambiar la clave con el secreto del webhook— y
+// para INFORMAR del modo. Un prefijo desconocido no bloquea: queda como aviso, y
+// la comprobación contra el proveedor al arrancar es la que confirma.
+function keyMode(secretKey) {
+  if (/^(sk|rk)_live_/.test(secretKey)) return "live";
+  if (/^(sk|rk)_test_/.test(secretKey)) return "test";
+  return "unknown";
+}
+
+function assessPublicBaseUrl(raw, mode) {
+  let u;
+  try { u = new URL(raw); } catch { return { ok: false, reason: "unparseable" }; }
+  const host = u.hostname.toLowerCase();
+  const local = host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+  if (u.protocol !== "https:" && u.protocol !== "http:") return { ok: false, reason: "not_http_or_https" };
+  // Las URLs de vuelta del pago se construyen con este origen: nada más que un
+  // origen. Una ruta, una query o credenciales aquí acabarían dentro de un enlace
+  // que el proveedor manda al navegador del cliente.
+  if (u.username || u.password) return { ok: false, reason: "has_credentials" };
+  if (u.pathname && u.pathname !== "/") return { ok: false, reason: "has_path" };
+  if (u.search || u.hash || /[?#]/.test(raw)) return { ok: false, reason: "has_query_or_fragment" };
+  if (u.protocol === "http:" && !local) return { ok: false, reason: "http_only_for_localhost" };
+  // Con claves de producción, nunca de vuelta a una máquina local ni sin TLS.
+  if (mode === "live" && (local || u.protocol !== "https:")) return { ok: false, reason: "live_key_needs_public_https" };
+  return { ok: true, origin: u.origin, host: u.host, local };
+}
+
+function assessReadiness(env) {
+  const e = env || process.env;
+  const val = (k) => (typeof e[k] === "string" ? e[k] : "");
+  const problems = [];
+  const warnings = [];
+  // "" es ausente. Espacios nada más no: alguien quiso poner algo y pegó mal.
+  const estado = (k) => (!val(k) ? "absent" : !val(k).trim() ? "blank" : "present");
+  const sk = estado("STRIPE_SECRET_KEY");
+  const wh = estado("STRIPE_WEBHOOK_SECRET");
+  const pb = estado("PUBLIC_BASE_URL");
+  const secretKey = val("STRIPE_SECRET_KEY").trim();
+  const webhookSecret = val("STRIPE_WEBHOOK_SECRET").trim();
+  const mode = keyMode(secretKey);
+
+  // Intención de cobrar = alguna credencial de Stripe, aunque esté mal puesta.
+  // PUBLIC_BASE_URL sola no lo es: no es una credencial.
+  const intent = sk !== "absent" || wh !== "absent";
+
+  if (sk === "absent") problems.push("missing:STRIPE_SECRET_KEY");
+  else if (sk === "blank") problems.push("blank:STRIPE_SECRET_KEY");
+  else if (/\s/.test(secretKey)) problems.push("malformed:STRIPE_SECRET_KEY:contains_whitespace");
+  else if (/^pk_/.test(secretKey)) problems.push("malformed:STRIPE_SECRET_KEY:looks_like_publishable_key");
+  else if (/^whsec_/.test(secretKey)) problems.push("malformed:STRIPE_SECRET_KEY:looks_like_webhook_secret");
+  else if (mode === "unknown") warnings.push("unrecognized_format:STRIPE_SECRET_KEY");
+
+  if (wh === "absent") problems.push("missing:STRIPE_WEBHOOK_SECRET");
+  else if (wh === "blank") problems.push("blank:STRIPE_WEBHOOK_SECRET");
+  else if (/\s/.test(webhookSecret)) problems.push("malformed:STRIPE_WEBHOOK_SECRET:contains_whitespace");
+  else if (/^(sk|rk|pk)_/.test(webhookSecret)) problems.push("malformed:STRIPE_WEBHOOK_SECRET:looks_like_api_key");
+  else if (!/^whsec_/.test(webhookSecret)) warnings.push("unrecognized_format:STRIPE_WEBHOOK_SECRET");
+  if (secretKey && webhookSecret && secretKey === webhookSecret) {
+    problems.push("malformed:STRIPE_WEBHOOK_SECRET:same_as_secret_key");
+  }
+
+  let base = null;
+  if (pb === "absent") problems.push("missing:PUBLIC_BASE_URL");
+  else if (pb === "blank") problems.push("blank:PUBLIC_BASE_URL");
+  else {
+    const b = assessPublicBaseUrl(val("PUBLIC_BASE_URL").trim(), mode);
+    if (b.ok) base = b;
+    else problems.push("invalid:PUBLIC_BASE_URL:" + b.reason);
+  }
+
+  if (!intent) {
+    // Desactivación deliberada. Lo de PUBLIC_BASE_URL no es un problema aquí —
+    // sin credenciales nadie la usa—, pero si está puesta y mal, se avisa.
+    const avisos = problems.filter((p) => p.startsWith("invalid:PUBLIC_BASE_URL") || p.startsWith("blank:PUBLIC_BASE_URL"));
+    return { state: PAYMENTS_STATE.DISABLED, problems: [], warnings: warnings.concat(avisos),
+      mode: null, baseUrl: null, host: null, webhookUrl: null };
+  }
+  return {
+    state: problems.length ? PAYMENTS_STATE.MISCONFIGURED : PAYMENTS_STATE.READY,
+    problems, warnings, mode,
+    baseUrl: base ? base.origin : null,
+    host: base ? base.host : null,
+    webhookUrl: base ? base.origin + WEBHOOK_PATH : null,
+  };
+}
+
+// Lo que el proveedor dice de la clave, combinado con lo evaluado del entorno.
+// Puro: `provider` es { status: "pending"|"ok"|"rejected"|"unreachable"|"skipped",
+// livemode: true|false|null }. Sólo una respuesta DEFINITIVA empeora el estado:
+// que el proveedor no conteste al arrancar es transitorio y no convierte un
+// despliegue correcto en uno roto (un checkout en ese rato falla sin cobrar).
+function combineReadiness(assessed, provider) {
+  const a = assessed || assessReadiness({});
+  const p = provider || { status: "skipped", livemode: null };
+  if (a.state !== PAYMENTS_STATE.READY) return { ...a, provider: p };
+  const problems = a.problems.slice();
+  const warnings = a.warnings.slice();
+  if (p.status === "rejected") problems.push("provider_rejected:STRIPE_SECRET_KEY");
+  if (p.status === "unreachable") warnings.push("provider_unreachable_at_startup");
+  if (typeof p.livemode === "boolean") {
+    const real = p.livemode ? "live" : "test";
+    if (a.mode !== "unknown" && a.mode !== real) problems.push("provider_mode_mismatch:STRIPE_SECRET_KEY");
+    if (real === "live") {
+      const b = assessPublicBaseUrl(a.baseUrl, "live");
+      if (!b.ok) problems.push("invalid:PUBLIC_BASE_URL:" + b.reason);
+    }
+  }
+  const mode = typeof p.livemode === "boolean" ? (p.livemode ? "live" : "test") : a.mode;
+  return { ...a, mode, problems, warnings, provider: p,
+    state: problems.length ? PAYMENTS_STATE.MISCONFIGURED : PAYMENTS_STATE.READY };
+}
+
+// Configurado = LISTO. Se conserva el nombre para quien lo use, pero ya no es un
+// booleano aparte: es la misma evaluación.
 function isConfigured(env) {
-  const c = readConfig(env);
-  return !!(c.secretKey && c.webhookSecret && c.publicBaseUrl);
+  return assessReadiness(env).state === PAYMENTS_STATE.READY;
 }
 
 // ---- llamadas a la API ----------------------------------------------------
@@ -510,6 +651,20 @@ async function createCheckoutSession(args) {
   return { sessionId: session.id, url: session.url, observed: normalizeSession(session) };
 }
 
+// Pregunta al proveedor si la clave secreta vale, sin crear nada: la lectura más
+// barata de un recurso que QRACKS necesita de todos modos (listar sesiones).
+// Distingue lo definitivo (la clave no vale) de lo transitorio (no contesta).
+async function verifyCredentials({ env } = {}) {
+  try {
+    const page = await stripeRequest("GET", "/v1/checkout/sessions?limit=1", { env, timeoutMs: 8000 });
+    const first = page && Array.isArray(page.data) ? page.data[0] : null;
+    return { status: "ok", livemode: first && typeof first.livemode === "boolean" ? first.livemode : null };
+  } catch (err) {
+    if (err && (err.status === 401 || err.status === 403)) return { status: "rejected", livemode: null };
+    return { status: "unreachable", livemode: null };
+  }
+}
+
 async function retrieveCheckoutSession(sessionId, { env } = {}) {
   if (typeof sessionId !== "string" || !sessionId) return null;
   const session = await stripeRequest("GET", `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { env });
@@ -611,6 +766,8 @@ module.exports = {
   parseSignatureHeader, verifyWebhookSignature,
   normalizeEvent, normalizeSession,
   readConfig, isConfigured,
+  PAYMENTS_STATE, WEBHOOK_PATH, assessReadiness, assessPublicBaseUrl, combineReadiness, keyMode,
+  verifyCredentials,
   createCheckoutSession, retrieveCheckoutSession, expireCheckoutSession,
   listCheckoutSessions,
   checkoutExpiresAt, SESSION_MAX_LIFETIME_MS, SESSION_MIN_LIFETIME_MS,

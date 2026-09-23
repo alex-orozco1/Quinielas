@@ -195,7 +195,59 @@ function isAuthenticatedAsParticipantReq(req, slug, participant) {
 // MON-003. Una sola definición del path del webhook: la usan el montaje del
 // parser crudo y el handler, y si divergieran el handler recibiría un cuerpo
 // ya parseado y ninguna firma verificaría jamás.
-const STRIPE_WEBHOOK_PATH = "/api/payments/stripe/webhook";
+const STRIPE_WEBHOOK_PATH = stripeAdapter.WEBHOOK_PATH;
+
+// ==========================================================================
+// MON-003 Correction 10 — el estado de Payments, UNA vez y para todos.
+//
+// Se evalúa el entorno al arrancar (el entorno no cambia sin reiniciar) y se
+// completa, en segundo plano, con lo que el proveedor diga de la clave. /plan,
+// /checkout, el webhook, la reconciliación, el log de arranque y el diagnóstico
+// del Panel de Plataforma leen TODOS de aquí: no hay otra interpretación.
+// ==========================================================================
+const PAYMENTS_ASSESSED = stripeAdapter.assessReadiness(process.env);
+const PAYMENTS_RUNTIME = {
+  assessed: PAYMENTS_ASSESSED,
+  // Sólo se pregunta al proveedor cuando el entorno está completo.
+  provider: { status: PAYMENTS_ASSESSED.state === stripeAdapter.PAYMENTS_STATE.READY ? "pending" : "skipped",
+    livemode: null, checkedAt: null },
+  webhook: { verified: 0, rejected: 0, lastVerifiedAt: null, lastRejectedAt: null, lastRejectReason: null },
+};
+function paymentsReadiness() {
+  return stripeAdapter.combineReadiness(PAYMENTS_RUNTIME.assessed, PAYMENTS_RUNTIME.provider);
+}
+// Lo que se puede decir en voz alta: estado, qué falta, modo, host y la URL del
+// webhook. Nunca un valor de credencial.
+function paymentsDiagnostic() {
+  const r = paymentsReadiness();
+  return {
+    state: r.state, problems: r.problems, warnings: r.warnings, mode: r.mode,
+    host: r.host, returnBase: r.baseUrl, webhookUrl: r.webhookUrl,
+    apiVersion: stripeAdapter.STRIPE_API_VERSION,
+    events: stripeAdapter.HANDLED_EVENTS,
+    provider: { status: PAYMENTS_RUNTIME.provider.status, checkedAt: PAYMENTS_RUNTIME.provider.checkedAt },
+    webhook: { ...PAYMENTS_RUNTIME.webhook },
+  };
+}
+function logPaymentsReadiness(when) {
+  const d = paymentsDiagnostic();
+  const line = JSON.stringify({ when, state: d.state, mode: d.mode, host: d.host, webhookUrl: d.webhookUrl,
+    apiVersion: d.apiVersion, provider: d.provider.status, problems: d.problems, warnings: d.warnings });
+  if (d.state === "misconfigured") console.error("PAYMENTS MISCONFIGURED " + line);
+  else console.log("payments_readiness " + line);
+}
+// Se hace ANTES de abrir el puerto, para que la línea de arranque sea la
+// definitiva: un "ready" que un segundo después pasa a "misconfigured" es justo
+// la clase de sorpresa que esto existe para evitar. La consulta tiene su propio
+// timeout; si el proveedor no contesta, se arranca igual (READY con aviso).
+async function checkPaymentsProvider() {
+  if (PAYMENTS_RUNTIME.assessed.state !== stripeAdapter.PAYMENTS_STATE.READY) {
+    PAYMENTS_RUNTIME.provider = { status: "skipped", livemode: null, checkedAt: null };
+    return;
+  }
+  const r = await stripeAdapter.verifyCredentials().catch(() => ({ status: "unreachable", livemode: null }));
+  PAYMENTS_RUNTIME.provider = { status: r.status, livemode: r.livemode, checkedAt: new Date().toISOString() };
+}
 
 const app = express();
 // Render puts exactly one reverse proxy in front of this app. Trusting only
@@ -2972,7 +3024,11 @@ const IDENTITY_OPTS = Object.freeze({
 // Si no se puede leer el estado de las compras, "blocked": en la duda, no se
 // empuja a nadie a pagar por otro canal.
 async function checkoutModeFor(slug, scopeId) {
-  if (stripeAdapter.isConfigured()) return "card";
+  // Correction 10: la MISMA readiness que el checkout. Mal configurado NO es
+  // "desactivado": no se ofrece respaldo manual, se dice que no está disponible.
+  const estado = paymentsReadiness().state;
+  if (estado === stripeAdapter.PAYMENTS_STATE.READY) return "card";
+  if (estado === stripeAdapter.PAYMENTS_STATE.MISCONFIGURED) return "unavailable";
   try {
     const store = await readPaymentIntents();
     // Sin torneo legible no se sabe cuál mirar: se miran TODOS los de la quiniela.
@@ -3034,7 +3090,14 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     // se ofrece si NADA del torneo puede estar cobrando (Correction 09): con una
     // compra abierta o una identidad viva, la respuesta es la misma que cuando
     // el checkout bloquea por eso, sin invitar a pagar por otro canal.
-    if (!stripeAdapter.isConfigured()) {
+    const readiness = paymentsReadiness();
+    if (readiness.state === stripeAdapter.PAYMENTS_STATE.MISCONFIGURED) {
+      // Correction 10: un despliegue a medias. Ni checkout (podría no poder
+      // confirmarse) ni respaldo manual (no es una decisión comercial).
+      logPayment("checkout_refused_misconfigured", { slug, problems: readiness.problems });
+      return res.status(503).json({ error: "payments_misconfigured" });
+    }
+    if (readiness.state !== stripeAdapter.PAYMENTS_STATE.READY) {
       const idxSinPasarela = await getRow("platform_index");
       const entradaSinPasarela = idxSinPasarela && Array.isArray(idxSinPasarela.quinielas)
         ? idxSinPasarela.quinielas.find((q) => q.slug === slug) : null;
@@ -3718,8 +3781,14 @@ async function openPurchase(slug, superseded) {
 // proveedor documenta que puede eliminar sus resultados de idempotencia pasadas al
 // menos 24 h, así que apoyarse en ella tendría fecha de caducidad.
 async function createSessionFor(intent, slug) {
-  const cfg = stripeAdapter.readConfig();
-  const base = cfg.publicBaseUrl.replace(/\/+$/, "");
+  // Correction 10: el origen de vuelta sale de la readiness —validado y
+  // normalizado al arrancar—, nunca del navegador ni de la cabecera Host. Sin él
+  // no se emite nada.
+  const readiness = paymentsReadiness();
+  if (readiness.state !== stripeAdapter.PAYMENTS_STATE.READY || !readiness.baseUrl) {
+    throw new Error("payments_not_ready");
+  }
+  const base = readiness.baseUrl;
 
   // ======================================================================
   // LA PRECONDICIÓN DE TODO (Correction 06, ampliada en Correction 07).
@@ -4462,11 +4531,17 @@ async function confirmPaymentAndGrant({ observed, eventId }) {
 
 // ---------- el webhook: la autoridad ----------
 app.post(STRIPE_WEBHOOK_PATH, async (req, res) => {
-  const cfg = stripeAdapter.readConfig();
-  if (!cfg.webhookSecret) {
-    logPayment("webhook_rejected", { reason: "not_configured" });
-    return res.status(503).json({ error: "payments_unavailable" });
+  // Correction 10: sólo con Payments LISTO se procesa nada. Con una configuración
+  // a medias se contesta 503 —el proveedor reintenta— y se dice por qué en el
+  // log: al corregir el entorno, los cobros pendientes se confirman solos.
+  const readiness = paymentsReadiness();
+  if (readiness.state !== stripeAdapter.PAYMENTS_STATE.READY) {
+    const misconfigured = readiness.state === stripeAdapter.PAYMENTS_STATE.MISCONFIGURED;
+    logPayment("webhook_rejected", { reason: misconfigured ? "misconfigured" : "not_configured",
+      problems: readiness.problems });
+    return res.status(503).json({ error: misconfigured ? "payments_misconfigured" : "payments_unavailable" });
   }
+  const cfg = stripeAdapter.readConfig();
   // `req.body` aquí es el Buffer crudo que puso express.raw arriba. Si algo lo
   // hubiera parseado, el adaptador lo rechaza antes de comparar nada.
   const verified = stripeAdapter.verifyWebhookSignature(
@@ -4474,6 +4549,11 @@ app.post(STRIPE_WEBHOOK_PATH, async (req, res) => {
   if (!verified.ok) {
     // Falla cerrado y en silencio hacia fuera: el motivo se registra, pero no
     // se devuelve, para no ir enseñando a un atacante en qué punto falló.
+    // Correction 10: y se cuenta. Un secreto de otro destino (test/live
+    // cruzados) sólo se nota así: todas las firmas fallan.
+    PAYMENTS_RUNTIME.webhook.rejected++;
+    PAYMENTS_RUNTIME.webhook.lastRejectedAt = new Date().toISOString();
+    PAYMENTS_RUNTIME.webhook.lastRejectReason = verified.reason;
     logPayment("webhook_invalid_signature", { reason: verified.reason });
     return res.status(400).json({ error: "invalid_signature" });
   }
@@ -4486,6 +4566,14 @@ app.post(STRIPE_WEBHOOK_PATH, async (req, res) => {
     return res.status(400).json({ error: "invalid_payload" });
   }
 
+  PAYMENTS_RUNTIME.webhook.verified++;
+  PAYMENTS_RUNTIME.webhook.lastVerifiedAt = new Date().toISOString();
+  // La versión de API con la que el destino serializa sus eventos. No se rechaza
+  // por ella (los campos que se leen son estables), pero se avisa si difiere de
+  // la fijada, para que el destino se cree con la misma.
+  if (parsed && typeof parsed.api_version === "string" && parsed.api_version !== stripeAdapter.STRIPE_API_VERSION) {
+    logPayment("webhook_api_version_differs", { event: parsed.api_version, pinned: stripeAdapter.STRIPE_API_VERSION });
+  }
   const observed = stripeAdapter.normalizeEvent(parsed);
   // Un evento que no escuchamos se acepta con 200 y no se procesa: devolver
   // error haría que el proveedor lo reintentara para siempre sin motivo.
@@ -4604,7 +4692,8 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
     // compra antes de adjuntarla. Este endpoint nunca crea una sesión — un GET
     // no vende.
     // ======================================================================
-    if (intent.status === paymentsDomain.PURCHASE_STATUS.CREATED && stripeAdapter.isConfigured()) {
+    if (intent.status === paymentsDomain.PURCHASE_STATUS.CREATED
+      && paymentsReadiness().state === stripeAdapter.PAYMENTS_STATE.READY) {
       try {
         let observed = null;
         // Correction 07: esta ruta OTORGA, así que descubre siempre. Un id guardado
@@ -5438,6 +5527,19 @@ const FUNNEL_EVENT_NAMES = [
   "standings_viewed",
   "standings_shared"
 ];
+// MON-003 Correction 10. El estado de Payments para el operador, ANTES de
+// cualquier prueba de punta a punta: qué estado, qué falta, a qué host vuelve el
+// pago y qué URL de webhook hay que registrar. Sin valores de credenciales.
+app.get("/api/platform/payments-readiness", async (req, res) => {
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, payments: paymentsDiagnostic() });
+});
+
 app.get("/api/platform-sports-health", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
@@ -5580,7 +5682,12 @@ const PORT = process.env.PORT || 3000;
 async function start(retriesLeft){
   try{
     await ensureTable();
-    app.listen(PORT, () => console.log("Quiniela server listening on port " + PORT));
+    await checkPaymentsProvider().catch(() => {});
+    app.listen(PORT, () => {
+      console.log("Quiniela server listening on port " + PORT);
+      // Antes de ningún clic: qué estado tiene Payments y, si algo falta, qué.
+      logPaymentsReadiness("startup");
+    });
   }catch(err){
     console.error("Database not ready yet:", err.message);
     if(retriesLeft > 0){
