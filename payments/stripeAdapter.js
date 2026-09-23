@@ -63,10 +63,20 @@
 //       a) mientras los parámetros de un intento siguen siendo válidos, se repite
 //          con SU MISMA clave de idempotencia. Si el listado no viera una sesión
 //          que existe, la clave devuelve esa misma sesión en vez de crear otra.
-//       b) cuando los parámetros dejan de valer y hay que estrenar clave, es
-//          porque la expiración congelada de aquel intento YA PASÓ — y eso sí es
-//          contractual (punto 2). Una sesión pasada de su `expires_at` no puede
+//       b) cuando los parámetros dejan de valer, NO se estrena clave hasta que la
+//          expiración congelada de TODO lo emitido en el torneo haya pasado, con
+//          un margen de gracia para relojes y pagos en vuelo — o hasta que conste
+//          prueba positiva de que cada sesión que pudo nacer está expirada. Eso sí
+//          es contractual (punto 2): una sesión pasada de su `expires_at` no puede
 //          cobrar, la viera el listado o no.
+//
+//          CORRECCIÓN (Correction 08). Hasta c46f3b8 esto decía "hay que estrenar
+//          clave porque la expiración YA PASÓ", y era falso: se estrenaba en cuanto
+//          a la expiración le quedaban menos de 30 min — la vida mínima que el
+//          proveedor admite para un parámetro —, es decir, con la sesión anterior
+//          todavía cobrando. Entre "no puedo repetir" y "puedo estrenar" hay una
+//          franja, y en ella la respuesta es: ninguna de las dos. El checkout no
+//          está disponible durante ese rato. Ver `decideEmission` en el dominio.
 //
 //     Es decir: un listado que se equivocara podría costar una consulta de más o
 //     un enlace de menos, nunca un segundo cobro. Lo único que un listado
@@ -81,8 +91,19 @@
 //     que esa red funcione los parámetros de una misma clave son estables
 //     (Correction 07): el spec declara `idempotency_error` como tipo de error
 //     propio, y reutilizar una clave con parámetros distintos es la forma de
-//     provocarlo. Ni la retención ni ese rechazo son necesarios para la
-//     corrección: sólo para el ahorro.
+//     provocarlo.
+//
+//     LA ÚNICA DEPENDENCIA QUE QUEDA, dicha en voz alta (Correction 08). Repetir
+//     una clave (red "a") presupone que el proveedor honra la idempotencia de esa
+//     clave MIENTRAS se repite. Por construcción eso ocurre como mucho 23 h 30 min
+//     después de su primer uso: sólo se repite mientras a su expiración —que nunca
+//     pasa de 24 h tras esa emisión— le quedan más de 30 min. El proveedor
+//     documenta que retiene las claves "al menos 24 h", pero ese texto NO está en
+//     el spec OpenAPI y su documentación no es alcanzable desde el entorno donde
+//     se escribió esto: NO VERIFICADO aquí. Si esa retención fuera menor, una
+//     repetición podría crear una segunda sesión de la MISMA clave; vencería a la
+//     misma hora que la primera y el descubrimiento las vería como varias sesiones
+//     de una compra (y las curaría), pero durante ese rato podrían cobrar las dos.
 //   - El calendario de reintentos de webhooks. No está en el contrato legible
 //     por máquina al que se tiene acceso, así que la recuperación funciona con
 //     el webhook llegando tarde, llegando dos veces, o no llegando nunca.
@@ -253,6 +274,8 @@ function normalizeEvent(parsedBody) {
     metadataPurchaseId: meta.qracks_purchase_id || null,
     slugHint: meta.qracks_slug || null,
     scopeHint: meta.qracks_scope_id || null,
+    // De qué intento salió la sesión (Correction 08). Sube igual por las dos vías.
+    attemptKey: attemptKeyOf(meta),
     sessionId: asId(obj.id),
     paymentIntentId: asId(obj.payment_intent),
     paid,
@@ -260,6 +283,16 @@ function normalizeEvent(parsedBody) {
     currency: typeof obj.currency === "string" ? obj.currency : null,
     terminalStatus,
   };
+}
+
+// La etiqueta de intento que QRACKS pone en la metadata al crear (Correction 08).
+// Es la clave de idempotencia de esa emisión, que no es un secreto: sólo
+// identifica, y es lo que permite atribuir una sesión observada a un intento
+// concreto. Algo que no sea una cadena razonable se lee como "sin etiqueta".
+const ATTEMPT_TAG_FIELD = "qracks_attempt";
+function attemptKeyOf(meta) {
+  const v = meta && meta[ATTEMPT_TAG_FIELD];
+  return typeof v === "string" && v.length > 0 && v.length <= 200 ? v : null;
 }
 
 // La misma traducción para una sesión leída directamente (reconciliación).
@@ -298,6 +331,7 @@ function normalizeSession(session) {
     purchaseId: meta.qracks_purchase_id || ref || null,
     clientReferenceId: ref,
     metadataPurchaseId: meta.qracks_purchase_id || null,
+    attemptKey: attemptKeyOf(meta),
     slugHint: meta.qracks_slug || null,
     scopeHint: meta.qracks_scope_id || null,
     sessionId: asId(session.id),
@@ -413,9 +447,13 @@ async function stripeRequest(method, path, { params, idempotencyKey, env, timeou
 // El importe, la moneda y la descripción los pone el SERVIDOR desde la
 // configuración comercial. Nada de esto llega del navegador, y por eso una
 // llamada fabricada no puede comprar PLUS por un peso.
-async function createCheckoutSession({
+//
+// Los parámetros se construyen en una función pura y aparte (Correction 08): una
+// clave de idempotencia sólo se puede repetir con EXACTAMENTE los mismos
+// parámetros, y tenerlos en un solo sitio es lo que permite comprobarlo.
+function buildCheckoutParams({
   amountMinor, currency, productName, purchaseId, slug, scopeId,
-  successUrl, cancelUrl, idempotencyKey, env, expiresAt,
+  successUrl, cancelUrl, expiresAt, attemptTag,
 }) {
   const params = {
     mode: "payment",
@@ -451,6 +489,16 @@ async function createCheckoutSession({
   // horizonte en el que una sesión deja de poder cobrar en un número que
   // conocemos, en vez de un valor por defecto que podría cambiar.
   if (Number.isSafeInteger(expiresAt)) params.expires_at = expiresAt;
+  // La etiqueta del intento (Correction 08). SÓLO si el intento la lleva: un
+  // intento registrado sin ella se repite sin ella, o la misma clave llevaría
+  // parámetros distintos y el proveedor la rechazaría.
+  if (typeof attemptTag === "string" && attemptTag) params[`metadata[${ATTEMPT_TAG_FIELD}]`] = attemptTag;
+  return params;
+}
+
+async function createCheckoutSession(args) {
+  const { idempotencyKey, env } = args || {};
+  const params = buildCheckoutParams(args || {});
   const session = await stripeRequest("POST", "/v1/checkout/sessions", { params, idempotencyKey, env });
   if (!session || typeof session.id !== "string" || typeof session.url !== "string") {
     throw new StripeError("invalid_response", "Stripe returned an unusable session");
@@ -566,6 +614,7 @@ module.exports = {
   createCheckoutSession, retrieveCheckoutSession, expireCheckoutSession,
   listCheckoutSessions,
   checkoutExpiresAt, SESSION_MAX_LIFETIME_MS, SESSION_MIN_LIFETIME_MS,
+  buildCheckoutParams, ATTEMPT_TAG_FIELD,
   SESSION_LIFECYCLE,
   _formEncode: formEncode,
 };

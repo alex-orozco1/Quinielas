@@ -4738,7 +4738,15 @@
         writePendingPurchase(data.purchaseId);
         return { ok: true, checkoutUrl: data.checkoutUrl, purchaseId: data.purchaseId };
       }
-      if(res.status === 503) return { ok: false, reason: "unavailable" };
+      // MON-003 Correction 08. Dos 503 que NO son lo mismo. `payments_unavailable`
+      // es "la pasarela no está configurada": ahí sí se ofrece el camino manual.
+      // `checkout_unavailable` es "ahora mismo no se puede abrir un pago NUEVO",
+      // y una de sus causas es que un pago anterior todavía pueda cobrar. Mandar a
+      // esa persona a "escríbenos y lo activamos" era invitarla a pagar por otro
+      // canal mientras el checkout con tarjeta seguía vivo.
+      if(res.status === 503){
+        return { ok: false, reason: (data && data.error === "checkout_unavailable") ? "checkout_unavailable" : "unavailable" };
+      }
       // CORRECTION 05 (P1-3). El servidor devuelve `purchaseId` a propósito
       // cuando hay un cobro en curso: es la compra que hay que CONFIRMAR, no un
       // error del que reintentar. Antes se tiraba, la pantalla decía "no pudimos
@@ -5176,7 +5184,10 @@
             ? (howTo || "El pago con tarjeta no está disponible ahora mismo. Escríbenos y lo activamos.")
             : (motivo === "replacement_in_progress" || motivo === "checkout_stale_observation")
               ? "Ya estamos preparando tu pago. Espera unos segundos y vuelve a intentarlo."
-              : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
+              : motivo === "checkout_unavailable"
+                // Sin invitar a pagar por otro lado: puede haber un pago abierto.
+                ? "Todavía no podemos abrir un pago nuevo. Si ya empezaste uno, termínalo en esa pestaña; si no, vuelve a intentarlo más tarde."
+                : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
         });
         cta.focus();
       } else {

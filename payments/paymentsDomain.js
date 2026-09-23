@@ -254,6 +254,8 @@ const SESSION_MATCH = Object.freeze({
   OTHER_SCOPE: "session_belongs_to_another_tournament",
   AMOUNT: "amount_does_not_match",
   CURRENCY: "currency_does_not_match",
+  // Lleva la etiqueta de un intento que esta compra no tiene registrado.
+  UNRECORDED_ATTEMPT: "session_from_an_unrecorded_attempt",
 });
 
 function verifySessionForPurchase(intent, observed) {
@@ -286,6 +288,15 @@ function verifySessionForPurchase(intent, observed) {
   if (normalizeCurrency(o.currency) !== normalizeCurrency(intent.currency)) {
     return { ok: false, reason: SESSION_MATCH.CURRENCY };
   }
+  // Correction 08: una sesión etiquetada dice de qué intento salió. Toda emisión
+  // se registra ANTES de salir, así que una etiqueta que la compra no conoce es
+  // una emisión que no consta — o una lectura de la compra más vieja que la
+  // sesión. En los dos casos no se adopta: se trata como conflicto, y quien
+  // llama falla cerrado en vez de contarla o descartarla.
+  const etiqueta = str(o.attemptKey);
+  if (etiqueta && !creationAttemptsOf(intent).some((a) => a.idempotencyKey === etiqueta)) {
+    return { ok: false, reason: SESSION_MATCH.UNRECORDED_ATTEMPT };
+  }
   return { ok: true, reason: SESSION_MATCH.OK };
 }
 
@@ -317,9 +328,22 @@ function verifySessionForPurchase(intent, observed) {
 // misma compra ya no son un reintento: son algo que hay que mirar.
 const MAX_CREATION_ATTEMPTS = 24;
 
-// Los intentos registrados, en forma normalizada y ordenados por fecha. Una compra
-// anterior a Correction 07 sólo tiene `creationAttemptedAt`: se lee como el primer
-// intento, para que su ventana siga buscándose.
+// Los intentos registrados, en forma normalizada y ordenados por fecha.
+//
+// EL INTENTO LEGADO (Correction 08). Una compra de eaa071b sólo tiene
+// `creationAttemptedAt`: la marca de su primera emisión, con la clave fija
+// `checkout:<compra>` y sin registro de ninguna emisión posterior. Correction 07 la
+// leía como primer intento SÓLO mientras `attempts` estuviera vacío — y el mismo
+// Correction 07, al registrar el primer intento nuevo, dejaba de estarlo. La
+// ventana legada desaparecía justo cuando empezaba a hacer falta: una sesión
+// legada cuya respuesta se perdió quedaba fuera de toda búsqueda, y un pago sobre
+// ella fuera del alcance de la reconciliación.
+//
+// La regla ahora no depende de si hay otros intentos: la marca es un intento
+// legado siempre que ningún intento registrado sea ESA misma emisión. Una compra
+// nacida en Correction 07 u 08 escribe como marca el instante de su primer
+// intento, así que ahí coinciden y no se duplica nada; una compra de eaa071b
+// tocada después conserva su marca, y su marca sigue siendo un intento.
 function creationAttemptsOf(intent) {
   const out = [];
   const lista = (intent && Array.isArray(intent.attempts)) ? intent.attempts : [];
@@ -332,36 +356,95 @@ function creationAttemptsOf(intent) {
       atMs: at,
       idempotencyKey: str(a.idempotencyKey),
       expiresAt: Number.isSafeInteger(a.expiresAt) ? a.expiresAt : null,
+      // La sesión de este intento lleva su clave como etiqueta (Correction 08).
+      tagged: a.tagged === true,
     });
   }
-  if (!out.length && intent && intent.creationAttemptedAt) {
-    const at = Date.parse(intent.creationAttemptedAt);
-    if (Number.isFinite(at)) {
-      // Legado: no se conocen su clave ni su expiración, pero SÍ su ventana, que es
-      // lo que hace falta para no perder su sesión.
-      out.push({ seq: 1, at: intent.creationAttemptedAt, atMs: at, idempotencyKey: null, expiresAt: null, legacy: true });
-    }
+  const marca = intent ? Date.parse(intent.creationAttemptedAt) : NaN;
+  if (Number.isFinite(marca) && !out.some((a) => a.atMs === marca)) {
+    // Legado: no se conocen su expiración ni cuántas veces se emitió, pero SÍ
+    // desde cuándo, que es lo que hace falta para no perder su sesión.
+    out.push({ seq: 0, at: intent.creationAttemptedAt, atMs: marca, idempotencyKey: null,
+      expiresAt: null, tagged: false, legacy: true });
   }
   return out.sort((a, b) => a.atMs - b.atMs || a.seq - b.seq);
 }
 
 // ¿Sirve todavía este intento para volver a pedir con SU clave?
 //
-// Sólo si su expiración congelada sigue lo bastante en el futuro para ser un
-// parámetro válido. Cuando deja de serlo hay que abrir otro intento — y eso es
-// seguro precisamente porque la expiración ya pasó: cualquier sesión que hubiera
-// nacido de este intento ya no puede cobrar, lo demuestre el descubrimiento o no.
+// Es UNA de las dos preguntas de Correction 08, y sólo esa: si la clave puede
+// repetirse con sus parámetros congelados, que siguen siendo válidos mientras a
+// su expiración le quede más que la vida mínima que el proveedor admite.
+//
+// Lo que esta función NO contesta —y Correction 07 le hacía contestar— es si
+// cuando deja de servir es seguro estrenar otra. No lo es por el solo hecho de
+// que ésta ya no sirva: entre "le quedan menos de 30 min" y "ya expiró" hay una
+// franja en la que su sesión todavía cobra. Eso lo decide `decideEmission`.
 function isAttemptReusable(attempt, nowMs, minLifetimeMs) {
-  if (!attempt || !attempt.idempotencyKey || !Number.isSafeInteger(attempt.expiresAt)) return false;
+  if (!attempt || attempt.legacy) return false;
+  if (!attempt.idempotencyKey || !Number.isSafeInteger(attempt.expiresAt)) return false;
   return attempt.expiresAt * 1000 - nowMs > minLifetimeMs;
+}
+
+// ---- hasta cuándo pudo emitir el código legado ------------------------------
+//
+// eaa071b no registraba sus emisiones después de la primera: reintentaba con la
+// misma clave y, si el proveedor la había podado, creaba otra sesión, con una
+// expiración que dependía de la hora de ESA emisión. Nada de eso quedó escrito.
+// Lo que sí se puede acotar es CUÁNDO dejó de poder emitir:
+//
+//   - cuando la compra dejó de estar abierta: eaa071b sólo emitía para compras
+//     abiertas, y cerrarla escribe `updatedAt`;
+//   - cuando el código nuevo la tocó por primera vez: su primer intento
+//     registrado, o la marca `legacyCutoverAt` que se escribe al evaluarla.
+//
+// Cada una de esas señales es, por sí sola, una cota superior válida de la última
+// emisión legada, así que vale la MÁS TEMPRANA. Tomar la más tardía haría que el
+// propio primer intento nuevo alargara el horizonte legado cada vez que se
+// registra — un bloqueo que se renueva solo.
+//
+// Si nada de eso existe todavía, la compra legada puede seguir emitiendo por lo
+// que sabemos: el límite es desconocido y se trata como tal.
+function legacyEmissionBound(intent, attempts) {
+  const lista = attempts || creationAttemptsOf(intent);
+  const leg = lista.find((a) => a.legacy);
+  if (!leg) return null;
+  const cotas = [];
+  const corte = Date.parse(intent && intent.legacyCutoverAt);
+  if (Number.isFinite(corte)) cotas.push(corte);
+  const primero = lista.find((a) => !a.legacy);
+  if (primero) cotas.push(primero.atMs);
+  if (intent && intent.status !== PURCHASE_STATUS.CREATED) {
+    const u = Date.parse(intent.updatedAt);
+    if (Number.isFinite(u)) cotas.push(u);
+  }
+  if (!cotas.length) return { fromMs: leg.atMs, boundMs: null, closed: false };
+  // Nunca antes de la propia marca: la primera emisión legada ocurrió en ella.
+  return { fromMs: leg.atMs, boundMs: Math.max(leg.atMs, Math.min(...cotas)), closed: true };
+}
+
+function needsLegacyCutover(intent) {
+  const b = legacyEmissionBound(intent);
+  return !!b && !b.closed;
 }
 
 // Las ventanas donde buscar, fusionadas. Los reintentos se agrupan, así que lo
 // normal es que veinte intentos quepan en una o dos consultas.
-function discoveryWindows(intent, marginMs) {
+//
+// La del intento legado no es un punto (Correction 08): cubre desde su marca hasta
+// el último instante en que eaa071b pudo emitir, porque sus emisiones posteriores
+// no dejaron marca propia. Mientras ese límite sea desconocido, llega hasta AHORA.
+function discoveryWindows(intent, marginMs, nowMs) {
   const m = Number.isFinite(marginMs) && marginMs > 0 ? marginMs : 0;
-  const crudas = creationAttemptsOf(intent)
-    .map((a) => ({ from: a.atMs - m, to: a.atMs + m }))
+  const intentos = creationAttemptsOf(intent);
+  const legado = legacyEmissionBound(intent, intentos);
+  const crudas = intentos
+    .map((a) => {
+      if (!a.legacy) return { from: a.atMs - m, to: a.atMs + m };
+      const hasta = legado.closed ? legado.boundMs
+        : (Number.isFinite(nowMs) ? Math.max(a.atMs, nowMs) : a.atMs);
+      return { from: a.atMs - m, to: hasta + m };
+    })
     .sort((x, y) => x.from - y.from);
   const out = [];
   for (const w of crudas) {
@@ -370,6 +453,195 @@ function discoveryWindows(intent, marginMs) {
     else out.push({ ...w });
   }
   return out;
+}
+
+// ---- IDENTIDADES del proveedor y hasta cuándo pueden cobrar (Correction 08) --
+//
+// Una identidad es una clave de idempotencia. Todas las sesiones que una clave
+// pueda haber producido llevan sus mismos parámetros, y por tanto la MISMA
+// expiración: esa expiración es el horizonte contractual hasta el que cualquiera
+// de ellas puede aceptar dinero, se haya visto o no.
+//
+// EL INVARIANT: no se estrena una identidad mientras otra del mismo torneo pueda
+// seguir cobrando, salvo PRUEBA POSITIVA de que lo que produjo ya no cobra. "El
+// listado no la ve" no es prueba de nada: el proveedor no promete que un listado
+// refleje lo que se acaba de crear.
+//
+// Tres clases, según lo que se sabe de ellas:
+//
+//   tagged    registrada por Correction 08: su sesión lleva la clave como
+//             etiqueta, y cada emisión consta. Es la única que admite prueba
+//             positiva antes de su horizonte.
+//   untagged  registrada por Correction 07: clave y expiración conocidas, pero su
+//             sesión no dice de qué intento salió. Sólo vale su horizonte.
+//   legacy    eaa071b: ni expiración congelada ni emisiones contadas. Horizonte =
+//             último instante en que pudo emitir + margen + vida máxima.
+const IDENTITY_KIND = Object.freeze({ TAGGED: "tagged", UNTAGGED: "untagged", LEGACY: "legacy" });
+const LEGACY_IDENTITY = "legacy";
+
+// `o`: { marginMs, maxLifetimeMs, graceMs, minLifetimeMs } — los fija el servidor.
+function providerIdentitiesOf(intent, o) {
+  const opts = o || {};
+  const margen = Number.isFinite(opts.marginMs) ? opts.marginMs : 0;
+  const vida = Number.isFinite(opts.maxLifetimeMs) ? opts.maxLifetimeMs : Infinity;
+  const intentos = creationAttemptsOf(intent);
+  const out = [];
+  const porClave = new Map();
+  for (const a of intentos) {
+    if (a.legacy) {
+      const b = legacyEmissionBound(intent, intentos);
+      out.push({ key: LEGACY_IDENTITY, kind: IDENTITY_KIND.LEGACY, emissions: null,
+        // Sin límite conocido de emisión, el horizonte es desconocido: infinito.
+        horizonMs: b.closed ? b.boundMs + margen + vida : Infinity });
+      continue;
+    }
+    if (!a.idempotencyKey || !Number.isSafeInteger(a.expiresAt)) {
+      // Un registro incompleto no dice su expiración; su sesión, si nació, vence
+      // como tarde una vida máxima después de nacer, y nació dentro del margen.
+      out.push({ key: `sin-clave:${a.seq}:${a.at}`, kind: IDENTITY_KIND.UNTAGGED, emissions: 1,
+        horizonMs: a.atMs + margen + vida });
+      continue;
+    }
+    let id = porClave.get(a.idempotencyKey);
+    if (!id) {
+      id = { key: a.idempotencyKey, kind: IDENTITY_KIND.TAGGED, emissions: 0, horizonMs: -Infinity };
+      porClave.set(a.idempotencyKey, id);
+      out.push(id);
+    }
+    id.emissions++;
+    id.horizonMs = Math.max(id.horizonMs, a.expiresAt * 1000);
+    // Una sola emisión sin etiqueta basta para que la clave entera deje de poder
+    // demostrarse por observación: esa sesión no diría de dónde salió.
+    if (!a.tagged) id.kind = IDENTITY_KIND.UNTAGGED;
+  }
+  return out.sort((x, y) => String(x.key).localeCompare(String(y.key)));
+}
+
+// ¿Puede esta identidad seguir cobrando AHORA? El margen de gracia cubre lo que
+// el contrato no fija: la diferencia entre nuestro reloj y el del proveedor, y un
+// pago que empezó antes de la expiración y termina un poco después. Un horizonte
+// no finito es desconocido y cuenta como vivo.
+function isIdentityLive(identity, nowMs, graceMs) {
+  if (!identity) return false;
+  const h = identity.horizonMs;
+  if (!Number.isFinite(h)) return true;
+  return h + (Number.isFinite(graceMs) ? graceMs : 0) > nowMs;
+}
+
+// ¿Consta, durable, la prueba de que esta identidad ya no cobra?
+function identityProofValid(intent, identity) {
+  if (!identity || identity.kind !== IDENTITY_KIND.TAGGED) return false;
+  const pruebas = (intent && Array.isArray(intent.identityProofs)) ? intent.identityProofs : [];
+  return pruebas.some((p) => p && p.key === identity.key
+    && isSafeCount(p.emissions) && p.emissions >= identity.emissions
+    && Array.isArray(p.sessionIds) && p.sessionIds.length >= identity.emissions);
+}
+
+function unprovenLiveIdentities(intent, nowMs, o) {
+  const grace = o && Number.isFinite(o.graceMs) ? o.graceMs : 0;
+  return providerIdentitiesOf(intent, o)
+    .filter((id) => isIdentityLive(id, nowMs, grace) && !identityProofValid(intent, id));
+}
+
+// Las identidades de TODO el torneo que impiden estrenar otra. Todas las compras
+// del torneo, en cualquier estado: una compra retirada por un evento o por código
+// anterior puede tener todavía una sesión cobrable que nadie ha visto.
+function identityBlockers(purchases, slug, scopeId, nowMs, o) {
+  const out = [];
+  for (const p of (Array.isArray(purchases) ? purchases : [])) {
+    if (!p || p.slug !== slug || p.scopeId !== scopeId) continue;
+    for (const id of unprovenLiveIdentities(p, nowMs, o)) {
+      out.push({ purchaseId: p.id, key: id.key, kind: id.kind,
+        horizon: Number.isFinite(id.horizonMs) ? new Date(id.horizonMs).toISOString() : null });
+    }
+  }
+  return out.sort((a, b) => String(a.purchaseId).localeCompare(String(b.purchaseId))
+    || String(a.key).localeCompare(String(b.key)));
+}
+
+// PRUEBA POSITIVA a partir de lo observado: qué identidades vivas de esta compra
+// quedan demostradas incobrables, y cuáles no.
+//
+// Una identidad `tagged` queda probada cuando se observan, EXPIRADAS, tantas
+// sesiones distintas con su etiqueta como emisiones suyas constan. Cada emisión es
+// una petición, y una petición crea como mucho una sesión: ver tantas como
+// emisiones es haberlas visto todas, dependa o no el proveedor de conservar la
+// clave. Con menos, alguna emisión pudo crear otra que no se ha visto.
+//
+// Sólo `dead` cuenta. Pagada no es "incobrable y vendible encima": es dinero.
+// Consumida sin pago declarado tampoco. Y lo que no se pudo leer, menos.
+function proveIdentities(intent, observed, nowMs, o) {
+  const grace = o && Number.isFinite(o.graceMs) ? o.graceMs : 0;
+  const vistas = new Map();
+  for (const s of (Array.isArray(observed) ? observed : [])) {
+    const id = str(s && s.sessionId);
+    if (id) vistas.set(id, s);
+  }
+  const proofs = [];
+  const unproven = [];
+  for (const id of providerIdentitiesOf(intent, o)) {
+    if (!isIdentityLive(id, nowMs, grace) || identityProofValid(intent, id)) continue;
+    if (id.kind !== IDENTITY_KIND.TAGGED) { unproven.push({ key: id.key, kind: id.kind }); continue; }
+    const suyas = [...vistas.values()].filter((s) => str(s.attemptKey) === id.key);
+    const muertas = suyas.filter((s) => s.paid !== true && sessionStateOf(s) === SESSION_STATE.DEAD);
+    if (suyas.length && muertas.length === suyas.length && muertas.length >= id.emissions) {
+      proofs.push({ key: id.key, emissions: id.emissions,
+        sessionIds: muertas.map((s) => str(s.sessionId)).sort() });
+    } else {
+      unproven.push({ key: id.key, kind: id.kind });
+    }
+  }
+  return { proofs, unproven };
+}
+
+// Deja las pruebas en la compra, DURABLES. Una sesión expirada no vuelve a
+// abrirse, así que la prueba no caduca; lo que sí se guarda es cuántas emisiones
+// cubría, para que una emisión posterior de la misma clave la invalide sola.
+function withIdentityProofs(intent, proofs, at) {
+  const nuevas = (Array.isArray(proofs) ? proofs : []).filter((p) => p && str(p.key));
+  if (!intent || !nuevas.length) return intent;
+  const porClave = new Map();
+  for (const p of (Array.isArray(intent.identityProofs) ? intent.identityProofs : [])) {
+    if (p && str(p.key)) porClave.set(p.key, p);
+  }
+  for (const p of nuevas) {
+    const prev = porClave.get(p.key);
+    if (prev && isSafeCount(prev.emissions) && prev.emissions >= p.emissions) continue;
+    porClave.set(p.key, { key: p.key, emissions: p.emissions,
+      sessionIds: (p.sessionIds || []).slice().sort(), at: at || null });
+  }
+  return { ...intent, identityProofs: [...porClave.values()]
+    .sort((a, b) => String(a.key).localeCompare(String(b.key))) };
+}
+
+// ---- LAS DOS PREGUNTAS, separadas (Correction 08) ---------------------------
+//
+//   1. ¿puedo repetir la clave del último intento con sus parámetros congelados?
+//   2. ¿es seguro estrenar una clave nueva?
+//
+// Correction 07 contestaba la segunda con la primera: "si no puedo repetir, estreno".
+// Con la sesión anterior a 20 min de expirar, eso eran dos sesiones cobrables. Aquí
+// cabe, y es la respuesta correcta en esa franja, "ni repito ni estreno": el
+// checkout no está disponible un rato. Dos checkouts cobrables no están permitidos
+// nunca.
+const EMISSION = Object.freeze({
+  REUSE: "reuse",         // misma clave, misma expiración, emisión nueva registrada
+  MINT: "mint",           // nada del torneo puede cobrar: identidad nueva
+  BLOCKED: "blocked",     // algo del torneo puede cobrar y no se puede repetir: nada
+  EXHAUSTED: "exhausted", // tope de intentos: una persona tiene que mirarlo
+});
+
+function decideEmission(target, purchases, nowMs, o) {
+  const opts = o || {};
+  const intentos = creationAttemptsOf(target);
+  if (intentos.length >= MAX_CREATION_ATTEMPTS) return { action: EMISSION.EXHAUSTED };
+  const ultimo = intentos.length ? intentos[intentos.length - 1] : null;
+  if (ultimo && isAttemptReusable(ultimo, nowMs, opts.minLifetimeMs)) {
+    return { action: EMISSION.REUSE, from: ultimo };
+  }
+  const blockers = identityBlockers(purchases, target && target.slug, target && target.scopeId, nowMs, opts);
+  if (blockers.length) return { action: EMISSION.BLOCKED, blockers };
+  return { action: EMISSION.MINT };
 }
 
 // ---- cuándo basta con la sesión que ya tenemos guardada ---------------------
@@ -1096,6 +1368,10 @@ module.exports = {
   SESSION_MATCH, verifySessionForPurchase,
   SESSION_SET, decideSessionSet,
   MAX_CREATION_ATTEMPTS, creationAttemptsOf, isAttemptReusable, discoveryWindows,
+  legacyEmissionBound, needsLegacyCutover,
+  IDENTITY_KIND, LEGACY_IDENTITY, providerIdentitiesOf, isIdentityLive, identityProofValid,
+  unprovenLiveIdentities, identityBlockers, proveIdentities, withIdentityProofs,
+  EMISSION, decideEmission,
   knownSessionIdsOf, needsSessionDiscovery,
   replacementKey, isClaimActive,
   MAX_SEEN_EVENTS,

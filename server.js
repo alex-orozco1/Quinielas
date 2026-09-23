@@ -492,6 +492,15 @@ function rateLimit(name) {
 // the generic store/read/delete endpoints are for QRACKS's own data shapes,
 // not an arbitrary key-value bucket anyone can stash unrelated things in.
 const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config", "platform_payment_intents"]);
+// MON-003 Correction 08. Filas que SOLO escribe el servidor. `platform_payment_intents`
+// entró en PLATFORM_KEYS para que la plataforma pudiera LEERLA, y con ello quedó
+// también escribible y borrable por el endpoint genérico — con la contraseña de
+// plataforma bastaba para reescribir compras, intentos y pruebas de identidad, o
+// para borrarlos. Esa fila ES la barrera contra el doble cobro: borrar un intento
+// es olvidar la única ventana donde encontrar su sesión, y fabricar una prueba es
+// autorizar una identidad nueva encima de una que cobra. Ninguna pantalla la
+// escribe; sólo el servidor, bajo su candado.
+const SERVER_OWNED_KEYS = new Set(["platform_payment_intents"]);
 
 function classifyKey(key) {
   if (PLATFORM_KEYS.has(key)) return { kind: "platform" };
@@ -1179,6 +1188,8 @@ app.post("/api/kv/:key", async (req, res) => {
     if (value === undefined) return res.status(400).json({ error: "missing_value" });
     const info = classifyKey(req.params.key);
     if (info.kind === "other") return res.status(400).json({ error: "invalid_key" });
+    // Correction 08: estado económico propiedad del servidor. Ni con credencial.
+    if (SERVER_OWNED_KEYS.has(req.params.key)) return res.status(403).json({ error: "server_owned_key" });
 
     const providedOwnerAuth = req.get("x-qracks-auth") || "";
     const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
@@ -1607,6 +1618,8 @@ app.delete("/api/kv/:key", async (req, res) => {
   try {
     const info = classifyKey(req.params.key);
     if (info.kind === "other") return res.status(400).json({ error: "invalid_key" });
+    // Correction 08: borrar la fila de compras es borrar la barrera entera.
+    if (SERVER_OWNED_KEYS.has(req.params.key)) return res.status(403).json({ error: "server_owned_key" });
     if (info.kind === "quiniela-meta" || info.kind === "picks" || info.kind === "platform") {
       const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
       const platHash = await getPlatformHash();
@@ -2915,6 +2928,23 @@ const SESSION_LOOKUP_MAX_PAGES = 20;
 // porque "ya no puede cobrar" no es "nunca cobró". El cálculo de la expiración que
 // se manda al crear vive en el adaptador, que es donde está el contrato.
 const SESSION_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+// ==========================================================================
+// CORRECTION 08 — ninguna identidad nueva mientras otra pueda cobrar
+//
+// Gracia sobre el horizonte contractual de una identidad. El contrato fija
+// CUÁNDO expira una sesión, pero no dice nada de la diferencia entre nuestro
+// reloj y el del proveedor, ni de un pago que empezó un instante antes y cierra
+// —3-D Secure incluido— un poco después. Nada de eso es contrato, así que se
+// trata como desconocido y se espera: pasado T + gracia, sí. En T + 1 s, no.
+const IDENTITY_EXPIRY_GRACE_MS = 15 * 60 * 1000;
+// Lo que el dominio necesita saber del contrato para razonar sobre identidades,
+// en un solo sitio. El dominio no conoce al proveedor: recibe números.
+const IDENTITY_OPTS = Object.freeze({
+  marginMs: SESSION_LOOKUP_MARGIN_MS,
+  maxLifetimeMs: SESSION_MAX_LIFETIME_MS,
+  graceMs: IDENTITY_EXPIRY_GRACE_MS,
+  minLifetimeMs: stripeAdapter.SESSION_MIN_LIFETIME_MS,
+});
 
 async function readPaymentIntents(client) {
   const row = client ? await getRowLocked(PAYMENT_INTENTS_KEY, client) : await getRow(PAYMENT_INTENTS_KEY);
@@ -3075,10 +3105,18 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
         return res.status(409).json({ error: "replacement_in_progress" });
       }
       claim = { key, token: "rep_" + crypto.randomBytes(8).toString("hex") };
-      // TODAS las compras abiertas, con sesión conocida o sin ella.
-      open = abiertas;
+      // Compras legadas del torneo cuyo último instante de emisión aún no está
+      // acotado: se acota aquí, con el turno, para que su horizonte deje de ser
+      // desconocido aunque este intento acabe sin emitir nada (Correction 08).
+      const purchasesAcotadas = store.purchases.map((p) => (p && p.slug === slug
+        && p.scopeId === scope.id && paymentsDomain.needsLegacyCutover(p)
+        ? { ...p, legacyCutoverAt: now } : p));
+      // TODAS las compras abiertas, con sesión conocida o sin ella — leídas de la
+      // versión acotada, que es la que queda escrita.
+      open = paymentsDomain.openIntentsForScope(purchasesAcotadas, slug, scope.id);
       await putRow(PAYMENT_INTENTS_KEY, {
-        ...store, replacements: { ...claims, [key]: { at: now, token: claim.token } },
+        ...store, purchases: purchasesAcotadas,
+        replacements: { ...claims, [key]: { at: now, token: claim.token } },
       }, client);
       await client.query("COMMIT");
     } catch (err) {
@@ -3112,7 +3150,8 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
           slug, purchaseId: a.id, code: err && err.code, message: err && err.message });
         r = { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED };
       }
-      resolved.push({ id: a.id, outcome: r.outcome, url: r.url || null, paid: r.paid === true });
+      resolved.push({ id: a.id, outcome: r.outcome, url: r.url || null, paid: r.paid === true,
+        proofs: Array.isArray(r.proofs) ? r.proofs : [] });
     }
 
     // La decisión la toma el dominio con el conjunto COMPLETO. Función pura:
@@ -3133,9 +3172,10 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       }
       // Reutilizar NO es cobrar: `plan.winnerPaid` es false en esta rama, así que
       // el motivo que se escribe dice exactamente eso.
-      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid).catch((err) => {
-        logPayment("checkout_retire_failed", { slug, message: err && err.message });
-      });
+      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid, pruebasDe(resolved))
+        .catch((err) => {
+          logPayment("checkout_retire_failed", { slug, message: err && err.message });
+        });
       logPayment("checkout_resumed", { slug, purchaseId: plan.purchaseId });
       return res.json({ ok: true, checkoutUrl: reuseUrl, purchaseId: plan.purchaseId });
     }
@@ -3151,9 +3191,10 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
       // pago del mismo torneo — la protección que Correction 02 construyó para
       // los reemplazos no cubría este camino. Si la escritura falla no se rompe
       // nada (sus sesiones ya están muertas allá), pero se dice.
-      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid).catch((err) => {
-        logPayment("checkout_retire_failed", { slug, message: err && err.message });
-      });
+      await retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid, pruebasDe(resolved))
+        .catch((err) => {
+          logPayment("checkout_retire_failed", { slug, message: err && err.message });
+        });
       logPayment("checkout_found_used", {
         slug, purchaseId: plan.purchaseId, dead: (plan.dead || []).length });
       return res.status(409).json({ error: "payment_in_progress", purchaseId: plan.purchaseId });
@@ -3182,16 +3223,18 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     const opened = await openPurchase(slug, dead);
     if (opened.error) {
       logPayment("checkout_creation_failed", { slug, reason: opened.error });
-      return res.status(opened.status || 409).json({ error: opened.error });
+      return res.status(opened.status || 409).json({ error: opened.publicError || opened.error });
     }
     const intent = opened.intent;
 
     // ---- fase 4: pedir la sesión de ESTA compra ----
     //
-    // Crear aquí es seguro sin preguntar nada: esta compra nació hace
-    // microsegundos con un id que no existía antes, así que no puede haber una
-    // sesión suya en el proveedor. Es el ÚNICO sitio donde crear a ciegas es
-    // correcto, y lo es por construcción, no por suerte.
+    // Esta compra nació hace microsegundos con un id que no existía antes, así que
+    // no puede haber una sesión SUYA en el proveedor. Lo que sí puede haber es una
+    // sesión de OTRA compra del torneo todavía cobrando: por eso la emisión pasa,
+    // como todas, por `recordCreationAttempt`, que se niega si queda alguna
+    // identidad del torneo viva sin prueba (Correction 08). `openPurchase` ya lo
+    // comprobó antes de crear la compra; aquí se vuelve a comprobar bajo candado.
     //
     // Si esta llamada se pierde —o el proceso muere aquí mismo— la compra ya está
     // persistida y con su `creationAttemptedAt` puesto ANTES de la llamada: el
@@ -3203,7 +3246,9 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     } catch (err) {
       logPayment("checkout_creation_failed", {
         slug, purchaseId: intent.id, code: err && err.code, message: err && err.message });
-      return res.status(502).json({ error: "checkout_unavailable" });
+      // La barrera de identidad es un "todavía no", no un fallo del proveedor.
+      return res.status(err && err.code === "identity_still_chargeable" ? 503 : 502)
+        .json({ error: "checkout_unavailable" });
     }
 
     // ---- fase 5: guardar la sesión ----
@@ -3301,6 +3346,12 @@ async function releaseReplacementClaim(claim) {
   }
 }
 
+// Las pruebas de identidad que la fase 2 obtuvo, por compra.
+function pruebasDe(resolved) {
+  return new Map((resolved || []).filter((r) => r && Array.isArray(r.proofs) && r.proofs.length)
+    .map((r) => [r.id, r.proofs]));
+}
+
 // Retira las compras cuya sesión se demostró incobrable, cuando NO se abre una
 // nueva que las sustituya.
 //
@@ -3308,7 +3359,7 @@ async function releaseReplacementClaim(claim) {
 // dejarlas en `created` habría permitido un segundo pago registrado del mismo
 // torneo. Apunta a la compra que se queda viva, que es la verdad de lo ocurrido:
 // ésta se retiró porque el dinero va por la otra.
-async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid) {
+async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid, proofsById) {
   const retirar = new Set((deadIds || []).filter((id) => id && id !== winnerId));
   if (!retirar.size) return;
   // CORRECTION 05 (P2-2): el motivo describe lo que DE VERDAD pasó.
@@ -3333,11 +3384,13 @@ async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid) {
       // Sólo lo que sigue abierto: una terminal ya tiene su historia escrita.
       if (!p || !retirar.has(p.id) || p.status !== paymentsDomain.PURCHASE_STATUS.CREATED) return p;
       n++;
-      const retired = {
+      // Las pruebas de que no le queda nada que cobre se guardan CON la retirada
+      // (Correction 08): son lo que después permite estrenar identidad en el torneo.
+      const retired = paymentsDomain.withIdentityProofs({
         ...p, status: paymentsDomain.PURCHASE_STATUS.EXPIRED, updatedAt: now,
         attention: { code, at: now, detail: winnerId },
         supersededBy: winnerId,
-      };
+      }, proofsById && proofsById.get(p.id), now);
       audit.push(paymentsDomain.buildPaymentAudit(retired, decision, "none", now));
       return retired;
     });
@@ -3540,6 +3593,23 @@ async function openPurchase(slug, superseded) {
     }
 
     const now = new Date().toISOString();
+    const nowMs = Date.parse(now);
+
+    // CORRECTION 08 — la misma barrera que `recordCreationAttempt`, ANTES de que
+    // nazca la compra. Una compra nueva es una identidad nueva: si algo del torneo
+    // puede seguir cobrando sin prueba de lo contrario, no se crea nada —ni la
+    // compra ni la sustitución de las anteriores—, en vez de crearla y descubrir
+    // después que no puede emitir.
+    const pruebas = new Map((superseded || []).map((c) => [c.id, c.proofs || []]));
+    const conPruebas = store.purchases.map((p) => (p && deadIds.has(p.id)
+      ? paymentsDomain.withIdentityProofs(p, pruebas.get(p.id), now) : p));
+    const bloqueos = paymentsDomain.identityBlockers(conPruebas, slug, scope.id, nowMs, IDENTITY_OPTS);
+    if (bloqueos.length) {
+      await client.query("ROLLBACK");
+      logPayment("checkout_identity_still_chargeable", { slug, blockers: bloqueos });
+      return { error: "identity_still_chargeable", publicError: "checkout_unavailable", status: 503 };
+    }
+
     const fresh = paymentsDomain.makePurchaseIntent({
       purchaseId: newPurchaseId(), slug, scopeId: scope.id,
       configVersion: offer.configVersion, expectedAmountMinor: offer.amountMinor,
@@ -3554,7 +3624,7 @@ async function openPurchase(slug, superseded) {
     }
 
     const audit = store.audit.slice();
-    const purchases = store.purchases.map((p) => {
+    const purchases = conPruebas.map((p) => {
       // La condición de estado se repite AQUÍ además de comprobarse arriba: si
       // alguien añadiera un camino que se salte la comprobación, este map sigue
       // sin poder degradar nada que no esté abierto.
@@ -3633,16 +3703,30 @@ async function createSessionFor(intent, slug) {
     // Congelados con el intento. Ni uno ni otro se recalculan al reintentar.
     expiresAt: attempt.expiresAt,
     idempotencyKey: attempt.idempotencyKey,
+    // La sesión dice de qué intento salió (Correction 08) — sólo si el intento
+    // nació etiquetado: repetir una clave exige repetir sus parámetros.
+    attemptTag: attempt.tagged ? attempt.idempotencyKey : null,
   });
 }
 
-// Registra DURABLEMENTE el intento que cubre la emisión que viene ahora.
+// Registra DURABLEMENTE el intento que cubre la emisión que viene ahora — o se
+// niega a que haya emisión.
 //
-// Reutiliza el último intento mientras sus parámetros sigan sirviendo: así la clave
-// de idempotencia se mantiene estable, que es la red contra una sesión que el
-// descubrimiento no viera. Sólo abre uno nuevo cuando la expiración congelada del
-// anterior ya no es un parámetro válido — y eso es seguro precisamente porque, si
-// esa expiración ya pasó, cualquier sesión de aquel intento no puede cobrar.
+// ES LA BARRERA ÚNICA de Correction 08. Toda petición de creación al proveedor
+// pasa por aquí antes de salir, sea para una compra que se reanuda o para una
+// recién nacida, así que la regla vive en un solo sitio y bajo el candado de la
+// fila de compras:
+//
+//   A. el último intento puede repetirse (clave y expiración congeladas siguen
+//      siendo válidas): se repite, con una fila nueva que fija SU ventana;
+//   B. no puede repetirse y alguna identidad del torneo —de esta compra o de
+//      cualquier otra— puede seguir cobrando sin prueba de lo contrario: NO sale
+//      nada. Ni la clave vieja ni una nueva. Se lanza y el llamador falla cerrado;
+//   C. nada del torneo puede cobrar ya: identidad nueva, etiquetada.
+//
+// Correction 07 pasaba de "no puedo repetir" a "estreno" sin más, y en la franja
+// en que la sesión anterior tenía menos de 30 min de vida eso eran dos sesiones
+// cobrables. Esa franja es exactamente B.
 //
 // LANZA si no consigue dejar el registro, incluido el caso en que la compra no está
 // en la fila: eso no es un éxito silencioso, es que se iba a pedir una sesión para
@@ -3657,60 +3741,73 @@ async function recordCreationAttempt(purchaseId, nowMs) {
       await client.query("ROLLBACK");
       throw new Error("creation_marker_purchase_missing");
     }
-    const previos = paymentsDomain.creationAttemptsOf(target);
-    const ultimo = previos.length ? previos[previos.length - 1] : null;
-    // CADA EMISIÓN SE REGISTRA, aunque reutilice la clave del intento anterior.
-    //
-    // Reutilizar la clave es lo que mantiene los parámetros estables, pero la
-    // ventana donde buscar la sesión la fija el instante de LA EMISIÓN, no el de la
-    // primera. Si se reutilizara el registro entero, una emisión doce horas después
-    // quedaría cubierta por una ventana de doce horas antes — que es exactamente el
-    // agujero que Correction 07 viene a cerrar, reaparecido por otra puerta.
-    //
-    // Así que siempre se añade una fila; lo que se hereda, cuando todavía sirve, son
-    // la clave y la expiración.
-    const reutilizable = paymentsDomain.isAttemptReusable(
-      ultimo, nowMs, stripeAdapter.SESSION_MIN_LIFETIME_MS);
-    if (previos.length >= paymentsDomain.MAX_CREATION_ATTEMPTS) {
+    const at = new Date(nowMs).toISOString();
+
+    // Compras legadas del torneo cuyo último instante de emisión todavía no está
+    // acotado: se acota AHORA, durable, antes de decidir. Sin esto su horizonte
+    // sería desconocido para siempre y el torneo no podría volver a vender.
+    let purchases = store.purchases.map((p) => (p && p.slug === target.slug
+      && p.scopeId === target.scopeId && paymentsDomain.needsLegacyCutover(p)
+      ? { ...p, legacyCutoverAt: at } : p));
+    const acotadas = purchases.filter((p, i) => p !== store.purchases[i]).map((p) => p.id);
+    const actual = purchases.find((p) => p && p.id === purchaseId);
+    const delTorneo = purchases.filter((p) => p && p.slug === target.slug && p.scopeId === target.scopeId);
+
+    const d = paymentsDomain.decideEmission(actual, delTorneo, nowMs, IDENTITY_OPTS);
+    if (d.action === paymentsDomain.EMISSION.EXHAUSTED) {
       await client.query("ROLLBACK");
       // No se poda ninguna ventana: olvidar una es perder la única forma de
       // encontrar un cobro que hubiera ocurrido en ella. Así que se para y se pide
       // una persona — veinticuatro intentos sobre una compra ya no son un reintento.
-      logPayment("checkout_attempts_exhausted", { purchaseId, attempts: previos.length });
+      logPayment("checkout_attempts_exhausted", { purchaseId,
+        attempts: paymentsDomain.creationAttemptsOf(actual).length });
       throw new Error("creation_attempts_exhausted");
     }
-    const at = new Date(nowMs).toISOString();
-    const seq = (ultimo ? ultimo.seq : 0) + 1;
-    const attempt = {
-      seq,
-      at,
-      // La clave y la expiración se HEREDAN mientras la expiración heredada siga
-      // siendo un parámetro válido: así dos emisiones que comparten clave comparten
-      // también parámetros, que es lo que el proveedor exige para responder con el
-      // mismo resultado en vez de un `idempotency_error`.
-      //
-      // Cuando ya no sirve se estrena identidad — y eso es seguro precisamente
-      // porque la expiración anterior ya pasó: cualquier sesión de aquellas
-      // emisiones no puede cobrar, lo demuestre el descubrimiento o no.
-      idempotencyKey: reutilizable ? ultimo.idempotencyKey : `checkout:${purchaseId}:${seq}`,
-      expiresAt: reutilizable ? ultimo.expiresAt : stripeAdapter.checkoutExpiresAt(at, nowMs),
-      inherited: reutilizable ? ultimo.seq : null,
-    };
-    const purchases = store.purchases.map((p) => (p && p.id === purchaseId
+    if (d.action === paymentsDomain.EMISSION.BLOCKED) {
+      // Lo único que se escribe es la cota legada, si hacía falta: es lo que hace
+      // que este bloqueo tenga fin.
+      if (acotadas.length) {
+        await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases }, client);
+        await client.query("COMMIT");
+        logPayment("checkout_legacy_cutover_recorded", { purchaseIds: acotadas.sort() });
+      } else {
+        await client.query("ROLLBACK");
+      }
+      logPayment("checkout_identity_still_chargeable", { purchaseId, blockers: d.blockers });
+      const err = new Error("creation_identity_still_chargeable");
+      err.code = "identity_still_chargeable";
+      err.blockers = d.blockers;
+      throw err;
+    }
+
+    const previos = paymentsDomain.creationAttemptsOf(actual);
+    const seq = previos.reduce((m, x) => Math.max(m, x.seq), 0) + 1;
+    const reusa = d.action === paymentsDomain.EMISSION.REUSE;
+    // CADA EMISIÓN SE REGISTRA, aunque repita la clave del intento anterior: la
+    // ventana donde buscar su sesión la fija el instante de ESTA emisión (C07).
+    const attempt = reusa
+      ? { seq, at, idempotencyKey: d.from.idempotencyKey, expiresAt: d.from.expiresAt,
+          inherited: d.from.seq, tagged: d.from.tagged === true }
+      : { seq, at, idempotencyKey: `checkout:${purchaseId}:${seq}`,
+          expiresAt: stripeAdapter.checkoutExpiresAt(at, nowMs), inherited: null, tagged: true };
+    purchases = purchases.map((p) => (p && p.id === purchaseId
       ? {
           ...p,
+          // Sólo los intentos REGISTRADOS; el legado se sigue leyendo de su marca,
+          // que se conserva abajo y ya no puede quedar tapada (Correction 08).
           attempts: previos.filter((x) => !x.legacy)
-            .map((x) => ({ seq: x.seq, at: x.at, idempotencyKey: x.idempotencyKey, expiresAt: x.expiresAt }))
-            .concat([attempt]),
-          // Se conserva: es la marca que sostiene el invariante "sin marca, cero
-          // peticiones", y la ventana del intento legado.
+            .map((x) => ({ seq: x.seq, at: x.at, idempotencyKey: x.idempotencyKey,
+              expiresAt: x.expiresAt, ...(x.tagged ? { tagged: true } : {}) }))
+            .concat([{ seq: attempt.seq, at: attempt.at, idempotencyKey: attempt.idempotencyKey,
+              expiresAt: attempt.expiresAt, ...(attempt.tagged ? { tagged: true } : {}) }]),
           creationAttemptedAt: p.creationAttemptedAt || at,
         }
       : p));
     await putRow(PAYMENT_INTENTS_KEY, { ...store, purchases }, client);
     await client.query("COMMIT");
     logPayment("checkout_attempt_recorded", {
-      purchaseId, seq, expiresAt: attempt.expiresAt, inherited: attempt.inherited });
+      purchaseId, seq, expiresAt: attempt.expiresAt, inherited: attempt.inherited,
+      tagged: attempt.tagged, action: d.action });
     return attempt;
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -3794,7 +3891,7 @@ async function locateSessionForPurchase(intent, hint) {
   if (hint && !encontradas.has(hint)) await mirar(hint, "hint");
 
   // 3. El listado, ventana por ventana.
-  const ventanas = paymentsDomain.discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS);
+  const ventanas = paymentsDomain.discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS, Date.now());
   if (!ventanas.length) {
     // Sin ningún intento registrado, NINGUNA petición de creación salió de QRACKS,
     // así que no puede existir ninguna sesión. El registro se escribe y se commitea
@@ -3854,6 +3951,27 @@ function decidirLocalizacion(encontradas, conflict, via) {
   return conflict
     ? { unknown: true, via: "conflicting_candidate", reason: conflict }
     : { absent: true, via: via === "list" ? "list_exhausted" : via };
+}
+
+// "Muerta" como veredicto sobre una COMPRA (Correction 08).
+//
+// Hasta aquí bastaba con que las sesiones vistas estuvieran expiradas. Pero lo
+// visto no es todo: una emisión cuya respuesta se perdió y que el listado no
+// devuelve puede seguir cobrando, y dar la compra por muerta es exactamente lo que
+// autoriza a vender otra encima — y a marcar ésta como sustituida, con lo que un
+// pago sobre esa sesión invisible ni siquiera otorgaría el plan.
+//
+// Así que la compra sólo está muerta si CADA identidad suya que todavía podría
+// cobrar queda probada incobrable por lo observado. Las pruebas se devuelven para
+// guardarlas junto con la sustitución, en la misma transacción.
+function proveDeadOrBlock(intent, observed, via) {
+  const r = paymentsDomain.proveIdentities(intent, observed, Date.now(), IDENTITY_OPTS);
+  if (r.unproven.length) {
+    logPayment("checkout_dead_unproven", {
+      slug: intent.slug, purchaseId: intent.id, via, unproven: r.unproven });
+    return { ok: false, unproven: r.unproven };
+  }
+  return { ok: true, proofs: r.proofs };
 }
 
 // Varias sesiones del proveedor para UNA compra: qué se puede afirmar, y qué se
@@ -3944,10 +4062,14 @@ async function resolveMultipleSessions(intent, sessions) {
       via: "consumed" };
   }
   if (veredicto.kind === D.SESSION_SET.ALL_DEAD) {
-    // Todas demostradas incobrables: la compra puede sustituirse. Se señala una
-    // por id, sólo para que la fila conserve una referencia auditable.
+    // Todas las VISTAS están muertas. Eso no basta para sustituir la compra
+    // (Correction 08): tiene que constar que no queda ninguna identidad suya capaz
+    // de cobrar, vista o no. Sin esa prueba, se bloquea.
+    const g = proveDeadOrBlock(intent, sessions, "many");
+    if (!g.ok) return { outcome: D.OPEN_INTENT.UNRESOLVED, via: "identity_unproven" };
+    // Se señala una por id, sólo para que la fila conserve una referencia auditable.
     return { outcome: D.OPEN_INTENT.DEAD, session: porId(sessions)[0] || null, decided: true,
-      via: "all_dead" };
+      via: "all_dead", proofs: g.proofs };
   }
   // Cualquier otra cosa —sigue habiendo algo vivo, algo consumido junto a un
   // cobro, algo desconocido, o dos cobros— deja el invariant SIN restaurar.
@@ -4029,7 +4151,7 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
       logPayment("checkout_session_multiplicity_resolved", {
         slug: intent.slug, purchaseId: intent.id, outcome: r.outcome, via: r.via });
       return { outcome: r.outcome, url, sessionId,
-        paid: !!(observed && observed.paid === true), via: r.via };
+        paid: !!(observed && observed.paid === true), via: r.via, proofs: r.proofs || [] };
     } else if (found.session) {
       sessionId = found.session.sessionId;
       observed = found.session;
@@ -4045,6 +4167,23 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
       });
       logPayment("checkout_session_recovered", {
         slug: intent.slug, purchaseId: intent.id, via: found.via });
+    } else if (found.absent && !reusable) {
+      // Correction 08. Hay OTRA compra abierta en el torneo, así que ésta no se va
+      // a vender: su destino es morir. Crearle una sesión para expirarla acto
+      // seguido —lo que se hacía antes— era estrenar una identidad cobrable
+      // mientras otra del torneo lo era también, que es justo lo que no se puede.
+      //
+      // Lo que se pregunta es si se puede dar por muerta sin tocar nada: sí, si no
+      // le queda ninguna identidad que pueda cobrar sin prueba (por ejemplo, nunca
+      // se emitió nada, o todo lo emitido ya pasó su horizonte). Si no, se bloquea.
+      const g = proveDeadOrBlock(intent, [], "absent_in_set");
+      logPayment("checkout_absent_in_open_set", {
+        slug: intent.slug, purchaseId: intent.id, via: found.via, dead: g.ok });
+      return g.ok
+        ? { outcome: paymentsDomain.OPEN_INTENT.DEAD, url: null, sessionId: null, paid: false,
+            via: "absent_in_set", proofs: g.proofs }
+        : { outcome: paymentsDomain.OPEN_INTENT.UNRESOLVED, url: null, sessionId: null, paid: false,
+            via: "absent_in_set" };
     } else if (found.absent) {
       // Demostrado que no hay nada que duplicar.
       const created = await createSessionFor(intent, intent.slug);
@@ -4097,9 +4236,16 @@ async function resolveOpenIntent(intent, currentOffer, reusable = true) {
       outcome = paymentsDomain.OPEN_INTENT.UNRESOLVED;
     }
   }
+  // Muerta, sí — pero ¿es TODO lo que esta compra pudo producir? (Correction 08)
+  let proofs = [];
+  if (outcome === paymentsDomain.OPEN_INTENT.DEAD) {
+    const g = proveDeadOrBlock(intent, observed ? [observed] : [], "single");
+    if (!g.ok) outcome = paymentsDomain.OPEN_INTENT.UNRESOLVED;
+    else proofs = g.proofs;
+  }
   // `paid` sube al conjunto porque "usada" no es "cobrada" (Correction 05,
   // P2-4): sólo el proveedor diciendo que se pagó cuenta como dinero.
-  return { outcome, url, sessionId, paid: !!(observed && observed.paid === true) };
+  return { outcome, url, sessionId, paid: !!(observed && observed.paid === true), proofs };
 }
 
 // Adjunta la identidad del proveedor a una compra ya creada. Nunca la

@@ -47,6 +47,17 @@ function cuerpoDe(src, marker) {
   throw new Error(`cuerpo sin cerrar: ${marker}`);
 }
 
+// Para funciones cuyo primer `{` es una desestructuración de parámetros, donde
+// `cuerpoDe` mediría la lista de parámetros y no el cuerpo: se corta desde el
+// ancla hasta la siguiente ancla, y las DOS tienen que existir.
+function entreAnclas(src, desde, hasta) {
+  const i = src.indexOf(desde);
+  assert.ok(i !== -1, `ancla inexistente: ${desde}`);
+  const j = src.indexOf(hasta, i + desde.length);
+  assert.ok(j !== -1, `ancla final inexistente: ${hasta}`);
+  return src.slice(i, j);
+}
+
 const NOW = "2026-09-10T12:00:00.000Z";
 const SCOPE = "ts:1:football:thesportsdb:4350:e1";
 const OTHER_SCOPE = "ts:1:football:thesportsdb:4350:e2";
@@ -755,9 +766,17 @@ test("MON003 · 55 — UI: la pantalla no conoce el precio ni el torneo", () => 
 
 test("MON003 · 56 — UI: sin pasarela configurada NO se finge un cobro", () => {
   const ui = stripComments(indexSrc);
-  assert.ok(ui.includes('reason: "unavailable"'));
+  // Correction 08: el 503 se parte por su motivo. Sólo "sin pasarela" es
+  // `unavailable` (y ofrece la vía manual); "no se puede abrir uno NUEVO todavía"
+  // tiene su propio motivo y NO invita a pagar por otro canal.
+  assert.ok(ui.includes('data.error === "checkout_unavailable") ? "checkout_unavailable" : "unavailable"'));
   assert.ok(/El pago con tarjeta no está disponible/.test(indexSrc),
     "se dice la verdad y queda la vía manual");
+  const sc = ui.slice(ui.indexOf('motivo === "checkout_unavailable"'));
+  const msg = sc.slice(0, sc.indexOf(":", sc.indexOf("?") + 1) + 200);
+  assert.ok(/Si ya empezaste uno, termínalo en esa pestaña/.test(msg), "remite al pago que ya pudiera estar abierto");
+  assert.ok(!/Escríbenos|activamos/.test(msg.slice(0, msg.indexOf('"No pudimos'))),
+    "y no empuja al canal manual mientras un checkout puede seguir vivo");
 });
 
 // Correction 05 partió la vuelta en dos: `resolveCheckoutReturn` decide QUÉ
@@ -1593,10 +1612,13 @@ test("MON003 · C3.4 — el proveedor devuelve el estado de la sesión al crearl
   // clave repetida la propia respuesta de creación YA es la sesión que existía.
   const src = stripComments(
     fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
-  const fn = src.slice(src.indexOf("async function createCheckoutSession({"));
-  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  // Correction 08: los parámetros viven en `buildCheckoutParams`; la creación los
+  // usa tal cual y devuelve la sesión normalizada de la misma respuesta.
+  const body = cuerpoDe(src, "async function createCheckoutSession(args)");
   assert.ok(body.includes("observed: normalizeSession(session)"));
   assert.ok(body.includes("idempotencyKey"), "y la clave viaja al proveedor");
+  assert.ok(body.includes("const params = buildCheckoutParams(args || {});"),
+    "y los parámetros salen de UN solo sitio");
 });
 
 test("MON003 · C3.5 — SERVER: la barrera se vuelve a comprobar BAJO EL CANDADO", () => {
@@ -1691,15 +1713,17 @@ test("MON003 · C3.9 — la marca de creación es una PRECONDICIÓN, no una nota
     "marcar algo que no existe no es un éxito");
   assert.ok(mark.includes('await client.query("COMMIT")'), "y se commitea de verdad");
   assert.ok(mark.includes("throw err"), "cualquier fallo sube");
-  // Nunca reescribe: la primera marca es la que acota la ventana.
-  assert.ok(mark.includes("isAttemptReusable(\n"), "se comprueba si la identidad anterior sirve");
+  // Correction 08: la decisión de repetir, estrenar o NO emitir es del dominio, y
+  // se toma con TODAS las compras del torneo a la vista.
+  assert.ok(mark.includes("paymentsDomain.decideEmission(actual, delTorneo, nowMs, IDENTITY_OPTS)"),
+    "se comprueba si la identidad anterior sirve y si es seguro estrenar otra");
 
   // NADA decide en función de ese campo salvo el descubrimiento, que es su razón
   // de ser.
   const locate = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
   // Correction 07: el descubrimiento ya no lee el campo a mano, usa las ventanas de
   // intento que el dominio deriva de él (y del legado).
-  assert.ok(locate.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS)"));
+  assert.ok(locate.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS, Date.now())"));
   const dom = stripComments(
     fs.readFileSync(path.join(__dirname, "..", "payments", "paymentsDomain.js"), "utf8"));
   assert.ok(cuerpoDe(dom, "function creationAttemptsOf(intent)").includes("intent.creationAttemptedAt"),
@@ -2034,15 +2058,16 @@ test("MON003 · C4.15 — las hermanas muertas se RETIRAN, no se dejan a medias"
   const src = stripComments(serverSrc);
   const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout", rateLimit'));
   const body = co.slice(0, co.indexOf("\n});"));
-  const retireAt = body.indexOf("retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid)");
+  // Correction 08: con las pruebas de identidad de la fase 2, que se guardan con la retirada.
+  const retireAt = body.indexOf(
+    "retireDeadSiblings(slug, plan.dead || [], plan.purchaseId, plan.winnerPaid, pruebasDe(resolved))");
   const respondAt = body.indexOf('error: "payment_in_progress"');
   assert.ok(retireAt !== -1 && respondAt !== -1);
   assert.ok(retireAt < respondAt, "se retiran ANTES de responder");
   // También en la rama que reutiliza: si hubiera hermanas muertas, se retiran.
   assert.equal((body.match(/retireDeadSiblings\(/g) || []).length, 2);
 
-  const fn = src.slice(src.indexOf("async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid)"));
-  const fnBody = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  const fnBody = cuerpoDe(src, "async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid, proofsById)");
   assert.ok(fnBody.includes("supersededBy: winnerId"), "lo que bloquea un grant tardío");
   assert.ok(fnBody.includes("PURCHASE_STATUS.EXPIRED"));
   // Correction 05 (P2-2): el motivo depende de si la que se conserva COBRÓ.
@@ -2072,8 +2097,8 @@ test("MON003 · C4.15 — las hermanas muertas se RETIRAN, no se dejan a medias"
 test("MON003 · C5.1 — el adaptador siembra la identidad en DOS sitios y en el cargo", () => {
   const src = stripComments(
     fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
-  const fn = src.slice(src.indexOf("async function createCheckoutSession({"));
-  const body = fn.slice(0, fn.indexOf("\nasync function ", 10));
+  // Correction 08: los parámetros se construyen en una función pura aparte.
+  const body = entreAnclas(src, "function buildCheckoutParams({", "async function createCheckoutSession(args)");
   // En la sesión: metadata y el campo que el proveedor describe para reconciliar.
   assert.ok(body.includes('"metadata[qracks_purchase_id]": purchaseId'));
   assert.ok(body.includes("client_reference_id: purchaseId"));
@@ -2181,7 +2206,9 @@ test("MON003 · C5.5 — SERVER: la ventana de búsqueda sale de un dato NUESTRO
   const src = stripComments(serverSrc);
   const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
   // Correction 07: hay UNA ventana POR INTENTO, no una sola anclada al primero.
-  assert.ok(body.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS)"),
+  // Correction 08: con el reloj, porque la ventana legada llega hasta el último
+  // instante en que eaa071b pudo emitir, que puede ser "hasta ahora".
+  assert.ok(body.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS, Date.now())"),
     "las ventanas las fijan los instantes en que PEDIMOS cada creación");
   assert.ok(body.includes("for (const w of ventanas)"), "se recorren todas");
   assert.ok(body.includes("SESSION_LOOKUP_MAX_PAGES"));
@@ -2195,7 +2222,7 @@ test("MON003 · C5.5 — SERVER: la ventana de búsqueda sale de un dato NUESTRO
   // Y `creationAttemptedAt` no es auditoría: sostiene esto, y se escribe una sola
   // vez porque la primera marca es la que acota la ventana.
   const mark = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
-  assert.ok(mark.includes("isAttemptReusable(\n"), "se comprueba si la identidad anterior sirve");
+  assert.ok(mark.includes("paymentsDomain.decideEmission("), "se comprueba si la identidad anterior sirve");
 });
 
 test("MON003 · C5.6 — SERVER: reanudar localiza primero y crea sólo ante una ausencia probada", () => {
@@ -2433,14 +2460,22 @@ test("MON003 · C6.2 — marcar algo que no existe NO es un éxito", () => {
   // Una marca previa no se reescribe, y no es un error.
   // Correction 07: CADA emisión deja su fila —su ventana— y lo que se hereda,
   // cuando todavía sirve, son la clave y la expiración.
-  assert.ok(body.includes("isAttemptReusable("), "se comprueba si la identidad anterior sirve");
-  assert.ok(body.includes("idempotencyKey: reutilizable ? ultimo.idempotencyKey"),
+  // Correction 08: la decisión es del dominio (repetir / estrenar / nada).
+  assert.ok(body.includes("paymentsDomain.decideEmission("), "se comprueba si la identidad anterior sirve");
+  assert.ok(body.includes("idempotencyKey: d.from.idempotencyKey"),
     "misma clave mientras sus parámetros sigan siendo válidos");
-  assert.ok(body.includes("expiresAt: reutilizable ? ultimo.expiresAt"),
+  assert.ok(body.includes("expiresAt: d.from.expiresAt"),
     "y la MISMA expiración con esa misma clave");
-  assert.ok(body.includes("concat([attempt])"), "pero la fila de la emisión se añade siempre");
-  assert.ok(body.includes("MAX_CREATION_ATTEMPTS"),
+  assert.ok(body.includes(".concat([{ seq: attempt.seq, at: attempt.at"),
+    "pero la fila de la emisión se añade siempre");
+  // Correction 08: el tope lo aplica el dominio al decidir la emisión; aquí se
+  // atiende su veredicto, y ANTES de escribir nada.
+  assert.ok(body.includes("paymentsDomain.EMISSION.EXHAUSTED"),
     "y la lista está acotada: al tope se falla cerrado, no se olvida una ventana");
+  assert.ok(body.indexOf("EMISSION.EXHAUSTED") < body.indexOf("putRow("));
+  assert.ok(cuerpoDe(stripComments(fs.readFileSync(path.join(__dirname, "..", "payments", "paymentsDomain.js"),
+    "utf8")), "function decideEmission(target, purchases, nowMs, o)")
+    .includes("intentos.length >= MAX_CREATION_ATTEMPTS"));
   assert.ok(body.includes("creation_attempts_exhausted"));
   // Todo fallo sube, y la transacción se cierra.
   assert.ok(body.includes("throw err"));
@@ -2641,8 +2676,12 @@ test("MON003 · C6.8 — la expiración es explícita, determinista y dentro del
   // Y el adaptador la manda.
   const adapter = stripComments(
     fs.readFileSync(path.join(__dirname, "..", "payments", "stripeAdapter.js"), "utf8"));
-  // `expiresAt` es un parámetro declarado de la creación…
-  assert.ok(cuerpoDe(adapter, "async function createCheckoutSession(").includes("expiresAt"));
+  // `expiresAt` es un parámetro declarado de la creación… (Correction 08: de la
+  // función que construye sus parámetros, que la creación usa sin tocar)
+  assert.ok(entreAnclas(adapter, "function buildCheckoutParams({", "async function createCheckoutSession(args)")
+    .includes("if (Number.isSafeInteger(expiresAt)) params.expires_at = expiresAt;"));
+  assert.ok(cuerpoDe(adapter, "async function createCheckoutSession(args)")
+    .includes("buildCheckoutParams(args || {})"));
   // …y se traduce a `expires_at` en un único sitio del archivo.
   assert.equal((adapter.match(/params\.expires_at = expiresAt/g) || []).length, 1);
 
@@ -2775,15 +2814,15 @@ test("MON003 · C7.3 — SERVER: cada emisión se registra, y la identidad se he
   const body = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
   // La fila se añade SIEMPRE: la ventana la fija el instante de la emisión, no el de
   // la primera. Reutilizar el registro entero era el agujero por otra puerta.
-  assert.ok(body.includes("concat([attempt])"));
-  assert.ok(body.includes("idempotencyKey: reutilizable ? ultimo.idempotencyKey"));
-  assert.ok(body.includes("expiresAt: reutilizable ? ultimo.expiresAt"));
+  assert.ok(body.includes(".concat([{ seq: attempt.seq, at: attempt.at"));
+  assert.ok(body.includes("idempotencyKey: d.from.idempotencyKey"));
+  assert.ok(body.includes("expiresAt: d.from.expiresAt"));
   // Se commitea antes de devolver, y cualquier fallo sube.
   assert.ok(body.includes('await client.query("COMMIT")'));
   assert.ok(body.includes("throw err"));
   assert.ok(body.includes('throw new Error("creation_marker_purchase_missing")'));
   // El tope no poda ninguna ventana: falla cerrado.
-  assert.ok(body.includes("MAX_CREATION_ATTEMPTS"));
+  assert.ok(body.includes("paymentsDomain.EMISSION.EXHAUSTED"));
   assert.ok(body.includes('throw new Error("creation_attempts_exhausted")'));
   assert.ok(!body.includes("slice(-"), "no se descarta ninguna ventana");
   // Y la marca legada se conserva: es la que sostiene 'sin marca, cero emisiones'.
@@ -2793,7 +2832,7 @@ test("MON003 · C7.3 — SERVER: cada emisión se registra, y la identidad se he
 test("MON003 · C7.4 — SERVER: el descubrimiento recorre TODAS las ventanas", () => {
   const src = stripComments(serverSrc);
   const body = cuerpoDe(src, "async function locateSessionForPurchase(intent, hint)");
-  assert.ok(body.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS)"));
+  assert.ok(body.includes("discoveryWindows(intent, SESSION_LOOKUP_MARGIN_MS, Date.now())"));
   assert.ok(body.includes("for (const w of ventanas)"));
   // Y las sesiones ya GUARDADAS entran siempre en el conjunto, antes que nada.
   const storedAt = body.indexOf('mirar(id, "stored")');
@@ -2931,7 +2970,9 @@ test("MON003 · C7.9 — las DOS normalizaciones exponen la MISMA identidad", ()
   // Todo lo que el dominio usa para decidir tiene que existir y coincidir en ambas.
   for (const campo of ["purchaseId", "clientReferenceId", "metadataPurchaseId",
     "slugHint", "scopeHint", "sessionId", "paymentIntentId", "paid",
-    "amountMinor", "currency", "lifecycle"]) {
+    "amountMinor", "currency", "lifecycle", "attemptKey"]) {
+    // Correction 08: la etiqueta de intento también sube igual por las dos vías.
+    assert.ok(campo in porSesion && campo in porEvento, `falta ${campo} en alguna vía`);
     assert.deepEqual(porEvento[campo], porSesion[campo], `divergen en ${campo}`);
   }
 
@@ -2946,5 +2987,330 @@ test("MON003 · C7.9 — las DOS normalizaciones exponen la MISMA identidad", ()
     stripeA.normalizeEvent({ id: "e", type: "checkout.session.completed", data: { object: reetiquetado } })]) {
     assert.equal(D.evaluateConfirmation({ intent: mine, observed: o,
       currentScopeId: SCOPE, quinielaExists: true }).decision, D.DECISION.IDENTITY_MISMATCH);
+  }
+});
+
+
+// ==== 22 · Correction 08: ninguna identidad nueva mientras otra pueda cobrar ====
+//
+// El P1: Correction 07 estrenaba clave en cuanto la anterior dejaba de poder
+// repetirse (le quedaban <30 min), y en esa franja la sesión anterior todavía
+// cobra. Las dos preguntas se separan: ¿puedo repetir? / ¿es seguro estrenar?, y
+// cabe la respuesta "ni lo uno ni lo otro".
+
+const C8_MIN = 60 * 1000;
+const C8_OPTS = Object.freeze({
+  marginMs: 15 * C8_MIN, maxLifetimeMs: 24 * 60 * C8_MIN, graceMs: 15 * C8_MIN, minLifetimeMs: 30 * C8_MIN,
+});
+const C8_T = Date.parse("2026-09-16T12:00:00.000Z");
+// Una compra con UN intento etiquetado cuya expiración es T.
+function c8Compra(over = {}) {
+  return {
+    id: "qpur_c8", slug: "liga", scopeId: SCOPE, status: "created",
+    createdAt: new Date(C8_T - 24 * 60 * C8_MIN).toISOString(),
+    creationAttemptedAt: new Date(C8_T - 24 * 60 * C8_MIN).toISOString(),
+    attempts: [{ seq: 1, at: new Date(C8_T - 24 * 60 * C8_MIN).toISOString(),
+      idempotencyKey: "checkout:qpur_c8:1", expiresAt: C8_T / 1000, tagged: true }],
+    ...over,
+  };
+}
+
+test("MON003 · C8.1 — la frontera: repetir / NADA / estrenar, punto por punto", () => {
+  const P = c8Compra();
+  const tabla = [
+    ["T-31m", -31 * C8_MIN, "reuse"],
+    ["T-30m-1s", -30 * C8_MIN - 1000, "reuse"],
+    ["T-30m", -30 * C8_MIN, "blocked"],        // estricto: exactamente 30 min ya no es válido
+    ["T-29m59s", -29 * C8_MIN - 59 * 1000, "blocked"],
+    ["T-10m", -10 * C8_MIN, "blocked"],
+    ["T-1s", -1000, "blocked"],
+    ["T", 0, "blocked"],
+    ["T+1s", 1000, "blocked"],                 // gracia: reloj ajeno y pagos en vuelo
+    ["T+15m-1ms", 15 * C8_MIN - 1, "blocked"],
+    ["T+15m", 15 * C8_MIN, "mint"],
+    ["T+2h", 120 * C8_MIN, "mint"],
+  ];
+  for (const [etq, delta, esperado] of tabla) {
+    const d = D.decideEmission(P, [P], C8_T + delta, C8_OPTS);
+    assert.equal(d.action, esperado, `${etq}: ${d.action}`);
+    if (esperado === "reuse") {
+      assert.equal(d.from.idempotencyKey, "checkout:qpur_c8:1", `${etq}: misma clave`);
+      assert.equal(d.from.expiresAt, C8_T / 1000, `${etq}: misma expiración`);
+    }
+    if (esperado === "blocked") {
+      assert.deepEqual(d.blockers.map((b) => b.key), ["checkout:qpur_c8:1"], `${etq}: quién bloquea`);
+    }
+  }
+});
+
+test("MON003 · C8.2 — PROPIEDAD: jamás 'mint' con una identidad del torneo viva sin prueba", () => {
+  // Historias aleatorias de intentos, varias compras del mismo torneo, algunas de
+  // otro, y relojes a ambos lados de cada frontera. La propiedad es la del ticket.
+  let semilla = 20260916;
+  const rnd = () => { semilla = (semilla * 1103515245 + 12345) % 2147483648; return semilla / 2147483648; };
+  const iso = (ms) => new Date(ms).toISOString();
+  let comprobados = 0;
+  for (let caso = 0; caso < 3000; caso++) {
+    const compras = [];
+    const n = 1 + Math.floor(rnd() * 3);
+    for (let k = 0; k < n; k++) {
+      const base = C8_T - Math.floor(rnd() * 72) * 60 * C8_MIN;
+      const intentos = [];
+      const m = Math.floor(rnd() * 4);
+      for (let j = 0; j < m; j++) {
+        const at = base + j * Math.floor(rnd() * 10) * 60 * C8_MIN;
+        intentos.push({ seq: j + 1, at: iso(at), idempotencyKey: `checkout:q${k}:${1 + Math.floor(rnd() * 2)}`,
+          expiresAt: Math.floor((at + (30 + Math.floor(rnd() * 1410)) * C8_MIN) / 1000), tagged: rnd() < 0.7 });
+      }
+      const legado = rnd() < 0.2;
+      compras.push({ id: `q${k}`, slug: "liga", scopeId: rnd() < 0.85 ? SCOPE : "otro",
+        status: rnd() < 0.7 ? "created" : "expired", updatedAt: rnd() < 0.5 ? iso(base + 3600e3) : undefined,
+        creationAttemptedAt: legado ? iso(base - 3600e3) : (intentos[0] ? intentos[0].at : null),
+        legacyCutoverAt: legado && rnd() < 0.5 ? iso(base) : undefined, attempts: intentos });
+    }
+    const objetivo = compras[0];
+    const ahora = C8_T + (Math.floor(rnd() * 96) - 48) * 30 * C8_MIN + Math.floor(rnd() * 3 - 1) * 1000;
+    const d = D.decideEmission(objetivo, compras, ahora, C8_OPTS);
+    if (d.action !== "mint") continue;
+    comprobados++;
+    // Si estrena: NINGUNA identidad de ninguna compra de su torneo puede estar viva.
+    for (const p of compras.filter((x) => x.slug === objetivo.slug && x.scopeId === objetivo.scopeId)) {
+      for (const id of D.providerIdentitiesOf(p, C8_OPTS)) {
+        assert.ok(Number.isFinite(id.horizonMs) && id.horizonMs + C8_OPTS.graceMs <= ahora,
+          `caso ${caso}: se estrena con ${p.id}/${id.key} viva hasta ${iso(id.horizonMs)} y ahora=${iso(ahora)}`);
+      }
+    }
+  }
+  assert.ok(comprobados > 200, `la propiedad se ejerció de verdad (${comprobados} estrenos)`);
+});
+
+test("MON003 · C8.3 — la ventana legada NO desaparece al registrar el primer intento nuevo", () => {
+  const L = "2026-09-15T08:00:00.000Z";
+  const legado = { id: "qpur_l", slug: "liga", scopeId: SCOPE, status: "created", creationAttemptedAt: L };
+  // Solo legado.
+  assert.equal(D.creationAttemptsOf(legado).length, 1);
+  assert.equal(D.creationAttemptsOf(legado)[0].legacy, true);
+  // Con un intento nuevo (C07 o C08) encima: el legado SIGUE ahí.
+  const tocado = { ...legado, attempts: [{ seq: 1, at: "2026-09-15T12:00:00.000Z",
+    idempotencyKey: "checkout:qpur_l:1", expiresAt: Date.parse("2026-09-16T12:00:00.000Z") / 1000, tagged: true }] };
+  const ints = D.creationAttemptsOf(tocado);
+  assert.equal(ints.length, 2, "el primer intento nuevo no tapa el legado");
+  assert.ok(ints.some((a) => a.legacy && a.at === L));
+  // Una compra NACIDA con intentos no inventa un legado: su marca es su primer intento.
+  const nueva = { ...tocado, creationAttemptedAt: "2026-09-15T12:00:00.000Z" };
+  assert.equal(D.creationAttemptsOf(nueva).length, 1);
+  assert.ok(!D.creationAttemptsOf(nueva).some((a) => a.legacy));
+
+  // La ventana legada va de su marca hasta la cota de emisión (el primer intento
+  // nuevo), NO es un punto — eaa071b pudo re-emitir sin dejar marca.
+  const M = 15 * C8_MIN;
+  const w = D.discoveryWindows(tocado, M, Date.parse("2026-09-15T20:00:00.000Z"));
+  assert.ok(w.some((x) => x.from <= Date.parse(L) - M && x.to >= Date.parse("2026-09-15T12:00:00.000Z")),
+    JSON.stringify(w.map((x) => [new Date(x.from).toISOString(), new Date(x.to).toISOString()])));
+  // Sin cota todavía: la ventana llega hasta AHORA.
+  const ahora = Date.parse("2026-09-17T09:00:00.000Z");
+  const w2 = D.discoveryWindows(legado, M, ahora);
+  assert.equal(w2.length, 1);
+  assert.ok(w2[0].to >= ahora, "hasta ahora, porque puede haber emitido hasta ahora");
+
+  // Horizonte: desconocido (infinito) sin cota; con cota, la cota MÁS TEMPRANA.
+  const [idL] = D.providerIdentitiesOf(legado, C8_OPTS);
+  assert.equal(idL.kind, "legacy");
+  assert.equal(idL.horizonMs, Infinity);
+  assert.ok(D.needsLegacyCutover(legado));
+  const cortado = { ...tocado, legacyCutoverAt: "2026-09-15T10:00:00.000Z" };
+  const idC = D.providerIdentitiesOf(cortado, C8_OPTS).find((x) => x.kind === "legacy");
+  assert.equal(idC.horizonMs, Date.parse("2026-09-15T10:00:00.000Z") + C8_OPTS.marginMs + C8_OPTS.maxLifetimeMs,
+    "la más temprana: registrar un intento nuevo NO alarga el horizonte legado");
+  assert.ok(!D.needsLegacyCutover(tocado), "el primer intento nuevo ya es una cota");
+  // Una legada CERRADA se acota por su cierre, sin marca de corte.
+  const cerrada = { ...legado, status: "expired", updatedAt: "2026-09-15T09:00:00.000Z" };
+  assert.ok(!D.needsLegacyCutover(cerrada));
+  // Y una legada nunca se repite: no se sabe con qué parámetros se emitió.
+  assert.equal(D.isAttemptReusable(D.creationAttemptsOf(legado)[0], Date.parse(L), 1), false);
+  // Mientras su horizonte no pase, bloquea ESTRENAR identidad en el torneo. (Con
+  // una clave nueva todavía repetible, repetirla no estrena nada: eso sigue valiendo.)
+  const soloLegado = { ...legado, legacyCutoverAt: "2026-09-15T10:00:00.000Z" };
+  const d = D.decideEmission(soloLegado, [soloLegado], Date.parse("2026-09-16T09:00:00.000Z"), C8_OPTS);
+  assert.equal(d.action, "blocked");
+  assert.deepEqual(d.blockers.map((b) => b.key), ["legacy"]);
+  assert.equal(D.decideEmission(cortado, [cortado], Date.parse("2026-09-16T09:00:00.000Z"), C8_OPTS).action,
+    "reuse", "repetir la clave nueva no es estrenar");
+  // Pasado el horizonte legado + gracia, sí.
+  const fin = Date.parse("2026-09-15T10:00:00.000Z") + C8_OPTS.marginMs + C8_OPTS.maxLifetimeMs + C8_OPTS.graceMs;
+  assert.equal(D.decideEmission(soloLegado, [soloLegado], fin - 1, C8_OPTS).action, "blocked");
+  assert.equal(D.decideEmission(soloLegado, [soloLegado], fin, C8_OPTS).action, "mint");
+});
+
+test("MON003 · C8.4 — prueba positiva: SÓLO 'expirada', y tantas como emisiones", () => {
+  const P = c8Compra();
+  const ahora = C8_T - 10 * C8_MIN;
+  const ses = (over) => ({ sessionId: "cs_a", attemptKey: "checkout:qpur_c8:1", lifecycle: "dead",
+    paid: false, ...over });
+  // expirada, con su etiqueta, una emisión: probada.
+  let r = D.proveIdentities(P, [ses()], ahora, C8_OPTS);
+  assert.deepEqual(r.unproven, []);
+  assert.deepEqual(r.proofs, [{ key: "checkout:qpur_c8:1", emissions: 1, sessionIds: ["cs_a"] }]);
+  // Nada de lo que no es 'expirada' prueba nada.
+  for (const [etq, o] of [["pagada", ses({ paid: true, lifecycle: "used" })],
+    ["consumida sin pago", ses({ lifecycle: "used" })], ["abierta", ses({ lifecycle: "chargeable" })],
+    ["ilegible", ses({ lifecycle: "unknown" })], ["sin etiqueta", ses({ attemptKey: null })],
+    ["de otro intento", ses({ attemptKey: "checkout:qpur_c8:9" })]]) {
+    r = D.proveIdentities(P, [o], ahora, C8_OPTS);
+    assert.deepEqual(r.proofs, [], etq);
+    assert.equal(r.unproven.length, 1, etq);
+  }
+  // "El listado no devolvió nada" no prueba nada.
+  assert.equal(D.proveIdentities(P, [], ahora, C8_OPTS).unproven.length, 1);
+  // Dos emisiones con la misma clave y UNA sola vista: la otra pudo crear otra.
+  const dos = c8Compra({ attempts: [...P.attempts, { ...P.attempts[0], seq: 2,
+    at: new Date(C8_T - 20 * 60 * C8_MIN).toISOString() }] });
+  assert.equal(D.proveIdentities(dos, [ses()], ahora, C8_OPTS).unproven.length, 1);
+  assert.equal(D.proveIdentities(dos, [ses(), ses({ sessionId: "cs_b" })], ahora, C8_OPTS).unproven.length, 0);
+  // La misma vista dos veces no cuenta doble.
+  assert.equal(D.proveIdentities(dos, [ses(), ses()], ahora, C8_OPTS).unproven.length, 1);
+  // Una etiqueta vista pero alguna viva: no.
+  assert.equal(D.proveIdentities(dos, [ses(), ses({ sessionId: "cs_b", lifecycle: "chargeable" })],
+    ahora, C8_OPTS).unproven.length, 1);
+  // Identidades sin etiqueta (C07) o legadas: sólo su horizonte vale.
+  const c07 = c8Compra({ attempts: [{ ...P.attempts[0], tagged: undefined }] });
+  assert.equal(D.proveIdentities(c07, [ses()], ahora, C8_OPTS).unproven[0].kind, "untagged");
+  // Pasado el horizonte + gracia, no hace falta prueba.
+  assert.deepEqual(D.proveIdentities(P, [], C8_T + 16 * C8_MIN, C8_OPTS), { proofs: [], unproven: [] });
+});
+
+test("MON003 · C8.5 — la barrera mira TODO el torneo, y las pruebas durables valen", () => {
+  const ahora = C8_T - 10 * C8_MIN;
+  const vieja = c8Compra({ id: "qpur_vieja", status: "expired", updatedAt: new Date(C8_T - 60 * C8_MIN).toISOString() });
+  const nueva = { id: "qpur_nueva", slug: "liga", scopeId: SCOPE, status: "created" };
+  // Una compra EXPIRADA (p. ej. por un evento) con su sesión viva sin ver: bloquea.
+  let d = D.decideEmission(nueva, [vieja, nueva], ahora, C8_OPTS);
+  assert.equal(d.action, "blocked");
+  assert.deepEqual(d.blockers.map((b) => b.purchaseId), ["qpur_vieja"]);
+  // Otro torneo no bloquea.
+  assert.equal(D.decideEmission(nueva, [{ ...vieja, scopeId: "otro" }, nueva], ahora, C8_OPTS).action, "mint");
+  // Con la prueba durable, no bloquea.
+  const probada = D.withIdentityProofs(vieja, [{ key: "checkout:qpur_c8:1", emissions: 1, sessionIds: ["cs_a"] }],
+    "2026-09-16T11:00:00.000Z");
+  assert.equal(D.decideEmission(nueva, [probada, nueva], ahora, C8_OPTS).action, "mint");
+  // Una prueba que cubría MENOS emisiones de las que hay ya no vale.
+  const reemitida = { ...probada, attempts: [...probada.attempts, { ...probada.attempts[0], seq: 2,
+    at: new Date(C8_T - 60 * C8_MIN).toISOString() }] };
+  assert.equal(D.decideEmission(nueva, [reemitida, nueva], ahora, C8_OPTS).action, "blocked");
+  // withIdentityProofs no rebaja una prueba mayor ni duplica claves.
+  const otra = D.withIdentityProofs(probada, [{ key: "checkout:qpur_c8:1", emissions: 1, sessionIds: ["cs_z"] }]);
+  assert.equal(otra.identityProofs.length, 1);
+  assert.deepEqual(otra.identityProofs[0].sessionIds, ["cs_a"]);
+  assert.equal(D.withIdentityProofs(probada, []), probada);
+});
+
+test("MON003 · C8.6 — una sesión con la etiqueta de un intento NO registrado no se adopta", () => {
+  const P = c8Compra({ id: "qpur_a", expectedAmountMinor: 19900, currency: "mxn" });
+  const base = { sessionId: "cs_1", purchaseId: "qpur_a", metadataPurchaseId: "qpur_a", clientReferenceId: "qpur_a",
+    slugHint: "liga", scopeHint: SCOPE, amountMinor: 19900, currency: "mxn" };
+  assert.equal(D.verifySessionForPurchase(P, { ...base, attemptKey: "checkout:qpur_c8:1" }).ok, true);
+  assert.equal(D.verifySessionForPurchase(P, { ...base, attemptKey: null }).ok, true, "sin etiqueta: legado/C07");
+  assert.equal(D.verifySessionForPurchase(P, { ...base, attemptKey: "checkout:qpur_a:7" }).reason,
+    D.SESSION_MATCH.UNRECORDED_ATTEMPT);
+});
+
+test("MON003 · C8.7 — ADAPTER: la etiqueta viaja sólo si el intento la lleva, y sube por las dos vías", () => {
+  const A = require("../payments/stripeAdapter");
+  const args = { amountMinor: 19900, currency: "mxn", productName: "QRACKS Plus", purchaseId: "qpur_a",
+    slug: "liga", scopeId: SCOPE, successUrl: "https://x/q/liga", cancelUrl: "https://x/q/liga?c=1",
+    expiresAt: 1790000000 };
+  const sin = A.buildCheckoutParams(args);
+  const con = A.buildCheckoutParams({ ...args, attemptTag: "checkout:qpur_a:3" });
+  assert.equal(con["metadata[qracks_attempt]"], "checkout:qpur_a:3");
+  assert.ok(!("metadata[qracks_attempt]" in sin), "un intento sin etiqueta se repite SIN etiqueta");
+  // Fuera de la etiqueta, idénticos: repetir una clave C07 manda lo mismo que C07.
+  const { ["metadata[qracks_attempt]"]: _tag, ...resto } = con;
+  assert.deepEqual(resto, sin);
+  // Determinista: mismos argumentos, mismos parámetros.
+  assert.deepEqual(A.buildCheckoutParams({ ...args }), sin);
+  // La etiqueta NO es una segunda autoridad de identidad: sólo atribuye.
+  const obj = { id: "cs_1", status: "expired", payment_status: "unpaid", amount_total: 19900, currency: "mxn",
+    client_reference_id: "qpur_a", metadata: { qracks_purchase_id: "qpur_a", qracks_attempt: "checkout:qpur_a:3" } };
+  assert.equal(A.normalizeSession(obj).attemptKey, "checkout:qpur_a:3");
+  assert.equal(A.normalizeEvent({ id: "e", type: "checkout.session.expired", data: { object: obj } }).attemptKey,
+    "checkout:qpur_a:3");
+  for (const raro of [42, "", "x".repeat(201), null, { a: 1 }]) {
+    assert.equal(A.normalizeSession({ ...obj, metadata: { ...obj.metadata, qracks_attempt: raro } }).attemptKey, null);
+  }
+});
+
+test("MON003 · C8.8 — SERVER: una sola barrera, antes de toda emisión y antes de toda compra nueva", () => {
+  const src = stripComments(serverSrc);
+  const rec = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
+  // La decisión es del dominio y ve TODO el torneo.
+  assert.ok(rec.includes("paymentsDomain.decideEmission(actual, delTorneo, nowMs, IDENTITY_OPTS)"));
+  assert.ok(rec.includes("p.slug === target.slug && p.scopeId === target.scopeId"));
+  // Bloqueado: no se registra ningún intento y se LANZA con un código propio.
+  const bloq = rec.slice(rec.indexOf("EMISSION.BLOCKED"), rec.indexOf("const previos"));
+  assert.ok(bloq.includes('err.code = "identity_still_chargeable"'));
+  assert.ok(bloq.includes("throw err"));
+  assert.ok(!bloq.includes("attempts:"), "un intento que no sale no se registra");
+  // Lo único que puede quedar escrito al bloquear es la cota legada.
+  assert.ok(bloq.includes("if (acotadas.length)"));
+  // Estrenar: SIEMPRE etiquetada. Repetir: con la etiqueta que tuviera.
+  assert.ok(rec.includes("expiresAt: stripeAdapter.checkoutExpiresAt(at, nowMs), inherited: null, tagged: true"));
+  assert.ok(rec.includes("tagged: d.from.tagged === true"));
+  // createSessionFor manda la etiqueta sólo si el intento la lleva.
+  assert.ok(cuerpoDe(src, "async function createSessionFor(intent, slug)")
+    .includes("attemptTag: attempt.tagged ? attempt.idempotencyKey : null"));
+  // openPurchase aplica la MISMA barrera antes de que nazca la compra.
+  const op = cuerpoDe(src, "async function openPurchase(slug, superseded)");
+  assert.ok(op.indexOf("identityBlockers(conPruebas, slug, scope.id, nowMs, IDENTITY_OPTS)")
+    < op.indexOf("makePurchaseIntent("));
+  assert.ok(op.includes("withIdentityProofs(p, pruebas.get(p.id), now)"), "y las pruebas se guardan con la sustitución");
+  // La gracia es explícita y no es cero.
+  assert.ok(/const IDENTITY_EXPIRY_GRACE_MS = 15 \* 60 \* 1000;/.test(src));
+});
+
+test("MON003 · C8.9 — SERVER: 'muerta' exige prueba de TODAS sus identidades vivas", () => {
+  const src = stripComments(serverSrc);
+  const roi = cuerpoDe(src, "async function resolveOpenIntent(intent, currentOffer, reusable = true)");
+  // Camino de una sesión.
+  assert.ok(roi.includes('proveDeadOrBlock(intent, observed ? [observed] : [], "single")'));
+  // Camino de una compra abierta junto a otras: no se le crea nada para matarla.
+  const aus = roi.slice(roi.indexOf("found.absent && !reusable"), roi.indexOf("} else if (found.absent) {"));
+  assert.ok(aus.includes('proveDeadOrBlock(intent, [], "absent_in_set")'));
+  assert.ok(!aus.includes("createSessionFor("), "no se estrena identidad para una compra condenada");
+  // Camino de varias sesiones.
+  const rms = cuerpoDe(src, "async function resolveMultipleSessions(intent, sessions)");
+  const alld = rms.slice(rms.indexOf("SESSION_SET.ALL_DEAD) {"));
+  assert.ok(alld.includes('proveDeadOrBlock(intent, sessions, "many")'));
+  assert.ok(alld.indexOf("proveDeadOrBlock") < alld.indexOf("OPEN_INTENT.DEAD"));
+  // Y las pruebas viajan hasta la retirada.
+  assert.ok(cuerpoDe(src, "async function retireDeadSiblings(slug, deadIds, winnerId, winnerPaid, proofsById)")
+    .includes("withIdentityProofs("));
+  // La fase 1 acota los legados del torneo al tomar el turno.
+  assert.ok(src.includes("paymentsDomain.needsLegacyCutover(p)\n        ? { ...p, legacyCutoverAt: now } : p)"));
+});
+
+test("MON003 · C8.10 — SERVER: la fila de compras sólo la escribe el servidor", () => {
+  const src = stripComments(serverSrc);
+  assert.ok(src.includes('const SERVER_OWNED_KEYS = new Set(["platform_payment_intents"]);'));
+  const post = src.slice(src.indexOf('app.post("/api/kv/:key"'));
+  const postHead = post.slice(0, post.indexOf("const providedOwnerAuth"));
+  assert.ok(postHead.includes('if (SERVER_OWNED_KEYS.has(req.params.key)) return res.status(403).json({ error: "server_owned_key" });'),
+    "antes de mirar credenciales: ni la de plataforma basta");
+  const del = src.slice(src.indexOf('app.delete("/api/kv/:key"'));
+  const delHead = del.slice(0, del.indexOf("DELETE FROM kv"));
+  assert.ok(delHead.includes("SERVER_OWNED_KEYS.has(req.params.key)"));
+  assert.ok(delHead.indexOf("SERVER_OWNED_KEYS") < delHead.indexOf("verifyPassword"));
+});
+
+test("MON003 · C8.11 — el dominio sigue sin vocabulario del proveedor", () => {
+  const dom = stripComments(fs.readFileSync(path.join(__dirname, "..", "payments", "paymentsDomain.js"), "utf8"));
+  for (const w of ["stripe", "Stripe", "payment_status", "client_reference_id", "expires_at", "qracks_attempt"]) {
+    assert.ok(!dom.includes(w), `el dominio menciona ${w}`);
+  }
+  // Y las funciones nuevas son puras: ni reloj propio ni red.
+  for (const f of ["function providerIdentitiesOf(", "function proveIdentities(", "function decideEmission(",
+    "function identityBlockers(", "function legacyEmissionBound(", "function discoveryWindows(",
+    "function withIdentityProofs("]) {
+    const b = cuerpoDe(dom, f);
+    assert.ok(!/Date\.now\(|new Date\(\)|fetch\(|require\(/.test(b), `${f} no es pura`);
   }
 });
