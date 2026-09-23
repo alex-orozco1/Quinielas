@@ -45,11 +45,12 @@ const DEFAULT_COMMERCIAL_CONFIG = Object.freeze({
   version: 1,
   updatedAt: null,
   updatedBy: "system_default",
-  // MON-002B: how an organizer actually reaches QRACKS to get Plus turned
-  // on. It lives in the config, not in the copy, because until MON-003 ships
-  // a real checkout this IS the mechanism, and the paywall must state it
-  // honestly rather than show a button that pretends to charge a card.
-  // Empty means the paywall falls back to a generic sentence.
+  // MON-002B introdujo este campo cuando contactar a QRACKS ERA la forma de
+  // comprar Plus. Desde MON-003 la compra normal es el checkout con tarjeta, y
+  // este contacto es sólo el RESPALDO para cuando el pago en línea no está
+  // configurado en el entorno (ver `checkout` en buildUpgradeOffer). Nunca se
+  // ofrece mientras el pago con tarjeta está disponible, ni cuando puede haber
+  // un pago anterior todavía abierto. Vacío -> una frase genérica.
   upgradeContact: "",
   free: Object.freeze({ participantLimit: 10, manualRoundLimit: 7 }),
   plus: Object.freeze({ participantLimit: 50, manualRoundLimit: 18, priceMXN: 199 }),
@@ -462,15 +463,33 @@ const PLAN_LABELS = Object.freeze({
 // `available: false` carries no price and no capabilities at all — an offer
 // that cannot be taken must not leave numbers lying around for a screen to
 // render by accident.
-function buildUpgradeOffer(entitlement, commercialConfig) {
+//
+// MON-003 Correction 09. CÓMO se compra también viaja en la oferta, decidido por
+// el servidor —que es quien sabe si la pasarela está configurada y si hay un pago
+// anterior que todavía puede cobrar—:
+//
+//   "card"     pago con tarjeta (Stripe Checkout). El camino normal.
+//   "manual"   la pasarela NO está configurada y no hay nada que pueda cobrar:
+//              el respaldo es contactar a QRACKS.
+//   "blocked"  la pasarela no está disponible y PUEDE haber un pago anterior
+//              abierto: ni checkout ni contacto — pagar por otro canal sería
+//              arriesgar un segundo cobro.
+//
+// Sin `opts.checkout` la oferta sale como "card": la pantalla nunca debe caer en
+// el copy manual por omisión, que es justo la regresión que esto corrige.
+const CHECKOUT_MODES = Object.freeze(["card", "manual", "blocked"]);
+function buildUpgradeOffer(entitlement, commercialConfig, opts) {
   if (!entitlement || entitlement.plan !== "FREE") return { available: false };
   const plus = commercialConfig && commercialConfig.plus;
   if (!plus || !Number.isFinite(plus.priceMXN)
     || !Number.isFinite(plus.participantLimit) || !Number.isFinite(plus.manualRoundLimit)) {
     return { available: false };
   }
+  const pedido = opts && opts.checkout;
+  const checkout = CHECKOUT_MODES.includes(pedido) ? pedido : "card";
   return {
     available: true,
+    checkout,
     priceMXN: plus.priceMXN,
     participantLimit: plus.participantLimit,
     roundLimit: plus.manualRoundLimit,
@@ -481,9 +500,11 @@ function buildUpgradeOffer(entitlement, commercialConfig) {
     // una pantalla que había derivado su propia versión de un límite y había
     // acabado diciendo algo distinto de lo que el servidor aplicaba.
     roundLimitApplies: !entitlement.competitionIdentity,
-    // Whatever the operator configured, or "" — the screen decides which
-    // sentence to write, but never invents a channel that does not exist.
-    contact: typeof commercialConfig.upgradeContact === "string" ? commercialConfig.upgradeContact : "",
+    // El contacto de respaldo SÓLO viaja cuando es el camino: con tarjeta
+    // disponible, o con un pago anterior posiblemente abierto, no hay nada que
+    // una pantalla pueda pintar por accidente.
+    contact: checkout === "manual" && typeof commercialConfig.upgradeContact === "string"
+      ? commercialConfig.upgradeContact : "",
     // Scope is copy with a commercial promise in it, so it is written once,
     // here, rather than in whichever screen happens to show the offer.
     scope: entitlement.competitionIdentity
@@ -495,7 +516,7 @@ function buildUpgradeOffer(entitlement, commercialConfig) {
 // The complete plan picture for one quiniela. `usage` is measured by the
 // caller from the rows it already read under lock (participants.length and
 // the durable lifecycle counter) — this function never guesses either.
-function summarizePlan(entitlement, commercialConfig, usage) {
+function summarizePlan(entitlement, commercialConfig, usage, opts) {
   const u = usage || {};
   const participantsUsed = Number.isFinite(u.participantsUsed) ? u.participantsUsed : 0;
   const roundsUsed = Number.isFinite(u.roundsUsed) ? u.roundsUsed : 0;
@@ -533,7 +554,7 @@ function summarizePlan(entitlement, commercialConfig, usage) {
       ? { used: roundsUsed, limit: limits.manualRoundLimit, remaining: remaining(limits.manualRoundLimit, roundsUsed), applies: true }
       : { used: roundsUsed, limit: null, remaining: null, applies: false },
     competition: { bound, label: u.competitionLabel || null },
-    upgrade: buildUpgradeOffer(entitlement, commercialConfig),
+    upgrade: buildUpgradeOffer(entitlement, commercialConfig, opts),
   };
 }
 
@@ -572,7 +593,7 @@ module.exports = {
   grantsFullCompetition,
   entitlementScopeId,
   entitlementCoversScope,
-  buildUpgradeOffer,
+  buildUpgradeOffer, CHECKOUT_MODES,
   summarizePlan,
   isValidManualGrantLimits,
   PLAN_LABELS,

@@ -1456,7 +1456,9 @@ app.post("/api/kv/:key", async (req, res) => {
               // which the two answers can disagree.
               return res.status(402).json({
                 error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit,
-                upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig),
+                upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig, {
+                  checkout: await checkoutModeFor(entry.slug, currentScopeId),
+                }),
               });
             }
           }
@@ -1493,7 +1495,9 @@ app.post("/api/kv/:key", async (req, res) => {
               await client.query("ROLLBACK");
               return res.status(402).json({
                 error: check.reason, limitType: "rounds", plan: check.plan, limit: check.limit,
-                upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig),
+                upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig, {
+                  checkout: await checkoutModeFor(entry.slug, currentScopeId),
+                }),
               });
             }
           }
@@ -1969,7 +1973,9 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
       ? tournamentScope.consumedInScope(entry, currentScope.id)
       : (Number.isFinite(entry.lifecycleRoundsConsumed) ? entry.lifecycleRoundsConsumed : 0);
 
-    const summary = summarizePlan(entry.entitlement, commercialConfig, { participantsUsed, roundsUsed });
+    const summary = summarizePlan(entry.entitlement, commercialConfig, { participantsUsed, roundsUsed }, {
+      checkout: await checkoutModeFor(entry.slug, currentScope && currentScope.id),
+    });
     // The league's display NAME lives in the browser's own picker list and is
     // not a commercial rule, so it is not duplicated here; what the server
     // does own — which tournament this quiniela is bound to — is returned as
@@ -2946,6 +2952,43 @@ const IDENTITY_OPTS = Object.freeze({
   minLifetimeMs: stripeAdapter.SESSION_MIN_LIFETIME_MS,
 });
 
+// MON-003 Correction 09 — CÓMO puede comprar Plus esta quiniela, ahora mismo.
+//
+// La pantalla de Plus heredó de MON-002 un texto que decía "escríbenos y
+// activamos Plus" siempre, también con el checkout funcionando. Quien decide qué
+// camino existe es el servidor, porque es el único que sabe las dos cosas que
+// importan: si la pasarela está configurada, y si hay un pago anterior del torneo
+// que todavía puede cobrar.
+//
+//   "card"     pasarela configurada: se compra con tarjeta. Si en el momento de
+//              pulsar hubiera algo cobrando, el checkout lo detecta y lo dice
+//              (Correction 08); la hoja no ofrece otra vía.
+//   "manual"   pasarela sin configurar y nada del torneo puede cobrar: el
+//              respaldo manual es legítimo.
+//   "blocked"  pasarela sin configurar pero con una compra abierta o una
+//              identidad viva sin prueba: ofrecer pago manual sería invitar a un
+//              segundo cobro. No se ofrece nada.
+//
+// Si no se puede leer el estado de las compras, "blocked": en la duda, no se
+// empuja a nadie a pagar por otro canal.
+async function checkoutModeFor(slug, scopeId) {
+  if (stripeAdapter.isConfigured()) return "card";
+  try {
+    const store = await readPaymentIntents();
+    // Sin torneo legible no se sabe cuál mirar: se miran TODOS los de la quiniela.
+    const scopes = scopeId ? [scopeId]
+      : [...new Set(store.purchases.filter((p) => p && p.slug === slug).map((p) => p.scopeId))];
+    for (const sc of scopes) {
+      if (paymentsDomain.openIntentsForScope(store.purchases, slug, sc).length) return "blocked";
+      if (paymentsDomain.identityBlockers(store.purchases, slug, sc, Date.now(), IDENTITY_OPTS).length) return "blocked";
+    }
+    return "manual";
+  } catch (err) {
+    logPayment("checkout_mode_unreadable", { slug, message: err && err.message });
+    return "blocked";
+  }
+}
+
 async function readPaymentIntents(client) {
   const row = client ? await getRowLocked(PAYMENT_INTENTS_KEY, client) : await getRow(PAYMENT_INTENTS_KEY);
   if (!row || typeof row !== "object") return { purchases: [], seenEvents: [], audit: [] };
@@ -2987,10 +3030,18 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
     if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
 
-    // Sin Stripe configurado no se finge un checkout: se dice que no está
-    // disponible y el Admin conserva la vía manual, que sigue existiendo.
+    // Sin Stripe configurado no se finge un checkout. Y el respaldo manual sólo
+    // se ofrece si NADA del torneo puede estar cobrando (Correction 09): con una
+    // compra abierta o una identidad viva, la respuesta es la misma que cuando
+    // el checkout bloquea por eso, sin invitar a pagar por otro canal.
     if (!stripeAdapter.isConfigured()) {
-      return res.status(503).json({ error: "payments_unavailable" });
+      const idxSinPasarela = await getRow("platform_index");
+      const entradaSinPasarela = idxSinPasarela && Array.isArray(idxSinPasarela.quinielas)
+        ? idxSinPasarela.quinielas.find((q) => q.slug === slug) : null;
+      const scopeSinPasarela = entradaSinPasarela && entradaSinPasarela.tournamentScope
+        ? entradaSinPasarela.tournamentScope.id : null;
+      const modo = await checkoutModeFor(slug, scopeSinPasarela);
+      return res.status(503).json({ error: modo === "manual" ? "payments_unavailable" : "checkout_unavailable" });
     }
 
     // ======================================================================

@@ -448,7 +448,10 @@ The three Stripe variables are required **together**: with only some of them the
 product would be able to start a charge it could never verify, so payments stay
 switched off unless all three are present. When they are absent, the upgrade
 path falls back to the manual one and says so — it never shows a checkout that
-cannot charge.
+cannot charge. The manual fallback is offered only when nothing for that pool's
+tournament could still be charging; if an earlier checkout might still be open,
+the screen offers no alternative channel at all. While Stripe is configured, the
+Plus screen never tells an organizer to write in to buy.
 
 Production: 🌐 **https://qracks.net**
 

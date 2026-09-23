@@ -1396,8 +1396,11 @@
     // callers that already know those details — see the specific handlers
     // below — show a more precise message with the real numbers; this is
     // only the safety-net copy for any call site that doesn't).
-    plan_lifecycle_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
-    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
+    // MON-003 Correction 09: el remedio es Plus, que se compra desde Admin. Antes
+    // esta red decía "contacta al equipo de QRACKS", que era el mecanismo de
+    // MON-001/002 y hoy mandaría a pedir a mano algo que se paga en línea.
+    plan_lifecycle_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Desde Admin puedes ver cómo pasar a Plus.",
+    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Desde Admin puedes ver cómo pasar a Plus.",
     // Fail-closed edge case (should be structurally impossible thanks to
     // the startup grandfathering migration, but the copy still needs to
     // exist rather than fall through to "undefined") — never blames the
@@ -5061,9 +5064,16 @@
       });
     });
     scope.querySelectorAll("[data-plan-warning-cta]").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         markPlanWarningSeen(btn.dataset.planWarningCta);
-        showUpgradeSheet(planState && planState.upgrade, { reason: null });
+        // Correction 09: la oferta se lee FRESCA al abrir la hoja. El modo de
+        // compra (tarjeta / respaldo manual / bloqueado) puede haber cambiado
+        // desde que se pintó el aviso —un deploy que configura la pasarela, un
+        // pago que se abrió en otra pestaña— y una copia vieja podría ofrecer el
+        // canal equivocado.
+        const fresco = await loadPlan({ force: true });
+        const plan = fresco || planState;
+        showUpgradeSheet(plan && plan.upgrade, { reason: null, plan: plan && plan.plan });
       });
     });
   }
@@ -5085,13 +5095,36 @@
           ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
           : `Con Plus: hasta ${offer.participantLimit} personas y el torneo completo.`)
       : "";
-    // Honest about the mechanism. There is no checkout yet (that is MON-003),
-    // so the button must not look like one.
-    const howTo = offer
-      ? (offer.contact
+    // MON-003 Correction 09. CÓMO se compra lo decide el servidor
+    // (`offer.checkout`), no esta pantalla. MON-002 escribía aquí "escríbenos y
+    // activamos Plus" siempre, porque entonces no había checkout; con el pago con
+    // tarjeta funcionando eso contradecía al propio botón.
+    //   card    -> el camino normal: el botón abre el pago con tarjeta.
+    //   manual  -> la pasarela no está configurada y nada puede estar cobrando:
+    //              el respaldo es escribirle a QRACKS. Sin botón de pago.
+    //   blocked -> la pasarela no está disponible y PUEDE haber un pago anterior
+    //              abierto: ni botón ni contacto; pagar por otro lado sería
+    //              arriesgar un segundo cobro.
+    // Un valor desconocido se trata como tarjeta: nunca se cae en el copy manual
+    // por omisión.
+    const mode = offer ? (["card", "manual", "blocked"].includes(offer.checkout) ? offer.checkout : "card") : null;
+    // Sin oferta. Si la quiniela YA tiene un plan por encima de Gratis, no hay
+    // nada más que comprar y lo honesto es la conversación ("escríbenos" para un
+    // grupo más grande). Si sigue en Gratis, que no haya oferta sólo puede ser que
+    // no se pudo leer: decir "escríbenos" ahí sería mandar a pedir a mano algo
+    // que se compra en línea (Correction 09).
+    const noOfferText = (c.plan && c.plan !== "FREE")
+      ? (c.noOffer || "Escríbenos para revisar las opciones de tu quiniela.")
+      : "No pudimos cargar las opciones de tu plan ahora mismo. Intenta de nuevo en unos minutos.";
+    const manualHowTo = "El pago con tarjeta no está disponible por ahora. "
+      + (offer && offer.contact
           ? `Escríbenos a ${offer.contact} y activamos Plus en esta quiniela.`
-          : "Escríbenos y activamos Plus en esta quiniela.")
-      : "";
+          : "Escríbenos y activamos Plus en esta quiniela.");
+    const howTo = !offer ? ""
+      : mode === "manual" ? manualHowTo
+      : mode === "blocked"
+        ? "Ahora mismo no podemos abrir un pago nuevo: puede haber uno anterior todavía abierto. Si ya empezaste uno, termínalo en esa pestaña; si no, vuelve a intentarlo más tarde."
+        : "Pagas con tarjeta en la página segura de Stripe. Plus se activa en esta quiniela en cuanto se confirma el pago.";
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "qz-modal-overlay";
@@ -5105,12 +5138,12 @@
               <p><strong>${esc(money(offer.priceMXN))}, un solo pago.</strong> ${esc(offer.scope || "")}</p>
               <p class="muted">${esc(howTo)}</p>
             ` : `
-              <p class="muted">${esc(c.noOffer || "Escríbenos para revisar las opciones de tu quiniela.")}</p>
+              <p class="muted">${esc(noOfferText)}</p>
             `}
           </div>
           <div class="qz-modal-actions">
             <button class="qz-modal-cancel" id="qz-upgrade-close">Cerrar</button>
-            ${offer ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}
+            ${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}
           </div>
         </div>
       `;
@@ -5150,8 +5183,8 @@
           }
           cta.disabled = false;
           cta.textContent = "Pasar a Plus";
-          // Sin pasarela disponible NO se finge un cobro: se dice la verdad y
-          // queda el camino de siempre, que sigue funcionando.
+          // No se abrió ningún pago: se cierra la hoja y se dice por qué, sin
+          // fingir un cobro. Qué se ofrece a cambio depende del motivo (abajo).
           cleanup(true);
 
           const motivo = started && started.reason;
@@ -5172,16 +5205,26 @@
               return;
             }
             invalidatePlan();
-            await loadPlan({ force: true });
+            const tras = await loadPlan({ force: true });
             await render();
-            toast("Tu pago ya está registrado. Si no ves Plus, escríbenos.");
+            // Lo que se dice sale del plan RECIÉN leído: si ya es Plus, eso; si
+            // todavía no, que el pago consta y se está terminando de aplicar. El
+            // contacto queda sólo como soporte para una anomalía, nunca como la
+            // forma de comprar.
+            toast(tras && tras.plan === "PLUS"
+              ? "Tu quiniela ya tiene Plus."
+              : "Tu pago ya está registrado y estamos terminando de activarlo. Si en unos minutos no ves Plus, escríbenos.");
             return;
           }
           // "Ya se está preparando" no es un error: es otra pestaña —o el clic
           // anterior— en mitad del proceso. El servidor sólo permite un alta a
           // la vez por torneo, que es lo que impide dos cobros.
+          // `unavailable` sólo llega cuando el servidor comprobó que la pasarela
+          // no está configurada Y que nada del torneo puede estar cobrando (si
+          // algo pudiera, contesta `checkout_unavailable`). Sólo ahí cabe el
+          // respaldo manual.
           toast(motivo === "unavailable"
-            ? (howTo || "El pago con tarjeta no está disponible ahora mismo. Escríbenos y lo activamos.")
+            ? manualHowTo
             : (motivo === "replacement_in_progress" || motivo === "checkout_stale_observation")
               ? "Ya estamos preparando tu pago. Espera unos segundos y vuelve a intentarlo."
               : motivo === "checkout_unavailable"
@@ -5205,6 +5248,7 @@
     const body = errorBody || {};
     if(body.error === "plan_participant_limit_reached"){
       return showUpgradeSheet(body.upgrade, {
+        plan: body.plan,
         limitType: "participants",
         headline: Number.isFinite(body.limit)
           ? `Tu quiniela llegó a ${body.limit} personas`
@@ -5217,6 +5261,7 @@
     }
     if(body.error === "plan_lifecycle_limit_reached"){
       return showUpgradeSheet(body.upgrade, {
+        plan: body.plan,
         limitType: "rounds",
         headline: Number.isFinite(body.limit)
           ? `Llegaste a ${body.limit} jornada${body.limit === 1 ? "" : "s"}`
@@ -5546,8 +5591,11 @@
           }
         );
         if(wantsUpgrade){
-          if(plan.upgrade && plan.upgrade.available){
-            await showUpgradeSheet(plan.upgrade, {
+          // Fresca, por la misma razón que el aviso (Correction 09).
+          const fresco = (await loadPlan({ force: true })) || plan;
+          if(fresco.upgrade && fresco.upgrade.available){
+            await showUpgradeSheet(fresco.upgrade, {
+              plan: fresco.plan,
               limitType: "participants",
               headline: `Tu quiniela llegó a ${plan.participants.limit} personas`,
               alternative: "Es el máximo de tu plan. Puedes quitar a alguien de la lista para hacer espacio.",
@@ -7513,7 +7561,7 @@
           <div class="login-title display">Crea tu quiniela</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
-          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando sea momento de realizar el pago" value="${esc(draft.contact)}"></div>
+          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Por si necesitamos avisarte algo sobre tu quiniela" value="${esc(draft.contact)}"></div>
           <div class="field">
             <label>Liga o competencia (opcional)</label>
             <select id="qz-c-league">
@@ -7871,7 +7919,7 @@
               ${rows.length ? rows.map(rowHtml).join("") : `<tr><td colspan="6" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
             </tbody>
           </table>
-          <p class="muted" style="margin-top:8px;">"Activar Plus" otorga el plan y registra el cobro en la misma operación. "Ajuste manual" es para casos especiales (soporte, pruebas, promociones) y pide un motivo, que queda en el historial.</p>
+          <p class="muted" style="margin-top:8px;">"Activar Plus" es para pagos recibidos FUERA del pago con tarjeta: otorga el plan y registra el cobro en la misma operación. La compra normal la hace el organizador desde su quiniela. "Ajuste manual" es para casos especiales (soporte, pruebas, promociones) y pide un motivo, que queda en el historial.</p>
           <p class="muted" style="margin-top:2px;">👉 Desliza hacia los lados para ver toda la tabla en pantallas angostas.</p>
         </div>
         <div id="qz-inspect-panel"></div>
@@ -7889,9 +7937,9 @@
           </div>
           <div class="field"><label>Precio de Plus (MXN)</label><input type="number" id="qz-c-plus-price" min="0" value="${config.plus.priceMXN}"></div>
           <div class="field">
-            <label>Cómo te contactan para activar Plus</label>
+            <label>Contacto de respaldo si el pago con tarjeta no está disponible</label>
             <input type="text" id="qz-c-contact" placeholder="Ej. hola@qracks.mx o WhatsApp 55 1234 5678" value="${esc(config.upgradeContact || "")}">
-            <p class="muted" style="margin-top:4px;">Es lo que se le muestra al organizador cuando toca "Pasar a Plus". Déjalo vacío y solo dirá "escríbenos".</p>
+            <p class="muted" style="margin-top:4px;">La compra normal de Plus es con tarjeta. Este contacto sólo se le muestra al organizador si el pago en línea no está configurado, y nunca mientras pueda haber un pago anterior abierto. Déjalo vacío y solo dirá "escríbenos".</p>
           </div>
           <button class="btn btn-primary" id="qz-c-save">Guardar planes</button>
         </div>
