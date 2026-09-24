@@ -358,6 +358,9 @@ function creationAttemptsOf(intent) {
       expiresAt: Number.isSafeInteger(a.expiresAt) ? a.expiresAt : null,
       // La sesión de este intento lleva su clave como etiqueta (Correction 08).
       tagged: a.tagged === true,
+      // A qué ruta vuelve el pago de este intento. Es un parámetro de la clave:
+      // se congela con ella. Sin valor = la ruta anterior a MON-003 · retorno a /a/.
+      returnRoute: a.returnRoute === "a" ? "a" : "q",
     });
   }
   const marca = intent ? Date.parse(intent.creationAttemptedAt) : NaN;

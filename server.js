@@ -3807,6 +3807,7 @@ async function createSessionFor(intent, slug) {
   // distintos es la forma de provocarlo.
   // ======================================================================
   const attempt = await recordCreationAttempt(intent.id, Date.now());
+  const returnRoute = attempt.returnRoute === "a" ? "a" : "q";
 
   return stripeAdapter.createCheckoutSession({
     amountMinor: intent.expectedAmountMinor,
@@ -3817,9 +3818,16 @@ async function createSessionFor(intent, slug) {
     // reconciliar. `qz_sess` lo rellena el proveedor con el id de la sesión: es
     // una PISTA que ahorra descubrimiento, nunca una autoridad — el servidor la
     // verifica contra la compra y funciona igual si no llega.
-    successUrl: `${base}/q/${encodeURIComponent(slug)}`
+    //
+    // MON-003 · retorno a /a/: se vuelve al panel de Admin (/a/:slug), no a la
+    // vista de participante. La ruta es un PARÁMETRO de la clave de idempotencia
+    // —va dentro de success_url y cancel_url—, así que se congela con el intento:
+    // repetir una clave emitida antes de este cambio manda su /q/ de siempre, o
+    // el proveedor la rechazaría. La pantalla lleva igualmente a /a/ una vuelta
+    // que llegue por /q/.
+    successUrl: `${base}/${returnRoute}/${encodeURIComponent(slug)}`
       + `?qz_pago=${encodeURIComponent(intent.id)}&qz_sess={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${base}/q/${encodeURIComponent(slug)}?qz_pago_cancelado=1`,
+    cancelUrl: `${base}/${returnRoute}/${encodeURIComponent(slug)}?qz_pago_cancelado=1`,
     // Congelados con el intento. Ni uno ni otro se recalculan al reintentar.
     expiresAt: attempt.expiresAt,
     idempotencyKey: attempt.idempotencyKey,
@@ -3907,9 +3915,12 @@ async function recordCreationAttempt(purchaseId, nowMs) {
     // ventana donde buscar su sesión la fija el instante de ESTA emisión (C07).
     const attempt = reusa
       ? { seq, at, idempotencyKey: d.from.idempotencyKey, expiresAt: d.from.expiresAt,
-          inherited: d.from.seq, tagged: d.from.tagged === true }
+          inherited: d.from.seq, tagged: d.from.tagged === true,
+          // La ruta de vuelta es parámetro de la clave: se hereda con ella.
+          returnRoute: d.from.returnRoute === "a" ? "a" : "q" }
       : { seq, at, idempotencyKey: `checkout:${purchaseId}:${seq}`,
-          expiresAt: stripeAdapter.checkoutExpiresAt(at, nowMs), inherited: null, tagged: true };
+          expiresAt: stripeAdapter.checkoutExpiresAt(at, nowMs), inherited: null, tagged: true,
+          returnRoute: "a" };
     purchases = purchases.map((p) => (p && p.id === purchaseId
       ? {
           ...p,
@@ -3917,9 +3928,11 @@ async function recordCreationAttempt(purchaseId, nowMs) {
           // que se conserva abajo y ya no puede quedar tapada (Correction 08).
           attempts: previos.filter((x) => !x.legacy)
             .map((x) => ({ seq: x.seq, at: x.at, idempotencyKey: x.idempotencyKey,
-              expiresAt: x.expiresAt, ...(x.tagged ? { tagged: true } : {}) }))
+              expiresAt: x.expiresAt, ...(x.tagged ? { tagged: true } : {}),
+              ...(x.returnRoute === "a" ? { returnRoute: "a" } : {}) }))
             .concat([{ seq: attempt.seq, at: attempt.at, idempotencyKey: attempt.idempotencyKey,
-              expiresAt: attempt.expiresAt, ...(attempt.tagged ? { tagged: true } : {}) }]),
+              expiresAt: attempt.expiresAt, ...(attempt.tagged ? { tagged: true } : {}),
+              ...(attempt.returnRoute === "a" ? { returnRoute: "a" } : {}) }]),
           creationAttemptedAt: p.creationAttemptedAt || at,
         }
       : p));
@@ -5635,6 +5648,15 @@ function injectMeta(html, { title, description, url }) {
   }
   return out;
 }
+
+// MON-003 · retorno a /a/: la misma aplicación, abierta en el panel de Admin. No
+// es una página pública: ni se cachea ni se indexa, y no concede nada — el
+// acceso de admin lo sigue decidiendo la sesión.
+app.get("/a/:slug", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.set("X-Robots-Tag", "noindex, nofollow");
+  res.sendFile(INDEX_HTML_PATH);
+});
 
 app.get("/q/:slug", async (req, res) => {
   try {

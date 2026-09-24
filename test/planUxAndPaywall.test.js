@@ -722,7 +722,8 @@ test("C09 · la hoja: botón de pago SÓLO con tarjeta; contacto SÓLO en modo m
   const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
   const code = stripComments(sheet);
   // Modo desconocido -> tarjeta, nunca manual por omisión.
-  assert.ok(code.includes('const mode = offer ? (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card") : null;'));
+  // (Retorno a /a/: un pago esperando confirmación tiene prioridad sobre todo.)
+  assert.ok(code.includes('const mode = !offer ? null : esperando ? "awaiting"\n      : (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card");'));
   // El botón existe sólo con tarjeta.
   assert.ok(code.includes('${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}'));
   // El texto de tarjeta no invita a escribir.

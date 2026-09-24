@@ -104,6 +104,20 @@
   #quiniela-root .qz-brand-context{
     font-weight:700; font-size:19px; line-height:1.25; color:var(--chalk);
   }
+  /* MON-003: la etiqueta del plan confirmado, debajo del nombre (o al lado, en
+     móvil, si cabe). */
+  #quiniela-root .qz-brand-line{ display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+  #quiniela-root .qz-plan-badge{
+    display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:800;
+    letter-spacing:0.04em; padding:2px 9px; border-radius:999px;
+    background:var(--gold); color:#1a1a1a; line-height:1.4; white-space:nowrap;
+  }
+  /* `hidden` tiene que ganar al display de arriba: sin esto la etiqueta se veía
+     en quinielas Gratis. */
+  #quiniela-root .qz-plan-badge[hidden]{ display:none; }
+  @media (max-width: 640px){
+    #quiniela-root .qz-brand-line{ flex-direction:row; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+  }
   #quiniela-root .qz-brand-round{
     font-weight:600; font-size:12.5px; color:rgba(247,245,236,0.65); margin-top:1px;
   }
@@ -1140,11 +1154,29 @@
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   let ROUTE = "root";
   let SLUG = null;
+  // MON-003: "/a/:slug" es la misma quiniela, abierta directamente en Admin. Es
+  // a donde vuelve el organizador desde el pago. No da ningún permiso: entrar
+  // como admin sigue exigiendo una sesión de admin que el servidor reconozca.
+  let ADMIN_ENTRY = false;
   if(pathParts.length === 0){ ROUTE = "root"; }
   else if(pathParts[0] === "q" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); }
+  else if(pathParts[0] === "a" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); ADMIN_ENTRY = true; }
   else if(pathParts[0] === "crear"){ ROUTE = "crear"; }
   else if(pathParts[0] === "panel-plataforma"){ ROUTE = "platform"; }
   else { ROUTE = "unknown"; }
+
+  // Una vuelta del pago que entró por la ruta antigua (/q/…?qz_pago=…, de un
+  // checkout abierto antes de que existiera /a/) se trata igual: se pasa a /a/
+  // sin recargar, con sus parámetros intactos.
+  if(ROUTE === "quiniela" && !ADMIN_ENTRY){
+    try{
+      const qs = new URLSearchParams(window.location.search);
+      if(qs.has("qz_pago") || qs.has("qz_pago_cancelado")){
+        ADMIN_ENTRY = true;
+        window.history.replaceState({}, "", "/a/" + encodeURIComponent(SLUG) + window.location.search + window.location.hash);
+      }
+    }catch(e){}
+  }
 
   function currentMetaKey(){ return SLUG ? ("quiniela:" + SLUG + ":meta") : "quiniela_meta_v1"; }
   // Post-creation continuity: /crear redirects here with ?setup=1 right
@@ -2906,6 +2938,14 @@
         const session = await checkSession();
         if(session){
           trackEvent("session_restored", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
+          // MON-003: por /a/ (la vuelta del pago) el organizador no pasa por
+          // "¿Eres Ana?": la cookie ya la reconoció el SERVIDOR como admin de
+          // esta quiniela. Cualquier otra sesión sigue el camino de siempre —
+          // /a/ no da permisos, sólo ahorra una pregunta.
+          if(ADMIN_ENTRY && session.isAdmin){
+            await enterRestoredSession(session, "admin");
+            return;
+          }
           renderSessionConfirm(session);
           return;
         }
@@ -2933,6 +2973,8 @@
     if(currentUser.isAdmin && !setupContinuityResolved && readCloseIntent()){
       setupContinuityResolved = true;
     }
+    // Por /a/ se llega al panel de Admin, no a la continuidad de configuración.
+    if(currentUser.isAdmin && ADMIN_ENTRY) setupContinuityResolved = true;
     if(currentUser.isAdmin && !setupContinuityResolved){
       setupContinuityResolved = true;
       const dest = resolveSetupDestination(meta, currentUser);
@@ -2945,6 +2987,19 @@
       if(dest === "invite"){ renderAdminSetupInvite(); return; }
     }
     renderApp();
+  }
+
+  // Entrar con una sesión que el servidor ya reconoció. Lo usan la confirmación
+  // "¿Eres …?" y la entrada directa de /a/.
+  async function enterRestoredSession(session, tab){
+    const fullParticipant = meta.participants.find(p => p.id === session.participantId);
+    currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
+    myPicks = await getPicks(currentUser.id);
+    activeTab = (tab === "admin" && currentUser.isAdmin) ? "admin" : "jornada";
+    await render();
+    // MON-003: hasta aquí no se sabía quién volvía. Si venía de pagar, éste
+    // es el primer instante en que se puede confirmar su compra.
+    resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
   }
 
   function renderSessionConfirm(session){
@@ -2961,14 +3016,7 @@
     `;
     document.getElementById("qz-session-yes").addEventListener("click", async () => {
       trackEvent("session_confirmation_accepted", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
-      const fullParticipant = meta.participants.find(p => p.id === session.participantId);
-      currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
-      myPicks = await getPicks(currentUser.id);
-      activeTab = "jornada";
-      await render();
-      // MON-003: hasta aquí no se sabía quién volvía. Si venía de pagar, éste
-      // es el primer instante en que se puede confirmar su compra.
-      resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
+      await enterRestoredSession(session, (ADMIN_ENTRY && session.isAdmin) ? "admin" : "jornada");
     });
     document.getElementById("qz-session-no").addEventListener("click", async () => {
       trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
@@ -3630,8 +3678,11 @@
         }
         currentUser = p;
         myPicks = await getPicks(p.id);
-        activeTab = "jornada";
-        render();
+        activeTab = (ADMIN_ENTRY && p.isAdmin) ? "admin" : "jornada";
+        await render();
+        // Si entró a pedir identificación al volver del pago, ahora se puede
+        // confirmar la compra.
+        resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
       });
     });
   }
@@ -3656,7 +3707,10 @@
         <div class="qz-header-top">
           <div>
             <span class="qz-brand-mark"><img src="${QRACKS_ICON_SRC}" alt="" style="width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:4px;">QRACKS</span>
-            <div class="qz-brand-context">${esc(meta.groupName)}</div>
+            <div class="qz-brand-line">
+              <div class="qz-brand-context">${esc(meta.groupName)}</div>
+              ${currentUser.isAdmin ? `<span class="qz-plan-badge" id="qz-plan-badge" ${planState && planState.plan === "PLUS" ? "" : "hidden"}>★ Plus</span>` : ``}
+            </div>
             ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
@@ -3677,6 +3731,10 @@
       </div>
       <div class="qz-main" id="qz-main"></div>
     `;
+    // La etiqueta Plus refleja el plan que CONFIRMA el servidor (/plan), no un
+    // estado local: por eso sigue ahí al recargar o al volver otro día, y no
+    // aparece mientras el pago no esté confirmado.
+    if(currentUser.isAdmin) loadPlan().then(paintPlanBadge).catch(() => {});
     document.getElementById("qz-user-toggle").addEventListener("click", (e) => {
       e.stopPropagation();
       userMenuOpen = !userMenuOpen;
@@ -4707,12 +4765,16 @@
   // Se guarda la VUELTA entera, no sólo el id: una vuelta cancelada también es
   // algo que hay que contarle al organizador, y también se pierde si la app le
   // pide identificarse antes de poder decírselo.
-  function writePendingPurchase(id, cancelled, sessionHint){
+  // `awaiting` distingue dos cosas muy distintas: "se abrió un checkout" (y
+  // quizá se abandonó: se puede volver a intentar) y "se volvió del pago, o el
+  // servidor dice que la sesión ya se usó" (hay un cobro esperando confirmación:
+  // NO se ofrece otro pago). Sólo lo segundo pone la pantalla en espera.
+  function writePendingPurchase(id, cancelled, sessionHint, awaiting){
     try{
       window.localStorage.setItem(pendingPurchaseKey(),
         JSON.stringify({ id: id || null, cancelled: !!cancelled,
           sess: (typeof sessionHint === "string" && sessionHint) ? sessionHint : null,
-          at: Date.now() }));
+          awaiting: !!awaiting, at: Date.now() }));
     }catch(e){}
   }
   function readPendingPurchase(){
@@ -4730,6 +4792,11 @@
   }
   function clearPendingPurchase(){
     try{ window.localStorage.removeItem(pendingPurchaseKey()); }catch(e){}
+  }
+  // Un pago que espera confirmación en ESTE dispositivo, o null.
+  function awaitingPayment(){
+    const p = readPendingPurchase();
+    return (p && p.id && !p.cancelled && p.awaiting) ? p : null;
   }
 
   let checkoutInFlight = false;
@@ -4814,36 +4881,89 @@
   //
   // Nada de esto ACTIVA nada: sólo pregunta. Quien decide si se cobró es el
   // servidor preguntándole al proveedor.
-  async function runCheckoutRecovery(purchaseId, sessionHint){
+  // MON-003: "Pago completado" se dice SÓLO cuando el servidor confirma que la
+  // quiniela ya es Plus (el plan recién leído), no porque la compra conste
+  // pagada: un pago puede constar y el plan no aplicarse (torneo cambiado,
+  // quiniela borrada…). Mientras no esté confirmado, la pantalla espera y no
+  // ofrece otro pago.
+  const CHECKOUT_RECHECK_MS = 20000;
+  let checkoutRecoveryActive = false;
+  let checkoutRecheckTimer = null;
+  async function runCheckoutRecovery(purchaseId, sessionHint, opts){
     if(!purchaseId) return;
-    notice("Estamos confirmando tu pago…");
-    // El proveedor puede tardar un momento en avisarnos. Se pregunta unas
-    // pocas veces y se para: quedarse esperando indefinidamente sería peor que
-    // decir que siga en su pantalla.
-    for(let i = 0; i < CHECKOUT_POLL_ATTEMPTS; i++){
-      let status = null;
-      try{ status = await readCheckoutStatus(purchaseId, sessionHint); }catch(e){}
-      if(status && status.status === "paid"){
-        clearPendingPurchase();
-        invalidatePlan();
-        await loadPlan({ force: true });
-        await render();
-        notice(status.needsAttention
-          ? "Tu pago se registró, pero necesitamos revisarlo. Te contactamos."
-          : "✅ ¡Listo! Tu quiniela ya tiene Plus.");
-        return;
+    // Una sola a la vez: la vuelta del pago puede llegar por dos caminos
+    // (arranque y entrada de la sesión) y preguntar dos veces no aporta nada.
+    if(checkoutRecoveryActive) return;
+    checkoutRecoveryActive = true;
+    const quiet = !!(opts && opts.quiet);
+    try{
+      if(!quiet){
+        // Hay un cobro esperando: se marca, para que la pantalla no ofrezca
+        // otro pago aunque se recargue.
+        writePendingPurchase(purchaseId, false, sessionHint, true);
+        notice("Estamos confirmando tu pago…");
+        await refreshPlanSurfaces();
       }
-      if(status && (status.status === "failed" || status.status === "cancelled" || status.status === "expired")){
-        clearPendingPurchase();
-        notice("El pago no se completó. No se hizo ningún cargo.");
-        return;
+      // El proveedor puede tardar un momento en avisarnos. Se pregunta unas
+      // pocas veces seguidas; si no basta, se sigue preguntando con calma
+      // mientras la página esté abierta.
+      for(let i = 0; i < CHECKOUT_POLL_ATTEMPTS; i++){
+        const r = await checkPurchaseOnce(purchaseId, sessionHint);
+        if(r === "done") return;
+        if(r === "paid_pending_plan" && quiet){
+          // Pagado de verdad: ya no es una vuelta silenciosa.
+          writePendingPurchase(purchaseId, false, sessionHint, true);
+        }
+        await new Promise(res => setTimeout(res, CHECKOUT_POLL_MS));
       }
-      await new Promise(r => setTimeout(r, CHECKOUT_POLL_MS));
+      if(quiet && !awaitingPayment()) return;
+      // La compra pendiente NO se borra: sigue habiendo un cobro por resolver y al
+      // volver a entrar se retoma. Y el mensaje no invita a comprar otra vez.
+      await refreshPlanSurfaces();
+      notice("Tu pago sigue en proceso. En cuanto se confirme, Plus se activa solo. "
+        + "No hace falta pagar otra vez.");
+      scheduleCheckoutRecheck(purchaseId, sessionHint);
+    } finally {
+      checkoutRecoveryActive = false;
     }
-    // La compra pendiente NO se borra: sigue habiendo un cobro por resolver y al
-    // volver a entrar se retoma. Y el mensaje no invita a comprar otra vez.
-    notice("Tu pago sigue en proceso. En cuanto se confirme, Plus se activa solo. "
-      + "No hace falta que lo intentes de nuevo.");
+  }
+  // Una pregunta al servidor. "done" = ya se dijo lo que había que decir.
+  async function checkPurchaseOnce(purchaseId, sessionHint){
+    let status = null;
+    try{ status = await readCheckoutStatus(purchaseId, sessionHint); }catch(e){}
+    if(status && status.status === "paid"){
+      invalidatePlan();
+      const plan = await loadPlan({ force: true });
+      if(plan && plan.plan === "PLUS"){
+        clearPendingPurchase();
+        await refreshPlanSurfaces();
+        notice("Pago completado. Tu quiniela ya tiene Plus.");
+        return "done";
+      }
+      if(status.needsAttention){
+        clearPendingPurchase();
+        await refreshPlanSurfaces();
+        notice("Tu pago se registró, pero necesitamos revisarlo. Te contactamos.");
+        return "done";
+      }
+      // Pagado y todavía sin Plus confirmado: se sigue esperando.
+      return "paid_pending_plan";
+    }
+    if(status && (status.status === "failed" || status.status === "cancelled" || status.status === "expired")){
+      clearPendingPurchase();
+      await refreshPlanSurfaces();
+      notice("El pago no se completó. No se hizo ningún cargo.");
+      return "done";
+    }
+    return "pending";
+  }
+  function scheduleCheckoutRecheck(purchaseId, sessionHint){
+    clearTimeout(checkoutRecheckTimer);
+    checkoutRecheckTimer = setTimeout(async () => {
+      if(!awaitingPayment()) return;
+      const r = await checkPurchaseOnce(purchaseId, sessionHint);
+      if(r !== "done") scheduleCheckoutRecheck(purchaseId, sessionHint);
+    }, CHECKOUT_RECHECK_MS);
   }
 
   async function resolveCheckoutReturn(){
@@ -4862,18 +4982,22 @@
     // Si la URL no trae nada puede seguir habiendo una vuelta pendiente de esta
     // quiniela: es lo que permite retomarla cuando la app pidió identificarse
     // antes de poder actuar.
+    // Volver por la success_url es la señal de que el pago se hizo: el
+    // proveedor sólo redirige ahí al completarse. Esa vuelta espera confirmación.
+    let awaiting = !!purchaseId && !cancelled;
     if(!purchaseId && !cancelled){
       const pending = readPendingPurchase();
       if(!pending) return;
       purchaseId = pending.id;
       cancelled = pending.cancelled;
+      awaiting = !!pending.awaiting;
       if(!sessionHint && typeof pending.sess === "string") sessionHint = pending.sess;
     }
     // La vuelta se PERSISTE antes de tocar la URL. Al volver del pago, la app
     // puede preguntar "¿Eres Ana?" antes de saber quién vuelve; si el
     // parámetro se consumiera ahí, se perdería para siempre y el organizador
     // se quedaría pagado y sin Plus, o sin saber que no se le cobró.
-    writePendingPurchase(purchaseId, cancelled, sessionHint);
+    writePendingPurchase(purchaseId, cancelled, sessionHint, awaiting);
     // Y la barra se limpia: no aporta nada al recargar y queda fea si alguien
     // comparte el enlace.
     try{
@@ -4897,12 +5021,31 @@
       return;
     }
     if(!purchaseId) return;
-    await runCheckoutRecovery(purchaseId, sessionHint);
+    // Un checkout que se abrió y del que no se volvió (quizá se abandonó) se
+    // comprueba en SILENCIO: si resulta pagado, se dice; si no, la pantalla no
+    // se pone en espera ni asegura que "sigue en proceso".
+    await runCheckoutRecovery(purchaseId, sessionHint, { quiet: !awaiting });
   }
 
   // Any write that consumes capacity can change these numbers, so the cached
   // copy is dropped rather than left to go quietly out of date.
   function invalidatePlan(){ planState = null; }
+
+  // Lo que depende del plan —la franja del plan en Admin y la etiqueta del
+  // encabezado— se refresca SIN repintar la aplicación entera. La vuelta del pago
+  // llega mientras el panel de Admin puede estar a medio pintar (sus vistas son
+  // asíncronas), y un render() completo en ese instante le cambiaba el DOM por
+  // debajo.
+  async function refreshPlanSurfaces(){
+    const plan = await loadPlan().catch(() => null);
+    paintPlanBadge(plan);
+    await renderPlanStrip().catch(() => {});
+  }
+
+  function paintPlanBadge(plan){
+    const el = document.getElementById("qz-plan-badge");
+    if(el) el.hidden = !(plan && plan.plan === "PLUS");
+  }
 
   // Shown once per threshold per quiniela, and only to the Admin. "Once"
   // survives a reload on purpose: re-arming the same warning every time the
@@ -5017,6 +5160,16 @@
     });
   }
 
+  // MON-003: el estado de espera. Persistente mientras el pago no se confirme
+  // (sobrevive a recargar en este dispositivo) y sin ningún botón de pago.
+  function paymentAwaitingHtml(plan){
+    if(!awaitingPayment() || (plan && plan.plan === "PLUS")) return "";
+    return `<div class="card" id="qz-payment-awaiting" role="status" style="border-color:var(--gold);background:#FFF9EC;">
+      <p style="margin:0;"><strong>⏳ Estamos confirmando tu pago.</strong></p>
+      <p class="muted" style="margin:6px 0 0;">En cuanto se confirme, tu quiniela tendrá Plus. No hace falta pagar otra vez.</p>
+    </div>`;
+  }
+
   function planStatusHtml(plan){
     if(!plan) return "";
     const bits = [`Plan ${esc(plan.planLabel)}`];
@@ -5037,7 +5190,8 @@
   // mid-task and nothing is blocked yet.
   function planWarningHtml(plan){
     if(!plan) return "";
-    const offer = plan.upgrade && plan.upgrade.available ? plan.upgrade : null;
+    // MON-003: con un pago esperando confirmación no se ofrece nada que vender.
+    const offer = plan.upgrade && plan.upgrade.available && !awaitingPayment() ? plan.upgrade : null;
     const parts = [];
     if(plan.participants && plan.participants.remaining === 1 && !planWarningSeen("people")){
       parts.push({
@@ -5126,7 +5280,11 @@
     // por omisión.
     //   unavailable -> (Correction 10) la pasarela está mal configurada: no es
     //              una decisión comercial, así que ni botón ni contacto.
-    const mode = offer ? (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card") : null;
+    // MON-003: con un pago esperando confirmación, la hoja espera: ni botón ni
+    // otra vía. Cualquier modo cede ante esto.
+    const esperando = !!awaitingPayment();
+    const mode = !offer ? null : esperando ? "awaiting"
+      : (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card");
     // Sin oferta. Si la quiniela YA tiene un plan por encima de Gratis, no hay
     // nada más que comprar y lo honesto es la conversación ("escríbenos" para un
     // grupo más grande). Si sigue en Gratis, que no haya oferta sólo puede ser que
@@ -5140,6 +5298,8 @@
           ? `Escríbenos a ${offer.contact} y activamos Plus en esta quiniela.`
           : "Escríbenos y activamos Plus en esta quiniela.");
     const howTo = !offer ? ""
+      : mode === "awaiting"
+        ? "Estamos confirmando tu pago. En cuanto se confirme, tu quiniela tendrá Plus. No hace falta pagar otra vez."
       : mode === "manual" ? manualHowTo
       : mode === "unavailable"
         ? "El pago con tarjeta no está disponible en este momento. Vuelve a intentarlo más tarde."
@@ -5307,7 +5467,7 @@
     const liveStrip = document.getElementById("qz-plan-strip");
     if(!liveStrip || !plan) return;
     liveStrip.innerHTML = tournamentStatusHtml(plan) + planStatusHtml(plan)
-      + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
+      + paymentAwaitingHtml(plan) + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
     wirePlanWarnings(liveStrip);
     wireTournamentActions(liveStrip);
   }

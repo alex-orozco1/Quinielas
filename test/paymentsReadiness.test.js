@@ -121,7 +121,10 @@ test("C10 · H/I/J — el origen de vuelta: sandbox al sandbox, producción a pr
   assert.ok(mk.includes("const base = readiness.baseUrl;"));
   assert.ok(mk.includes('throw new Error("payments_not_ready")'), "sin readiness lista no se emite");
   assert.ok(!/req\.|get\(["']host|x-forwarded/i.test(mk), "nada de la petición");
-  assert.ok(mk.includes("`${base}/q/${encodeURIComponent(slug)}`"));
+  // Retorno a /a/: la ruta sale del intento (congelada con su clave): "a" para
+  // intentos nuevos, "q" para los emitidos antes. Nada más puede ir ahí.
+  assert.ok(mk.includes("`${base}/${returnRoute}/${encodeURIComponent(slug)}`"));
+  assert.ok(mk.includes('const returnRoute = attempt.returnRoute === "a" ? "a" : "q";'));
   assert.ok(mk.includes("?qz_pago=${encodeURIComponent(intent.id)}&qz_sess={CHECKOUT_SESSION_ID}"));
   assert.ok(mk.includes("?qz_pago_cancelado=1"));
   // Ningún dominio de producción fijo en el código de PAGOS: ni en el adaptador,
@@ -223,4 +226,98 @@ test("C10 · la UI: mal configurado no es 'sin pasarela' ni ofrece contacto", ()
   assert.ok(INDEX.includes('e503 === "payments_misconfigured" ? "payments_misconfigured"'));
   const t = sheet.slice(sheet.indexOf('motivo === "payments_misconfigured"'));
   assert.ok(!/Escr[ií]benos/.test(t.slice(0, 200)));
+});
+
+
+test("RETORNO /a/ · la ruta de vuelta es parámetro de la clave: nueva para intentos nuevos, heredada al repetir", () => {
+  const src = stripComments(SRC);
+  const rec = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
+  assert.ok(rec.includes('returnRoute: d.from.returnRoute === "a" ? "a" : "q" }'), "al repetir, la de la clave");
+  assert.ok(rec.includes('inherited: null, tagged: true,\n          returnRoute: "a" };'), "al estrenar, /a/");
+  assert.ok(rec.includes('...(x.returnRoute === "a" ? { returnRoute: "a" } : {})'), "y se conserva al reescribir la fila");
+  const D = require("../payments/paymentsDomain");
+  const at = "2026-09-24T10:00:00.000Z";
+  assert.equal(D.creationAttemptsOf({ attempts: [{ seq: 1, at, idempotencyKey: "k", expiresAt: 1, returnRoute: "a" }] })[0].returnRoute, "a");
+  assert.equal(D.creationAttemptsOf({ attempts: [{ seq: 1, at, idempotencyKey: "k", expiresAt: 1 }] })[0].returnRoute, "q",
+    "un intento anterior vuelve a /q/, como se emitió");
+  assert.equal(D.creationAttemptsOf({ attempts: [{ seq: 1, at, idempotencyKey: "k", expiresAt: 1, returnRoute: "../x" }] })[0].returnRoute, "q",
+    "nada inventado entra en la URL");
+  // /a/ la sirve el servidor sin caché ni indexación, y no concede nada.
+  const ruta = SRC.slice(SRC.indexOf('app.get("/a/:slug"'));
+  const cuerpo = ruta.slice(0, ruta.indexOf("\n});"));
+  assert.ok(cuerpo.includes('"no-store"') && cuerpo.includes('"noindex, nofollow"'));
+  assert.ok(!/session|isAdmin|cookie/i.test(cuerpo), "la ruta no decide permisos");
+});
+
+test("RETORNO /a/ · la pantalla: sin '¿Eres…?' sólo para una sesión de ADMIN que el servidor reconoce", () => {
+  const ui = stripComments(INDEX);
+  assert.ok(ui.includes('else if(pathParts[0] === "a" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); ADMIN_ENTRY = true; }'));
+  const r = cuerpoDe(ui, "async function render()");
+  const atajo = r.slice(r.indexOf("if(ADMIN_ENTRY && session.isAdmin)"));
+  assert.ok(atajo.startsWith('if(ADMIN_ENTRY && session.isAdmin){\n            await enterRestoredSession(session, "admin");'));
+  assert.ok(r.indexOf("const session = await checkSession();") < r.indexOf("if(ADMIN_ENTRY && session.isAdmin)"),
+    "la sesión la valida el servidor antes");
+  assert.ok(r.includes("renderSessionConfirm(session);"), "cualquier otra sesión sigue preguntando");
+  const enter = cuerpoDe(ui, "async function enterRestoredSession(session, tab)");
+  assert.ok(enter.includes('activeTab = (tab === "admin" && currentUser.isAdmin) ? "admin" : "jornada";'),
+    "Admin sólo si el participante ES admin");
+  // Una vuelta que llega por /q/ (checkouts anteriores) pasa a /a/ sin recargar.
+  assert.ok(ui.includes('if(qs.has("qz_pago") || qs.has("qz_pago_cancelado")){\n        ADMIN_ENTRY = true;'));
+});
+
+test("RETORNO /a/ · 'Pago completado' sólo con PLUS confirmado; mientras tanto, espera sin ofrecer otro pago", () => {
+  const ui = stripComments(INDEX);
+  const once = cuerpoDe(ui, "async function checkPurchaseOnce(purchaseId, sessionHint)");
+  const completado = once.indexOf('"Pago completado. Tu quiniela ya tiene Plus."');
+  assert.ok(completado !== -1);
+  const antes = once.slice(0, completado);
+  assert.ok(antes.includes("const plan = await loadPlan({ force: true });") && antes.includes('if(plan && plan.plan === "PLUS"){'),
+    "el mensaje depende del plan recién leído del servidor");
+  assert.ok(once.includes('return "paid_pending_plan";'), "pagado sin Plus confirmado: se sigue esperando");
+  assert.equal((ui.match(/Pago completado\. Tu quiniela ya tiene Plus\./g) || []).length, 1, "un solo sitio lo dice");
+  // Espera: el aviso de límite no vende, la hoja no tiene botón.
+  const aviso = cuerpoDe(ui, "function planWarningHtml(plan)");
+  assert.ok(aviso.includes("!awaitingPayment()"));
+  const hoja = cuerpoDe(ui, "function showUpgradeSheet(upgrade, ctx)");
+  assert.ok(hoja.includes('const mode = !offer ? null : esperando ? "awaiting"'));
+  assert.ok(hoja.includes('${mode === "card" ? `<button'), "botón sólo en modo tarjeta (nunca en espera)");
+  const espera = cuerpoDe(ui, "function paymentAwaitingHtml(plan)");
+  assert.ok(!/<button/.test(espera) && /No hace falta pagar otra vez/.test(espera));
+  // Una sola recuperación a la vez, y la espera sobrevive a recargar.
+  const bucle = cuerpoDe(ui, "async function runCheckoutRecovery(purchaseId, sessionHint, opts)");
+  assert.ok(bucle.includes("if(checkoutRecoveryActive) return;"));
+  assert.ok(bucle.includes("writePendingPurchase(purchaseId, false, sessionHint, true);"));
+  // Un checkout abierto y no pagado no deja la pantalla en espera.
+  const vuelta = cuerpoDe(ui, "async function resolveCheckoutReturn()");
+  assert.ok(vuelta.includes("{ quiet: !awaiting }"));
+});
+
+test("RETORNO /a/ · la etiqueta Plus del encabezado sale del plan del servidor, sólo para Admin", () => {
+  const ui = stripComments(INDEX);
+  const app = cuerpoDe(ui, "function renderApp()");
+  assert.ok(app.includes('${currentUser.isAdmin ? `<span class="qz-plan-badge" id="qz-plan-badge" ${planState && planState.plan === "PLUS" ? "" : "hidden"}>★ Plus</span>` : ``}'));
+  assert.ok(app.includes("if(currentUser.isAdmin) loadPlan().then(paintPlanBadge)"));
+  const paint = cuerpoDe(ui, "function paintPlanBadge(plan)");
+  assert.ok(paint.includes('el.hidden = !(plan && plan.plan === "PLUS");'));
+  // Debajo del nombre; al lado en móvil si cabe.
+  assert.ok(INDEX.includes("#quiniela-root .qz-brand-line{ display:flex; flex-direction:column;"));
+  assert.ok(/@media \(max-width: 640px\)\{\s*#quiniela-root \.qz-brand-line\{ flex-direction:row; flex-wrap:wrap;/.test(INDEX));
+  // El display de la etiqueta no puede anular `hidden` (en Gratis se veía).
+  assert.ok(INDEX.includes("#quiniela-root .qz-plan-badge[hidden]{ display:none; }"));
+});
+
+test("RETORNO /a/ · la recuperación del pago no repinta la aplicación entera", () => {
+  // Con /a/ el organizador vuelve DIRECTO a Admin, cuyas vistas se pintan de
+  // forma asíncrona: un render() completo desde la recuperación les cambiaba el
+  // DOM a medio pintar (TypeError en renderAdminRondas). Sólo se refresca lo que
+  // depende del plan.
+  const ui = stripComments(INDEX);
+  for (const f of ["async function runCheckoutRecovery(purchaseId, sessionHint, opts)",
+    "async function checkPurchaseOnce(purchaseId, sessionHint)"]) {
+    const b = cuerpoDe(ui, f);
+    assert.ok(!/\brender\(\)/.test(b), f + " no llama a render()");
+    assert.ok(b.includes("refreshPlanSurfaces()"), f + " refresca la franja y la etiqueta");
+  }
+  const r = cuerpoDe(ui, "async function refreshPlanSurfaces()");
+  assert.ok(r.includes("paintPlanBadge(plan)") && r.includes("renderPlanStrip()"));
 });

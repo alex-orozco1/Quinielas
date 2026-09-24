@@ -785,9 +785,16 @@ test("MON003 · 56 — UI: sin pasarela configurada NO se finge un cobro", () =>
 // historia, así que los invariantes de la vuelta se comprueban sobre el par.
 function vueltaSrc() {
   const ui = stripComments(indexSrc);
-  const uno = ui.slice(ui.indexOf("async function resolveCheckoutReturn"));
-  const dos = ui.slice(ui.indexOf("async function runCheckoutRecovery"));
-  return uno.slice(0, uno.indexOf("\n  }\n")) + "\n" + dos.slice(0, dos.indexOf("\n  }\n"));
+  // La vuelta son tres piezas: qué compra mirar, el bucle, y cada pregunta al
+  // servidor (MON-003, retorno a /a/: `checkPurchaseOnce` decide qué decir).
+  const tramo = (anc) => {
+    const at = ui.indexOf(anc);
+    assert.ok(at !== -1, "ancla inexistente: " + anc);
+    const t = ui.slice(at);
+    return t.slice(0, t.indexOf("\n  }\n"));
+  };
+  return [tramo("async function resolveCheckoutReturn"), tramo("async function runCheckoutRecovery"),
+    tramo("async function checkPurchaseOnce")].join("\n");
 }
 
 test("MON003 · 57 — UI: la vuelta del checkout confirma contra el servidor", () => {
@@ -928,7 +935,7 @@ test("MON003 · 68 — VUELTA: la señal se persiste ANTES de limpiar la URL", (
   // La app puede preguntar "¿Eres Ana?" antes de poder actuar. Si el parámetro
   // se consume ahí, se pierde para siempre: pagado y sin Plus.
   const body = vueltaSrc();
-  const persistAt = body.indexOf("writePendingPurchase(purchaseId, cancelled, sessionHint)");
+  const persistAt = body.indexOf("writePendingPurchase(purchaseId, cancelled, sessionHint, awaiting)");
   const cleanAt = body.indexOf("window.history.replaceState");
   assert.ok(persistAt !== -1 && cleanAt !== -1);
   assert.ok(persistAt < cleanAt, "primero se guarda, después se limpia");
@@ -941,8 +948,12 @@ test("MON003 · 69 — VUELTA: se reintenta al confirmar la identidad", () => {
   const at = ui.indexOf('getElementById("qz-session-yes")');
   assert.ok(at !== -1);
   const body = ui.slice(at, at + 900);
-  assert.ok(body.includes("resolveCheckoutReturn()"),
+  // Retorno a /a/: la confirmación y la entrada directa comparten la función
+  // que entra con la sesión, y ésa es la que retoma la vuelta del pago.
+  assert.ok(body.includes("enterRestoredSession(session,"),
     "ése es el primer instante en que se sabe que quien volvió es el organizador");
+  const enter = ui.slice(ui.indexOf("async function enterRestoredSession(session, tab)"));
+  assert.ok(enter.slice(0, 900).includes("resolveCheckoutReturn()"));
 });
 
 test("MON003 · 70 — VUELTA: una cancelación también se persiste y se cuenta", () => {
@@ -957,13 +968,19 @@ test("MON003 · 71 — VUELTA: el pendiente caduca y se limpia en cada final", (
   assert.ok(ui.includes("PENDING_PURCHASE_MAX_AGE_MS"),
     "sin caducidad, un pendiente irresoluble se preguntaría en cada carga para siempre");
   const body = vueltaSrc();
-  assert.equal((body.match(/clearPendingPurchase\(\)/g) || []).length, 3,
-    "se limpia en los tres finales: pagado, fallido y cancelado");
+  // Retorno a /a/: pagado con Plus confirmado, pagado con revisión, fallido y
+  // cancelado. "Pagado sin Plus confirmado todavía" NO limpia: sigue esperando.
+  assert.equal((body.match(/clearPendingPurchase\(\)/g) || []).length, 4,
+    "se limpia en los cuatro finales: Plus confirmado, revisión, fallido y cancelado");
   // Y NO se limpia cuando el cobro sigue en proceso: ahí queda algo por
   // resolver y borrarlo perdería la única pista para retomarlo.
-  const enProceso = body.indexOf("Tu pago sigue en proceso");
+  // El tramo "sigue en proceso" del BUCLE (lo que viene detrás en `body` es otra
+  // función) no limpia nada: ahí queda algo por resolver.
+  const bucle = ui.slice(ui.indexOf("async function runCheckoutRecovery"));
+  const bucleBody = bucle.slice(0, bucle.indexOf("\n  }\n"));
+  const enProceso = bucleBody.indexOf("Tu pago sigue en proceso");
   assert.ok(enProceso !== -1);
-  assert.ok(!body.slice(enProceso).includes("clearPendingPurchase"),
+  assert.ok(!bucleBody.slice(enProceso).includes("clearPendingPurchase"),
     "un cobro sin resolver no se olvida");
 });
 
@@ -2427,7 +2444,7 @@ test("MON003 · C5.13 — un cobro en curso es un estado de RECUPERACIÓN, no un
     "y un cobro ya registrado tampoco invita a comprar otra vez");
   // El mensaje de 'sigue en proceso' dice explícitamente que no hace falta
   // reintentar: es lo que evita un segundo cargo por impaciencia.
-  assert.ok(/No hace falta que lo intentes de nuevo/.test(indexSrc));
+  assert.ok(/No hace falta pagar otra vez/.test(indexSrc));
 });
 
 // ==== 20 · Correction 06: marca durable, multiplicidad y expiración explícita ==
