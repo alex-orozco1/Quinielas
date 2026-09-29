@@ -160,7 +160,9 @@ test("LÍMITE · el alcance por ciclo se conserva: el Plus de un torneo no cubre
 test("UNIFICADO · /plan, los dos paywalls y la compra usan la cobertura de la competencia seleccionada", () => {
   assert.equal((serverSrc.match(/coverage: plusCoverageOf\(mergedValue\.settings\),/g) || []).length, 2, "paywalls 402");
   assert.ok(serverSrc.includes("coverage: plusCoverageOf(meta.settings),"), "/plan (Ajustes, franja, hoja)");
-  assert.ok(serverSrc.includes("coverageText: competitionCoverage.plusCoverageText(offer.participantLimit,"), "la compra la congela");
+  assert.ok(serverSrc.includes("coverageText: competitionCoverage.plusCoverageText(plus.participantLimit, plusCoverageOf(settings)),"),
+    "la oferta del checkout, con los ajustes de ESA quiniela");
+  assert.ok(serverSrc.includes("      coverageText: offer.coverageText,"), "y la compra congela ESA frase");
   // El resumen de un Plus lleva la misma frase que su oferta.
   const s = summarizePlan({ ...buildPlusEntitlement(cfg) }, cfg, { participantsUsed: 3, roundsUsed: 25 }, { coverage: LIGA_MX });
   assert.equal(s.coverage.text, "hasta 50 personas y el torneo completo, incluida la liguilla");
@@ -214,10 +216,115 @@ test("UNIFICADO · la descripción es parámetro de la clave: se congela por int
   assert.ok(serverSrc.includes("productDescription: attempt.description || null,"), "y viaja al proveedor desde el intento");
 });
 
-test("UNIFICADO · la frase NO entra en sameOffer: reusar una compra abierta no cambia lo que se vende", () => {
-  // Plus cubre el ciclo completo sea cual sea la frase; la frase sólo lo describe.
-  // Meterla en sameOffer forzaría sustituir compras abiertas (y bloquear hasta que
-  // caduquen) por un cambio de redacción.
-  const fn = serverSrc.slice(serverSrc.indexOf("function sameOffer(purchase, offer)"), serverSrc.indexOf("async function releaseReplacementClaim"));
-  assert.ok(!/coverage/.test(fn));
+test("UNIFICADO · una compra abierta que dice cubrir OTRA competencia no se reutiliza", () => {
+  // Fix de copy dinámico: la página de pago de una compra abierta tiene que decir
+  // la competencia de ESA quiniela. Si la quiniela cambió de competencia (manual ->
+  // Liga MX es un cambio permitido), la compra vieja no se reutiliza: se sustituye
+  // por el camino ya probado de C08. Una compra anterior a la frase no describe
+  // nada en su página, así que no miente y sigue reutilizándose (sin forzar
+  // sustituciones al desplegar).
+  const fnSrc = serverSrc.slice(serverSrc.indexOf("function sameOffer(purchase, offer)"), serverSrc.indexOf("// Suelta el turno PROPIO."));
+  const sameOffer = new Function(`${fnSrc}; return sameOffer;`)();
+  const offer = { amountMinor: 19900, participantLimit: 50, manualRoundLimit: 18,
+    coverageText: "hasta 50 personas y el torneo completo, incluida la liguilla" };
+  const compra = (coverageText) => ({ expectedAmountMinor: 19900,
+    purchased: { participantLimit: 50, manualRoundLimit: 18, coverageText } });
+  assert.equal(sameOffer(compra(offer.coverageText), offer), true, "misma competencia: se reutiliza");
+  assert.equal(sameOffer(compra("hasta 50 personas y el torneo completo"), offer), false, "otra competencia: no");
+  assert.equal(sameOffer(compra(null), offer), true, "compra anterior sin frase: se reutiliza");
+  assert.equal(sameOffer(compra(undefined), offer), true);
+});
+
+// ==== 4. Fix de copy dinámico: lo que se VE sale de la competencia de ESA quiniela ====
+//
+// Encontrado en la UI: "Plan Plus · 1 de 50 personas · cubre el torneo completo,
+// incluida la liguilla" en una quiniela que no era de Liga MX. La frase venía del
+// servidor, pero la competencia que el servidor leía la había escrito la pantalla
+// de Ajustes: su selector no tenía "Sin definir" y caía en Liga MX (`|| "4350"`),
+// así que "Guardar ajustes" convertía una quiniela manual en Liga MX.
+
+// El camino entero: ajustes de la quiniela -> servidor (plusCoverageOf +
+// summarizePlan) -> la línea que pinta la franja del Admin (planStatusHtml, el
+// código real de public/index.html).
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const planStatusHtml = new Function("esc", "planOfferCtaHtml",
+  indexSrc.slice(indexSrc.indexOf("  function planStatusHtml(plan){"), indexSrc.indexOf("  // MON-003. Qué da Plus, en UNA frase"))
+  + "; return planStatusHtml;")(esc, () => "");
+const plusPitch = new Function(
+  indexSrc.slice(indexSrc.indexOf("  function plusPitch(offer){"), indexSrc.indexOf("  // MON-003. La puerta FIJA a la oferta Plus."))
+  + "; return plusPitch;")();
+function vistaDe(settings) {
+  const cov = plusCoverageOf(settings);
+  const plus = summarizePlan(buildPlusEntitlement(cfg), cfg, { participantsUsed: 1, roundsUsed: 3 }, { coverage: cov });
+  const free = summarizePlan(buildFreeEntitlement(cfg), cfg, { participantsUsed: 1, roundsUsed: 1 }, { coverage: cov });
+  return {
+    franja: planStatusHtml(plus).replace(/<[^>]+>/g, ""),
+    oferta: plusPitch(free.upgrade),
+    ajustesPlus: `Tu quiniela tiene Plus: ${plus.coverage.text}.`,
+  };
+}
+
+test("COPY DINÁMICO · 1. Liga MX -> \"incluida la liguilla\" (franja, oferta, Ajustes)", () => {
+  const v = vistaDe({ sportsdbLeagueId: "4350" });
+  assert.equal(v.franja, "Plan Plus · 1 de 50 personas · cubre el torneo completo, incluida la liguilla");
+  assert.equal(v.oferta, "Con Plus: hasta 50 personas y el torneo completo, incluida la liguilla.");
+  assert.match(v.ajustesPlus, /incluida la liguilla\.$/);
+});
+
+test("COPY DINÁMICO · 2. Premier (y el resto de ligas europeas) -> sin \"liguilla\"", () => {
+  for (const id of ["4328", "4335", "4331", "4332", "4334"]) {
+    const v = vistaDe({ sportsdbLeagueId: id });
+    assert.equal(v.franja, "Plan Plus · 1 de 50 personas · cubre el torneo completo", id);
+    assert.equal(v.oferta, "Con Plus: hasta 50 personas y el torneo completo.", id);
+    for (const t of Object.values(v)) assert.ok(!/liguilla|eliminatorias/i.test(t), `${id}: ${t}`);
+  }
+});
+
+test("COPY DINÁMICO · 3. Champions -> \"incluidas las eliminatorias\"", () => {
+  const v = vistaDe({ sportsdbLeagueId: "4480" });
+  assert.equal(v.franja, "Plan Plus · 1 de 50 personas · cubre el torneo completo, incluidas las eliminatorias");
+  assert.equal(v.oferta, "Con Plus: hasta 50 personas y el torneo completo, incluidas las eliminatorias.");
+  for (const t of Object.values(v)) assert.ok(!/liguilla/i.test(t), t);
+});
+
+test("COPY DINÁMICO · 4. manual o desconocida -> sin \"liguilla\"", () => {
+  for (const settings of [{}, { sportsdbLeagueId: "" }, { sportsdbLeagueId: null }, undefined,
+    { sportsdbLeagueId: "999999" }, { sportsdbLeagueId: "4350x" }]) {
+    const v = vistaDe(settings);
+    assert.equal(v.franja, "Plan Plus · 1 de 50 personas · cubre el torneo completo", JSON.stringify(settings));
+    for (const t of Object.values(v)) assert.ok(!/liguilla|eliminatorias/i.test(t), `${JSON.stringify(settings)}: ${t}`);
+  }
+});
+
+test("COPY DINÁMICO · el frontend no tiene ninguna frase de cobertura propia", () => {
+  // Código de la pantalla, sin comentarios: ni "liguilla" ni "eliminatorias".
+  const code = indexSrc.replace(/<!--[\s\S]*?-->/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n").map((l) => { const i = l.search(/(^|[^:])\/\//); return i === -1 ? l : l.slice(0, i + 1); }).join("\n");
+  assert.ok(!/liguilla/i.test(code), "ningún 'liguilla' fuera de comentarios en public/index.html");
+  assert.ok(!/eliminatorias/i.test(code), "ningún 'eliminatorias' fuera de comentarios");
+  // Y en el servidor la frase sólo vive en el catálogo.
+  for (const f of ["server.js", "planLimits.js", "platformState.js", "payments/paymentsDomain.js", "payments/stripeAdapter.js"]) {
+    const src = fs.readFileSync(path.join(ROOT, f), "utf8").replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    assert.ok(!/incluida la liguilla|incluidas las eliminatorias/.test(src), f);
+  }
+});
+
+test("COPY DINÁMICO · causa raíz: Ajustes ya no convierte una quiniela sin liga en Liga MX", () => {
+  const sel = indexSrc.slice(indexSrc.indexOf('<select id="qz-sportsdb-league">'), indexSrc.indexOf("</select>", indexSrc.indexOf('<select id="qz-sportsdb-league">')));
+  assert.ok(sel.includes('<option value="" ${meta.settings.sportsdbLeagueId ? "" : "selected"}>Sin definir</option>'));
+  assert.ok(!sel.includes('|| "4350"'), "sin liga guardada no se preselecciona Liga MX");
+  assert.ok(sel.includes('meta.settings.sportsdbLeagueId === l.id ? "selected" : ""'));
+  // Guardar con "Sin definir" manda "" y el servidor lo trata como sin liga (no hay
+  // cambio que bloquear y no se adopta ninguna competencia).
+  assert.ok(indexSrc.includes('meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;'));
+  assert.ok(serverSrc.includes("const leagueOrSeasonChanged = (oldLeagueId || null) !== (newLeagueId || null)"));
+  assert.ok(serverSrc.includes("if (newLeagueId && !entry.entitlement.competitionIdentity) {"));
+});
+
+test("COPY DINÁMICO · el plan en memoria es de ESA quiniela y posterior a cualquier cambio", () => {
+  const load = indexSrc.slice(indexSrc.indexOf("  async function loadPlan(opts){"), indexSrc.indexOf("  // ---------- MON-003: el pago ----------"));
+  assert.ok(load.includes("if(planStateSlug !== SLUG){ planState = null; planStateSlug = SLUG; }"));
+  assert.ok(load.includes("if(gen === planGen && slugAlPedir === SLUG){ planState = leido; return leido; }"),
+    "una lectura de antes de invalidar no se cachea ni se entrega");
+  assert.ok(indexSrc.includes("function invalidatePlan(){ planState = null; planGen++; }"));
 });

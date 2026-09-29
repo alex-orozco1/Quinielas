@@ -441,9 +441,12 @@ test("UX: the plan strip is Admin-only and backend-driven", () => {
   const fn = blockFrom(indexSrc, "async function renderPlanStrip()");
   assert.ok(fn.includes("currentUser && currentUser.isAdmin"), "participants never see it");
   assert.ok(fn.includes("await loadPlan()"), "and it renders what the server said");
-  const loader = blockFrom(indexSrc, "async function loadPlan(opts)");
-  assert.ok(loader.includes('"/api/quinielas/" + encodeURIComponent(SLUG) + "/plan"'));
+  // MON-003 · cobertura: la lectura vive en readPlanFresh (descarta respuestas
+  // de antes de invalidar); loadPlan sólo cachea.
+  const loader = blockFrom(indexSrc, "async function readPlanFresh()");
+  assert.ok(loader.includes('"/api/quinielas/" + encodeURIComponent(slugAlPedir) + "/plan"'));
   assert.ok(loader.includes("adminOrOwnerCred()"), "authenticated as the organizer");
+  assert.ok(blockFrom(indexSrc, "async function loadPlan(opts)").includes("readPlanFresh()"));
 });
 
 test("UX: the status line is composed from the server's numbers, not recomputed", () => {

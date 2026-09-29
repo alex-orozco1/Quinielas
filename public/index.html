@@ -4736,26 +4736,45 @@
   // product ended up showing one paywall and enforcing another.
   let planState = null;
   let planStateInFlight = null;
+  // MON-003 · cobertura: el plan en memoria es de UNA quiniela y de UN momento.
+  // `planStateSlug` impide pintar el de otra; `planGen` impide que una lectura
+  // que salió ANTES de invalidar (p. ej. antes de cambiar la liga en Ajustes)
+  // vuelva a dejar el plan viejo —con la frase de cobertura de antes— en caché.
+  let planStateSlug = null;
+  let planGen = 0;
   async function loadPlan(opts){
     if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
-    if(!(opts && opts.force) && planState) return planState;
-    if(planStateInFlight) return planStateInFlight;
-    planStateInFlight = (async () => {
+    if(planStateSlug !== SLUG){ planState = null; planStateSlug = SLUG; }
+    const force = !!(opts && opts.force);
+    if(!force && planState) return planState;
+    if(!force && planStateInFlight) return planStateInFlight;
+    const p = readPlanFresh();
+    planStateInFlight = p;
+    try{ return await p; }
+    finally{ if(planStateInFlight === p) planStateInFlight = null; }
+  }
+  // Una lectura del plan que NUNCA entrega una foto de antes de invalidar: si
+  // mientras viajaba alguien invalidó (la liga pudo cambiar) o se cambió de
+  // quiniela, se descarta y se vuelve a leer.
+  async function readPlanFresh(){
+    for(let intento = 0; intento < 3; intento++){
+      const gen = planGen;
+      const slugAlPedir = SLUG;
+      let leido = null;
       try{
         const headers = {};
         const cred = adminOrOwnerCred();
         if(cred) headers["X-Qracks-Auth"] = cred;
-        const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/plan", {
+        const res = await fetch("/api/quinielas/" + encodeURIComponent(slugAlPedir) + "/plan", {
           headers, credentials: "same-origin"
         });
         if(!res.ok) return null;
         const data = await res.json();
-        planState = data && data.available ? data : null;
-        return planState;
+        leido = data && data.available ? data : null;
       }catch(e){ console.error("loadPlan failed", e); return null; }
-    })();
-    try{ return await planStateInFlight; }
-    finally{ planStateInFlight = null; }
+      if(gen === planGen && slugAlPedir === SLUG){ planState = leido; return leido; }
+    }
+    return null;
   }
   // ---------- MON-003: el pago ----------
   //
@@ -5035,7 +5054,7 @@
 
   // Any write that consumes capacity can change these numbers, so the cached
   // copy is dropped rather than left to go quietly out of date.
-  function invalidatePlan(){ planState = null; }
+  function invalidatePlan(){ planState = null; planGen++; }
 
   // Lo que depende del plan —la franja del plan en Admin y la etiqueta del
   // encabezado— se refresca SIN repintar la aplicación entera. La vuelta del pago
@@ -7369,7 +7388,13 @@
         <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
         <div class="field">
           <select id="qz-sportsdb-league">
-            ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${(meta.settings.sportsdbLeagueId || "4350") === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
+            ${/* MON-003 · cobertura: sin liga guardada se muestra "Sin definir", no
+                 Liga MX. Antes el selector caía en Liga MX por defecto y "Guardar
+                 ajustes" (por cambiar el nombre o la cuota) la guardaba: una
+                 quiniela manual pasaba a ser Liga MX sin que nadie lo eligiera, y
+                 Plus empezaba a decir "incluida la liguilla". */ ""}
+            <option value="" ${meta.settings.sportsdbLeagueId ? "" : "selected"}>Sin definir</option>
+            ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${meta.settings.sportsdbLeagueId === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
           </select>
         </div>
         <div class="eyebrow">Temporada para resultados automáticos (TheSportsDB)</div>
@@ -8271,7 +8296,7 @@
           </div>
           <div class="row2">
             <div class="field"><label>Plus — personas</label><input type="number" id="qz-c-plus-people" min="1" value="${config.plus.participantLimit}"></div>
-            <div class="field"><label>Plus — jornadas</label><p class="muted" id="qz-c-plus-coverage" style="margin:6px 0 0;">El torneo completo, con sus fases finales (liguilla, eliminatorias). Sin tope de jornadas.</p></div>
+            <div class="field"><label>Plus — jornadas</label><p class="muted" id="qz-c-plus-coverage" style="margin:6px 0 0;">El torneo completo de cada quiniela, con sus fases finales. Sin tope de jornadas. La frase por competencia la define el servidor.</p></div>
           </div>
           <div class="field"><label>Precio de Plus (MXN)</label><input type="number" id="qz-c-plus-price" min="0" value="${config.plus.priceMXN}"></div>
           <div class="field">

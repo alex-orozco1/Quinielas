@@ -1108,14 +1108,15 @@ test("MON003 · C1.6 — SNAPSHOT: el checkout exige la oferta ENTERA antes de v
   // Correction 02 lo movió a readPlusOffer(), que devuelve la oferta completa o
   // null: así ninguna ruta puede quedarse con media oferta.
   const src = stripComments(serverSrc);
-  const fn = src.slice(src.indexOf("function readPlusOffer(commercialConfig)"));
+  const fn = src.slice(src.indexOf("function readPlusOffer(commercialConfig, settings)"));
   const body = fn.slice(0, fn.indexOf("function sameOffer"));
   assert.ok(body.includes("Number.isSafeInteger(plus.participantLimit)"));
   assert.ok(body.includes("Number.isSafeInteger(plus.manualRoundLimit)"));
   assert.ok(body.includes("amountMinor == null || amountMinor <= 0"));
   assert.ok(body.includes("return null"), "una oferta incompleta no es una oferta");
   // Los DOS sitios que abren una compra la usan; ninguno lee la config a mano.
-  const usos = src.match(/readPlusOffer\(await getRow\("commercial_config", client\)\)/g) || [];
+  // MON-003 · cobertura: con los ajustes de ESA quiniela, leídos en la misma transacción.
+  const usos = src.match(/readPlusOffer\(await getRow\("commercial_config", client\),\s*\(\(await getRow\(`quiniela:\$\{slug\}:meta`, client\)\) \|\| \{\}\)\.settings\)/g) || [];
   assert.equal(usos.length, 2, "el endpoint y openPurchase, los dos bajo lock");
   assert.ok(src.includes("participantLimit: offer.participantLimit"));
   assert.ok(src.includes("manualRoundLimit: offer.manualRoundLimit"));

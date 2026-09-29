@@ -3188,7 +3188,8 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
         return res.status(409).json({ error: "payment_already_recorded" });
       }
 
-      offer = readPlusOffer(await getRow("commercial_config", client));
+      offer = readPlusOffer(await getRow("commercial_config", client),
+        ((await getRow(`quiniela:${slug}:meta`, client)) || {}).settings);
       if (!offer) {
         await client.query("ROLLBACK");
         logPayment("checkout_creation_failed", { slug, reason: "unusable_offer" });
@@ -3424,7 +3425,11 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
 
 // La oferta de PLUS vigente, o null si no se puede leer entera. Vender sin
 // saber qué se vende es peor que no vender (Correction 01).
-function readPlusOffer(commercialConfig) {
+//
+// MON-003 · cobertura: la oferta también dice QUÉ cubre, con la frase de la
+// competencia seleccionada en ESTA quiniela (`settings`, leídos en la misma
+// transacción). Es lo que se congela en la compra y lo que ve la página de pago.
+function readPlusOffer(commercialConfig, settings) {
   const cfg = commercialConfig || DEFAULT_COMMERCIAL_CONFIG;
   const plus = (cfg && cfg.plus) || null;
   if (!plus) return null;
@@ -3436,6 +3441,7 @@ function readPlusOffer(commercialConfig) {
     participantLimit: plus.participantLimit,
     manualRoundLimit: plus.manualRoundLimit,
     configVersion: cfg.version,
+    coverageText: competitionCoverage.plusCoverageText(plus.participantLimit, plusCoverageOf(settings)),
   };
 }
 
@@ -3447,7 +3453,13 @@ function sameOffer(purchase, offer) {
     && purchase.expectedAmountMinor === offer.amountMinor
     && !!purchase.purchased
     && purchase.purchased.participantLimit === offer.participantLimit
-    && purchase.purchased.manualRoundLimit === offer.manualRoundLimit;
+    && purchase.purchased.manualRoundLimit === offer.manualRoundLimit
+    // MON-003 · cobertura: una compra abierta que dice cubrir OTRA cosa (la
+    // quiniela cambió de competencia desde que se abrió) no se reutiliza: su
+    // página de pago diría la frase de antes. Una compra anterior a este cambio
+    // no congeló ninguna frase y su página no describe nada, así que no miente.
+    && (purchase.purchased.coverageText == null
+      || purchase.purchased.coverageText === offer.coverageText);
 }
 
 // Suelta el turno PROPIO. Si otro lo tomó entre medias, no es nuestro.
@@ -3645,7 +3657,8 @@ async function openPurchase(slug, superseded) {
       await client.query("ROLLBACK");
       return { error: "already_on_plan", status: 409 };
     }
-    const offer = readPlusOffer(await getRow("commercial_config", client));
+    const offer = readPlusOffer(await getRow("commercial_config", client),
+      ((await getRow(`quiniela:${slug}:meta`, client)) || {}).settings);
     if (!offer) {
       await client.query("ROLLBACK");
       return { error: "price_unavailable", status: 409 };
@@ -3747,8 +3760,7 @@ async function openPurchase(slug, superseded) {
       boundToCompetition: !!(entry.entitlement && entry.entitlement.competitionIdentity),
       // MON-003: la cobertura que se vende, con la frase de la oferta, según la
       // competencia seleccionada AHORA (leída en esta misma transacción).
-      coverageText: competitionCoverage.plusCoverageText(offer.participantLimit,
-        plusCoverageOf(((await getRow(`quiniela:${slug}:meta`, client)) || {}).settings)),
+      coverageText: offer.coverageText,
     });
     if (!fresh) {
       await client.query("ROLLBACK");
