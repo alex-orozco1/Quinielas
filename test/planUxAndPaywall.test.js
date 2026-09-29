@@ -804,3 +804,66 @@ test("C09 · adversarial: la hoja se abre con la oferta FRESCA, y sin oferta en 
   const block = stripComments(blockFrom(indexSrc, "function showPlanBlock(errorBody)"));
   assert.equal((block.match(/plan: body\.plan,/g) || []).length, 2);
 });
+
+// ==== MON-003 · la puerta fija a la oferta Plus =============================
+//
+// En el sandbox, una quiniela Free nueva ("Plan Gratis · 1 de 10 personas · 1
+// de 7 jornadas") no tenía por dónde contratar Plus: la oferta sólo aparecía al
+// quedar 1 lugar/jornada (una vez), al llenarse o al chocar con el límite.
+
+function ctaFn(awaiting) {
+  const src = blockFrom(indexSrc, "function planOfferCtaHtml(plan, source)");
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  return new Function("esc", "awaitingPayment", `${src}; return planOfferCtaHtml;`)(esc, () => awaiting);
+}
+
+test("CTA Plus · una Free NUEVA, lejos de cualquier límite, tiene el botón", () => {
+  const plan = summarizePlan(FREE, cfg, { participantsUsed: 1, roundsUsed: 1 }, { checkout: "card" });
+  const html = ctaFn(false)(plan, "plan_strip");
+  assert.match(html, /data-plan-open-offer="plan_strip"/);
+  assert.match(html, />Ver plan Plus</);
+  // El botón ABRE la oferta; pagar sigue siendo cosa de la hoja.
+  assert.ok(!/checkout|Pasar a Plus/.test(html));
+});
+
+test("CTA Plus · sin oferta del servidor, con Plus o con un pago esperando: nada", () => {
+  const cta = ctaFn(false);
+  assert.equal(cta(null, "x"), "");
+  assert.equal(cta(summarizePlan(PLUS, cfg, { participantsUsed: 1, roundsUsed: 1 }), "x"), "");
+  assert.equal(cta({ plan: "FREE", upgrade: { available: false } }, "x"), "");
+  const free = summarizePlan(FREE, cfg, { participantsUsed: 1, roundsUsed: 1 }, { checkout: "card" });
+  assert.equal(ctaFn(true)(free, "x"), "", "con un pago pendiente no se ofrece otro");
+});
+
+test("CTA Plus · vive en la franja del plan Y en Ajustes (con y sin contraseña de dueño)", () => {
+  const status = stripComments(blockFrom(indexSrc, "function planStatusHtml(plan)"));
+  assert.ok(status.includes('planOfferCtaHtml(plan, "plan_strip")'));
+  const strip = stripComments(blockFrom(indexSrc, "async function renderPlanStrip()"));
+  assert.ok(strip.includes("wirePlanOfferCta(liveStrip)"));
+  const owner = stripComments(blockFrom(indexSrc, "function renderAdminOwner(body)"));
+  assert.ok(owner.includes('ROUTE === "quiniela" && SLUG && currentUser && currentUser.isAdmin ? settingsPlanCardHtml()'), "sólo para el Admin de una quiniela con plan");
+  assert.equal((owner.match(/body\.innerHTML = planCard \+/g) || []).length, 2, "bloqueado y desbloqueado");
+  assert.equal((owner.match(/renderSettingsPlan\(\);/g) || []).length, 2);
+  const settings = stripComments(blockFrom(indexSrc, "async function renderSettingsPlan()"));
+  assert.ok(settings.includes("currentUser && currentUser.isAdmin"));
+  assert.ok(settings.includes("await loadPlan()"), "el plan sale del servidor");
+  assert.ok(settings.includes('planOfferCtaHtml(plan, "settings")'));
+  assert.ok(settings.includes("paymentAwaitingHtml(plan)"), "el pago pendiente se ve también aquí");
+  assert.ok(settings.includes("wirePlanOfferCta(live)"));
+  // La vuelta del pago refresca también la tarjeta de Ajustes.
+  const surfaces = stripComments(blockFrom(indexSrc, "async function refreshPlanSurfaces()"));
+  assert.ok(surfaces.includes("renderSettingsPlan()"));
+});
+
+test("CTA Plus · abre la hoja con la oferta FRESCA; los bloqueos siguen dentro de la hoja", () => {
+  const wire = stripComments(blockFrom(indexSrc, "function wirePlanOfferCta(scope)"));
+  assert.ok(wire.includes("await loadPlan({ force: true })"));
+  assert.ok(wire.includes("showUpgradeSheet(fresco.upgrade, { reason: null, plan: fresco.plan, source:"));
+  assert.ok(!/planState/.test(wire), "nunca con la copia en caché");
+  assert.ok(!/startCheckout/.test(wire), "el CTA no abre pagos por su cuenta");
+  const sheet = stripComments(blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)"));
+  // Pendiente > cualquier modo; botón de pago sólo con tarjeta.
+  assert.ok(sheet.includes('const mode = !offer ? null : esperando ? "awaiting"'));
+  assert.ok(sheet.includes('${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}'));
+  assert.ok(sheet.includes('source: c.source || (c.limitType ? "paywall_" + c.limitType : "paywall")'));
+});

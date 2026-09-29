@@ -118,6 +118,12 @@
   @media (max-width: 640px){
     #quiniela-root .qz-brand-line{ flex-direction:row; flex-wrap:wrap; align-items:center; gap:4px 8px; }
   }
+  /* MON-003: la línea del plan y su botón fijo a la oferta Plus. En móvil el
+     botón baja debajo de la línea en vez de apretarla. */
+  #quiniela-root .qz-plan-row{
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+    gap:8px 12px; margin:0 0 12px;
+  }
   #quiniela-root .qz-brand-round{
     font-weight:600; font-size:12.5px; color:rgba(247,245,236,0.65); margin-top:1px;
   }
@@ -5040,6 +5046,7 @@
     const plan = await loadPlan().catch(() => null);
     paintPlanBadge(plan);
     await renderPlanStrip().catch(() => {});
+    await renderSettingsPlan().catch(() => {});
   }
 
   function paintPlanBadge(plan){
@@ -5183,7 +5190,47 @@
       // el torneo entero, final incluida.
       bits.push("cubre este torneo completo");
     }
-    return `<p class="muted" id="qz-plan-status" style="margin:0 0 12px;">${bits.join(" · ")}</p>`;
+    const cta = planOfferCtaHtml(plan, "plan_strip");
+    const line = `<p class="muted" id="qz-plan-status" style="margin:0;">${bits.join(" · ")}</p>`;
+    return cta
+      ? `<div class="qz-plan-row">${line}${cta}</div>`
+      : line.replace('style="margin:0;"', 'style="margin:0 0 12px;"');
+  }
+
+  // MON-003. La puerta FIJA a la oferta Plus. Antes la oferta sólo aparecía al
+  // quedar 1 lugar o 1 jornada (y una sola vez), al llenarse la quiniela o al
+  // chocar con el límite: un Admin con "1 de 10 personas" no tenía por dónde
+  // contratar Plus. Aparece cuando el SERVIDOR dice que hay oferta
+  // (`upgrade.available`) y ningún pago espera confirmación. Cómo se paga —y si
+  // se puede pagar ahora— lo sigue decidiendo el servidor dentro de la hoja
+  // (`offer.checkout`): el botón de pago sólo existe en modo tarjeta.
+  function planOfferCtaHtml(plan, source){
+    if(!plan || !plan.upgrade || !plan.upgrade.available) return "";
+    if(awaitingPayment()) return "";
+    return `<button class="btn btn-gold btn-sm" data-plan-open-offer="${esc(source)}">Ver plan Plus</button>`;
+  }
+
+  function wirePlanOfferCta(scope){
+    if(!scope) return;
+    scope.querySelectorAll("[data-plan-open-offer]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try{
+          // Fresca, por la misma razón que el aviso (Correction 09): el modo de
+          // compra puede haber cambiado desde que se pintó el botón.
+          const fresco = await loadPlan({ force: true });
+          if(!fresco){
+            toast("No pudimos cargar las opciones de tu plan ahora mismo. Intenta de nuevo en unos minutos.");
+            return;
+          }
+          await showUpgradeSheet(fresco.upgrade, { reason: null, plan: fresco.plan, source: btn.dataset.planOpenOffer });
+        } finally {
+          btn.disabled = false;
+          // Lo que la hoja haya cambiado (un pago que quedó esperando) se refleja.
+          refreshPlanSurfaces().catch(() => {});
+        }
+      });
+    });
   }
 
   // Fires at exactly one place left. Deliberately not a modal: the Admin is
@@ -5345,7 +5392,7 @@
         cta.addEventListener("click", async () => {
           // `source` is a real column; a field the table has no room for
           // would simply be dropped, which is not instrumentation.
-          trackEvent("upgrade_cta_clicked", { source: c.limitType ? "paywall_" + c.limitType : "paywall" });
+          trackEvent("upgrade_cta_clicked", { source: c.source || (c.limitType ? "paywall_" + c.limitType : "paywall") });
           cta.disabled = true;
           cta.textContent = "Abriendo el pago…";
           // MON-003: el checkout lo crea el SERVIDOR. Esta pantalla no conoce
@@ -5469,7 +5516,48 @@
     liveStrip.innerHTML = tournamentStatusHtml(plan) + planStatusHtml(plan)
       + paymentAwaitingHtml(plan) + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
     wirePlanWarnings(liveStrip);
+    wirePlanOfferCta(liveStrip);
     wireTournamentActions(liveStrip);
+  }
+
+  // MON-003. El plan también vive en Ajustes: es donde un Admin busca "qué plan
+  // tengo y cómo lo mejoro". Mismo origen que la franja (loadPlan, del servidor)
+  // y el mismo botón; no depende de la contraseña de dueño porque el plan es
+  // cosa del Admin (el servidor ya lo exige para leerlo y para pagar).
+  function settingsPlanCardHtml(){
+    return `<div class="card" id="qz-settings-plan">
+      <div class="section-title"><span class="display" style="font-size:18px;">Tu plan</span></div>
+      <div id="qz-settings-plan-body"><p class="muted" style="margin:0;">Cargando tu plan…</p></div>
+    </div>`;
+  }
+
+  async function renderSettingsPlan(){
+    if(!document.getElementById("qz-settings-plan-body")) return;
+    if(!(currentUser && currentUser.isAdmin)) return;
+    const plan = await loadPlan().catch(() => null);
+    const live = document.getElementById("qz-settings-plan-body");
+    if(!live) return;
+    if(!plan || !plan.planLabel){
+      live.innerHTML = `<p class="muted" style="margin:0;">No pudimos cargar tu plan ahora mismo. Intenta de nuevo en unos minutos.</p>`;
+      return;
+    }
+    const bits = [`Plan ${esc(plan.planLabel)}`];
+    if(plan.participants) bits.push(`${plan.participants.used} de ${plan.participants.limit} persona${plan.participants.limit === 1 ? "" : "s"}`);
+    if(plan.rounds && plan.rounds.applies) bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
+    const offer = plan.upgrade && plan.upgrade.available ? plan.upgrade : null;
+    const pitch = offer
+      ? (offer.roundLimitApplies
+          ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
+          : `Con Plus: hasta ${offer.participantLimit} personas y el torneo completo.`)
+      : "";
+    live.innerHTML = `
+      <p style="margin:0 0 8px;" id="qz-settings-plan-status">${bits.join(" · ")}</p>
+      ${plan.plan === "PLUS" ? `<p class="muted" style="margin:0;">Tu quiniela tiene Plus.</p>` : ``}
+      ${paymentAwaitingHtml(plan)}
+      ${pitch && !awaitingPayment() ? `<p class="muted" style="margin:0 0 10px;">${esc(pitch)}</p>` : ``}
+      ${planOfferCtaHtml(plan, "settings")}
+    `;
+    wirePlanOfferCta(live);
   }
 
   async function renderAdmin(main){
@@ -7206,8 +7294,10 @@
   }
 
   function renderAdminOwner(body){
+    // Los planes son de las quinielas con link propio; la raíz heredada no tiene.
+    const planCard = ROUTE === "quiniela" && SLUG && currentUser && currentUser.isAdmin ? settingsPlanCardHtml() : "";
     if(!ownerUnlocked){
-      body.innerHTML = `
+      body.innerHTML = planCard + `
         <div class="card">
           <div class="eyebrow">Ajustes del dueño</div>
           <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de dueño.</p>
@@ -7230,6 +7320,7 @@
         }
       });
       enterSubmits("qz-owner-pw", "qz-owner-unlock");
+      renderSettingsPlan();
       // Recuperación puntual: solo para quien ya es admin de esta quiniela.
       // Vuelve a pedir el PIN (nunca lo guarda en cookies/localStorage) y lo
       // deja únicamente en memoria (currentUserPinCache, el mismo mecanismo
@@ -7258,7 +7349,7 @@
       }
       return;
     }
-    body.innerHTML = `
+    body.innerHTML = planCard + `
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:18px;">Configuración general</span></div>
         <div class="eyebrow">Nombre del grupo</div>
@@ -7327,6 +7418,7 @@
         <button class="btn btn-ghost" data-start-new-tournament>Empezar un torneo nuevo sin cerrar este</button>
       </div>
     `;
+    renderSettingsPlan();
     wireTournamentActions(body);
     (async () => {
       const plan = await loadPlan();
