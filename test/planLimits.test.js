@@ -201,10 +201,15 @@ test("PLUS participants: 49 -> 50 allowed, 50 -> 51 blocked", () => {
   assert.equal(blocked.limit, 50);
 });
 
-test("PLUS lifecycle: 17 -> 18 allowed, 18 -> 19 blocked", () => {
+// MON-003 · cobertura: INVERTIDO a propósito. Esto afirmaba "Plus sin torneo =
+// 18 jornadas, la 19 se bloquea". Plus cubre ahora el torneo completo, fases
+// finales incluidas, con o sin competencia ligada: el límite de uso es el ciclo
+// de torneo, no un número de jornadas (ver planLimits.roundBudgetApplies).
+test("PLUS lifecycle: no round cap — the 19th (and the liguilla after it) is allowed", () => {
   const ent = buildPlusEntitlement(DEFAULT_COMMERCIAL_CONFIG);
   assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 17, 1).allowed, true);
-  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 18, 1).allowed, false);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 18, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(ent, DEFAULT_COMMERCIAL_CONFIG, 60, 5).allowed, true);
 });
 
 // ---- Multiple-at-once ----

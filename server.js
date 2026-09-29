@@ -20,6 +20,7 @@ const {
   summarizePlan, buildUpgradeOffer, isValidManualGrantLimits,
   entitlementScopeId,
 } = require("./planLimits");
+const competitionCoverage = require("./competitionCoverage");
 const { outcomeFromRegulation } = require("./scoreContract");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
@@ -1510,6 +1511,7 @@ app.post("/api/kv/:key", async (req, res) => {
                 error: check.reason, limitType: "participants", plan: check.plan, limit: check.limit,
                 upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig, {
                   checkout: await checkoutModeFor(entry.slug, currentScopeId),
+                  coverage: plusCoverageOf(mergedValue.settings),
                 }),
               });
             }
@@ -1549,6 +1551,7 @@ app.post("/api/kv/:key", async (req, res) => {
                 error: check.reason, limitType: "rounds", plan: check.plan, limit: check.limit,
                 upgrade: buildUpgradeOffer(entry.entitlement, commercialConfig, {
                   checkout: await checkoutModeFor(entry.slug, currentScopeId),
+                  coverage: plusCoverageOf(mergedValue.settings),
                 }),
               });
             }
@@ -2027,6 +2030,7 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
 
     const summary = summarizePlan(entry.entitlement, commercialConfig, { participantsUsed, roundsUsed }, {
       checkout: await checkoutModeFor(entry.slug, currentScope && currentScope.id),
+      coverage: plusCoverageOf(meta.settings),
     });
     // The league's display NAME lives in the browser's own picker list and is
     // not a commercial rule, so it is not duplicated here; what the server
@@ -3023,6 +3027,16 @@ const IDENTITY_OPTS = Object.freeze({
 //
 // Si no se puede leer el estado de las compras, "blocked": en la duda, no se
 // empuja a nadie a pagar por otro canal.
+// MON-003. Qué cubre Plus en esta quiniela, según la competencia SELECCIONADA
+// en sus ajustes. El nombre del campo es del proveedor de hoy (TheSportsDB); la
+// traducción a "proveedor + id" se hace aquí, igual que al construir el ciclo de
+// torneo, y el catálogo (competitionCoverage.js) no sabe de ajustes. Sin liga
+// -> quiniela manual -> la frase genérica.
+function plusCoverageOf(settings) {
+  const leagueId = settings && settings.sportsdbLeagueId;
+  return competitionCoverage.coverageFor(leagueId ? "thesportsdb" : null, leagueId || null);
+}
+
 async function checkoutModeFor(slug, scopeId) {
   // Correction 10: la MISMA readiness que el checkout. Mal configurado NO es
   // "desactivado": no se ofrece respaldo manual, se dice que no está disponible.
@@ -3731,6 +3745,10 @@ async function openPurchase(slug, superseded) {
       participantLimit: offer.participantLimit,
       manualRoundLimit: offer.manualRoundLimit,
       boundToCompetition: !!(entry.entitlement && entry.entitlement.competitionIdentity),
+      // MON-003: la cobertura que se vende, con la frase de la oferta, según la
+      // competencia seleccionada AHORA (leída en esta misma transacción).
+      coverageText: competitionCoverage.plusCoverageText(offer.participantLimit,
+        plusCoverageOf(((await getRow(`quiniela:${slug}:meta`, client)) || {}).settings)),
     });
     if (!fresh) {
       await client.query("ROLLBACK");
@@ -3813,6 +3831,8 @@ async function createSessionFor(intent, slug) {
     amountMinor: intent.expectedAmountMinor,
     currency: intent.currency,
     productName: "QRACKS Plus",
+    // MON-003: lo que cubre, con la frase de la oferta. Congelada con el intento.
+    productDescription: attempt.description || null,
     purchaseId: intent.id, slug, scopeId: intent.scopeId,
     // `qz_pago` es NUESTRO id de compra, que es lo único que hace falta para
     // reconciliar. `qz_sess` lo rellena el proveedor con el id de la sesión: es
@@ -3917,10 +3937,16 @@ async function recordCreationAttempt(purchaseId, nowMs) {
       ? { seq, at, idempotencyKey: d.from.idempotencyKey, expiresAt: d.from.expiresAt,
           inherited: d.from.seq, tagged: d.from.tagged === true,
           // La ruta de vuelta es parámetro de la clave: se hereda con ella.
-          returnRoute: d.from.returnRoute === "a" ? "a" : "q" }
+          returnRoute: d.from.returnRoute === "a" ? "a" : "q",
+          // Y la descripción del producto, igual (MON-003): una clave emitida
+          // sin descripción se repite sin ella.
+          description: d.from.description || null }
       : { seq, at, idempotencyKey: `checkout:${purchaseId}:${seq}`,
           expiresAt: stripeAdapter.checkoutExpiresAt(at, nowMs), inherited: null, tagged: true,
-          returnRoute: "a" };
+          returnRoute: "a",
+          // MON-003: la cobertura CONGELADA en la compra, como descripción del
+          // producto en la página de pago. De la compra, no de la hora de ahora.
+          description: paymentsDomain.productDescriptionForIntent(actual) };
     purchases = purchases.map((p) => (p && p.id === purchaseId
       ? {
           ...p,
@@ -3929,10 +3955,12 @@ async function recordCreationAttempt(purchaseId, nowMs) {
           attempts: previos.filter((x) => !x.legacy)
             .map((x) => ({ seq: x.seq, at: x.at, idempotencyKey: x.idempotencyKey,
               expiresAt: x.expiresAt, ...(x.tagged ? { tagged: true } : {}),
-              ...(x.returnRoute === "a" ? { returnRoute: "a" } : {}) }))
+              ...(x.returnRoute === "a" ? { returnRoute: "a" } : {}),
+              ...(x.description ? { description: x.description } : {}) }))
             .concat([{ seq: attempt.seq, at: attempt.at, idempotencyKey: attempt.idempotencyKey,
               expiresAt: attempt.expiresAt, ...(attempt.tagged ? { tagged: true } : {}),
-              ...(attempt.returnRoute === "a" ? { returnRoute: "a" } : {}) }]),
+              ...(attempt.returnRoute === "a" ? { returnRoute: "a" } : {}),
+              ...(attempt.description ? { description: attempt.description } : {}) }]),
           creationAttemptedAt: p.creationAttemptedAt || at,
         }
       : p));

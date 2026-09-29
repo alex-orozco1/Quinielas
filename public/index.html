@@ -5185,9 +5185,12 @@
     }
     if(plan.rounds && plan.rounds.applies){
       bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
+    }else if(plan.coverage && plan.coverage.scope){
+      // Plus: no hay cuenta de jornadas que mostrar, porque cubre el torneo
+      // entero, fases finales incluidas. La frase es la del servidor.
+      bits.push(`cubre ${esc(plan.coverage.scope)}`);
     }else if(plan.rounds && plan.competition && plan.competition.bound){
-      // Plus con torneo: no hay cuenta de jornadas que mostrar, porque cubre
-      // el torneo entero, final incluida.
+      // Un plan especial ligado a un torneo: tampoco cuenta jornadas.
       bits.push("cubre este torneo completo");
     }
     const cta = planOfferCtaHtml(plan, "plan_strip");
@@ -5195,6 +5198,18 @@
     return cta
       ? `<div class="qz-plan-row">${line}${cta}</div>`
       : line.replace('style="margin:0;"', 'style="margin:0 0 12px;"');
+  }
+
+  // MON-003. Qué da Plus, en UNA frase para la franja, Ajustes y la hoja: la del
+  // servidor (`coverageText`, de competitionCoverage.js), según la competencia
+  // seleccionada — "hasta 50 personas y el torneo completo, incluida la
+  // liguilla". Ningún número de jornadas: Plus no tiene tope dentro de su torneo.
+  function plusPitch(offer){
+    if(!offer) return "";
+    const text = typeof offer.coverageText === "string" && offer.coverageText
+      ? offer.coverageText
+      : `hasta ${offer.participantLimit} personas y el torneo completo`;
+    return `Con Plus: ${text}.`;
   }
 
   // MON-003. La puerta FIJA a la oferta Plus. Antes la oferta sólo aparecía al
@@ -5305,14 +5320,8 @@
     const c = ctx || {};
     const offer = upgrade && upgrade.available ? upgrade : null;
     const money = (n) => `$${Number(n).toLocaleString("es-MX")} MXN`;
-    // Con torneo, Plus cubre el torneo completo y el número de jornadas no
-    // aplica; sin torneo, sí. La distinción la decide el servidor
-    // (offer.roundLimitApplies), no esta pantalla.
-    const unlocks = offer
-      ? (offer.roundLimitApplies
-          ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
-          : `Con Plus: hasta ${offer.participantLimit} personas y el torneo completo.`)
-      : "";
+    // Qué cubre Plus lo dice el servidor (offer.coverageText), no esta pantalla.
+    const unlocks = plusPitch(offer);
     // MON-003 Correction 09. CÓMO se compra lo decide el servidor
     // (`offer.checkout`), no esta pantalla. MON-002 escribía aquí "escríbenos y
     // activamos Plus" siempre, porque entonces no había checkout; con el pago con
@@ -5545,14 +5554,13 @@
     if(plan.participants) bits.push(`${plan.participants.used} de ${plan.participants.limit} persona${plan.participants.limit === 1 ? "" : "s"}`);
     if(plan.rounds && plan.rounds.applies) bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
     const offer = plan.upgrade && plan.upgrade.available ? plan.upgrade : null;
-    const pitch = offer
-      ? (offer.roundLimitApplies
-          ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
-          : `Con Plus: hasta ${offer.participantLimit} personas y el torneo completo.`)
+    const pitch = plusPitch(offer);
+    const tienePlus = plan.plan === "PLUS"
+      ? (plan.coverage && plan.coverage.text ? `Tu quiniela tiene Plus: ${plan.coverage.text}.` : "Tu quiniela tiene Plus.")
       : "";
     live.innerHTML = `
       <p style="margin:0 0 8px;" id="qz-settings-plan-status">${bits.join(" · ")}</p>
-      ${plan.plan === "PLUS" ? `<p class="muted" style="margin:0;">Tu quiniela tiene Plus.</p>` : ``}
+      ${tienePlus ? `<p class="muted" style="margin:0;" id="qz-settings-plan-plus">${esc(tienePlus)}</p>` : ``}
       ${paymentAwaitingHtml(plan)}
       ${pitch && !awaitingPayment() ? `<p class="muted" style="margin:0 0 10px;">${esc(pitch)}</p>` : ``}
       ${planOfferCtaHtml(plan, "settings")}
@@ -8139,7 +8147,9 @@
         ? { p: config.free.participantLimit, r: config.free.manualRoundLimit }
         : { p: q.entitlement.participantLimit, r: q.entitlement.manualRoundLimit };
       const bound = !!q.entitlement.competitionIdentity;
-      const rounds = (plan !== "FREE" && bound) ? "torneo completo" : `${q.lifecycleRoundsConsumed || 0}/${limits.r} jornadas`;
+      // Misma regla que planLimits.roundBudgetApplies: Plus nunca cuenta
+      // jornadas (MON-003); un plan especial, sólo si no está ligado a torneo.
+      const rounds = (plan === "PLUS" || (plan !== "FREE" && bound)) ? "torneo completo" : `${q.lifecycleRoundsConsumed || 0}/${limits.r} jornadas`;
       return badge + `<br><span class="muted" style="font-size:11.5px;">${q.count === null ? "?" : q.count}/${limits.p} personas · ${esc(rounds)}</span>`;
     }
 
@@ -8261,7 +8271,7 @@
           </div>
           <div class="row2">
             <div class="field"><label>Plus — personas</label><input type="number" id="qz-c-plus-people" min="1" value="${config.plus.participantLimit}"></div>
-            <div class="field"><label>Plus — jornadas sin torneo</label><input type="number" id="qz-c-plus-rounds" min="1" value="${config.plus.manualRoundLimit}"></div>
+            <div class="field"><label>Plus — jornadas</label><p class="muted" id="qz-c-plus-coverage" style="margin:6px 0 0;">El torneo completo, con sus fases finales (liguilla, eliminatorias). Sin tope de jornadas.</p></div>
           </div>
           <div class="field"><label>Precio de Plus (MXN)</label><input type="number" id="qz-c-plus-price" min="0" value="${config.plus.priceMXN}"></div>
           <div class="field">
@@ -8306,7 +8316,9 @@
           // recoverable and never a silent overwrite.
           version: config.version,
           free: { participantLimit: num("qz-c-free-people"), manualRoundLimit: num("qz-c-free-rounds") },
-          plus: { participantLimit: num("qz-c-plus-people"), manualRoundLimit: num("qz-c-plus-rounds"), priceMXN: num("qz-c-plus-price") },
+          // `manualRoundLimit` de Plus ya no limita (MON-003); se reenvía el
+          // valor guardado porque las compras lo llevan en su snapshot.
+          plus: { participantLimit: num("qz-c-plus-people"), manualRoundLimit: config.plus.manualRoundLimit, priceMXN: num("qz-c-plus-price") },
           upgradeContact: document.getElementById("qz-c-contact").value.trim()
         };
         commercialSaveBtn.disabled = true;

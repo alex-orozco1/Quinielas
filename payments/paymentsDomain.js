@@ -344,6 +344,20 @@ const MAX_CREATION_ATTEMPTS = 24;
 // nacida en Correction 07 u 08 escribe como marca el instante de su primer
 // intento, así que ahí coinciden y no se duplica nada; una compra de eaa071b
 // tocada después conserva su marca, y su marca sigue siendo un intento.
+function productDescriptionOf(v) {
+  if (typeof v !== "string") return null;
+  if (!v || v.length > 300 || /[\u0000-\u001f<>]/.test(v)) return null;
+  return v;
+}
+
+// La descripción del producto para una compra: su cobertura congelada, como
+// frase. null si la compra no la congeló (anterior a MON-003 · cobertura).
+function productDescriptionForIntent(intent) {
+  const t = intent && intent.purchased ? coverageTextOf(intent.purchased.coverageText) : null;
+  if (!t) return null;
+  return `Plus para esta quiniela: ${t}. Un solo pago.`;
+}
+
 function creationAttemptsOf(intent) {
   const out = [];
   const lista = (intent && Array.isArray(intent.attempts)) ? intent.attempts : [];
@@ -361,6 +375,10 @@ function creationAttemptsOf(intent) {
       // A qué ruta vuelve el pago de este intento. Es un parámetro de la clave:
       // se congela con ella. Sin valor = la ruta anterior a MON-003 · retorno a /a/.
       returnRoute: a.returnRoute === "a" ? "a" : "q",
+      // La descripción del producto que llevó esta emisión (MON-003). También es
+      // parámetro de la clave: se congela con ella. Sin valor = sin descripción,
+      // como toda emisión anterior a este cambio.
+      description: productDescriptionOf(a.description),
     });
   }
   const marca = intent ? Date.parse(intent.creationAttemptedAt) : NaN;
@@ -916,9 +934,18 @@ function isClaimActive(claim, nowMs, ttlMs) {
 // compra nueva. Todo lo comercial —importe, moneda, torneo, versión de
 // configuración— se congela aquí en el momento de crearlo, y es esto, no el
 // navegador ni el proveedor, lo que manda al confirmar.
+// Una frase de cobertura utilizable, o null. Texto plano y corto: viaja a la
+// página de pago del proveedor como descripción del producto.
+function coverageTextOf(v) {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (!t || t.length > 200 || /[\u0000-\u001f<>]/.test(t)) return null;
+  return t;
+}
+
 function makePurchaseIntent({
   purchaseId, slug, scopeId, configVersion, expectedAmountMinor, currency,
-  provider, now, participantLimit, manualRoundLimit, boundToCompetition,
+  provider, now, participantLimit, manualRoundLimit, boundToCompetition, coverageText,
 }) {
   if (!str(purchaseId) || !str(slug) || !str(scopeId)) return null;
   if (!isSafeCount(expectedAmountMinor) || expectedAmountMinor <= 0) return null;
@@ -962,6 +989,12 @@ function makePurchaseIntent({
       // único que cambia es que puede recibir MÁS de lo que el número dice.
       // Se registra para que eso se pueda ver, en vez de deducirlo.
       boundToCompetition: !!boundToCompetition,
+      // MON-003. LO QUE SE DIJO QUE CUBRE, congelado con la compra: la misma
+      // frase que vio el Admin en la oferta ("hasta 50 personas y el torneo
+      // completo, incluida la liguilla"). Es auditoría y es lo que describe el
+      // producto en la página de pago; el enforcement no la lee (Plus cubre el
+      // ciclo completo sin tope de jornadas). Una compra anterior no la tiene.
+      coverageText: coverageTextOf(coverageText),
     }),
     provider: String(provider),
     providerSessionId: null,
@@ -1371,6 +1404,7 @@ module.exports = {
   SESSION_MATCH, verifySessionForPurchase,
   SESSION_SET, decideSessionSet,
   MAX_CREATION_ATTEMPTS, creationAttemptsOf, isAttemptReusable, discoveryWindows,
+  productDescriptionForIntent,
   legacyEmissionBound, needsLegacyCutover,
   IDENTITY_KIND, LEGACY_IDENTITY, providerIdentitiesOf, isIdentityLive, identityProofValid,
   unprovenLiveIdentities, identityBlockers, proveIdentities, withIdentityProofs,

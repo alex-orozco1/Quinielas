@@ -73,14 +73,18 @@ test("PLAN READ: FREE reports the live numbers, its usage, and a real upgrade of
   assert.equal(s.upgrade.available, true);
   assert.equal(s.upgrade.priceMXN, 199);
   assert.equal(s.upgrade.participantLimit, 50);
-  assert.equal(s.upgrade.roundLimit, 18);
+  // MON-003 · cobertura: la oferta ya no lleva "18 jornadas"; dice qué cubre.
+  assert.equal(s.upgrade.roundLimit, undefined);
+  assert.equal(s.upgrade.coverageText, "hasta 50 personas y el torneo completo");
 });
 
 test("PLAN READ: PLUS reports its own snapshot and offers nothing further", () => {
   const s = summarizePlan(PLUS, cfg, { participantsUsed: 49, roundsUsed: 17 });
   assert.equal(s.planLabel, "Plus");
   assert.deepEqual(s.participants, { used: 49, limit: 50, remaining: 1 });
-  assert.deepEqual(s.rounds, { used: 17, limit: 18, remaining: 1, applies: true });
+  // MON-003 · cobertura: INVERTIDO. Plus no tiene presupuesto de jornadas.
+  assert.deepEqual(s.rounds, { used: 17, limit: null, remaining: null, applies: false });
+  assert.equal(s.coverage.text, "hasta 50 personas y el torneo completo");
   assert.equal(s.upgrade.available, false);
   assert.equal(s.upgrade.priceMXN, undefined, "an offer that cannot be taken carries no price");
 });
@@ -251,10 +255,13 @@ test("LIFECYCLE: FREE publishes its 7th round and is refused the 8th", () => {
   assert.equal(blocked.limit, 7);
 });
 
-test("LIFECYCLE: PLUS without a tournament publishes its 18th and is refused the 19th", () => {
+// MON-003 · cobertura: INVERTIDO. Plus ya no se corta en la jornada 19: cubre el
+// torneo completo (sin competencia ligada también). Lo que sí sigue acotando a
+// Plus es el CICLO — ver el test de alcance por ciclo más abajo.
+test("LIFECYCLE: PLUS without a tournament is NOT refused the 19th — Plus covers the whole cycle", () => {
   assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 17, 1).allowed, true);
-  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).allowed, false);
-  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).limit, 18);
+  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).limit, undefined, "no hay límite que citar");
 });
 
 test("LIFECYCLE: a bulk publish is judged on the total, not one round at a time", () => {
@@ -341,7 +348,10 @@ test("CONFIG: the server refuses an invalid commercial config before it can corr
     { ...cfg, free: { participantLimit: 0, manualRoundLimit: 7 } },
     { ...cfg, free: { participantLimit: 10, manualRoundLimit: 0 } },
     { ...cfg, plus: { participantLimit: 5, manualRoundLimit: 18, priceMXN: 199 } },   // plus < free
-    { ...cfg, plus: { participantLimit: 50, manualRoundLimit: 3, priceMXN: 199 } },   // plus < free
+    // MON-003 · cobertura: Plus ya no tiene tope de jornadas, así que
+    // `plus.manualRoundLimit` sólo tiene que ser usable (va en el snapshot); ya
+    // no se compara con Gratis. Se sigue rechazando uno inutilizable.
+    { ...cfg, plus: { participantLimit: 50, manualRoundLimit: 0, priceMXN: 199 } },
     { ...cfg, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: -1 } },
     { ...cfg, upgradeContact: 123 },
     { ...cfg, upgradeContact: "x".repeat(201) },
@@ -479,7 +489,9 @@ test("UX: the hard paywall answers all five required questions, from the server'
   // 3/4/5) unlocks, price, scope — all from the response's upgrade block
   assert.ok(fn.includes("body.upgrade"), "the offer comes from the rejection, with no second read");
   const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
-  assert.ok(sheet.includes("offer.participantLimit") && sheet.includes("offer.roundLimit"), "what Plus unlocks");
+  // MON-003 · cobertura: lo que desbloquea es la frase del servidor, sin "18 jornadas".
+  assert.ok(sheet.includes("const unlocks = plusPitch(offer);"), "what Plus unlocks");
+  assert.ok(blockFrom(indexSrc, "function plusPitch(offer)").includes("offer.coverageText"));
   assert.ok(sheet.includes("money(offer.priceMXN)"), "what it costs");
   assert.ok(sheet.includes("offer.scope"), "what it covers");
   assert.ok(sheet.includes("Pasar a Plus"), "one primary action");
@@ -665,13 +677,12 @@ test("SECURITY: enforcement fails closed on a missing entry, a missing entitleme
 
 test("SECURITY: the upgrade offer carries no secret and nothing a participant could misuse", () => {
   const offer = buildUpgradeOffer(FREE, { ...cfg, upgradeContact: "hola@qracks.mx" });
-  // MON-003 añadió roundLimitApplies: dice SI el número de jornadas aplica,
-  // que es lo que evitaba que la pantalla dijera "18 jornadas" a un Plus que
-  // en realidad cubre el torneo entero. Correction 09 añadió `checkout`: CÓMO
-  // se compra, decidido por el servidor.
+  // Correction 09 añadió `checkout`: CÓMO se compra, decidido por el servidor.
+  // MON-003 · cobertura cambió roundLimit/roundLimitApplies por `coverage` y
+  // `coverageText`: qué cubre Plus según la competencia, sin número de jornadas.
   assert.deepEqual(Object.keys(offer).sort(),
-    ["available", "checkout", "contact", "participantLimit", "priceMXN", "roundLimit", "roundLimitApplies", "scope"]);
-  assert.equal(typeof offer.roundLimitApplies, "boolean");
+    ["available", "checkout", "contact", "coverage", "coverageText", "participantLimit", "priceMXN", "scope"]);
+  assert.deepEqual(Object.keys(offer.coverage).sort(), ["known", "name", "scope"]);
   // Sin modo explícito, TARJETA — nunca el copy manual por omisión — y el
   // contacto de respaldo no viaja.
   assert.equal(offer.checkout, "card");

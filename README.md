@@ -159,7 +159,7 @@ Every pool carries an **entitlement** — an explicit record of what it is allow
 | | Free | Plus |
 |---|---|---|
 | Participants | 10 | 50 |
-| Matchdays published | 7 | 18, or the full tournament when a competition is selected |
+| Matchdays published | 7 | The full tournament, final phases included (see *Plus coverage* below) |
 | Price | — | $199 MXN, one payment |
 | Scope | — | The one tournament cycle it was bought for |
 
@@ -171,6 +171,26 @@ A few rules follow from that:
 - **Plus is a frozen snapshot.** A pool that bought Plus keeps the numbers and price it was sold, even if the configuration changes later.
 - **Plus does not roll over.** When an organizer starts a new tournament, the pool returns to Free — a purchase belongs to the tournament it was bought for.
 - Pools that predate commercial enforcement are **grandfathered** and keep the experience they already had. Operators can also issue **manual grants** for support, testing, or promotions, with a reason the server requires and records. Unlike a purchase, both of these carry across tournament cycles — they are statuses somebody deliberately granted, not something bought for one tournament.
+
+### Plus coverage
+
+Plus has **no matchday cap** inside the tournament cycle it was bought for: it covers the whole tournament, final phases included. What changes between competitions is only how that is said, and that wording comes from one server-side table, `competitionCoverage.js`, keyed by provider and competition id with a format for each entry. The same sentence appears in Settings, in the offer, in the paywall and as the product description on the Stripe payment page:
+
+| Competition | Format | What Plus says |
+|---|---|---|
+| Liga MX | league + playoffs | hasta 50 personas y el torneo completo, incluida la liguilla |
+| Premier League, La Liga, Bundesliga, Serie A, Ligue 1 | league | hasta 50 personas y el torneo completo |
+| UEFA Champions League | league phase + knockout | hasta 50 personas y el torneo completo, incluidas las eliminatorias |
+| No competition selected, or one not in the table | — | hasta 50 personas y el torneo completo |
+
+Coverage is **never** inferred from the fixtures the sports API happens to return: an incomplete calendar (a liguilla not yet scheduled, a knockout not yet drawn) would produce a wrong number. A matchday count is shown only when the table defines one **and** the format is a plain league, where that number is the whole competition; none is defined today. What bounds Plus is the tournament cycle: starting a new tournament returns the pool to Free.
+
+**Adding MLS** (or any competition) when it is incorporated:
+
+1. Take the competition id from the sports-data provider's own API — never from memory.
+2. Add an entry to `COVERAGE_CATALOG` in `competitionCoverage.js`. MLS is a regular season followed by the MLS Cup Playoffs, so: `"thesportsdb:<id>": entry("MLS", FORMAT.LEAGUE_WITH_PLAYOFFS, "incluidos los playoffs")`, with no matchday count.
+3. Add it to the competition picker in `public/index.html` (`SPORTSDB_LEAGUES` and the maps next to it).
+4. Run `node --test test/competitionCoverage.test.js`, which fails if a competition in the picker has no coverage entry.
 
 **Paying for Plus** goes through a hosted Stripe Checkout: the organizer is sent to Stripe, pays there, and Plus is activated only after the payment is verified **server-side** against a signed webhook. The page they come back to never activates anything by itself, and QRACKS never sees or stores a card number.
 
@@ -345,6 +365,7 @@ Manual administration remains available as a fallback whenever external data is 
 ├── public/
 ├── scripts/
 ├── test/
+├── competitionCoverage.js # what Plus covers, per competition
 ├── competitionSync.js   # provider fixtures -> matchdays
 ├── planLimits.js        # plans, entitlements, enforcement
 ├── scoreContract.js     # regulation-time scoring

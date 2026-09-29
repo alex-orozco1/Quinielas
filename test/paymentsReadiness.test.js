@@ -232,8 +232,8 @@ test("C10 · la UI: mal configurado no es 'sin pasarela' ni ofrece contacto", ()
 test("RETORNO /a/ · la ruta de vuelta es parámetro de la clave: nueva para intentos nuevos, heredada al repetir", () => {
   const src = stripComments(SRC);
   const rec = cuerpoDe(src, "async function recordCreationAttempt(purchaseId, nowMs)");
-  assert.ok(rec.includes('returnRoute: d.from.returnRoute === "a" ? "a" : "q" }'), "al repetir, la de la clave");
-  assert.ok(rec.includes('inherited: null, tagged: true,\n          returnRoute: "a" };'), "al estrenar, /a/");
+  assert.ok(rec.includes('returnRoute: d.from.returnRoute === "a" ? "a" : "q",'), "al repetir, la de la clave");
+  assert.ok(rec.includes('inherited: null, tagged: true,\n          returnRoute: "a",'), "al estrenar, /a/");
   assert.ok(rec.includes('...(x.returnRoute === "a" ? { returnRoute: "a" } : {})'), "y se conserva al reescribir la fila");
   const D = require("../payments/paymentsDomain");
   const at = "2026-09-24T10:00:00.000Z";

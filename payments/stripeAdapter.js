@@ -593,7 +593,7 @@ async function stripeRequest(method, path, { params, idempotencyKey, env, timeou
 // clave de idempotencia sólo se puede repetir con EXACTAMENTE los mismos
 // parámetros, y tenerlos en un solo sitio es lo que permite comprobarlo.
 function buildCheckoutParams({
-  amountMinor, currency, productName, purchaseId, slug, scopeId,
+  amountMinor, currency, productName, productDescription, purchaseId, slug, scopeId,
   successUrl, cancelUrl, expiresAt, attemptTag,
 }) {
   const params = {
@@ -634,6 +634,13 @@ function buildCheckoutParams({
   // intento registrado sin ella se repite sin ella, o la misma clave llevaría
   // parámetros distintos y el proveedor la rechazaría.
   if (typeof attemptTag === "string" && attemptTag) params[`metadata[${ATTEMPT_TAG_FIELD}]`] = attemptTag;
+  // Qué cubre Plus, visible en la página de pago (MON-003). `product_data.
+  // description` es el campo documentado para eso ("The product's description,
+  // meant to be displayable to the customer"). Igual que la etiqueta: sólo si el
+  // intento la lleva, o una clave emitida sin ella cambiaría de parámetros.
+  if (typeof productDescription === "string" && productDescription) {
+    params["line_items[0][price_data][product_data][description]"] = productDescription;
+  }
   return params;
 }
 

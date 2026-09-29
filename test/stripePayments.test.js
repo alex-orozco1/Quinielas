@@ -818,38 +818,51 @@ test("MON003 · 57 — UI: la vuelta del checkout confirma contra el servidor", 
 
 // ==== 15 · Quick Win 1: el panel dejaba entender "PLUS = 18 jornadas" ======
 
-test("MON003 · 58 — QUICK WIN 1: Plus con torneo cubre el torneo, no 18 jornadas", () => {
+// MON-003 · cobertura sustituyó a Quick Win 1. Quick Win 1 corrigió la COPY
+// ("18 jornadas" para un Plus con torneo) sin tocar la regla; la regla era la
+// que estaba mal: Plus sin competencia ligada seguía cortándose en la 19 —en una
+// Liga MX, a mitad de la liguilla—. Ahora Plus cubre el torneo completo con o
+// sin competencia, y la oferta no lleva ningún número de jornadas.
+test("MON003 · 58 — COBERTURA: la oferta dice el torneo completo, nunca 18 jornadas", () => {
   const { buildUpgradeOffer, DEFAULT_COMMERCIAL_CONFIG } = require("../planLimits");
   const cfg = DEFAULT_COMMERCIAL_CONFIG;
-  const conTorneo = { plan: "FREE", competitionIdentity: "4350:2026-2027" };
-  const sinTorneo = { plan: "FREE", competitionIdentity: null };
-  assert.equal(buildUpgradeOffer(conTorneo, cfg).roundLimitApplies, false);
-  assert.equal(buildUpgradeOffer(sinTorneo, cfg).roundLimitApplies, true);
+  for (const e of [{ plan: "FREE", competitionIdentity: "4350:2026-2027" }, { plan: "FREE", competitionIdentity: null }]) {
+    const o = buildUpgradeOffer(e, cfg);
+    assert.equal(o.roundLimit, undefined);
+    assert.equal(o.roundLimitApplies, undefined);
+    assert.ok(!/\d+ jornadas/.test(o.coverageText), o.coverageText);
+  }
 });
 
-test("MON003 · 59 — QUICK WIN 1: la copy sigue la regla del servidor, no la suya", () => {
-  assert.ok(indexSrc.includes("offer.roundLimitApplies"));
-  assert.ok(indexSrc.includes("y el torneo completo."));
-  assert.ok(indexSrc.includes("Plus — jornadas sin torneo"),
-    "el campo editable es el tope manual, y ahora lo dice");
+test("MON003 · 59 — COBERTURA: la copy es la del servidor, en todas las pantallas", () => {
+  assert.ok(!indexSrc.includes("offer.roundLimitApplies"));
+  assert.ok(!indexSrc.includes("offer.roundLimit"));
+  assert.ok(!indexSrc.includes("Plus — jornadas sin torneo"), "el campo de tope manual de Plus ya no existe");
+  assert.ok(indexSrc.includes("Sin tope de jornadas."));
 });
 
-test("MON003 · 60 — QUICK WIN 1: el enforcement NO cambió", () => {
-  // La copy se corrigió; la regla es exactamente la misma que antes.
+test("MON003 · 60 — COBERTURA: Plus sin competencia tampoco se corta; el ciclo sí lo acota", () => {
   const { checkLifecycleRoundConsumption, DEFAULT_COMMERCIAL_CONFIG } = require("../planLimits");
   const cfg = DEFAULT_COMMERCIAL_CONFIG;
   const plus = { plan: "PLUS", participantLimit: 50, manualRoundLimit: 18,
     competitionIdentity: "4350:2026-2027", scopeId: SCOPE };
   assert.equal(checkLifecycleRoundConsumption(plus, cfg, 500, 1, { currentScopeId: SCOPE }).allowed, true);
   const sinComp = { ...plus, competitionIdentity: null };
-  assert.equal(checkLifecycleRoundConsumption(sinComp, cfg, 18, 1, { currentScopeId: SCOPE }).allowed, false);
+  // INVERTIDO respecto a Quick Win 1: antes `false`.
+  assert.equal(checkLifecycleRoundConsumption(sinComp, cfg, 18, 1, { currentScopeId: SCOPE }).allowed, true);
+  // El alcance por ciclo se conserva: otro torneo, nada.
+  const otro = checkLifecycleRoundConsumption(sinComp, cfg, 0, 1, { currentScopeId: SCOPE.replace(/e1$/, "e2") });
+  assert.equal(otro.allowed, false);
+  assert.equal(otro.reason, "entitlement_scope_mismatch");
 });
 
 // ==== 16 · Quick Win 2: la bandera de la Premier ===========================
 
 test("MON003 · 61 — QUICK WIN 2: la Premier ya no lleva una bandera negra", () => {
   const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
-  const line = readme.split("\n").find((l) => l.includes("Premier League"));
+  // La línea de la lista de competencias (la tabla de cobertura de Plus también
+  // nombra la Premier, sin bandera).
+  const line = readme.split("\n").find((l) => l.trim().startsWith("- ") && l.includes("Premier League"));
   assert.ok(line);
   assert.ok(!line.includes("\u{1F3F4}"),
     "U+1F3F4 a secas se pinta como un rectángulo negro en casi todas partes");
@@ -1033,6 +1046,8 @@ test("MON003 · C1.1 — SNAPSHOT: una compra congela límites, precio y versió
     // Auditoría: si ya había competencia al comprar, el límite de jornadas no
     // será el que vivirá (un PLUS con torneo cubre el torneo entero).
     boundToCompetition: false,
+    // MON-003 · cobertura: la frase vendida, sólo si el llamador la congeló.
+    coverageText: null,
   });
   // Congelado de verdad: el objeto no se puede reescribir en sitio.
   assert.ok(Object.isFrozen(i.purchased));
