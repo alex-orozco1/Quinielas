@@ -983,8 +983,11 @@ test("MON003 · 71 — VUELTA: el pendiente caduca y se limpia en cada final", (
   const body = vueltaSrc();
   // Retorno a /a/: pagado con Plus confirmado, pagado con revisión, fallido y
   // cancelado. "Pagado sin Plus confirmado todavía" NO limpia: sigue esperando.
-  assert.equal((body.match(/clearPendingPurchase\(\)/g) || []).length, 4,
-    "se limpia en los cuatro finales: Plus confirmado, revisión, fallido y cancelado");
+  // MON-003 · confirmación visible: "Plus confirmado" se separó en dos finales
+  // (Plus por ESTA compra -> tarjeta; Plus por otra vía -> aviso), así que son cinco.
+  // Y un sexto: el servidor dice que esa compra no existe para esta quiniela.
+  assert.equal((body.match(/clearPendingPurchase\(\)/g) || []).length, 6,
+    "se limpia en los seis finales: Plus por esta compra, Plus por otra vía, revisión, compra inexistente, fallido y cancelado");
   // Y NO se limpia cuando el cobro sigue en proceso: ahí queda algo por
   // resolver y borrarlo perdería la única pista para retomarlo.
   // El tramo "sigue en proceso" del BUCLE (lo que viene detrás en `body` es otra

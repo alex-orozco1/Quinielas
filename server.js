@@ -2049,6 +2049,9 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
       // screens need to say which tournament is being played and whether it
       // is over, and neither of those is an identifier. Keeping the id out of
       // the response also keeps it out of anything a browser could echo back.
+      // MON-003: la compra (id de QRACKS, no del proveedor) que otorgó el Plus
+      // de ESTE torneo, si lo otorgó una. Ver confirmedPurchaseIdOf.
+      confirmedPurchaseId: confirmedPurchaseIdOf(entry),
       tournament: currentScope ? {
         cycle: currentScope.editionSeq,
         name: currentScope.displayName || null,
@@ -3027,6 +3030,21 @@ const IDENTITY_OPTS = Object.freeze({
 //
 // Si no se puede leer el estado de las compras, "blocked": en la duda, no se
 // empuja a nadie a pagar por otro canal.
+// MON-003 · confirmación visible del pago. La compra que otorgó el Plus del
+// torneo que se está jugando AHORA, o null. Sólo una compra con tarjeta
+// confirmada por el proveedor (no un grant manual, no un Plus heredado), sin
+// revocar, y estampada para el ciclo actual. Es lo que autoriza a la pantalla a
+// decir "Pago completado. Tu quiniela ya tiene Plus.": nunca los parámetros de
+// la URL de vuelta, ni tener Plus sin más.
+function confirmedPurchaseIdOf(entry) {
+  const e = entry && entry.entitlement;
+  if (!e || e.revoked || e.plan !== "PLUS" || e.source !== "stripe_purchase") return null;
+  if (typeof e.purchaseId !== "string" || !e.purchaseId) return null;
+  const scopeId = entry.tournamentScope && entry.tournamentScope.id;
+  if (!scopeId || entitlementScopeId(e) !== scopeId) return null;
+  return e.purchaseId;
+}
+
 // MON-003. Qué cubre Plus en esta quiniela, según la competencia SELECCIONADA
 // en sus ajustes. El nombre del campo es del proveedor de hoy (TheSportsDB); la
 // traducción a "proveedor + id" se hace aquí, igual que al construir el ciclo de
@@ -4802,12 +4820,19 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
       }
     }
 
+    // MON-003: ¿ESTA compra es la que dio Plus al torneo actual? Se lee después
+    // de reconciliar, de la fila de ahora.
+    const idxAhora = await getRow("platform_index");
+    const entryAhora = idxAhora && Array.isArray(idxAhora.quinielas)
+      ? idxAhora.quinielas.find((q) => q.slug === slug) : null;
     res.json({
       ok: true,
       status: intent.status,
       // Que haga falta mirarlo es información del Admin; el detalle interno no.
       needsAttention: !!intent.attention,
       confirmedAt: intent.confirmedAt || null,
+      plusApplied: intent.status === paymentsDomain.PURCHASE_STATUS.PAID
+        && confirmedPurchaseIdOf(entryAhora) === intent.id,
     });
   } catch (err) {
     console.error("checkout status failed", { slug, message: err && err.message });

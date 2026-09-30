@@ -2009,6 +2009,13 @@
     n._h = setTimeout(()=> n.classList.remove("show"), 6000);
   }
 
+  function hideNotice(){
+    const n = document.getElementById("qz-notice");
+    if(!n) return;
+    clearTimeout(n._h);
+    n.classList.remove("show");
+  }
+
   function toast(msg){
     let t = document.getElementById("qz-toast");
     if(!t){
@@ -4894,6 +4901,14 @@
       ? "?sess=" + encodeURIComponent(sessionHint) : "";
     const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG)
       + "/checkout/" + encodeURIComponent(purchaseId) + qs, { headers, credentials: "same-origin" });
+    if(res.status === 404){
+      // MON-003: el servidor dice que ESA compra no existe para esta quiniela (un
+      // enlace de vuelta inventado o de otra quiniela). No hay cobro que esperar;
+      // sin esto la pantalla quedaba "confirmando tu pago" hasta 24 h y sin
+      // dejar pagar.
+      const body = await res.json().catch(() => ({}));
+      return body && body.error === "purchase_not_found" ? { status: "not_found" } : null;
+    }
     if(!res.ok) return null;
     return await res.json().catch(() => null);
   }
@@ -4959,10 +4974,25 @@
     if(status && status.status === "paid"){
       invalidatePlan();
       const plan = await loadPlan({ force: true });
+      // MON-003 · confirmación visible: el servidor dice que ESTA compra es la
+      // que dio Plus al torneo actual. Entonces —y sólo entonces— se recuerda
+      // para la tarjeta "Pago completado", que queda al inicio del panel Admin
+      // hasta que se descarte (ya no un aviso que se va a los 6 segundos).
+      if(plan && plan.plan === "PLUS" && plan.confirmedPurchaseId === purchaseId){
+        rememberConfirmedPurchase(purchaseId);
+        // "Estamos confirmando tu pago…" ya no es verdad: se retira en el acto,
+        // para que no conviva con la tarjeta de pago completado.
+        hideNotice();
+        clearPendingPurchase();
+        await refreshPlanSurfaces();
+        return "done";
+      }
+      // Plus, pero no por esta compra (p. ej. un grant del operador mientras se
+      // pagaba): no se afirma "Pago completado" de algo que no lo dio.
       if(plan && plan.plan === "PLUS"){
         clearPendingPurchase();
         await refreshPlanSurfaces();
-        notice("Pago completado. Tu quiniela ya tiene Plus.");
+        notice("Tu quiniela ya tiene Plus.");
         return "done";
       }
       if(status.needsAttention){
@@ -4974,6 +5004,11 @@
       // Pagado y todavía sin Plus confirmado: se sigue esperando.
       return "paid_pending_plan";
     }
+    if(status && status.status === "not_found"){
+      clearPendingPurchase();
+      await refreshPlanSurfaces();
+      return "done";
+    }
     if(status && (status.status === "failed" || status.status === "cancelled" || status.status === "expired")){
       clearPendingPurchase();
       await refreshPlanSurfaces();
@@ -4982,6 +5017,63 @@
     }
     return "pending";
   }
+  // MON-003 · la tarjeta "Pago completado". Se recuerda la compra que el
+  // SERVIDOR confirmó como la que dio Plus (nunca por los parámetros de vuelta),
+  // y se muestra mientras el servidor lo siga diciendo y no se haya descartado.
+  // Descartada, no vuelve por esa misma compra. Si el almacenamiento no está
+  // disponible, vive en memoria mientras dure la página.
+  let confirmedPurchaseMem = null;
+  const confirmedPurchaseSeenMem = new Set();
+  function confirmedPurchaseKey(){ return "qracks_pago_ok_" + (SLUG || "root"); }
+  function confirmedPurchaseSeenKey(id){ return "qracks_pago_visto_" + id; }
+  function confirmedPurchaseSeen(id){
+    if(confirmedPurchaseSeenMem.has(id)) return true;
+    try{ return window.localStorage.getItem(confirmedPurchaseSeenKey(id)) === "1"; }catch(e){ return false; }
+  }
+  function rememberConfirmedPurchase(id){
+    if(typeof id !== "string" || !id || confirmedPurchaseSeen(id)) return;
+    confirmedPurchaseMem = id;
+    try{ window.localStorage.setItem(confirmedPurchaseKey(), id); }catch(e){}
+  }
+  function storedConfirmedPurchase(){
+    try{ const v = window.localStorage.getItem(confirmedPurchaseKey()); if(v) return v; }catch(e){}
+    return confirmedPurchaseMem;
+  }
+  function dismissConfirmedPurchase(id){
+    confirmedPurchaseSeenMem.add(id);
+    confirmedPurchaseMem = null;
+    try{
+      window.localStorage.setItem(confirmedPurchaseSeenKey(id), "1");
+      window.localStorage.removeItem(confirmedPurchaseKey());
+    }catch(e){}
+  }
+  // La compra cuya tarjeta toca mostrar ahora, o null.
+  function confirmedPurchaseToShow(plan){
+    const id = storedConfirmedPurchase();
+    if(!id || confirmedPurchaseSeen(id)) return null;
+    if(!plan || plan.plan !== "PLUS" || plan.confirmedPurchaseId !== id) return null;
+    return id;
+  }
+  function paymentConfirmedHtml(plan){
+    const id = confirmedPurchaseToShow(plan);
+    if(!id) return "";
+    return `<div class="card" id="qz-payment-confirmed" role="status" data-purchase="${esc(id)}" style="border-color:var(--gold);background:#FFF9EC;">
+      <p style="margin:0 0 10px;font-weight:700;">✅ Pago completado. Tu quiniela ya tiene Plus.</p>
+      <button class="btn btn-gold btn-sm" data-payment-confirmed-dismiss>Entendido</button>
+    </div>`;
+  }
+  function wirePaymentConfirmed(scope){
+    if(!scope) return;
+    const btn = scope.querySelector("[data-payment-confirmed-dismiss]");
+    if(!btn) return;
+    btn.addEventListener("click", () => {
+      const card = scope.querySelector("#qz-payment-confirmed");
+      const id = card && card.dataset.purchase;
+      if(id) dismissConfirmedPurchase(id);
+      if(card) card.remove();
+    });
+  }
+
   function scheduleCheckoutRecheck(purchaseId, sessionHint){
     clearTimeout(checkoutRecheckTimer);
     checkoutRecheckTimer = setTimeout(async () => {
@@ -5541,6 +5633,13 @@
     const plan = await loadPlan();
     const liveStrip = document.getElementById("qz-plan-strip");
     if(!liveStrip || !plan) return;
+    // La confirmación del pago va al INICIO del panel —antes del título y del
+    // consejo—: es lo que el organizador vino a ver.
+    const slot = document.getElementById("qz-payment-confirmed-slot");
+    if(slot){
+      slot.innerHTML = paymentConfirmedHtml(plan);
+      wirePaymentConfirmed(slot);
+    }
     liveStrip.innerHTML = tournamentStatusHtml(plan) + planStatusHtml(plan)
       + paymentAwaitingHtml(plan) + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
     wirePlanWarnings(liveStrip);
@@ -5597,6 +5696,7 @@
       {id:"dueno", label:"Ajustes"},
     ];
     main.innerHTML = `
+      <div id="qz-payment-confirmed-slot"></div>
       ${screenHeaderHtml("admin", "Panel de administración")}
       <div id="qz-plan-strip"></div>
       <div class="qz-tabs" id="qz-admin-subtabs" style="margin-bottom:14px;">

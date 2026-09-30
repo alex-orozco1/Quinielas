@@ -268,13 +268,18 @@ test("RETORNO /a/ · la pantalla: sin '¿Eres…?' sólo para una sesión de ADM
 test("RETORNO /a/ · 'Pago completado' sólo con PLUS confirmado; mientras tanto, espera sin ofrecer otro pago", () => {
   const ui = stripComments(INDEX);
   const once = cuerpoDe(ui, "async function checkPurchaseOnce(purchaseId, sessionHint)");
-  const completado = once.indexOf('"Pago completado. Tu quiniela ya tiene Plus."');
-  assert.ok(completado !== -1);
-  const antes = once.slice(0, completado);
-  assert.ok(antes.includes("const plan = await loadPlan({ force: true });") && antes.includes('if(plan && plan.plan === "PLUS"){'),
-    "el mensaje depende del plan recién leído del servidor");
+  // MON-003 · confirmación visible: ya no es un aviso de 6 s sino una tarjeta,
+  // y sólo se recuerda la compra cuando el plan RECIÉN leído dice que ESTA
+  // compra es la que dio Plus al torneo actual.
+  const recuerda = once.indexOf("rememberConfirmedPurchase(purchaseId);");
+  assert.ok(recuerda !== -1);
+  const antes = once.slice(0, recuerda);
+  assert.ok(antes.includes("const plan = await loadPlan({ force: true });")
+    && antes.includes('if(plan && plan.plan === "PLUS" && plan.confirmedPurchaseId === purchaseId){'),
+    "la tarjeta depende del plan recién leído del servidor y de ESTA compra");
   assert.ok(once.includes('return "paid_pending_plan";'), "pagado sin Plus confirmado: se sigue esperando");
   assert.equal((ui.match(/Pago completado\. Tu quiniela ya tiene Plus\./g) || []).length, 1, "un solo sitio lo dice");
+  assert.ok(cuerpoDe(ui, "function paymentConfirmedHtml(plan)").includes("Pago completado. Tu quiniela ya tiene Plus."));
   // Espera: el aviso de límite no vende, la hoja no tiene botón.
   const aviso = cuerpoDe(ui, "function planWarningHtml(plan)");
   assert.ok(aviso.includes("!awaitingPayment()"));
