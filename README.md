@@ -409,7 +409,7 @@ npm install
 Configure the required environment variables:
 
 ```env
-DATABASE_URL=postgresql://user:password@localhost:5432/qracks
+DATABASE_URL=postgresql://localhost:5432/qracks
 PLATFORM_PASSWORD=your-password
 ```
 
