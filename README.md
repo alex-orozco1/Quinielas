@@ -159,7 +159,7 @@ Every pool carries an **entitlement** — an explicit record of what it is allow
 | | Free | Plus |
 |---|---|---|
 | Participants | 10 | 50 |
-| Matchdays published | 7 | 18, or the full tournament when a competition is selected |
+| Matchdays published | 7 | The full tournament, final phases included (see *Plus coverage* below) |
 | Price | — | $199 MXN, one payment |
 | Scope | — | The one tournament cycle it was bought for |
 
@@ -172,7 +172,29 @@ A few rules follow from that:
 - **Plus does not roll over.** When an organizer starts a new tournament, the pool returns to Free — a purchase belongs to the tournament it was bought for.
 - Pools that predate commercial enforcement are **grandfathered** and keep the experience they already had. Operators can also issue **manual grants** for support, testing, or promotions, with a reason the server requires and records. Unlike a purchase, both of these carry across tournament cycles — they are statuses somebody deliberately granted, not something bought for one tournament.
 
-**There is no automatic checkout yet.** Upgrading is a conversation: the paywall states the price and how to reach the organizers, and a platform operator activates Plus and records the payment in the same operation. The product does not pretend to charge a card it cannot charge.
+### Plus coverage
+
+Plus has **no matchday cap** inside the tournament cycle it was bought for: it covers the whole tournament, final phases included. What changes between competitions is only how that is said, and that wording comes from one server-side table, `competitionCoverage.js`, keyed by provider and competition id with a format for each entry. The same sentence appears in Settings, in the offer, in the paywall and as the product description on the Stripe payment page:
+
+| Competition | Format | What Plus says |
+|---|---|---|
+| Liga MX | league + playoffs | hasta 50 personas y el torneo completo, incluida la liguilla |
+| Premier League, La Liga, Bundesliga, Serie A, Ligue 1 | league | hasta 50 personas y el torneo completo |
+| UEFA Champions League | league phase + knockout | hasta 50 personas y el torneo completo, incluidas las eliminatorias |
+| No competition selected, or one not in the table | — | hasta 50 personas y el torneo completo |
+
+Coverage is **never** inferred from the fixtures the sports API happens to return: an incomplete calendar (a liguilla not yet scheduled, a knockout not yet drawn) would produce a wrong number. A matchday count is shown only when the table defines one **and** the format is a plain league, where that number is the whole competition; none is defined today. What bounds Plus is the tournament cycle: starting a new tournament returns the pool to Free.
+
+**Adding MLS** (or any competition) when it is incorporated:
+
+1. Take the competition id from the sports-data provider's own API — never from memory.
+2. Add an entry to `COVERAGE_CATALOG` in `competitionCoverage.js`. MLS is a regular season followed by the MLS Cup Playoffs, so: `"thesportsdb:<id>": entry("MLS", FORMAT.LEAGUE_WITH_PLAYOFFS, "incluidos los playoffs")`, with no matchday count.
+3. Add it to the competition picker in `public/index.html` (`SPORTSDB_LEAGUES` and the maps next to it).
+4. Run `node --test test/competitionCoverage.test.js`, which fails if a competition in the picker has no coverage entry.
+
+**Paying for Plus** goes through a hosted Stripe Checkout: the organizer is sent to Stripe, pays there, and Plus is activated only after the payment is verified **server-side** against a signed webhook. The page they come back to never activates anything by itself, and QRACKS never sees or stores a card number.
+
+Checkout is off unless the environment carries Stripe credentials. Where it is off — and for support, promotions and exceptions anywhere — a platform operator still activates Plus manually and records the payment in the same operation. The product does not pretend to charge a card it cannot charge.
 
 ---
 
@@ -276,7 +298,7 @@ Prediction pools only work when participants trust the system.
 The organizer's competition picker currently covers:
 
 - 🇲🇽 Liga MX
-- 🏴 Premier League
+- 🇬🇧 Premier League
 - 🇪🇸 La Liga
 - 🇩🇪 Bundesliga
 - 🇮🇹 Serie A
@@ -343,6 +365,7 @@ Manual administration remains available as a fallback whenever external data is 
 ├── public/
 ├── scripts/
 ├── test/
+├── competitionCoverage.js # what Plus covers, per competition
 ├── competitionSync.js   # provider fixtures -> matchdays
 ├── planLimits.js        # plans, entitlements, enforcement
 ├── scoreContract.js     # regulation-time scoring
@@ -386,7 +409,7 @@ npm install
 Configure the required environment variables:
 
 ```env
-DATABASE_URL=postgresql://user:password@localhost:5432/qracks
+DATABASE_URL=postgresql://localhost:5432/qracks
 PLATFORM_PASSWORD=your-password
 ```
 
@@ -438,6 +461,61 @@ QRACKS is currently deployed on Render, configured through `render.yaml`.
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `PLATFORM_PASSWORD` | Platform administrator password |
+| `STRIPE_SECRET_KEY` | Stripe secret key. Server-only — never sent to a browser. |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret, used to verify that an event really came from Stripe. |
+| `PUBLIC_BASE_URL` | The public origin (e.g. `https://qracks.net`), used to build the return URLs a checkout comes back to. |
+
+`PORT` (default `3000`) and `PG_POOL_MAX` (default `10`) are optional. `THESPORTSDB_API_KEY` and
+`SPORTMONKS_API_TOKEN` belong to the sports-data integration, not to payments. Currency (MXN), the
+Stripe API version and the webhook path are fixed in code; the Plus price and limits come from the
+Platform Panel (`commercial_config`), never from the environment.
+
+The server evaluates the three Stripe variables **once, at startup**, into one of three states that
+every payment path shares — the Plus screen, checkout, the webhook and reconciliation:
+
+| State | When | What organizers see |
+|---|---|---|
+| `READY` | All three present and valid, and Stripe accepts the key | Card checkout |
+| `DISABLED` | **No** Stripe credential at all — payments deliberately off | The manual fallback (only when nothing for that tournament could still be charging) |
+| `MISCONFIGURED` | Any Stripe credential present but something missing or wrong | Card payment "not available right now". No checkout, no webhook processing, **no** manual fallback — it is a deployment error, not a commercial choice |
+
+A partial configuration never opens a checkout it could not confirm, and never looks like a
+deliberate shutdown. While Stripe is `READY`, the Plus screen never tells an organizer to write in to buy.
+
+### MON-003 / Stripe deployment checklist
+
+**Sandbox** (Stripe *test mode* → QRACKS sandbox)
+
+- `PUBLIC_BASE_URL=https://qracks-mon003-sandbox.onrender.com`
+- `STRIPE_SECRET_KEY` = the **test-mode** secret key
+- Webhook destination URL: `https://qracks-mon003-sandbox.onrender.com/api/payments/stripe/webhook`
+- `STRIPE_WEBHOOK_SECRET` = the signing secret **of that sandbox destination**
+
+**Production** (Stripe *live mode* → qracks.net)
+
+- `PUBLIC_BASE_URL=https://qracks.net`
+- `STRIPE_SECRET_KEY` = the **live-mode** secret key
+- Webhook destination URL: `https://qracks.net/api/payments/stripe/webhook`
+- `STRIPE_WEBHOOK_SECRET` = the signing secret **of that production destination**
+
+**Both**
+
+- `PUBLIC_BASE_URL` is the bare origin: `https://`, no path, no trailing `?`/`#` (a trailing `/` is fine). It is
+  where Stripe sends the customer back, so it is never taken from the browser or the `Host` header.
+- Webhook events — exactly these six: `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+  `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created`.
+- Create the webhook destination with API version `2026-08-26.dahlia` (the one pinned in code).
+- **Never mix modes.** A test key with a live signing secret (or the reverse) is not detectable from the
+  environment alone: a signing secret carries no mode. Every webhook would then fail its signature — the
+  Platform Panel shows those rejections. A signing secret belongs to **one** destination: rotating or
+  recreating the destination means updating `STRIPE_WEBHOOK_SECRET` and restarting.
+- **Confirm before any end-to-end test.** Right after a deploy, the log has one line:
+  - `payments_readiness {"when":"startup","state":"ready","mode":"test","host":"qracks-mon003-sandbox.onrender.com","webhookUrl":"…/api/payments/stripe/webhook",…}` — good to go. Check that `mode` and `host` are the ones you expect.
+  - `PAYMENTS MISCONFIGURED {…"problems":["missing:PUBLIC_BASE_URL"]…}` — fix what `problems` names, then restart.
+  - `payments_readiness {…"state":"disabled"…}` — no Stripe credentials: payments are off on purpose.
+
+  The same diagnosis, in words and with the exact webhook URL to register, is on the Platform Panel under
+  **Pagos (Stripe)**. No value of any credential is ever logged or shown.
 
 Production: 🌐 **https://qracks.net**
 
@@ -477,7 +555,7 @@ Where possible, every screen should make the next meaningful action obvious.
 
 QRACKS is not a sportsbook: it does not manage bets, hold prize money or distribute winnings. It is built for groups who already organize prediction pools themselves, and its job is to remove the operational work.
 
-When QRACKS charges, it charges for the software — never a cut of whatever the group plays for. Handling prize money is not part of the product today, and it is not what the Payments work in *What's next* refers to.
+When QRACKS charges, it charges for the software — never a cut of whatever the group plays for. Handling prize money is not part of the product, and the payments work does not move it in that direction: money for Plus goes from the organizer to QRACKS through a payment provider, and whatever the group plays for never touches the platform.
 
 **Less spreadsheet, less chasing people, less manual scoring — more playing.**
 
@@ -492,7 +570,8 @@ Where the product stands today. New ideas are prioritized against these stages r
 | Core Product | ✅ Established | Create, join, predict, score, rank, administer |
 | Performance & Stability | ✅ Continuous | Payload optimization, connection pooling, concurrency safety |
 | Sports Data Reliability | ✅ Implemented | Provider abstraction, competition sync, postseason support, fail-closed scoring |
-| Monetization Foundation | ✅ Implemented | Plans, entitlements, server-side enforcement, tournament cycles — **not** payments |
+| Monetization Foundation | ✅ Implemented | Plans, entitlements, server-side enforcement, tournament cycles |
+| Payments | ✅ Implemented | Hosted Stripe Checkout, verified server-side. Live wherever the environment is configured for it. |
 | Product Iteration | 🔄 Continuous | Removing friction from organizer and participant workflows, guided by real usage |
 | Advanced features | ⏸️ On hold | Capabilities beyond today's core loop wait until it shows recurring usage. Unrelated to the Plus plan, which already works. |
 
@@ -502,7 +581,7 @@ Where the product stands today. New ideas are prioritized against these stages r
 
 In order, and without dates:
 
-1. **Payments** — a real Plus checkout, confirmed server-side rather than trusted from the browser. It is the one part of Plus an organizer cannot do alone today.
+1. **Payments, in production** — the checkout is built and verified; what remains is turning it on for real traffic and watching the first purchases closely.
 2. **Help** — today's per-screen tips become one help system, written once and used across the landing page, participant and administrator views.
 3. **Product iteration** — watch real pools, measure where people actually get stuck, and fix what the evidence shows rather than what seems likely.
 4. **Sports-data rollout** — turn the provider capabilities already built into a safe organizer experience, including choosing and migrating providers. The architecture is ready; the product experience is not.

@@ -73,14 +73,18 @@ test("PLAN READ: FREE reports the live numbers, its usage, and a real upgrade of
   assert.equal(s.upgrade.available, true);
   assert.equal(s.upgrade.priceMXN, 199);
   assert.equal(s.upgrade.participantLimit, 50);
-  assert.equal(s.upgrade.roundLimit, 18);
+  // MON-003 · cobertura: la oferta ya no lleva "18 jornadas"; dice qué cubre.
+  assert.equal(s.upgrade.roundLimit, undefined);
+  assert.equal(s.upgrade.coverageText, "hasta 50 personas y el torneo completo");
 });
 
 test("PLAN READ: PLUS reports its own snapshot and offers nothing further", () => {
   const s = summarizePlan(PLUS, cfg, { participantsUsed: 49, roundsUsed: 17 });
   assert.equal(s.planLabel, "Plus");
   assert.deepEqual(s.participants, { used: 49, limit: 50, remaining: 1 });
-  assert.deepEqual(s.rounds, { used: 17, limit: 18, remaining: 1, applies: true });
+  // MON-003 · cobertura: INVERTIDO. Plus no tiene presupuesto de jornadas.
+  assert.deepEqual(s.rounds, { used: 17, limit: null, remaining: null, applies: false });
+  assert.equal(s.coverage.text, "hasta 50 personas y el torneo completo");
   assert.equal(s.upgrade.available, false);
   assert.equal(s.upgrade.priceMXN, undefined, "an offer that cannot be taken carries no price");
 });
@@ -251,10 +255,13 @@ test("LIFECYCLE: FREE publishes its 7th round and is refused the 8th", () => {
   assert.equal(blocked.limit, 7);
 });
 
-test("LIFECYCLE: PLUS without a tournament publishes its 18th and is refused the 19th", () => {
+// MON-003 · cobertura: INVERTIDO. Plus ya no se corta en la jornada 19: cubre el
+// torneo completo (sin competencia ligada también). Lo que sí sigue acotando a
+// Plus es el CICLO — ver el test de alcance por ciclo más abajo.
+test("LIFECYCLE: PLUS without a tournament is NOT refused the 19th — Plus covers the whole cycle", () => {
   assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 17, 1).allowed, true);
-  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).allowed, false);
-  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).limit, 18);
+  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).allowed, true);
+  assert.equal(checkLifecycleRoundConsumption(PLUS, cfg, 18, 1).limit, undefined, "no hay límite que citar");
 });
 
 test("LIFECYCLE: a bulk publish is judged on the total, not one round at a time", () => {
@@ -341,7 +348,10 @@ test("CONFIG: the server refuses an invalid commercial config before it can corr
     { ...cfg, free: { participantLimit: 0, manualRoundLimit: 7 } },
     { ...cfg, free: { participantLimit: 10, manualRoundLimit: 0 } },
     { ...cfg, plus: { participantLimit: 5, manualRoundLimit: 18, priceMXN: 199 } },   // plus < free
-    { ...cfg, plus: { participantLimit: 50, manualRoundLimit: 3, priceMXN: 199 } },   // plus < free
+    // MON-003 · cobertura: Plus ya no tiene tope de jornadas, así que
+    // `plus.manualRoundLimit` sólo tiene que ser usable (va en el snapshot); ya
+    // no se compara con Gratis. Se sigue rechazando uno inutilizable.
+    { ...cfg, plus: { participantLimit: 50, manualRoundLimit: 0, priceMXN: 199 } },
     { ...cfg, plus: { participantLimit: 50, manualRoundLimit: 18, priceMXN: -1 } },
     { ...cfg, upgradeContact: 123 },
     { ...cfg, upgradeContact: "x".repeat(201) },
@@ -431,9 +441,12 @@ test("UX: the plan strip is Admin-only and backend-driven", () => {
   const fn = blockFrom(indexSrc, "async function renderPlanStrip()");
   assert.ok(fn.includes("currentUser && currentUser.isAdmin"), "participants never see it");
   assert.ok(fn.includes("await loadPlan()"), "and it renders what the server said");
-  const loader = blockFrom(indexSrc, "async function loadPlan(opts)");
-  assert.ok(loader.includes('"/api/quinielas/" + encodeURIComponent(SLUG) + "/plan"'));
+  // MON-003 · cobertura: la lectura vive en readPlanFresh (descarta respuestas
+  // de antes de invalidar); loadPlan sólo cachea.
+  const loader = blockFrom(indexSrc, "async function readPlanFresh()");
+  assert.ok(loader.includes('"/api/quinielas/" + encodeURIComponent(slugAlPedir) + "/plan"'));
   assert.ok(loader.includes("adminOrOwnerCred()"), "authenticated as the organizer");
+  assert.ok(blockFrom(indexSrc, "async function loadPlan(opts)").includes("readPlanFresh()"));
 });
 
 test("UX: the status line is composed from the server's numbers, not recomputed", () => {
@@ -479,20 +492,41 @@ test("UX: the hard paywall answers all five required questions, from the server'
   // 3/4/5) unlocks, price, scope — all from the response's upgrade block
   assert.ok(fn.includes("body.upgrade"), "the offer comes from the rejection, with no second read");
   const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
-  assert.ok(sheet.includes("offer.participantLimit") && sheet.includes("offer.roundLimit"), "what Plus unlocks");
+  // MON-003 · cobertura: lo que desbloquea es la frase del servidor, sin "18 jornadas".
+  assert.ok(sheet.includes("const unlocks = plusPitch(offer);"), "what Plus unlocks");
+  assert.ok(blockFrom(indexSrc, "function plusPitch(offer)").includes("offer.coverageText"));
   assert.ok(sheet.includes("money(offer.priceMXN)"), "what it costs");
   assert.ok(sheet.includes("offer.scope"), "what it covers");
   assert.ok(sheet.includes("Pasar a Plus"), "one primary action");
 });
 
 test("UX: the paywall is honest about the mechanism and does not fake a checkout", () => {
+  // MON-003 cambió el mecanismo, no la regla. Antes no había cobro y la
+  // honestidad consistía en no insinuar uno; ahora hay un checkout real y la
+  // honestidad consiste en llevar a él de verdad, y en decir la verdad cuando
+  // no está disponible.
   const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
-  assert.ok(sheet.includes("activamos Plus en esta quiniela"), "it says what actually happens next");
-  assert.ok(sheet.includes("offer.contact"), "using the channel the operator configured");
   const code = stripComments(sheet);
-  for (const fake of ["Pagar ahora", "checkout", "Stripe", "MercadoPago", "tarjeta"]) {
-    assert.ok(!code.includes(fake), `no debe simular un cobro: "${fake}"`);
+  assert.ok(code.includes("startCheckout()"), "el botón abre el checkout de verdad");
+  assert.ok(sheet.includes("offer.contact"), "y conserva el canal manual como respaldo");
+  assert.ok(sheet.includes("activamos Plus en esta quiniela"));
+  assert.ok(code.includes('motivo === "unavailable"'),
+    "sin pasarela configurada se dice, en vez de fingir que se cobró");
+  // Correction 05 (P1-3): un cobro en curso NO se trata como un error del que
+  // reintentar. Se confirma, que es lo que el servidor pedía al devolver el id.
+  assert.ok(code.includes('motivo === "payment_in_progress" && started.purchaseId'),
+    "el id de la compra que manda el servidor no se tira");
+  assert.ok(code.includes("runCheckoutRecovery(started.purchaseId"),
+    "y se pasa a confirmar ese cobro en vez de abrir otro checkout");
+  const enCurso = code.indexOf('motivo === "payment_in_progress"');
+  const invita = code.indexOf("No pudimos abrir el pago");
+  assert.ok(enCurso !== -1 && invita !== -1 && enCurso < invita,
+    "el camino de recuperación se toma ANTES del mensaje genérico de reintento");
+  // Lo que sigue prohibido: capturar la tarjeta aquí. El cobro es hospedado.
+  for (const fake of ["card-number", "cardNumber", "cvc", "cvv", "numero de tarjeta"]) {
+    assert.ok(!code.includes(fake), `QRACKS no captura datos de tarjeta: "${fake}"`);
   }
+  assert.ok(!/<input[^>]*card/i.test(sheet), "ni un formulario de tarjeta propio");
 });
 
 test("UX: no dark patterns — no countdown, no scarcity, no hidden price", () => {
@@ -646,7 +680,204 @@ test("SECURITY: enforcement fails closed on a missing entry, a missing entitleme
 
 test("SECURITY: the upgrade offer carries no secret and nothing a participant could misuse", () => {
   const offer = buildUpgradeOffer(FREE, { ...cfg, upgradeContact: "hola@qracks.mx" });
-  assert.deepEqual(Object.keys(offer).sort(), ["available", "contact", "participantLimit", "priceMXN", "roundLimit", "scope"]);
+  // Correction 09 añadió `checkout`: CÓMO se compra, decidido por el servidor.
+  // MON-003 · cobertura cambió roundLimit/roundLimitApplies por `coverage` y
+  // `coverageText`: qué cubre Plus según la competencia, sin número de jornadas.
+  assert.deepEqual(Object.keys(offer).sort(),
+    ["available", "checkout", "contact", "coverage", "coverageText", "participantLimit", "priceMXN", "scope"]);
+  assert.deepEqual(Object.keys(offer.coverage).sort(), ["known", "name", "scope"]);
+  // Sin modo explícito, TARJETA — nunca el copy manual por omisión — y el
+  // contacto de respaldo no viaja.
+  assert.equal(offer.checkout, "card");
+  assert.equal(offer.contact, "");
+  // El contacto sólo sale cuando ES el camino.
+  const manual = buildUpgradeOffer(FREE, { ...cfg, upgradeContact: "hola@qracks.mx" }, { checkout: "manual" });
+  assert.equal(manual.checkout, "manual");
+  assert.equal(manual.contact, "hola@qracks.mx");
+  const bloqueada = buildUpgradeOffer(FREE, { ...cfg, upgradeContact: "hola@qracks.mx" }, { checkout: "blocked" });
+  assert.equal(bloqueada.checkout, "blocked");
+  assert.equal(bloqueada.contact, "", "con un pago posiblemente abierto no se ofrece otro canal");
+  // Un modo inventado no se cuela.
+  assert.equal(buildUpgradeOffer(FREE, cfg, { checkout: "gratis" }).checkout, "card");
   assert.deepEqual(buildUpgradeOffer(PLUS, cfg), { available: false });
   assert.deepEqual(buildUpgradeOffer(FREE, null), { available: false }, "no config -> no offer, never a guess");
+});
+
+// ==== MON-003 Correction 09: la hoja de Plus ya no habla del flujo manual ====
+//
+// MON-002 escribía "escríbenos y activamos Plus" siempre, porque entonces no había
+// checkout. Con Stripe funcionando eso contradecía al botón. El modo lo decide el
+// servidor (`offer.checkout`) y la pantalla lo obedece.
+
+test("C09 · la oferta dice CÓMO se compra, y el servidor lo decide en TODOS los sitios", () => {
+  const src = stripComments(serverSrc);
+  // El helper: tarjeta si la pasarela está configurada; si no, manual SÓLO si
+  // nada del torneo puede estar cobrando; ante la duda, bloqueado.
+  const fn = blockFrom(src, "async function checkoutModeFor(slug, scopeId)");
+  // Correction 10: la MISMA readiness que el checkout; mal configurado no es manual.
+  assert.ok(fn.includes("const estado = paymentsReadiness().state;"));
+  assert.ok(fn.includes('if (estado === stripeAdapter.PAYMENTS_STATE.READY) return "card";'));
+  assert.ok(fn.includes('if (estado === stripeAdapter.PAYMENTS_STATE.MISCONFIGURED) return "unavailable";'));
+  assert.ok(fn.includes("openIntentsForScope(") && fn.includes("identityBlockers("));
+  assert.ok(fn.includes('return "manual";'));
+  assert.ok(/catch \(err\) \{[\s\S]*return "blocked";/.test(fn), "si no se puede leer, bloqueado");
+  // Toda oferta que sale del servidor lleva el modo.
+  const ofertas = src.match(/buildUpgradeOffer\(entry\.entitlement, commercialConfig[^)]*\)?/g) || [];
+  assert.equal(ofertas.length, 2);
+  for (const o of ofertas) assert.ok(o.includes("{"), "las dos 402 pasan el modo: " + o);
+  assert.equal((src.match(/checkout: await checkoutModeFor\(/g) || []).length, 3, "402 x2 + /plan");
+  // El checkout sin pasarela: manual sólo si nada puede cobrar.
+  const co = src.slice(src.indexOf('app.post("/api/quinielas/:slug/checkout"'));
+  const sinPasarela = co.slice(co.indexOf("if (readiness.state !== stripeAdapter.PAYMENTS_STATE.READY)"), co.indexOf("EL INVARIANT"));
+  assert.ok(sinPasarela.includes('modo === "manual" ? "payments_unavailable" : "checkout_unavailable"'));
+});
+
+test("C09 · la hoja: botón de pago SÓLO con tarjeta; contacto SÓLO en modo manual", () => {
+  const sheet = blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)");
+  const code = stripComments(sheet);
+  // Modo desconocido -> tarjeta, nunca manual por omisión.
+  // (Retorno a /a/: un pago esperando confirmación tiene prioridad sobre todo.)
+  assert.ok(code.includes('const mode = !offer ? null : esperando ? "awaiting"\n      : (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card");'));
+  // El botón existe sólo con tarjeta.
+  assert.ok(code.includes('${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}'));
+  // El texto de tarjeta no invita a escribir.
+  const howTo = code.slice(code.indexOf("const howTo ="), code.indexOf("return new Promise"));
+  const tarjeta = howTo.slice(howTo.lastIndexOf(':'));
+  assert.ok(/Pagas con tarjeta/.test(tarjeta));
+  assert.ok(!/Escríbenos|escríbenos|contact/.test(tarjeta), "con tarjeta no se ofrece contacto");
+  // Bloqueado: ni contacto ni botón.
+  const bloq = howTo.slice(howTo.indexOf('mode === "blocked"'), howTo.lastIndexOf(':'));
+  assert.ok(/puede haber uno anterior todavía abierto/.test(bloq));
+  assert.ok(!/Escríbenos|contact/.test(bloq), "con un pago posiblemente abierto no se ofrece otro canal");
+  // El contacto sólo vive en el texto manual.
+  const manual = code.slice(code.indexOf("const manualHowTo"), code.indexOf("const howTo ="));
+  assert.ok(manual.includes("offer.contact"));
+  assert.equal((code.match(/offer\.contact/g) || []).length, 2, "sólo dentro de manualHowTo");
+  // Y el aviso de `unavailable` al pulsar usa el texto manual, no el de tarjeta.
+  assert.ok(code.includes('toast(motivo === "unavailable"\n            ? manualHowTo'));
+});
+
+test("C09 · barrido global: ningún resto de 'no hay checkout' ni de compra por contacto", () => {
+  const todo = [indexSrc, serverSrc, fs.readFileSync(path.join(__dirname, "..", "planLimits.js"), "utf8")].join("\n");
+  const codigo = stripComments(indexSrc);
+  for (const viejo of [/There is no checkout yet/i, /no checkout yet/i, /until MON-003 ships/i,
+    /Cómo te contactan para activar Plus/, /cuando sea momento de realizar el pago/,
+    /Contacta al equipo de QRACKS para aumentar tu límite/]) {
+    assert.ok(!viejo.test(todo), "resto del flujo manual: " + viejo);
+  }
+  // Cada "escríbenos" que queda en la interfaz está en un sitio legítimo:
+  // respaldo manual, "no hay nada por encima de Plus", o soporte DESPUÉS de un
+  // pago que ya consta. Si aparece otro, este test obliga a justificarlo.
+  const permitidos = [
+    "Escríbenos a ${offer.contact} y activamos Plus en esta quiniela.",
+    "Escríbenos y activamos Plus en esta quiniela.",
+    "Escríbenos para revisar las opciones de tu quiniela.",
+    "Si necesitas un grupo más grande, escríbenos.",
+    "Si en unos minutos no ves Plus, escríbenos.",
+    // Texto para el OPERADOR en el Panel de Plataforma, describiendo el respaldo.
+    'Déjalo vacío y solo dirá "escríbenos".',
+  ];
+  let resto = codigo;
+  for (const p of permitidos) resto = resto.split(p).join("");
+  assert.ok(!/escr[ií]benos/i.test(resto), "un 'escríbenos' fuera de los sitios justificados");
+  // Y los errores de límite remiten a Plus, no a pedirlo a mano.
+  assert.ok(indexSrc.includes('plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Desde Admin puedes ver cómo pasar a Plus."'));
+});
+
+test("C09 · Panel de Plataforma: el contacto es RESPALDO, y 'Activar Plus' es para pagos fuera de línea", () => {
+  assert.ok(indexSrc.includes("Contacto de respaldo si el pago con tarjeta no está disponible"));
+  assert.ok(indexSrc.includes("La compra normal de Plus es con tarjeta."));
+  assert.ok(indexSrc.includes('"Activar Plus" es para pagos recibidos FUERA del pago con tarjeta'));
+  // MANUAL_GRANT y "Activar Plus" siguen existiendo: son herramientas de operador.
+  assert.ok(indexSrc.includes("data-grant-plus=") && indexSrc.includes("data-grant-manual="));
+});
+
+test("C09 · 'pago ya registrado' refresca y dice lo que el plan RECIÉN leído dice", () => {
+  const sheet = stripComments(blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)"));
+  const rama = sheet.slice(sheet.indexOf('if(motivo === "payment_already_recorded")'));
+  assert.ok(rama.includes("const tras = await loadPlan({ force: true });"));
+  assert.ok(rama.includes('tras && tras.plan === "PLUS"'));
+  assert.ok(rama.indexOf("runCheckoutRecovery(pend.id") < rama.indexOf("loadPlan"), "primero la recuperación si hay compra pendiente");
+});
+
+test("C09 · adversarial: la hoja se abre con la oferta FRESCA, y sin oferta en Gratis no se manda a escribir", () => {
+  // Una pestaña abierta antes de un deploy que configura la pasarela tenía en
+  // caché una oferta "manual"; el aviso abría la hoja con esa copia.
+  const wire = blockFrom(indexSrc, "function wirePlanWarnings(scope)");
+  const cta = wire.slice(wire.indexOf("[data-plan-warning-cta]"));
+  assert.ok(cta.includes("await loadPlan({ force: true })"), "el aviso relee el plan antes de abrir la hoja");
+  assert.ok(!/showUpgradeSheet\(planState && planState\.upgrade/.test(stripComments(cta)), "nunca con la copia en caché");
+  const share = indexSrc.slice(indexSrc.indexOf('title: "Tu quiniela está llena"'));
+  assert.ok(share.slice(0, 900).includes("await loadPlan({ force: true })"), "compartir con la quiniela llena, igual");
+  // Sin oferta: la conversación sólo si ya no hay nada que comprar.
+  const sheet = stripComments(blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)"));
+  assert.ok(sheet.includes('const noOfferText = (c.plan && c.plan !== "FREE")'));
+  assert.ok(sheet.includes("No pudimos cargar las opciones de tu plan ahora mismo."));
+  assert.ok(sheet.includes("${esc(noOfferText)}"));
+  // Las entradas pasan el plan para poder decidirlo.
+  const block = stripComments(blockFrom(indexSrc, "function showPlanBlock(errorBody)"));
+  assert.equal((block.match(/plan: body\.plan,/g) || []).length, 2);
+});
+
+// ==== MON-003 · la puerta fija a la oferta Plus =============================
+//
+// En el sandbox, una quiniela Free nueva ("Plan Gratis · 1 de 10 personas · 1
+// de 7 jornadas") no tenía por dónde contratar Plus: la oferta sólo aparecía al
+// quedar 1 lugar/jornada (una vez), al llenarse o al chocar con el límite.
+
+function ctaFn(awaiting) {
+  const src = blockFrom(indexSrc, "function planOfferCtaHtml(plan, source)");
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  return new Function("esc", "awaitingPayment", `${src}; return planOfferCtaHtml;`)(esc, () => awaiting);
+}
+
+test("CTA Plus · una Free NUEVA, lejos de cualquier límite, tiene el botón", () => {
+  const plan = summarizePlan(FREE, cfg, { participantsUsed: 1, roundsUsed: 1 }, { checkout: "card" });
+  const html = ctaFn(false)(plan, "plan_strip");
+  assert.match(html, /data-plan-open-offer="plan_strip"/);
+  assert.match(html, />Ver plan Plus</);
+  // El botón ABRE la oferta; pagar sigue siendo cosa de la hoja.
+  assert.ok(!/checkout|Pasar a Plus/.test(html));
+});
+
+test("CTA Plus · sin oferta del servidor, con Plus o con un pago esperando: nada", () => {
+  const cta = ctaFn(false);
+  assert.equal(cta(null, "x"), "");
+  assert.equal(cta(summarizePlan(PLUS, cfg, { participantsUsed: 1, roundsUsed: 1 }), "x"), "");
+  assert.equal(cta({ plan: "FREE", upgrade: { available: false } }, "x"), "");
+  const free = summarizePlan(FREE, cfg, { participantsUsed: 1, roundsUsed: 1 }, { checkout: "card" });
+  assert.equal(ctaFn(true)(free, "x"), "", "con un pago pendiente no se ofrece otro");
+});
+
+test("CTA Plus · vive en la franja del plan Y en Ajustes (con y sin contraseña de dueño)", () => {
+  const status = stripComments(blockFrom(indexSrc, "function planStatusHtml(plan)"));
+  assert.ok(status.includes('planOfferCtaHtml(plan, "plan_strip")'));
+  const strip = stripComments(blockFrom(indexSrc, "async function renderPlanStrip()"));
+  assert.ok(strip.includes("wirePlanOfferCta(liveStrip)"));
+  const owner = stripComments(blockFrom(indexSrc, "function renderAdminOwner(body)"));
+  assert.ok(owner.includes('ROUTE === "quiniela" && SLUG && currentUser && currentUser.isAdmin ? settingsPlanCardHtml()'), "sólo para el Admin de una quiniela con plan");
+  assert.equal((owner.match(/body\.innerHTML = planCard \+/g) || []).length, 2, "bloqueado y desbloqueado");
+  assert.equal((owner.match(/renderSettingsPlan\(\);/g) || []).length, 2);
+  const settings = stripComments(blockFrom(indexSrc, "async function renderSettingsPlan()"));
+  assert.ok(settings.includes("currentUser && currentUser.isAdmin"));
+  assert.ok(settings.includes("await loadPlan()"), "el plan sale del servidor");
+  assert.ok(settings.includes('planOfferCtaHtml(plan, "settings")'));
+  assert.ok(settings.includes("paymentAwaitingHtml(plan)"), "el pago pendiente se ve también aquí");
+  assert.ok(settings.includes("wirePlanOfferCta(live)"));
+  // La vuelta del pago refresca también la tarjeta de Ajustes.
+  const surfaces = stripComments(blockFrom(indexSrc, "async function refreshPlanSurfaces()"));
+  assert.ok(surfaces.includes("renderSettingsPlan()"));
+});
+
+test("CTA Plus · abre la hoja con la oferta FRESCA; los bloqueos siguen dentro de la hoja", () => {
+  const wire = stripComments(blockFrom(indexSrc, "function wirePlanOfferCta(scope)"));
+  assert.ok(wire.includes("await loadPlan({ force: true })"));
+  assert.ok(wire.includes("showUpgradeSheet(fresco.upgrade, { reason: null, plan: fresco.plan, source:"));
+  assert.ok(!/planState/.test(wire), "nunca con la copia en caché");
+  assert.ok(!/startCheckout/.test(wire), "el CTA no abre pagos por su cuenta");
+  const sheet = stripComments(blockFrom(indexSrc, "function showUpgradeSheet(upgrade, ctx)"));
+  // Pendiente > cualquier modo; botón de pago sólo con tarjeta.
+  assert.ok(sheet.includes('const mode = !offer ? null : esperando ? "awaiting"'));
+  assert.ok(sheet.includes('${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}'));
+  assert.ok(sheet.includes('source: c.source || (c.limitType ? "paywall_" + c.limitType : "paywall")'));
 });

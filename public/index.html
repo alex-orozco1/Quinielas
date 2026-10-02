@@ -104,6 +104,26 @@
   #quiniela-root .qz-brand-context{
     font-weight:700; font-size:19px; line-height:1.25; color:var(--chalk);
   }
+  /* MON-003: la etiqueta del plan confirmado, debajo del nombre (o al lado, en
+     móvil, si cabe). */
+  #quiniela-root .qz-brand-line{ display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+  #quiniela-root .qz-plan-badge{
+    display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:800;
+    letter-spacing:0.04em; padding:2px 9px; border-radius:999px;
+    background:var(--gold); color:#1a1a1a; line-height:1.4; white-space:nowrap;
+  }
+  /* `hidden` tiene que ganar al display de arriba: sin esto la etiqueta se veía
+     en quinielas Gratis. */
+  #quiniela-root .qz-plan-badge[hidden]{ display:none; }
+  @media (max-width: 640px){
+    #quiniela-root .qz-brand-line{ flex-direction:row; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+  }
+  /* MON-003: la línea del plan y su botón fijo a la oferta Plus. En móvil el
+     botón baja debajo de la línea en vez de apretarla. */
+  #quiniela-root .qz-plan-row{
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+    gap:8px 12px; margin:0 0 12px;
+  }
   #quiniela-root .qz-brand-round{
     font-weight:600; font-size:12.5px; color:rgba(247,245,236,0.65); margin-top:1px;
   }
@@ -1140,11 +1160,29 @@
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   let ROUTE = "root";
   let SLUG = null;
+  // MON-003: "/a/:slug" es la misma quiniela, abierta directamente en Admin. Es
+  // a donde vuelve el organizador desde el pago. No da ningún permiso: entrar
+  // como admin sigue exigiendo una sesión de admin que el servidor reconozca.
+  let ADMIN_ENTRY = false;
   if(pathParts.length === 0){ ROUTE = "root"; }
   else if(pathParts[0] === "q" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); }
+  else if(pathParts[0] === "a" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); ADMIN_ENTRY = true; }
   else if(pathParts[0] === "crear"){ ROUTE = "crear"; }
   else if(pathParts[0] === "panel-plataforma"){ ROUTE = "platform"; }
   else { ROUTE = "unknown"; }
+
+  // Una vuelta del pago que entró por la ruta antigua (/q/…?qz_pago=…, de un
+  // checkout abierto antes de que existiera /a/) se trata igual: se pasa a /a/
+  // sin recargar, con sus parámetros intactos.
+  if(ROUTE === "quiniela" && !ADMIN_ENTRY){
+    try{
+      const qs = new URLSearchParams(window.location.search);
+      if(qs.has("qz_pago") || qs.has("qz_pago_cancelado")){
+        ADMIN_ENTRY = true;
+        window.history.replaceState({}, "", "/a/" + encodeURIComponent(SLUG) + window.location.search + window.location.hash);
+      }
+    }catch(e){}
+  }
 
   function currentMetaKey(){ return SLUG ? ("quiniela:" + SLUG + ":meta") : "quiniela_meta_v1"; }
   // Post-creation continuity: /crear redirects here with ?setup=1 right
@@ -1319,6 +1357,19 @@
       return data.health || empty;
     }catch(e){ console.error("getPlatformSportsHealth failed", e); return empty; }
   }
+  // MON-003 Correction 10: el estado de Payments tal y como lo evalúa el
+  // servidor. Un fallo de red o de credencial aquí no rompe el panel: se pinta
+  // como DESCONOCIDO, nunca como listo.
+  async function getPlatformPaymentsReadiness(){
+    try{
+      const res = await fetch("/api/platform/payments-readiness", {
+        headers: { "X-Qracks-Platform-Auth": platformPasswordCache || "" }, cache: "no-store"
+      });
+      const data = await res.json().catch(() => ({}));
+      if(!res.ok || !data.ok) return null;
+      return data.payments || null;
+    }catch(e){ console.error("getPlatformPaymentsReadiness failed", e); return null; }
+  }
   // Self-service: anyone can register a brand-new quiniela in the platform index
   // (that's how /crear and "move to my own link" work) — no platform password needed,
   // it only ever adds one new entry, it can't touch or remove anyone else's.
@@ -1396,8 +1447,11 @@
     // callers that already know those details — see the specific handlers
     // below — show a more precise message with the real numbers; this is
     // only the safety-net copy for any call site that doesn't).
-    plan_lifecycle_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
-    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Contacta al equipo de QRACKS para aumentar tu límite.",
+    // MON-003 Correction 09: el remedio es Plus, que se compra desde Admin. Antes
+    // esta red decía "contacta al equipo de QRACKS", que era el mecanismo de
+    // MON-001/002 y hoy mandaría a pedir a mano algo que se paga en línea.
+    plan_lifecycle_limit_reached: "Esta quiniela ya llegó al límite de jornadas de su plan actual. Desde Admin puedes ver cómo pasar a Plus.",
+    plan_participant_limit_reached: "Esta quiniela ya llegó al límite de participantes de su plan actual. Desde Admin puedes ver cómo pasar a Plus.",
     // Fail-closed edge case (should be structurally impossible thanks to
     // the startup grandfathering migration, but the copy still needs to
     // exist rather than fall through to "undefined") — never blames the
@@ -1953,6 +2007,13 @@
     n.classList.add("show");
     clearTimeout(n._h);
     n._h = setTimeout(()=> n.classList.remove("show"), 6000);
+  }
+
+  function hideNotice(){
+    const n = document.getElementById("qz-notice");
+    if(!n) return;
+    clearTimeout(n._h);
+    n.classList.remove("show");
   }
 
   function toast(msg){
@@ -2890,6 +2951,14 @@
         const session = await checkSession();
         if(session){
           trackEvent("session_restored", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
+          // MON-003: por /a/ (la vuelta del pago) el organizador no pasa por
+          // "¿Eres Ana?": la cookie ya la reconoció el SERVIDOR como admin de
+          // esta quiniela. Cualquier otra sesión sigue el camino de siempre —
+          // /a/ no da permisos, sólo ahorra una pregunta.
+          if(ADMIN_ENTRY && session.isAdmin){
+            await enterRestoredSession(session, "admin");
+            return;
+          }
           renderSessionConfirm(session);
           return;
         }
@@ -2917,6 +2986,8 @@
     if(currentUser.isAdmin && !setupContinuityResolved && readCloseIntent()){
       setupContinuityResolved = true;
     }
+    // Por /a/ se llega al panel de Admin, no a la continuidad de configuración.
+    if(currentUser.isAdmin && ADMIN_ENTRY) setupContinuityResolved = true;
     if(currentUser.isAdmin && !setupContinuityResolved){
       setupContinuityResolved = true;
       const dest = resolveSetupDestination(meta, currentUser);
@@ -2929,6 +3000,19 @@
       if(dest === "invite"){ renderAdminSetupInvite(); return; }
     }
     renderApp();
+  }
+
+  // Entrar con una sesión que el servidor ya reconoció. Lo usan la confirmación
+  // "¿Eres …?" y la entrada directa de /a/.
+  async function enterRestoredSession(session, tab){
+    const fullParticipant = meta.participants.find(p => p.id === session.participantId);
+    currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
+    myPicks = await getPicks(currentUser.id);
+    activeTab = (tab === "admin" && currentUser.isAdmin) ? "admin" : "jornada";
+    await render();
+    // MON-003: hasta aquí no se sabía quién volvía. Si venía de pagar, éste
+    // es el primer instante en que se puede confirmar su compra.
+    resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
   }
 
   function renderSessionConfirm(session){
@@ -2945,11 +3029,7 @@
     `;
     document.getElementById("qz-session-yes").addEventListener("click", async () => {
       trackEvent("session_confirmation_accepted", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
-      const fullParticipant = meta.participants.find(p => p.id === session.participantId);
-      currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
-      myPicks = await getPicks(currentUser.id);
-      activeTab = "jornada";
-      render();
+      await enterRestoredSession(session, (ADMIN_ENTRY && session.isAdmin) ? "admin" : "jornada");
     });
     document.getElementById("qz-session-no").addEventListener("click", async () => {
       trackEvent("session_confirmation_rejected", { participantId: session.participantId, isNewUser: false, source: session.isAdmin ? "organizer" : "participant" });
@@ -3611,8 +3691,11 @@
         }
         currentUser = p;
         myPicks = await getPicks(p.id);
-        activeTab = "jornada";
-        render();
+        activeTab = (ADMIN_ENTRY && p.isAdmin) ? "admin" : "jornada";
+        await render();
+        // Si entró a pedir identificación al volver del pago, ahora se puede
+        // confirmar la compra.
+        resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
       });
     });
   }
@@ -3637,7 +3720,10 @@
         <div class="qz-header-top">
           <div>
             <span class="qz-brand-mark"><img src="${QRACKS_ICON_SRC}" alt="" style="width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:4px;">QRACKS</span>
-            <div class="qz-brand-context">${esc(meta.groupName)}</div>
+            <div class="qz-brand-line">
+              <div class="qz-brand-context">${esc(meta.groupName)}</div>
+              ${currentUser.isAdmin ? `<span class="qz-plan-badge" id="qz-plan-badge" ${planState && planState.plan === "PLUS" ? "" : "hidden"}>★ Plus</span>` : ``}
+            </div>
             ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
@@ -3658,6 +3744,10 @@
       </div>
       <div class="qz-main" id="qz-main"></div>
     `;
+    // La etiqueta Plus refleja el plan que CONFIRMA el servidor (/plan), no un
+    // estado local: por eso sigue ahí al recargar o al volver otro día, y no
+    // aparece mientras el pago no esté confirmado.
+    if(currentUser.isAdmin) loadPlan().then(paintPlanBadge).catch(() => {});
     document.getElementById("qz-user-toggle").addEventListener("click", (e) => {
       e.stopPropagation();
       userMenuOpen = !userMenuOpen;
@@ -4653,30 +4743,427 @@
   // product ended up showing one paywall and enforcing another.
   let planState = null;
   let planStateInFlight = null;
+  // MON-003 · cobertura: el plan en memoria es de UNA quiniela y de UN momento.
+  // `planStateSlug` impide pintar el de otra; `planGen` impide que una lectura
+  // que salió ANTES de invalidar (p. ej. antes de cambiar la liga en Ajustes)
+  // vuelva a dejar el plan viejo —con la frase de cobertura de antes— en caché.
+  let planStateSlug = null;
+  let planGen = 0;
   async function loadPlan(opts){
     if(ROUTE !== "quiniela" || !SLUG || !meta) return null;
-    if(!(opts && opts.force) && planState) return planState;
-    if(planStateInFlight) return planStateInFlight;
-    planStateInFlight = (async () => {
+    if(planStateSlug !== SLUG){ planState = null; planStateSlug = SLUG; }
+    const force = !!(opts && opts.force);
+    if(!force && planState) return planState;
+    if(!force && planStateInFlight) return planStateInFlight;
+    const p = readPlanFresh();
+    planStateInFlight = p;
+    try{ return await p; }
+    finally{ if(planStateInFlight === p) planStateInFlight = null; }
+  }
+  // Una lectura del plan que NUNCA entrega una foto de antes de invalidar: si
+  // mientras viajaba alguien invalidó (la liga pudo cambiar) o se cambió de
+  // quiniela, se descarta y se vuelve a leer.
+  async function readPlanFresh(){
+    for(let intento = 0; intento < 3; intento++){
+      const gen = planGen;
+      const slugAlPedir = SLUG;
+      let leido = null;
       try{
         const headers = {};
         const cred = adminOrOwnerCred();
         if(cred) headers["X-Qracks-Auth"] = cred;
-        const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/plan", {
+        const res = await fetch("/api/quinielas/" + encodeURIComponent(slugAlPedir) + "/plan", {
           headers, credentials: "same-origin"
         });
         if(!res.ok) return null;
         const data = await res.json();
-        planState = data && data.available ? data : null;
-        return planState;
+        leido = data && data.available ? data : null;
       }catch(e){ console.error("loadPlan failed", e); return null; }
-    })();
-    try{ return await planStateInFlight; }
-    finally{ planStateInFlight = null; }
+      if(gen === planGen && slugAlPedir === SLUG){ planState = leido; return leido; }
+    }
+    return null;
   }
+  // ---------- MON-003: el pago ----------
+  //
+  // Esta pantalla no sabe cuánto cuesta Plus, ni qué torneo se está comprando,
+  // ni cómo se verifica el cobro. Pide que se prepare el pago y sigue el
+  // enlace. Todo lo comercial lo pone el servidor, que es lo que impide que
+  // una llamada fabricada compre Plus por un peso.
+  // El pago pendiente de ESTA quiniela, con caducidad. Sin caducidad, un
+  // pendiente que nunca se resolvió haría que cada carga de la página
+  // preguntara por él para siempre.
+  const PENDING_PURCHASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  function pendingPurchaseKey(){ return "qracks_pago_" + (SLUG || "root"); }
+  // Se guarda la VUELTA entera, no sólo el id: una vuelta cancelada también es
+  // algo que hay que contarle al organizador, y también se pierde si la app le
+  // pide identificarse antes de poder decírselo.
+  // `awaiting` distingue dos cosas muy distintas: "se abrió un checkout" (y
+  // quizá se abandonó: se puede volver a intentar) y "se volvió del pago, o el
+  // servidor dice que la sesión ya se usó" (hay un cobro esperando confirmación:
+  // NO se ofrece otro pago). Sólo lo segundo pone la pantalla en espera.
+  function writePendingPurchase(id, cancelled, sessionHint, awaiting){
+    try{
+      window.localStorage.setItem(pendingPurchaseKey(),
+        JSON.stringify({ id: id || null, cancelled: !!cancelled,
+          sess: (typeof sessionHint === "string" && sessionHint) ? sessionHint : null,
+          awaiting: !!awaiting, at: Date.now() }));
+    }catch(e){}
+  }
+  function readPendingPurchase(){
+    try{
+      const raw = window.localStorage.getItem(pendingPurchaseKey());
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      if(!parsed || (!parsed.id && !parsed.cancelled)) return null;
+      if(!Number.isFinite(parsed.at) || Date.now() - parsed.at > PENDING_PURCHASE_MAX_AGE_MS){
+        clearPendingPurchase();
+        return null;
+      }
+      return parsed;
+    }catch(e){ return null; }
+  }
+  function clearPendingPurchase(){
+    try{ window.localStorage.removeItem(pendingPurchaseKey()); }catch(e){}
+  }
+  // Un pago que espera confirmación en ESTE dispositivo, o null.
+  function awaitingPayment(){
+    const p = readPendingPurchase();
+    return (p && p.id && !p.cancelled && p.awaiting) ? p : null;
+  }
+
+  let checkoutInFlight = false;
+  async function startCheckout(){
+    if(ROUTE !== "quiniela" || !SLUG) return { ok: false };
+    // Un segundo clic mientras el primero sigue en vuelo no manda otra
+    // petición. El servidor también lo soporta (reutiliza la compra abierta),
+    // pero no llegar a pedirlo es mejor que depender de que lo resuelva.
+    if(checkoutInFlight) return { ok: false, reason: "in_flight" };
+    checkoutInFlight = true;
+    try{
+      const headers = { "Content-Type": "application/json" };
+      const cred = adminOrOwnerCred();
+      if(cred) headers["X-Qracks-Auth"] = cred;
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/checkout", {
+        method: "POST", headers, credentials: "same-origin", body: "{}"
+      });
+      const data = await res.json().catch(() => ({}));
+      if(res.ok && data && data.checkoutUrl){
+        // Se recuerda qué compra se abrió para poder preguntar por ella al
+        // volver, incluso si el navegador pierde el parámetro de la URL.
+        writePendingPurchase(data.purchaseId);
+        return { ok: true, checkoutUrl: data.checkoutUrl, purchaseId: data.purchaseId };
+      }
+      // MON-003 Correction 08. Dos 503 que NO son lo mismo. `payments_unavailable`
+      // es "la pasarela no está configurada": ahí sí se ofrece el camino manual.
+      // `checkout_unavailable` es "ahora mismo no se puede abrir un pago NUEVO",
+      // y una de sus causas es que un pago anterior todavía pueda cobrar. Mandar a
+      // esa persona a "escríbenos y lo activamos" era invitarla a pagar por otro
+      // canal mientras el checkout con tarjeta seguía vivo.
+      if(res.status === 503){
+        // Correction 10: `payments_misconfigured` es un error de despliegue, no
+        // "sin pasarela": tampoco ofrece el camino manual.
+        const e503 = data && data.error;
+        return { ok: false, reason: e503 === "checkout_unavailable" ? "checkout_unavailable"
+          : e503 === "payments_misconfigured" ? "payments_misconfigured" : "unavailable" };
+      }
+      // CORRECTION 05 (P1-3). El servidor devuelve `purchaseId` a propósito
+      // cuando hay un cobro en curso: es la compra que hay que CONFIRMAR, no un
+      // error del que reintentar. Antes se tiraba, la pantalla decía "no pudimos
+      // abrir el pago, inténtalo otra vez" e invitaba a reintentar sobre algo que
+      // podía estar ya cobrado. Se conserva y se persiste como compra pendiente,
+      // que es lo que hace que la recuperación arranque sola.
+      const recuperable = data && typeof data.purchaseId === "string" && data.purchaseId;
+      if(recuperable){
+        writePendingPurchase(data.purchaseId);
+      }
+      return { ok: false, reason: (data && data.error) || "error",
+        purchaseId: recuperable || null };
+    }catch(e){
+      return { ok: false, reason: "network_error" };
+    }finally{
+      checkoutInFlight = false;
+    }
+  }
+
+  // La vuelta del checkout. NO activa nada: la URL de regreso sólo dice QUÉ
+  // compra mirar, y quien contesta si se cobró es el servidor preguntándole al
+  // proveedor. Un parámetro inventado a mano aquí no consigue nada.
+  const CHECKOUT_POLL_MS = 2000;
+  const CHECKOUT_POLL_ATTEMPTS = 6;
+  async function readCheckoutStatus(purchaseId, sessionHint){
+    const headers = {};
+    const cred = adminOrOwnerCred();
+    if(cred) headers["X-Qracks-Auth"] = cred;
+    // La pista del id de sesión, si el proveedor la puso en la URL de vuelta. El
+    // servidor la VERIFICA contra la compra antes de usarla para nada, así que
+    // mandarla sólo puede acelerar el rescate; inventarla no consigue nada.
+    const qs = (typeof sessionHint === "string" && sessionHint)
+      ? "?sess=" + encodeURIComponent(sessionHint) : "";
+    const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG)
+      + "/checkout/" + encodeURIComponent(purchaseId) + qs, { headers, credentials: "same-origin" });
+    if(res.status === 404){
+      // MON-003: el servidor dice que ESA compra no existe para esta quiniela (un
+      // enlace de vuelta inventado o de otra quiniela). No hay cobro que esperar;
+      // sin esto la pantalla quedaba "confirmando tu pago" hasta 24 h y sin
+      // dejar pagar.
+      const body = await res.json().catch(() => ({}));
+      return body && body.error === "purchase_not_found" ? { status: "not_found" } : null;
+    }
+    if(!res.ok) return null;
+    return await res.json().catch(() => null);
+  }
+  // El bucle de recuperación de un cobro, en un solo sitio.
+  //
+  // CORRECTION 05 (P1-3): lo usan las DOS entradas — volver del checkout, y que
+  // el servidor conteste "hay un pago en curso" al pulsar el botón. Antes lo
+  // segundo caía en un error genérico que invitaba a reintentar sobre algo que
+  // podía estar ya cobrado.
+  //
+  // Nada de esto ACTIVA nada: sólo pregunta. Quien decide si se cobró es el
+  // servidor preguntándole al proveedor.
+  // MON-003: "Pago completado" se dice SÓLO cuando el servidor confirma que la
+  // quiniela ya es Plus (el plan recién leído), no porque la compra conste
+  // pagada: un pago puede constar y el plan no aplicarse (torneo cambiado,
+  // quiniela borrada…). Mientras no esté confirmado, la pantalla espera y no
+  // ofrece otro pago.
+  const CHECKOUT_RECHECK_MS = 20000;
+  let checkoutRecoveryActive = false;
+  let checkoutRecheckTimer = null;
+  async function runCheckoutRecovery(purchaseId, sessionHint, opts){
+    if(!purchaseId) return;
+    // Una sola a la vez: la vuelta del pago puede llegar por dos caminos
+    // (arranque y entrada de la sesión) y preguntar dos veces no aporta nada.
+    if(checkoutRecoveryActive) return;
+    checkoutRecoveryActive = true;
+    const quiet = !!(opts && opts.quiet);
+    try{
+      if(!quiet){
+        // Hay un cobro esperando: se marca, para que la pantalla no ofrezca
+        // otro pago aunque se recargue.
+        writePendingPurchase(purchaseId, false, sessionHint, true);
+        notice("Estamos confirmando tu pago…");
+        await refreshPlanSurfaces();
+      }
+      // El proveedor puede tardar un momento en avisarnos. Se pregunta unas
+      // pocas veces seguidas; si no basta, se sigue preguntando con calma
+      // mientras la página esté abierta.
+      for(let i = 0; i < CHECKOUT_POLL_ATTEMPTS; i++){
+        const r = await checkPurchaseOnce(purchaseId, sessionHint);
+        if(r === "done") return;
+        if(r === "paid_pending_plan" && quiet){
+          // Pagado de verdad: ya no es una vuelta silenciosa.
+          writePendingPurchase(purchaseId, false, sessionHint, true);
+        }
+        await new Promise(res => setTimeout(res, CHECKOUT_POLL_MS));
+      }
+      if(quiet && !awaitingPayment()) return;
+      // La compra pendiente NO se borra: sigue habiendo un cobro por resolver y al
+      // volver a entrar se retoma. Y el mensaje no invita a comprar otra vez.
+      await refreshPlanSurfaces();
+      notice("Tu pago sigue en proceso. En cuanto se confirme, Plus se activa solo. "
+        + "No hace falta pagar otra vez.");
+      scheduleCheckoutRecheck(purchaseId, sessionHint);
+    } finally {
+      checkoutRecoveryActive = false;
+    }
+  }
+  // Una pregunta al servidor. "done" = ya se dijo lo que había que decir.
+  async function checkPurchaseOnce(purchaseId, sessionHint){
+    let status = null;
+    try{ status = await readCheckoutStatus(purchaseId, sessionHint); }catch(e){}
+    if(status && status.status === "paid"){
+      invalidatePlan();
+      const plan = await loadPlan({ force: true });
+      // MON-003 · confirmación visible: el servidor dice que ESTA compra es la
+      // que dio Plus al torneo actual. Entonces —y sólo entonces— se recuerda
+      // para la tarjeta "Pago completado", que queda al inicio del panel Admin
+      // hasta que se descarte (ya no un aviso que se va a los 6 segundos).
+      if(plan && plan.plan === "PLUS" && plan.confirmedPurchaseId === purchaseId){
+        rememberConfirmedPurchase(purchaseId);
+        // "Estamos confirmando tu pago…" ya no es verdad: se retira en el acto,
+        // para que no conviva con la tarjeta de pago completado.
+        hideNotice();
+        clearPendingPurchase();
+        await refreshPlanSurfaces();
+        return "done";
+      }
+      // Plus, pero no por esta compra (p. ej. un grant del operador mientras se
+      // pagaba): no se afirma "Pago completado" de algo que no lo dio.
+      if(plan && plan.plan === "PLUS"){
+        clearPendingPurchase();
+        await refreshPlanSurfaces();
+        notice("Tu quiniela ya tiene Plus.");
+        return "done";
+      }
+      if(status.needsAttention){
+        clearPendingPurchase();
+        await refreshPlanSurfaces();
+        notice("Tu pago se registró, pero necesitamos revisarlo. Te contactamos.");
+        return "done";
+      }
+      // Pagado y todavía sin Plus confirmado: se sigue esperando.
+      return "paid_pending_plan";
+    }
+    if(status && status.status === "not_found"){
+      clearPendingPurchase();
+      await refreshPlanSurfaces();
+      return "done";
+    }
+    if(status && (status.status === "failed" || status.status === "cancelled" || status.status === "expired")){
+      clearPendingPurchase();
+      await refreshPlanSurfaces();
+      notice("El pago no se completó. No se hizo ningún cargo.");
+      return "done";
+    }
+    return "pending";
+  }
+  // MON-003 · la tarjeta "Pago completado". Se recuerda la compra que el
+  // SERVIDOR confirmó como la que dio Plus (nunca por los parámetros de vuelta),
+  // y se muestra mientras el servidor lo siga diciendo y no se haya descartado.
+  // Descartada, no vuelve por esa misma compra. Si el almacenamiento no está
+  // disponible, vive en memoria mientras dure la página.
+  let confirmedPurchaseMem = null;
+  const confirmedPurchaseSeenMem = new Set();
+  function confirmedPurchaseKey(){ return "qracks_pago_ok_" + (SLUG || "root"); }
+  function confirmedPurchaseSeenKey(id){ return "qracks_pago_visto_" + id; }
+  function confirmedPurchaseSeen(id){
+    if(confirmedPurchaseSeenMem.has(id)) return true;
+    try{ return window.localStorage.getItem(confirmedPurchaseSeenKey(id)) === "1"; }catch(e){ return false; }
+  }
+  function rememberConfirmedPurchase(id){
+    if(typeof id !== "string" || !id || confirmedPurchaseSeen(id)) return;
+    confirmedPurchaseMem = id;
+    try{ window.localStorage.setItem(confirmedPurchaseKey(), id); }catch(e){}
+  }
+  function storedConfirmedPurchase(){
+    try{ const v = window.localStorage.getItem(confirmedPurchaseKey()); if(v) return v; }catch(e){}
+    return confirmedPurchaseMem;
+  }
+  function dismissConfirmedPurchase(id){
+    confirmedPurchaseSeenMem.add(id);
+    confirmedPurchaseMem = null;
+    try{
+      window.localStorage.setItem(confirmedPurchaseSeenKey(id), "1");
+      window.localStorage.removeItem(confirmedPurchaseKey());
+    }catch(e){}
+  }
+  // La compra cuya tarjeta toca mostrar ahora, o null.
+  function confirmedPurchaseToShow(plan){
+    const id = storedConfirmedPurchase();
+    if(!id || confirmedPurchaseSeen(id)) return null;
+    if(!plan || plan.plan !== "PLUS" || plan.confirmedPurchaseId !== id) return null;
+    return id;
+  }
+  function paymentConfirmedHtml(plan){
+    const id = confirmedPurchaseToShow(plan);
+    if(!id) return "";
+    return `<div class="card" id="qz-payment-confirmed" role="status" data-purchase="${esc(id)}" style="border-color:var(--gold);background:#FFF9EC;">
+      <p style="margin:0 0 10px;font-weight:700;">✅ Pago completado. Tu quiniela ya tiene Plus.</p>
+      <button class="btn btn-gold btn-sm" data-payment-confirmed-dismiss>Entendido</button>
+    </div>`;
+  }
+  function wirePaymentConfirmed(scope){
+    if(!scope) return;
+    const btn = scope.querySelector("[data-payment-confirmed-dismiss]");
+    if(!btn) return;
+    btn.addEventListener("click", () => {
+      const card = scope.querySelector("#qz-payment-confirmed");
+      const id = card && card.dataset.purchase;
+      if(id) dismissConfirmedPurchase(id);
+      if(card) card.remove();
+    });
+  }
+
+  function scheduleCheckoutRecheck(purchaseId, sessionHint){
+    clearTimeout(checkoutRecheckTimer);
+    checkoutRecheckTimer = setTimeout(async () => {
+      if(!awaitingPayment()) return;
+      const r = await checkPurchaseOnce(purchaseId, sessionHint);
+      if(r !== "done") scheduleCheckoutRecheck(purchaseId, sessionHint);
+    }, CHECKOUT_RECHECK_MS);
+  }
+
+  async function resolveCheckoutReturn(){
+    if(ROUTE !== "quiniela" || !SLUG || !meta) return;
+    let params;
+    try{ params = new URLSearchParams(window.location.search); }catch(e){ params = new URLSearchParams(); }
+    let cancelled = !!params.get("qz_pago_cancelado");
+    let purchaseId = params.get("qz_pago");
+    // La pista del id de sesión que rellena el proveedor en la URL de vuelta.
+    // Acelera el rescate cuando el id nunca se llegó a guardar aquí; el servidor
+    // la verifica y funciona igual si no llega.
+    let sessionHint = params.get("qz_sess");
+    if(typeof sessionHint === "string" && !/^cs_[A-Za-z0-9_]{1,200}$/.test(sessionHint)){
+      sessionHint = null;
+    }
+    // Si la URL no trae nada puede seguir habiendo una vuelta pendiente de esta
+    // quiniela: es lo que permite retomarla cuando la app pidió identificarse
+    // antes de poder actuar.
+    // Volver por la success_url es la señal de que el pago se hizo: el
+    // proveedor sólo redirige ahí al completarse. Esa vuelta espera confirmación.
+    let awaiting = !!purchaseId && !cancelled;
+    if(!purchaseId && !cancelled){
+      const pending = readPendingPurchase();
+      if(!pending) return;
+      purchaseId = pending.id;
+      cancelled = pending.cancelled;
+      awaiting = !!pending.awaiting;
+      if(!sessionHint && typeof pending.sess === "string") sessionHint = pending.sess;
+    }
+    // La vuelta se PERSISTE antes de tocar la URL. Al volver del pago, la app
+    // puede preguntar "¿Eres Ana?" antes de saber quién vuelve; si el
+    // parámetro se consumiera ahí, se perdería para siempre y el organizador
+    // se quedaría pagado y sin Plus, o sin saber que no se le cobró.
+    writePendingPurchase(purchaseId, cancelled, sessionHint, awaiting);
+    // Y la barra se limpia: no aporta nada al recargar y queda fea si alguien
+    // comparte el enlace.
+    try{
+      const url = new URL(window.location.href);
+      let tocada = false;
+      for(const k of ["qz_pago", "qz_pago_cancelado", "qz_sess"]){
+        if(url.searchParams.has(k)){ url.searchParams.delete(k); tocada = true; }
+      }
+      if(tocada) window.history.replaceState({}, "", url.toString());
+    }catch(e){}
+    // La credencial en memoria NO sirve de portero aquí: volver del pago es una
+    // navegación completa, y `ownerPasswordCache`/`currentUserPinCache` mueren
+    // con la página. Lo que SÍ sobrevive es la cookie de sesión, que es
+    // exactamente con lo que el servidor autoriza. Gatear por la credencial
+    // dejaba a todo organizador que pagara viendo cómo no pasaba nada.
+    const pareceAdmin = !!adminOrOwnerCred() || !!(currentUser && currentUser.isAdmin);
+    if(!pareceAdmin) return;
+    if(cancelled){
+      clearPendingPurchase();
+      notice("No se hizo ningún cargo. Puedes intentarlo cuando quieras.");
+      return;
+    }
+    if(!purchaseId) return;
+    // Un checkout que se abrió y del que no se volvió (quizá se abandonó) se
+    // comprueba en SILENCIO: si resulta pagado, se dice; si no, la pantalla no
+    // se pone en espera ni asegura que "sigue en proceso".
+    await runCheckoutRecovery(purchaseId, sessionHint, { quiet: !awaiting });
+  }
+
   // Any write that consumes capacity can change these numbers, so the cached
   // copy is dropped rather than left to go quietly out of date.
-  function invalidatePlan(){ planState = null; }
+  function invalidatePlan(){ planState = null; planGen++; }
+
+  // Lo que depende del plan —la franja del plan en Admin y la etiqueta del
+  // encabezado— se refresca SIN repintar la aplicación entera. La vuelta del pago
+  // llega mientras el panel de Admin puede estar a medio pintar (sus vistas son
+  // asíncronas), y un render() completo en ese instante le cambiaba el DOM por
+  // debajo.
+  async function refreshPlanSurfaces(){
+    const plan = await loadPlan().catch(() => null);
+    paintPlanBadge(plan);
+    await renderPlanStrip().catch(() => {});
+    await renderSettingsPlan().catch(() => {});
+  }
+
+  function paintPlanBadge(plan){
+    const el = document.getElementById("qz-plan-badge");
+    if(el) el.hidden = !(plan && plan.plan === "PLUS");
+  }
 
   // Shown once per threshold per quiniela, and only to the Admin. "Once"
   // survives a reload on purpose: re-arming the same warning every time the
@@ -4791,6 +5278,16 @@
     });
   }
 
+  // MON-003: el estado de espera. Persistente mientras el pago no se confirme
+  // (sobrevive a recargar en este dispositivo) y sin ningún botón de pago.
+  function paymentAwaitingHtml(plan){
+    if(!awaitingPayment() || (plan && plan.plan === "PLUS")) return "";
+    return `<div class="card" id="qz-payment-awaiting" role="status" style="border-color:var(--gold);background:#FFF9EC;">
+      <p style="margin:0;"><strong>⏳ Estamos confirmando tu pago.</strong></p>
+      <p class="muted" style="margin:6px 0 0;">En cuanto se confirme, tu quiniela tendrá Plus. No hace falta pagar otra vez.</p>
+    </div>`;
+  }
+
   function planStatusHtml(plan){
     if(!plan) return "";
     const bits = [`Plan ${esc(plan.planLabel)}`];
@@ -4799,19 +5296,75 @@
     }
     if(plan.rounds && plan.rounds.applies){
       bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
+    }else if(plan.coverage && plan.coverage.scope){
+      // Plus: no hay cuenta de jornadas que mostrar, porque cubre el torneo
+      // entero, fases finales incluidas. La frase es la del servidor.
+      bits.push(`cubre ${esc(plan.coverage.scope)}`);
     }else if(plan.rounds && plan.competition && plan.competition.bound){
-      // Plus con torneo: no hay cuenta de jornadas que mostrar, porque cubre
-      // el torneo entero, final incluida.
+      // Un plan especial ligado a un torneo: tampoco cuenta jornadas.
       bits.push("cubre este torneo completo");
     }
-    return `<p class="muted" id="qz-plan-status" style="margin:0 0 12px;">${bits.join(" · ")}</p>`;
+    const cta = planOfferCtaHtml(plan, "plan_strip");
+    const line = `<p class="muted" id="qz-plan-status" style="margin:0;">${bits.join(" · ")}</p>`;
+    return cta
+      ? `<div class="qz-plan-row">${line}${cta}</div>`
+      : line.replace('style="margin:0;"', 'style="margin:0 0 12px;"');
+  }
+
+  // MON-003. Qué da Plus, en UNA frase para la franja, Ajustes y la hoja: la del
+  // servidor (`coverageText`, de competitionCoverage.js), según la competencia
+  // seleccionada — "hasta 50 personas y el torneo completo, incluida la
+  // liguilla". Ningún número de jornadas: Plus no tiene tope dentro de su torneo.
+  function plusPitch(offer){
+    if(!offer) return "";
+    const text = typeof offer.coverageText === "string" && offer.coverageText
+      ? offer.coverageText
+      : `hasta ${offer.participantLimit} personas y el torneo completo`;
+    return `Con Plus: ${text}.`;
+  }
+
+  // MON-003. La puerta FIJA a la oferta Plus. Antes la oferta sólo aparecía al
+  // quedar 1 lugar o 1 jornada (y una sola vez), al llenarse la quiniela o al
+  // chocar con el límite: un Admin con "1 de 10 personas" no tenía por dónde
+  // contratar Plus. Aparece cuando el SERVIDOR dice que hay oferta
+  // (`upgrade.available`) y ningún pago espera confirmación. Cómo se paga —y si
+  // se puede pagar ahora— lo sigue decidiendo el servidor dentro de la hoja
+  // (`offer.checkout`): el botón de pago sólo existe en modo tarjeta.
+  function planOfferCtaHtml(plan, source){
+    if(!plan || !plan.upgrade || !plan.upgrade.available) return "";
+    if(awaitingPayment()) return "";
+    return `<button class="btn btn-gold btn-sm" data-plan-open-offer="${esc(source)}">Ver plan Plus</button>`;
+  }
+
+  function wirePlanOfferCta(scope){
+    if(!scope) return;
+    scope.querySelectorAll("[data-plan-open-offer]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try{
+          // Fresca, por la misma razón que el aviso (Correction 09): el modo de
+          // compra puede haber cambiado desde que se pintó el botón.
+          const fresco = await loadPlan({ force: true });
+          if(!fresco){
+            toast("No pudimos cargar las opciones de tu plan ahora mismo. Intenta de nuevo en unos minutos.");
+            return;
+          }
+          await showUpgradeSheet(fresco.upgrade, { reason: null, plan: fresco.plan, source: btn.dataset.planOpenOffer });
+        } finally {
+          btn.disabled = false;
+          // Lo que la hoja haya cambiado (un pago que quedó esperando) se refleja.
+          refreshPlanSurfaces().catch(() => {});
+        }
+      });
+    });
   }
 
   // Fires at exactly one place left. Deliberately not a modal: the Admin is
   // mid-task and nothing is blocked yet.
   function planWarningHtml(plan){
     if(!plan) return "";
-    const offer = plan.upgrade && plan.upgrade.available ? plan.upgrade : null;
+    // MON-003: con un pago esperando confirmación no se ofrece nada que vender.
+    const offer = plan.upgrade && plan.upgrade.available && !awaitingPayment() ? plan.upgrade : null;
     const parts = [];
     if(plan.participants && plan.participants.remaining === 1 && !planWarningSeen("people")){
       parts.push({
@@ -4855,9 +5408,16 @@
       });
     });
     scope.querySelectorAll("[data-plan-warning-cta]").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         markPlanWarningSeen(btn.dataset.planWarningCta);
-        showUpgradeSheet(planState && planState.upgrade, { reason: null });
+        // Correction 09: la oferta se lee FRESCA al abrir la hoja. El modo de
+        // compra (tarjeta / respaldo manual / bloqueado) puede haber cambiado
+        // desde que se pintó el aviso —un deploy que configura la pasarela, un
+        // pago que se abrió en otra pestaña— y una copia vieja podría ofrecer el
+        // canal equivocado.
+        const fresco = await loadPlan({ force: true });
+        const plan = fresco || planState;
+        showUpgradeSheet(plan && plan.upgrade, { reason: null, plan: plan && plan.plan });
       });
     });
   }
@@ -4871,16 +5431,48 @@
     const c = ctx || {};
     const offer = upgrade && upgrade.available ? upgrade : null;
     const money = (n) => `$${Number(n).toLocaleString("es-MX")} MXN`;
-    const unlocks = offer
-      ? `Con Plus: hasta ${offer.participantLimit} personas y ${offer.roundLimit} jornadas.`
-      : "";
-    // Honest about the mechanism. There is no checkout yet (that is MON-003),
-    // so the button must not look like one.
-    const howTo = offer
-      ? (offer.contact
+    // Qué cubre Plus lo dice el servidor (offer.coverageText), no esta pantalla.
+    const unlocks = plusPitch(offer);
+    // MON-003 Correction 09. CÓMO se compra lo decide el servidor
+    // (`offer.checkout`), no esta pantalla. MON-002 escribía aquí "escríbenos y
+    // activamos Plus" siempre, porque entonces no había checkout; con el pago con
+    // tarjeta funcionando eso contradecía al propio botón.
+    //   card    -> el camino normal: el botón abre el pago con tarjeta.
+    //   manual  -> la pasarela no está configurada y nada puede estar cobrando:
+    //              el respaldo es escribirle a QRACKS. Sin botón de pago.
+    //   blocked -> la pasarela no está disponible y PUEDE haber un pago anterior
+    //              abierto: ni botón ni contacto; pagar por otro lado sería
+    //              arriesgar un segundo cobro.
+    // Un valor desconocido se trata como tarjeta: nunca se cae en el copy manual
+    // por omisión.
+    //   unavailable -> (Correction 10) la pasarela está mal configurada: no es
+    //              una decisión comercial, así que ni botón ni contacto.
+    // MON-003: con un pago esperando confirmación, la hoja espera: ni botón ni
+    // otra vía. Cualquier modo cede ante esto.
+    const esperando = !!awaitingPayment();
+    const mode = !offer ? null : esperando ? "awaiting"
+      : (["card", "manual", "blocked", "unavailable"].includes(offer.checkout) ? offer.checkout : "card");
+    // Sin oferta. Si la quiniela YA tiene un plan por encima de Gratis, no hay
+    // nada más que comprar y lo honesto es la conversación ("escríbenos" para un
+    // grupo más grande). Si sigue en Gratis, que no haya oferta sólo puede ser que
+    // no se pudo leer: decir "escríbenos" ahí sería mandar a pedir a mano algo
+    // que se compra en línea (Correction 09).
+    const noOfferText = (c.plan && c.plan !== "FREE")
+      ? (c.noOffer || "Escríbenos para revisar las opciones de tu quiniela.")
+      : "No pudimos cargar las opciones de tu plan ahora mismo. Intenta de nuevo en unos minutos.";
+    const manualHowTo = "El pago con tarjeta no está disponible por ahora. "
+      + (offer && offer.contact
           ? `Escríbenos a ${offer.contact} y activamos Plus en esta quiniela.`
-          : "Escríbenos y activamos Plus en esta quiniela.")
-      : "";
+          : "Escríbenos y activamos Plus en esta quiniela.");
+    const howTo = !offer ? ""
+      : mode === "awaiting"
+        ? "Estamos confirmando tu pago. En cuanto se confirme, tu quiniela tendrá Plus. No hace falta pagar otra vez."
+      : mode === "manual" ? manualHowTo
+      : mode === "unavailable"
+        ? "El pago con tarjeta no está disponible en este momento. Vuelve a intentarlo más tarde."
+      : mode === "blocked"
+        ? "Ahora mismo no podemos abrir un pago nuevo: puede haber uno anterior todavía abierto. Si ya empezaste uno, termínalo en esa pestaña; si no, vuelve a intentarlo más tarde."
+        : "Pagas con tarjeta en la página segura de Stripe. Plus se activa en esta quiniela en cuanto se confirma el pago.";
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "qz-modal-overlay";
@@ -4894,12 +5486,12 @@
               <p><strong>${esc(money(offer.priceMXN))}, un solo pago.</strong> ${esc(offer.scope || "")}</p>
               <p class="muted">${esc(howTo)}</p>
             ` : `
-              <p class="muted">${esc(c.noOffer || "Escríbenos para revisar las opciones de tu quiniela.")}</p>
+              <p class="muted">${esc(noOfferText)}</p>
             `}
           </div>
           <div class="qz-modal-actions">
             <button class="qz-modal-cancel" id="qz-upgrade-close">Cerrar</button>
-            ${offer ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}
+            ${mode === "card" ? `<button class="qz-modal-confirm qz-modal-not-destructive" id="qz-upgrade-cta">Pasar a Plus</button>` : ``}
           </div>
         </div>
       `;
@@ -4917,14 +5509,78 @@
       overlay.querySelector("#qz-upgrade-close").addEventListener("click", () => cleanup(false));
       const cta = overlay.querySelector("#qz-upgrade-cta");
       if(cta){
-        cta.addEventListener("click", () => {
+        cta.addEventListener("click", async () => {
           // `source` is a real column; a field the table has no room for
           // would simply be dropped, which is not instrumentation.
-          trackEvent("upgrade_cta_clicked", { source: c.limitType ? "paywall_" + c.limitType : "paywall" });
+          trackEvent("upgrade_cta_clicked", { source: c.source || (c.limitType ? "paywall_" + c.limitType : "paywall") });
+          cta.disabled = true;
+          cta.textContent = "Abriendo el pago…";
+          // MON-003: el checkout lo crea el SERVIDOR. Esta pantalla no conoce
+          // el precio que se va a cobrar, ni el torneo, ni el plan — sólo pide
+          // que se prepare el pago y sigue el enlace que le devuelven.
+          const started = await startCheckout();
+          // Un enlace tiene que ser un enlace. Sin esta comprobación,
+          // `location.href = null` manda al navegador a la cadena "null" y el
+          // organizador acaba en una página que no existe tras pulsar "Pasar a
+          // Plus". El servidor ya no lo devuelve nulo; esto es el cinturón.
+          if(started && typeof started.checkoutUrl === "string"
+            && /^https:\/\/[^\s]+$/.test(started.checkoutUrl)){
+            cleanup(true);
+            window.location.href = started.checkoutUrl;
+            return;
+          }
+          cta.disabled = false;
+          cta.textContent = "Pasar a Plus";
+          // No se abrió ningún pago: se cierra la hoja y se dice por qué, sin
+          // fingir un cobro. Qué se ofrece a cambio depende del motivo (abajo).
           cleanup(true);
-          // Deliberately not a fake checkout: it restates the real next step
-          // so the Admin leaves knowing exactly what happens now.
-          toast(howTo);
+
+          const motivo = started && started.reason;
+          // CORRECTION 05 (P1-3). "Hay un pago en curso" NO es un error del que
+          // reintentar: es un cobro que puede estar hecho ya. Se cierra la hoja y
+          // se pasa a CONFIRMARLO, que es lo que el servidor pedía al devolver el
+          // id de la compra. Invitar a abrir otro checkout aquí era invitar a un
+          // segundo cargo.
+          if(motivo === "payment_in_progress" && started.purchaseId){
+            await runCheckoutRecovery(started.purchaseId, null);
+            return;
+          }
+          // Lo mismo si el cobro ya quedó registrado y sólo falta que se refleje.
+          if(motivo === "payment_already_recorded"){
+            const pend = readPendingPurchase();
+            if(pend && pend.id){
+              await runCheckoutRecovery(pend.id, pend.sess || null);
+              return;
+            }
+            invalidatePlan();
+            const tras = await loadPlan({ force: true });
+            await render();
+            // Lo que se dice sale del plan RECIÉN leído: si ya es Plus, eso; si
+            // todavía no, que el pago consta y se está terminando de aplicar. El
+            // contacto queda sólo como soporte para una anomalía, nunca como la
+            // forma de comprar.
+            toast(tras && tras.plan === "PLUS"
+              ? "Tu quiniela ya tiene Plus."
+              : "Tu pago ya está registrado y estamos terminando de activarlo. Si en unos minutos no ves Plus, escríbenos.");
+            return;
+          }
+          // "Ya se está preparando" no es un error: es otra pestaña —o el clic
+          // anterior— en mitad del proceso. El servidor sólo permite un alta a
+          // la vez por torneo, que es lo que impide dos cobros.
+          // `unavailable` sólo llega cuando el servidor comprobó que la pasarela
+          // no está configurada Y que nada del torneo puede estar cobrando (si
+          // algo pudiera, contesta `checkout_unavailable`). Sólo ahí cabe el
+          // respaldo manual.
+          toast(motivo === "unavailable"
+            ? manualHowTo
+            : (motivo === "replacement_in_progress" || motivo === "checkout_stale_observation")
+              ? "Ya estamos preparando tu pago. Espera unos segundos y vuelve a intentarlo."
+              : motivo === "payments_misconfigured"
+                ? "El pago con tarjeta no está disponible en este momento. Vuelve a intentarlo más tarde."
+              : motivo === "checkout_unavailable"
+                // Sin invitar a pagar por otro lado: puede haber un pago abierto.
+                ? "Todavía no podemos abrir un pago nuevo. Si ya empezaste uno, termínalo en esa pestaña; si no, vuelve a intentarlo más tarde."
+                : "No pudimos abrir el pago. Inténtalo de nuevo en un momento.");
         });
         cta.focus();
       } else {
@@ -4942,6 +5598,7 @@
     const body = errorBody || {};
     if(body.error === "plan_participant_limit_reached"){
       return showUpgradeSheet(body.upgrade, {
+        plan: body.plan,
         limitType: "participants",
         headline: Number.isFinite(body.limit)
           ? `Tu quiniela llegó a ${body.limit} personas`
@@ -4954,6 +5611,7 @@
     }
     if(body.error === "plan_lifecycle_limit_reached"){
       return showUpgradeSheet(body.upgrade, {
+        plan: body.plan,
         limitType: "rounds",
         headline: Number.isFinite(body.limit)
           ? `Llegaste a ${body.limit} jornada${body.limit === 1 ? "" : "s"}`
@@ -4975,10 +5633,57 @@
     const plan = await loadPlan();
     const liveStrip = document.getElementById("qz-plan-strip");
     if(!liveStrip || !plan) return;
+    // La confirmación del pago va al INICIO del panel —antes del título y del
+    // consejo—: es lo que el organizador vino a ver.
+    const slot = document.getElementById("qz-payment-confirmed-slot");
+    if(slot){
+      slot.innerHTML = paymentConfirmedHtml(plan);
+      wirePaymentConfirmed(slot);
+    }
     liveStrip.innerHTML = tournamentStatusHtml(plan) + planStatusHtml(plan)
-      + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
+      + paymentAwaitingHtml(plan) + tournamentEndedCardHtml(plan) + planWarningHtml(plan);
     wirePlanWarnings(liveStrip);
+    wirePlanOfferCta(liveStrip);
     wireTournamentActions(liveStrip);
+  }
+
+  // MON-003. El plan también vive en Ajustes: es donde un Admin busca "qué plan
+  // tengo y cómo lo mejoro". Mismo origen que la franja (loadPlan, del servidor)
+  // y el mismo botón; no depende de la contraseña de dueño porque el plan es
+  // cosa del Admin (el servidor ya lo exige para leerlo y para pagar).
+  function settingsPlanCardHtml(){
+    return `<div class="card" id="qz-settings-plan">
+      <div class="section-title"><span class="display" style="font-size:18px;">Tu plan</span></div>
+      <div id="qz-settings-plan-body"><p class="muted" style="margin:0;">Cargando tu plan…</p></div>
+    </div>`;
+  }
+
+  async function renderSettingsPlan(){
+    if(!document.getElementById("qz-settings-plan-body")) return;
+    if(!(currentUser && currentUser.isAdmin)) return;
+    const plan = await loadPlan().catch(() => null);
+    const live = document.getElementById("qz-settings-plan-body");
+    if(!live) return;
+    if(!plan || !plan.planLabel){
+      live.innerHTML = `<p class="muted" style="margin:0;">No pudimos cargar tu plan ahora mismo. Intenta de nuevo en unos minutos.</p>`;
+      return;
+    }
+    const bits = [`Plan ${esc(plan.planLabel)}`];
+    if(plan.participants) bits.push(`${plan.participants.used} de ${plan.participants.limit} persona${plan.participants.limit === 1 ? "" : "s"}`);
+    if(plan.rounds && plan.rounds.applies) bits.push(`${plan.rounds.used} de ${plan.rounds.limit} jornada${plan.rounds.limit === 1 ? "" : "s"}`);
+    const offer = plan.upgrade && plan.upgrade.available ? plan.upgrade : null;
+    const pitch = plusPitch(offer);
+    const tienePlus = plan.plan === "PLUS"
+      ? (plan.coverage && plan.coverage.text ? `Tu quiniela tiene Plus: ${plan.coverage.text}.` : "Tu quiniela tiene Plus.")
+      : "";
+    live.innerHTML = `
+      <p style="margin:0 0 8px;" id="qz-settings-plan-status">${bits.join(" · ")}</p>
+      ${tienePlus ? `<p class="muted" style="margin:0;" id="qz-settings-plan-plus">${esc(tienePlus)}</p>` : ``}
+      ${paymentAwaitingHtml(plan)}
+      ${pitch && !awaitingPayment() ? `<p class="muted" style="margin:0 0 10px;">${esc(pitch)}</p>` : ``}
+      ${planOfferCtaHtml(plan, "settings")}
+    `;
+    wirePlanOfferCta(live);
   }
 
   async function renderAdmin(main){
@@ -4991,6 +5696,7 @@
       {id:"dueno", label:"Ajustes"},
     ];
     main.innerHTML = `
+      <div id="qz-payment-confirmed-slot"></div>
       ${screenHeaderHtml("admin", "Panel de administración")}
       <div id="qz-plan-strip"></div>
       <div class="qz-tabs" id="qz-admin-subtabs" style="margin-bottom:14px;">
@@ -5283,8 +5989,11 @@
           }
         );
         if(wantsUpgrade){
-          if(plan.upgrade && plan.upgrade.available){
-            await showUpgradeSheet(plan.upgrade, {
+          // Fresca, por la misma razón que el aviso (Correction 09).
+          const fresco = (await loadPlan({ force: true })) || plan;
+          if(fresco.upgrade && fresco.upgrade.available){
+            await showUpgradeSheet(fresco.upgrade, {
+              plan: fresco.plan,
               limitType: "participants",
               headline: `Tu quiniela llegó a ${plan.participants.limit} personas`,
               alternative: "Es el máximo de tu plan. Puedes quitar a alguien de la lista para hacer espacio.",
@@ -6712,8 +7421,10 @@
   }
 
   function renderAdminOwner(body){
+    // Los planes son de las quinielas con link propio; la raíz heredada no tiene.
+    const planCard = ROUTE === "quiniela" && SLUG && currentUser && currentUser.isAdmin ? settingsPlanCardHtml() : "";
     if(!ownerUnlocked){
-      body.innerHTML = `
+      body.innerHTML = planCard + `
         <div class="card">
           <div class="eyebrow">Ajustes del dueño</div>
           <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de dueño.</p>
@@ -6736,6 +7447,7 @@
         }
       });
       enterSubmits("qz-owner-pw", "qz-owner-unlock");
+      renderSettingsPlan();
       // Recuperación puntual: solo para quien ya es admin de esta quiniela.
       // Vuelve a pedir el PIN (nunca lo guarda en cookies/localStorage) y lo
       // deja únicamente en memoria (currentUserPinCache, el mismo mecanismo
@@ -6764,7 +7476,7 @@
       }
       return;
     }
-    body.innerHTML = `
+    body.innerHTML = planCard + `
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:18px;">Configuración general</span></div>
         <div class="eyebrow">Nombre del grupo</div>
@@ -6776,7 +7488,13 @@
         <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
         <div class="field">
           <select id="qz-sportsdb-league">
-            ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${(meta.settings.sportsdbLeagueId || "4350") === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
+            ${/* MON-003 · cobertura: sin liga guardada se muestra "Sin definir", no
+                 Liga MX. Antes el selector caía en Liga MX por defecto y "Guardar
+                 ajustes" (por cambiar el nombre o la cuota) la guardaba: una
+                 quiniela manual pasaba a ser Liga MX sin que nadie lo eligiera, y
+                 Plus empezaba a decir "incluida la liguilla". */ ""}
+            <option value="" ${meta.settings.sportsdbLeagueId ? "" : "selected"}>Sin definir</option>
+            ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${meta.settings.sportsdbLeagueId === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
           </select>
         </div>
         <div class="eyebrow">Temporada para resultados automáticos (TheSportsDB)</div>
@@ -6833,6 +7551,7 @@
         <button class="btn btn-ghost" data-start-new-tournament>Empezar un torneo nuevo sin cerrar este</button>
       </div>
     `;
+    renderSettingsPlan();
     wireTournamentActions(body);
     (async () => {
       const plan = await loadPlan();
@@ -7250,7 +7969,7 @@
           <div class="login-title display">Crea tu quiniela</div>
           <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
-          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Para avisarte cuando sea momento de realizar el pago" value="${esc(draft.contact)}"></div>
+          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Por si necesitamos avisarte algo sobre tu quiniela" value="${esc(draft.contact)}"></div>
           <div class="field">
             <label>Liga o competencia (opcional)</label>
             <select id="qz-c-league">
@@ -7357,6 +8076,54 @@
     const days = Math.floor(hours / 24);
     return `hace ${days} día${days === 1 ? "" : "s"}`;
   }
+  // Qué le falta a Payments, en palabras. Los códigos vienen del servidor y
+  // nunca llevan valores de credenciales.
+  function paymentsProblemText(code){
+    const [kind, v, why] = String(code).split(":");
+    const vars = { STRIPE_SECRET_KEY: "la clave secreta de Stripe (STRIPE_SECRET_KEY)",
+      STRIPE_WEBHOOK_SECRET: "el signing secret del webhook (STRIPE_WEBHOOK_SECRET)",
+      PUBLIC_BASE_URL: "la URL pública (PUBLIC_BASE_URL)" };
+    const nom = vars[v] || v || "";
+    const razones = {
+      contains_whitespace: "tiene espacios dentro", looks_like_publishable_key: "parece una clave publicable (pk_), no la secreta",
+      looks_like_webhook_secret: "parece el signing secret del webhook", looks_like_api_key: "parece una clave de API, no el signing secret",
+      same_as_secret_key: "es igual a la clave secreta", unparseable: "no es una URL válida",
+      not_http_or_https: "no empieza por https://", has_credentials: "lleva usuario o contraseña",
+      has_path: "lleva una ruta: debe ser sólo el origen, p. ej. https://qracks.net",
+      has_query_or_fragment: "lleva ? o #", http_only_for_localhost: "debe ser https (http sólo en localhost)",
+      live_key_needs_public_https: "con claves live debe ser https y pública",
+    };
+    if(kind === "missing") return "Falta " + nom + ".";
+    if(kind === "blank") return nom.charAt(0).toUpperCase() + nom.slice(1) + " está en blanco.";
+    if(kind === "malformed" || kind === "invalid") return nom.charAt(0).toUpperCase() + nom.slice(1) + ": " + (razones[why] || why) + ".";
+    if(kind === "provider_rejected") return "Stripe rechazó " + nom + ".";
+    if(kind === "provider_mode_mismatch") return "El modo (test/live) de " + nom + " no coincide con lo que dice Stripe.";
+    return String(code);
+  }
+  function paymentsReadinessHtml(p){
+    if(!p){
+      return `<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">❔</span><strong>Desconocido</strong></div>
+        <p class="muted" style="margin:6px 0 0;font-size:13px;">No se pudo leer el estado de los pagos. Recarga el panel.</p>`;
+    }
+    const titulo = p.state === "ready" ? ["✅", "Listo para cobrar"]
+      : p.state === "disabled" ? ["⏸️", "Desactivado (sin credenciales de Stripe)"]
+      : ["⛔", "Mal configurado — no se cobra nada"];
+    const lineas = [];
+    if(p.mode) lineas.push("Modo: <strong>" + esc(p.mode === "live" ? "live (dinero real)" : p.mode === "test" ? "test (sandbox)" : "desconocido") + "</strong>");
+    if(p.returnBase) lineas.push("El pago vuelve a: <strong>" + esc(p.returnBase) + "</strong>");
+    if(p.webhookUrl) lineas.push("URL del webhook en Stripe: <code>" + esc(p.webhookUrl) + "</code>");
+    if(p.state === "ready" && p.provider) lineas.push("Clave comprobada con Stripe: " + esc(
+      p.provider.status === "ok" ? "sí" : p.provider.status === "unreachable" ? "Stripe no respondió al arrancar" : "pendiente"));
+    if(p.webhook && (p.webhook.verified || p.webhook.rejected)){
+      lineas.push("Webhooks: " + esc(String(p.webhook.verified)) + " verificados, " + esc(String(p.webhook.rejected)) + " con firma inválida"
+        + (p.webhook.rejected && !p.webhook.verified ? " — revisa que el signing secret sea el de ESTE destino" : ""));
+    }
+    return `<div style="display:flex;align-items:center;gap:8px;" data-payments-state="${esc(p.state)}"><span style="font-size:18px;">${titulo[0]}</span><strong>${esc(titulo[1])}</strong></div>
+      ${(p.problems || []).length ? `<ul style="margin:8px 0 0 18px;font-size:13px;">${p.problems.map(c => `<li>${esc(paymentsProblemText(c))}</li>`).join("")}</ul>` : ``}
+      ${lineas.length ? `<p class="muted" style="margin:8px 0 0;font-size:13px;line-height:1.6;">${lineas.join("<br>")}</p>` : ``}
+      ${p.state === "disabled" ? `<p class="muted" style="margin:6px 0 0;font-size:13px;">Los organizadores ven el contacto de respaldo. Para cobrar con tarjeta configura las tres variables del README.</p>` : ``}`;
+  }
+
   function sportsDataHealthHtml(health){
     if(!health || !health.lastOutcome){
       return `
@@ -7406,8 +8173,9 @@
       return;
     }
     root.innerHTML = `<div class="qz-main" style="padding-top:24px;max-width:1000px;"><p class="muted">Cargando quinielas…</p></div>`;
-    const [idx, settings, config, analytics, sportsHealth] = await Promise.all([
-      getPlatformIndex(), getPlatformSettings(), getCommercialConfig(), getPlatformAnalytics(), getPlatformSportsHealth()
+    const [idx, settings, config, analytics, sportsHealth, paymentsReady] = await Promise.all([
+      getPlatformIndex(), getPlatformSettings(), getCommercialConfig(), getPlatformAnalytics(), getPlatformSportsHealth(),
+      getPlatformPaymentsReadiness()
     ]);
     const rows = idx.quinielas.map(q => {
       // Counts now live on the index entry itself (kept fresh whenever that
@@ -7504,7 +8272,9 @@
         ? { p: config.free.participantLimit, r: config.free.manualRoundLimit }
         : { p: q.entitlement.participantLimit, r: q.entitlement.manualRoundLimit };
       const bound = !!q.entitlement.competitionIdentity;
-      const rounds = (plan !== "FREE" && bound) ? "torneo completo" : `${q.lifecycleRoundsConsumed || 0}/${limits.r} jornadas`;
+      // Misma regla que planLimits.roundBudgetApplies: Plus nunca cuenta
+      // jornadas (MON-003); un plan especial, sólo si no está ligado a torneo.
+      const rounds = (plan === "PLUS" || (plan !== "FREE" && bound)) ? "torneo completo" : `${q.lifecycleRoundsConsumed || 0}/${limits.r} jornadas`;
       return badge + `<br><span class="muted" style="font-size:11.5px;">${q.count === null ? "?" : q.count}/${limits.p} personas · ${esc(rounds)}</span>`;
     }
 
@@ -7597,6 +8367,10 @@
           </div>
           <p class="muted" style="margin-top:10px;font-size:12px;">Cada etapa muestra el total de eventos en esa ventana de tiempo. Estos conteos no representan un embudo de conversión — las etapas no comparten una unidad consistente entre sí, así que no se muestra ningún porcentaje entre ellas.</p>
         </div>
+        <div class="card" id="qz-payments-readiness">
+          <div class="eyebrow">Pagos (Stripe)</div>
+          ${paymentsReadinessHtml(paymentsReady)}
+        </div>
         <div class="card">
           <div class="eyebrow">Sports Data</div>
           ${sportsDataHealthHtml(sportsHealth)}
@@ -7608,7 +8382,7 @@
               ${rows.length ? rows.map(rowHtml).join("") : `<tr><td colspan="6" class="muted">Todavía no se ha creado ninguna quiniela.</td></tr>`}
             </tbody>
           </table>
-          <p class="muted" style="margin-top:8px;">"Activar Plus" otorga el plan y registra el cobro en la misma operación. "Ajuste manual" es para casos especiales (soporte, pruebas, promociones) y pide un motivo, que queda en el historial.</p>
+          <p class="muted" style="margin-top:8px;">"Activar Plus" es para pagos recibidos FUERA del pago con tarjeta: otorga el plan y registra el cobro en la misma operación. La compra normal la hace el organizador desde su quiniela. "Ajuste manual" es para casos especiales (soporte, pruebas, promociones) y pide un motivo, que queda en el historial.</p>
           <p class="muted" style="margin-top:2px;">👉 Desliza hacia los lados para ver toda la tabla en pantallas angostas.</p>
         </div>
         <div id="qz-inspect-panel"></div>
@@ -7622,13 +8396,13 @@
           </div>
           <div class="row2">
             <div class="field"><label>Plus — personas</label><input type="number" id="qz-c-plus-people" min="1" value="${config.plus.participantLimit}"></div>
-            <div class="field"><label>Plus — jornadas</label><input type="number" id="qz-c-plus-rounds" min="1" value="${config.plus.manualRoundLimit}"></div>
+            <div class="field"><label>Plus — jornadas</label><p class="muted" id="qz-c-plus-coverage" style="margin:6px 0 0;">El torneo completo de cada quiniela, con sus fases finales. Sin tope de jornadas. La frase por competencia la define el servidor.</p></div>
           </div>
           <div class="field"><label>Precio de Plus (MXN)</label><input type="number" id="qz-c-plus-price" min="0" value="${config.plus.priceMXN}"></div>
           <div class="field">
-            <label>Cómo te contactan para activar Plus</label>
+            <label>Contacto de respaldo si el pago con tarjeta no está disponible</label>
             <input type="text" id="qz-c-contact" placeholder="Ej. hola@qracks.mx o WhatsApp 55 1234 5678" value="${esc(config.upgradeContact || "")}">
-            <p class="muted" style="margin-top:4px;">Es lo que se le muestra al organizador cuando toca "Pasar a Plus". Déjalo vacío y solo dirá "escríbenos".</p>
+            <p class="muted" style="margin-top:4px;">La compra normal de Plus es con tarjeta. Este contacto sólo se le muestra al organizador si el pago en línea no está configurado, y nunca mientras pueda haber un pago anterior abierto. Déjalo vacío y solo dirá "escríbenos".</p>
           </div>
           <button class="btn btn-primary" id="qz-c-save">Guardar planes</button>
         </div>
@@ -7667,7 +8441,9 @@
           // recoverable and never a silent overwrite.
           version: config.version,
           free: { participantLimit: num("qz-c-free-people"), manualRoundLimit: num("qz-c-free-rounds") },
-          plus: { participantLimit: num("qz-c-plus-people"), manualRoundLimit: num("qz-c-plus-rounds"), priceMXN: num("qz-c-plus-price") },
+          // `manualRoundLimit` de Plus ya no limita (MON-003); se reenvía el
+          // valor guardado porque las compras lo llevan en su snapshot.
+          plus: { participantLimit: num("qz-c-plus-people"), manualRoundLimit: config.plus.manualRoundLimit, priceMXN: num("qz-c-plus-price") },
           upgradeContact: document.getElementById("qz-c-contact").value.trim()
         };
         commercialSaveBtn.disabled = true;
@@ -8195,7 +8971,15 @@
       accessLinkOpenedTracked = true;
       trackEvent("access_link_opened");
     }
-    render();
+    // MON-003: la vuelta del checkout se resuelve DESPUÉS de pintar, y el
+    // `await` es la parte que importa. render() es quien restaura la sesión
+    // (checkSession -> currentUser), así que sin esperarlo la confirmación
+    // arrancaba antes de saber que quien vuelve es el organizador, se daba por
+    // no-admin y se salía en silencio: el pago se cobraba y la pantalla no
+    // decía nada. Pintar primero también evita que el Admin mire una pantalla
+    // en blanco mientras se confirma, y `notice()` sobrevive al re-render.
+    await render();
+    resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
   }
   boot();
 })();

@@ -32,6 +32,8 @@
 //                       entitlementCoversScope below.
 // ==========================================================================
 
+const { coverageFor, plusCoverageText } = require("./competitionCoverage");
+
 // ---- Commercial config: the DYNAMIC, server-side SSOT ------------------
 //
 // These are only the SEED/DEFAULT values, used exactly once when the
@@ -45,13 +47,17 @@ const DEFAULT_COMMERCIAL_CONFIG = Object.freeze({
   version: 1,
   updatedAt: null,
   updatedBy: "system_default",
-  // MON-002B: how an organizer actually reaches QRACKS to get Plus turned
-  // on. It lives in the config, not in the copy, because until MON-003 ships
-  // a real checkout this IS the mechanism, and the paywall must state it
-  // honestly rather than show a button that pretends to charge a card.
-  // Empty means the paywall falls back to a generic sentence.
+  // MON-002B introdujo este campo cuando contactar a QRACKS ERA la forma de
+  // comprar Plus. Desde MON-003 la compra normal es el checkout con tarjeta, y
+  // este contacto es sólo el RESPALDO para cuando el pago en línea no está
+  // configurado en el entorno (ver `checkout` en buildUpgradeOffer). Nunca se
+  // ofrece mientras el pago con tarjeta está disponible, ni cuando puede haber
+  // un pago anterior todavía abierto. Vacío -> una frase genérica.
   upgradeContact: "",
   free: Object.freeze({ participantLimit: 10, manualRoundLimit: 7 }),
+  // `plus.manualRoundLimit` ya no limita nada (MON-003: Plus cubre el torneo
+  // completo, ver roundBudgetApplies). Se conserva porque cada compra lo guarda
+  // en su snapshot y las compras anteriores lo llevan; no se muestra.
   plus: Object.freeze({ participantLimit: 50, manualRoundLimit: 18, priceMXN: 199 }),
 });
 
@@ -67,7 +73,12 @@ function isCommercialConfigValid(config) {
   if (!Number.isFinite(f.participantLimit) || f.participantLimit < 1) return false;
   if (!Number.isFinite(f.manualRoundLimit) || f.manualRoundLimit < 1) return false;
   if (!Number.isFinite(p.participantLimit) || p.participantLimit < f.participantLimit) return false;
-  if (!Number.isFinite(p.manualRoundLimit) || p.manualRoundLimit < f.manualRoundLimit) return false;
+  // MON-003: Plus ya NO tiene tope de jornadas (cubre el torneo completo, ver
+  // roundBudgetApplies). `plus.manualRoundLimit` sigue existiendo porque viaja
+  // en el snapshot de cada compra (auditoría y compatibilidad con compras
+  // anteriores), así que sólo se exige que sea un número usable; compararlo con
+  // Gratis ya no significa nada.
+  if (!Number.isFinite(p.manualRoundLimit) || p.manualRoundLimit < 1) return false;
   if (!Number.isFinite(p.priceMXN) || p.priceMXN < 0) return false;
   if (config.upgradeContact !== undefined && config.upgradeContact !== null) {
     if (typeof config.upgradeContact !== "string" || config.upgradeContact.length > 200) return false;
@@ -142,17 +153,46 @@ function buildFreeEntitlement(config, nowIso) {
 // quiniela paid for, frozen — see the module header comment on why this
 // must never silently track a later commercial_config change).
 function buildPlusEntitlement(config, nowIso, opts) {
-  const o = opts || {};
-  return {
-    plan: "PLUS",
+  return buildPurchasedPlusEntitlement({
     participantLimit: config.plus.participantLimit,
     manualRoundLimit: config.plus.manualRoundLimit,
     pricePaidMXN: config.plus.priceMXN,
+    configVersion: config.version,
+  }, nowIso, opts);
+}
+
+// MON-003 Correction 01. Un PLUS construido desde NÚMEROS EXPLÍCITOS en vez de
+// desde una configuración.
+//
+// Existe porque un cobro no es instantáneo: entre abrir el checkout y que el
+// pago se confirme pasan minutos, y en ese hueco la configuración comercial
+// puede cambiar. Leerla otra vez al confirmar entregaba los límites NUEVOS a
+// quien había comprado los viejos — que es exactamente lo que el snapshot de
+// MON-001C existe para impedir, sólo que por una puerta que MON-003 abrió.
+//
+// La forma del entitlement se define UNA sola vez, aquí: buildPlusEntitlement
+// delega en esta función, así que la ruta de compra y la de grant manual no
+// pueden divergir en los campos que el enforcement lee.
+//
+// Devuelve null si el snapshot no es utilizable. Nunca rellena un hueco con la
+// configuración de hoy: eso sería volver a adivinar qué se compró.
+function buildPurchasedPlusEntitlement(snapshot, nowIso, opts) {
+  const o = opts || {};
+  const s = snapshot || {};
+  if (!Number.isFinite(s.participantLimit) || !Number.isFinite(s.manualRoundLimit)) return null;
+  if (!Number.isFinite(s.pricePaidMXN)) return null;
+  return {
+    plan: "PLUS",
+    participantLimit: s.participantLimit,
+    manualRoundLimit: s.manualRoundLimit,
+    pricePaidMXN: s.pricePaidMXN,
     source: o.source || "purchase",
     grantedAt: nowIso || new Date().toISOString(),
     grantedBy: o.grantedBy || "system",
     reason: o.reason || null,
-    configVersionAtGrant: config.version,
+    // La versión de configuración que produjo ESTOS números, no la que esté
+    // viva al otorgar: es lo único que hace auditable qué se vendió.
+    configVersionAtGrant: Number.isFinite(s.configVersion) ? s.configVersion : null,
     competitionIdentity: o.competitionIdentity || null,
     revoked: false,
   };
@@ -237,6 +277,28 @@ function isKnownPlan(plan) {
 // fails those closed before this is ever reached.
 function grantsFullCompetition(entitlement) {
   return !!entitlement && entitlement.plan !== "FREE";
+}
+
+// MON-003. ¿Se cuenta un presupuesto de jornadas para este plan? UNA regla, que
+// usan el enforcement (checkLifecycleRoundConsumption) y lo que ve el Admin
+// (summarizePlan), para que no puedan decir cosas distintas.
+//
+//   FREE           sí, siempre: Gratis = N jornadas, con liga o sin ella.
+//   PLUS           no: Plus cubre EL TORNEO COMPLETO del ciclo que se compró,
+//                  fases finales incluidas (liguilla, eliminatorias). Antes, un
+//                  Plus sin competencia ligada quedaba en 18 jornadas —y una
+//                  quiniela manual o una que aún no importaba su liga se
+//                  bloqueaba a mitad de la liguilla—. El límite de uso de Plus
+//                  es el CICLO (entitlementCoversScope): iniciar un torneo nuevo
+//                  lo devuelve a Gratis.
+//   GRANDFATHERED / MANUAL_GRANT
+//                  como siempre: sin presupuesto si están ligados a una
+//                  competencia; si no, sus propios números (el operador los
+//                  eligió a propósito).
+function roundBudgetApplies(entitlement) {
+  if (!entitlement) return true;
+  if (entitlement.plan === "PLUS") return false;
+  return !(entitlement.competitionIdentity && grantsFullCompetition(entitlement));
 }
 
 // MON-002C. Which tournament cycle an entitlement was granted for.
@@ -345,7 +407,9 @@ function checkLifecycleRoundConsumption(entitlement, commercialConfig, consumedC
   if (!entitlementCoversScope(entitlement, currentScopeId)) {
     return { allowed: false, reason: "entitlement_scope_mismatch", plan: entitlement.plan };
   }
-  if (entitlement.competitionIdentity && grantsFullCompetition(entitlement)) {
+  if (!roundBudgetApplies(entitlement)) {
+    // MON-003: Plus cubre el torneo completo, tenga o no competencia ligada
+    // (ver roundBudgetApplies).
     // MON-002B: "Plus = 50 personas + torneo completo si existe". A paid/
     // granted plan bound to a tournament gets that whole tournament, so a
     // round count is not the thing being limited — the BINDING is (see
@@ -433,21 +497,51 @@ const PLAN_LABELS = Object.freeze({
 // `available: false` carries no price and no capabilities at all — an offer
 // that cannot be taken must not leave numbers lying around for a screen to
 // render by accident.
-function buildUpgradeOffer(entitlement, commercialConfig) {
+//
+// MON-003 Correction 09. CÓMO se compra también viaja en la oferta, decidido por
+// el servidor —que es quien sabe si la pasarela está configurada y si hay un pago
+// anterior que todavía puede cobrar—:
+//
+//   "card"     pago con tarjeta (Stripe Checkout). El camino normal.
+//   "manual"   la pasarela NO está configurada y no hay nada que pueda cobrar:
+//              el respaldo es contactar a QRACKS.
+//   "blocked"  la pasarela no está disponible y PUEDE haber un pago anterior
+//              abierto: ni checkout ni contacto — pagar por otro canal sería
+//              arriesgar un segundo cobro.
+//   "unavailable"  (Correction 10) la pasarela está MAL CONFIGURADA: un error
+//              de despliegue, no una decisión comercial. Ni checkout ni contacto.
+//
+// Sin `opts.checkout` la oferta sale como "card": la pantalla nunca debe caer en
+// el copy manual por omisión, que es justo la regresión que esto corrige.
+const CHECKOUT_MODES = Object.freeze(["card", "manual", "blocked", "unavailable"]);
+function buildUpgradeOffer(entitlement, commercialConfig, opts) {
   if (!entitlement || entitlement.plan !== "FREE") return { available: false };
   const plus = commercialConfig && commercialConfig.plus;
   if (!plus || !Number.isFinite(plus.priceMXN)
     || !Number.isFinite(plus.participantLimit) || !Number.isFinite(plus.manualRoundLimit)) {
     return { available: false };
   }
+  const pedido = opts && opts.checkout;
+  const checkout = CHECKOUT_MODES.includes(pedido) ? pedido : "card";
+  // MON-003. Qué cubre Plus, dicho por el servidor y con UNA frase para
+  // Ajustes, la oferta, el paywall y el checkout. Plus cubre el torneo completo
+  // (roundBudgetApplies); la competencia seleccionada sólo decide cómo se dice
+  // (liguilla, eliminatorias). Sin competencia conocida, la frase genérica: no
+  // se inventan fases ni cantidades. Ya no viaja ningún número de jornadas
+  // —antes "18"— porque no es un límite que se aplique.
+  const coverage = opts && opts.coverage ? opts.coverage : coverageFor(null, null);
   return {
     available: true,
+    checkout,
     priceMXN: plus.priceMXN,
     participantLimit: plus.participantLimit,
-    roundLimit: plus.manualRoundLimit,
-    // Whatever the operator configured, or "" — the screen decides which
-    // sentence to write, but never invents a channel that does not exist.
-    contact: typeof commercialConfig.upgradeContact === "string" ? commercialConfig.upgradeContact : "",
+    coverage: { known: !!coverage.known, name: coverage.name || null, scope: coverage.scope },
+    coverageText: plusCoverageText(plus.participantLimit, coverage),
+    // El contacto de respaldo SÓLO viaja cuando es el camino: con tarjeta
+    // disponible, o con un pago anterior posiblemente abierto, no hay nada que
+    // una pantalla pueda pintar por accidente.
+    contact: checkout === "manual" && typeof commercialConfig.upgradeContact === "string"
+      ? commercialConfig.upgradeContact : "",
     // Scope is copy with a commercial promise in it, so it is written once,
     // here, rather than in whichever screen happens to show the offer.
     scope: entitlement.competitionIdentity
@@ -459,7 +553,7 @@ function buildUpgradeOffer(entitlement, commercialConfig) {
 // The complete plan picture for one quiniela. `usage` is measured by the
 // caller from the rows it already read under lock (participants.length and
 // the durable lifecycle counter) — this function never guesses either.
-function summarizePlan(entitlement, commercialConfig, usage) {
+function summarizePlan(entitlement, commercialConfig, usage, opts) {
   const u = usage || {};
   const participantsUsed = Number.isFinite(u.participantsUsed) ? u.participantsUsed : 0;
   const roundsUsed = Number.isFinite(u.roundsUsed) ? u.roundsUsed : 0;
@@ -468,7 +562,7 @@ function summarizePlan(entitlement, commercialConfig, usage) {
   const bound = !!(entitlement && entitlement.competitionIdentity);
   // The round budget stops applying exactly where enforcement stops applying
   // — same condition, one source (see checkLifecycleRoundConsumption).
-  const roundsApply = !(bound && grantsFullCompetition(entitlement));
+  const roundsApply = roundBudgetApplies(entitlement);
 
   // Fail-closed and SAY so, rather than inventing numbers to fill a screen.
   if (!plan || !limits || (entitlement && entitlement.revoked)) {
@@ -497,7 +591,13 @@ function summarizePlan(entitlement, commercialConfig, usage) {
       ? { used: roundsUsed, limit: limits.manualRoundLimit, remaining: remaining(limits.manualRoundLimit, roundsUsed), applies: true }
       : { used: roundsUsed, limit: null, remaining: null, applies: false },
     competition: { bound, label: u.competitionLabel || null },
-    upgrade: buildUpgradeOffer(entitlement, commercialConfig),
+    // MON-003: lo que cubre Plus en ESTA quiniela, con la misma frase que la
+    // oferta. Sólo para Plus: los demás planes no se venden con ella.
+    coverage: plan === "PLUS" ? {
+      scope: ((opts && opts.coverage) || coverageFor(null, null)).scope,
+      text: plusCoverageText(limits.participantLimit, (opts && opts.coverage) || coverageFor(null, null)),
+    } : null,
+    upgrade: buildUpgradeOffer(entitlement, commercialConfig, opts),
   };
 }
 
@@ -526,6 +626,7 @@ module.exports = {
   evaluateCompetitionBinding,
   buildFreeEntitlement,
   buildPlusEntitlement,
+  buildPurchasedPlusEntitlement,
   buildGrandfatheredEntitlement,
   buildManualGrantEntitlement,
   isKnownPlan,
@@ -533,9 +634,10 @@ module.exports = {
   checkParticipantCapacity,
   checkLifecycleRoundConsumption,
   grantsFullCompetition,
+  roundBudgetApplies,
   entitlementScopeId,
   entitlementCoversScope,
-  buildUpgradeOffer,
+  buildUpgradeOffer, CHECKOUT_MODES,
   summarizePlan,
   isValidManualGrantLimits,
   PLAN_LABELS,
