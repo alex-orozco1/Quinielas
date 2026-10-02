@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "ask": [
+      "mcp__github__merge_pull_request",
+      "mcp__github__enable_pr_auto_merge",
+      "mcp__github__create_pull_request",
+      "mcp__Render__trigger_deploy",
+      "mcp__Render__update_environment_variables",
+      "mcp__Render__create_web_service",
+      "mcp__Render__create_postgres",
+      "mcp__Render__create_key_value",
+      "mcp__Render__create_cron_job",
+      "mcp__Render__create_static_site"
+    ]
+  }
+}
