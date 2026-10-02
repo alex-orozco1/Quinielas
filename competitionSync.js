@@ -158,6 +158,14 @@ function fromDomainEvent(ev) {
 // corregir — nunca corrompe un pick ni un resultado.
 const CLUSTER_GAP_MS = 4 * 24 * 60 * 60 * 1000;
 
+// El número de una ronda numérica del proveedor a partir de su clave de grupo
+// (`round:7` -> 7), o null si la clave no es de ronda o la ronda no es un número.
+function numericProviderRoundOf(key) {
+  if (typeof key !== "string" || !key.startsWith("round:")) return null;
+  const id = key.slice("round:".length);
+  return /^[0-9]+$/.test(id) ? Number(id) : null;
+}
+
 // La clave estructural de un fixture. `null` significa "no se puede agrupar con
 // seguridad", que es una respuesta legítima y acaba en staging con diagnóstico.
 function groupKeyOf(fx) {
@@ -190,6 +198,10 @@ const DIAGNOSTIC = Object.freeze({
   DUPLICATE_FIXTURE_ID: "duplicate_fixture_id",
   MISSING_KICKOFF: "missing_kickoff",
   MALFORMED_KICKOFF: "malformed_kickoff",
+  // Una ronda numérica del proveedor cuyo número ya ocupa una jornada que NO es
+  // de esa ronda (creada a mano, heredada o de otro proveedor). La jornada
+  // existente se respeta y los partidos de esa ronda van a staging, uno por
+  // uno y con su `providerFixtureId`: nunca desaparecen.
   ROUND_NUMBER_TAKEN: "round_number_taken",
   // Un fixture que se guardó sin ronda y que el proveedor ahora SÍ ubica en
   // una. Su metadata se actualiza, pero convertirlo en jornada es una decisión
@@ -596,9 +608,35 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
   // dos "Jornada 1" — dos jornadas distintas con el mismo nombre para el
   // participante, y un choque de numeración imposible de deshacer después.
   let nextFallbackNumber = Math.max(0, ...rounds.map((r) => Number(r && r.number) || 0)) + 1;
+  // Los números de las rondas numéricas del proveedor que van a crear jornada en
+  // ESTE lote se reservan antes de repartir números a las fases sin ronda. Los
+  // grupos se recorren por kickoff, y sin la reserva un grupo sin ronda que
+  // empezara antes podía quedarse con el número de una ronda del proveedor y
+  // dejarla sin sitio.
+  const reservedProviderNumbers = new Set();
+  for (const key of byKey.keys()) {
+    const n = numericProviderRoundOf(key);
+    if (n != null && !roundsByGroupKey.has(key) && !existingRoundNumbers.has(n)) reservedProviderNumbers.add(n);
+  }
   const takeNextNumber = () => {
-    while (existingRoundNumbers.has(nextFallbackNumber)) nextFallbackNumber += 1;
+    while (existingRoundNumbers.has(nextFallbackNumber) || reservedProviderNumbers.has(nextFallbackNumber)) {
+      nextFallbackNumber += 1;
+    }
     return nextFallbackNumber++;
+  };
+  // Un fixture que no se puede colocar se conserva en staging. Si ya venía de
+  // staging, sólo se actualiza lo que cambió: nunca se duplica.
+  const keepStaged = (c) => {
+    if (c.fromStagedId) {
+      if (c.stagedChanges && Object.keys(c.stagedChanges).length) {
+        stagedUpdates.push({
+          providerFixtureId: c.fixture.providerFixtureId, provider: c.fixture.provider,
+          identityKey: c.fromStagedId, changes: c.stagedChanges,
+        });
+      }
+    } else {
+      newStaged.push(c.fixture);
+    }
   };
 
   const orderedKeys = [...byKey.entries()].sort((a, b) => compareFixtures(a[1][0].fixture, b[1][0].fixture));
@@ -630,23 +668,42 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
     }
     if (!sinDueño.length) continue;
 
-    // Jornada nueva. Se parte en ventanas temporales: el mismo stage y leg
-    // jugados con una semana de diferencia son dos jornadas, no una.
+    // Jornada nueva.
+    //
+    // Con una ronda NUMÉRICA del proveedor (`round:N`), la ronda ES la jornada:
+    // todos sus partidos van juntos aunque uno se juegue semanas después
+    // (aplazado, reprogramado). Es lo mismo que hace ownerFor() en los syncs
+    // siguientes, así que la primera importación y las demás coinciden. Antes
+    // se partía por ventanas de tiempo y, como el número N ya lo había tomado
+    // la primera ventana, el resto de partidos se descartaba sin guardarse en
+    // ningún sitio (producción: Liga MX 2026-2027, Jornada 7 con 5 de 9).
+    //
+    // Sin ronda numérica (fase final por stage + leg, o una ronda con nombre),
+    // se sigue partiendo en ventanas: el mismo stage y leg jugados con una
+    // semana de diferencia son dos jornadas, no una.
     //
     // El índice va por REFERENCIA al objeto fixture, no por `providerFixtureId`:
     // dos proveedores pueden traer el mismo número en la misma clave de grupo, y
     // buscar por número promovería el fixture equivocado desde staging.
     const candByFixture = new Map(sinDueño.map((c) => [c.fixture, c]));
-    for (const cluster of splitIntoClusters(sinDueño.map((c) => c.fixture))) {
+    const sinDueñoFixtures = sinDueño.map((c) => c.fixture);
+    const clusters = numericProviderRoundOf(key) != null
+      ? [sinDueñoFixtures]
+      : splitIntoClusters(sinDueñoFixtures);
+    for (const cluster of clusters) {
       const providerRoundId = cluster[0].providerRoundId;
       const isNumeric = providerRoundId != null && /^[0-9]+$/.test(providerRoundId);
       if (isNumeric && existingRoundNumbers.has(Number(providerRoundId))) {
-        // Estos partidos NO se conservan aparte, y es deliberado: una jornada
-        // existente con ese número ya los cubre (el Admin la creó a mano, o es
-        // heredada). Guardarlos como "pendientes" le diría para siempre que
-        // cinco partidos necesitan su atención cuando ya los tiene. El
-        // diagnóstico lo dice una vez; eso es observabilidad, no ruido.
-        note(DIAGNOSTIC.ROUND_NUMBER_TAKEN, null, providerRoundId);
+        // El número lo ocupa una jornada que NO es de esta ronda: el Admin la
+        // creó a mano, es heredada o es de otro proveedor. Se respeta —nunca
+        // dos "Jornada N"— pero no se puede dar por hecho que ya tenga estos
+        // partidos, así que cada uno se conserva en staging con su id. Ninguno
+        // desaparece.
+        for (const fx of cluster) {
+          note(DIAGNOSTIC.ROUND_NUMBER_TAKEN, fx.providerFixtureId, providerRoundId);
+          const c = candByFixture.get(fx);
+          if (c) keepStaged(c);
+        }
         continue;
       }
       const number = isNumeric ? Number(providerRoundId) : takeNextNumber();

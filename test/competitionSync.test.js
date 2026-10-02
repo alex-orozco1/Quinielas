@@ -334,7 +334,11 @@ test("PRODBUG #3: existing 1..5 + provider 1..17 con eventos sin ronda -> 6..17 
   // ...y los dos sin ronda tampoco abortan ni reducen el resultado válido:
   // ahora son su propia jornada, numerada sin chocar con ninguna de las 1..17.
   assert.equal(skippedEvents, 0);
-  assert.equal(stagedFixtures.length, 0);
+  // INVERTIDO (fix round_number_taken): antes era 0 porque los partidos del
+  // proveedor para J1..J5 —números que ocupan las jornadas heredadas—
+  // desaparecían. Ahora se respetan las jornadas heredadas y esos 5 partidos se
+  // conservan en staging. Los dos sin ronda siguen sin ir a staging.
+  assert.deepEqual(stagedFixtures.map((f) => f.providerFixtureId).sort(), ["e1", "e2", "e3", "e4", "e5"]);
   // Y se separan en DOS jornadas, no una: se juegan con una semana de
   // diferencia, así que no son el mismo día de partidos. Ésa es la agrupación
   // temporal haciendo su trabajo, sin mirar un solo nombre.
