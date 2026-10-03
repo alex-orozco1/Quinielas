@@ -587,7 +587,7 @@ test("UX: a commercial refusal from the import flow is not dressed up as a provi
   // de revisión. La afirmación es la misma.
   const slice = indexSrc.slice(at, at + 6000);
   assert.ok(slice.includes("res.status === 402"), "402 must be handled on its own");
-  assert.ok(slice.includes("humanizeError(data.error)"), "with the commercial copy");
+  assert.ok(slice.includes("humanizeError(data.error, data)"), "with the commercial copy");
   const at402 = slice.indexOf("res.status === 402");
   const branch = slice.slice(at402, slice.indexOf("} else {", at402));
   assert.ok(!branch.includes("sportsDataFailureMessage"), "and never through the provider-failure message");

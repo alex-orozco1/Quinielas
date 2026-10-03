@@ -485,10 +485,13 @@ function checkPlatformCredential(req, plain, stored) {
 }
 // For routes whose whole job is checking a credential: when the limit is what
 // made it fail, say so (429 + Retry-After) instead of "wrong PIN".
+// The wait is also in the body (retryAfterSeconds) so the screen can say
+// "intenta de nuevo en N min" without reading headers.
 function sendIfCredentialThrottled(req, res) {
   if (!req.qzCredentialThrottled) return false;
-  res.set("Retry-After", String(Math.max(1, Math.ceil((req.qzCredentialRetryAfterMs || 0) / 1000))));
-  res.status(429).json({ error: "too_many_attempts" });
+  const retryAfterSeconds = Math.max(1, Math.ceil((req.qzCredentialRetryAfterMs || 0) / 1000));
+  res.set("Retry-After", String(retryAfterSeconds));
+  res.status(429).json({ error: "too_many_attempts", retryAfterSeconds });
   return true;
 }
 
@@ -872,7 +875,9 @@ function rateLimit(name) {
     }
     bucket.count++;
     if (bucket.count > RATE_LIMIT_MAX) {
-      return res.status(429).json({ error: "too_many_attempts" });
+      const retryAfterSeconds = Math.max(1, Math.ceil((bucket.windowStart + RATE_LIMIT_WINDOW_MS - now) / 1000));
+      res.set("Retry-After", String(retryAfterSeconds));
+      return res.status(429).json({ error: "too_many_attempts", retryAfterSeconds });
     }
     next();
   };

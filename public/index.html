@@ -1483,8 +1483,22 @@
     reason_required: "Escribe el motivo del ajuste manual.",
     invalid_commercial_config: "Revisa los números: Plus no puede quedar por debajo de Gratis, y ningún límite puede ser cero."
   };
-  function humanizeError(code){
+  // `result` (optional) is the server's answer: for too_many_attempts it
+  // carries retryAfterSeconds, the real time left, which is what gets shown.
+  function humanizeError(code, result){
+    if(code === "too_many_attempts") return tooManyAttemptsMessage(result && result.retryAfterSeconds);
     return ERROR_MESSAGES[code] || "No se pudo completar la acción. Intenta de nuevo.";
+  }
+  function formatWait(seconds){
+    const s = Math.max(1, Math.ceil(Number(seconds) || 0));
+    if(s < 60) return s + " s";
+    const m = Math.ceil(s / 60);
+    if(m < 120) return m + " min";
+    return Math.round(m / 60) + " h";
+  }
+  function tooManyAttemptsMessage(retryAfterSeconds){
+    if(!Number.isFinite(Number(retryAfterSeconds)) || Number(retryAfterSeconds) <= 0) return ERROR_MESSAGES.too_many_attempts;
+    return "Demasiados intentos. Intenta de nuevo en " + formatWait(retryAfterSeconds) + ", o entra desde un dispositivo donde ya hayas entrado.";
   }
 
   // AUTO-004: groups the 9 possible reliabilityState values TheSportsDB
@@ -1830,7 +1844,7 @@
     }else if(result.error === "round_locked"){
       liveEl.innerHTML = `<span style="color:var(--red);">La jornada ya cerró. Ya no es posible modificar estos pronósticos.</span>`;
     }else{
-      liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${round.id}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
+      liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error, result))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${round.id}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
       const retryBtn = document.getElementById("qz-retry-picks-" + round.id);
       if(retryBtn){
         // Un error del guardado manual delega su reintento al mismo flujo
@@ -1855,7 +1869,7 @@
         body: JSON.stringify({ metaKey: currentMetaKey(), password })
       });
       const data = await res.json().catch(() => ({}));
-      if(!res.ok) return { ok: false, error: data.error || null };
+      if(!res.ok) return { ok: false, error: data.error || null, retryAfterSeconds: data.retryAfterSeconds };
       return { ok: !!data.ok, error: null };
     }catch(e){ console.error("verifyOwnerPassword failed", e); return { ok: false, error: null }; }
   }
@@ -1871,12 +1885,12 @@
         body: JSON.stringify({ password })
       });
       const data = await res.json().catch(() => ({}));
-      if(!res.ok) return { ok: false, error: data.error || null };
+      if(!res.ok) return { ok: false, error: data.error || null, retryAfterSeconds: data.retryAfterSeconds };
       return { ok: !!data.ok, error: null };
     }catch(e){ console.error("verifyPlatformPassword failed", e); return { ok: false, error: null }; }
   }
   function pinFailureMessage(result, fallback){
-    return result && result.error === "too_many_attempts" ? humanizeError(result.error) : fallback;
+    return result && result.error === "too_many_attempts" ? humanizeError(result.error, result) : fallback;
   }
   async function verifyParticipantPin(participantId, pin){
     try{
@@ -1886,7 +1900,7 @@
       });
       if(!res.ok){
         const data = await res.json().catch(() => ({}));
-        return { ok: false, error: data.error || null };
+        return { ok: false, error: data.error || null, retryAfterSeconds: data.retryAfterSeconds };
       }
       return await res.json();
     }catch(e){ console.error("verifyParticipantPin failed", e); return { ok: false }; }
@@ -1917,7 +1931,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if(res.ok) adoptParticipantRevs(data.participantRevs);
-      return { ok: res.ok, error: res.ok ? null : (data.error || null) };
+      return { ok: res.ok, error: res.ok ? null : (data.error || null), retryAfterSeconds: res.ok ? null : data.retryAfterSeconds };
     }catch(e){ console.error("apiSetPin failed", e); return { ok: false, error: null }; }
   }
   async function apiSetPin(participantId, currentPin, newPin){
@@ -3281,7 +3295,7 @@
           : result.error === "admin_claim_required"
             ? "Esa no es la contraseña de administrador. Intenta de nuevo."
             : result.error === "too_many_attempts"
-              ? humanizeError(result.error)
+              ? humanizeError(result.error, result)
               : "No pudimos guardar tu PIN. Intenta de nuevo.";
         errorEl.style.display = "block";
         continueBtn.disabled = false;
@@ -3676,6 +3690,8 @@
     });
   }
 
+  // Wrong PINs typed on this screen, per participant (memory only).
+  const loginPinMisses = new Map();
   function renderLogin(){
     const sortedParticipants = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     const names = sortedParticipants.map(p => `
@@ -3753,7 +3769,7 @@
               toast(result.error === "admin_claim_required"
                 ? "Contraseña de administrador incorrecta"
                 : result.error === "too_many_attempts"
-                  ? humanizeError(result.error)
+                  ? humanizeError(result.error, result)
                   : "No se pudo guardar el PIN, intenta de nuevo");
               return;
             }
@@ -3769,7 +3785,17 @@
           if(entered === null) return;
           const cleanEntered = entered.trim();
           const verification = await verifyParticipantPin(p.id, cleanEntered);
-          if(!verification.ok){ toast(pinFailureMessage(verification, "❌ PIN incorrecto")); return; }
+          if(!verification.ok){
+            // After a few misses, point at the way out that exists today
+            // instead of inviting more guesses.
+            if(verification.error !== "too_many_attempts") loginPinMisses.set(p.id, (loginPinMisses.get(p.id) || 0) + 1);
+            const forgotHint = (loginPinMisses.get(p.id) || 0) >= 5
+              ? "❌ PIN incorrecto. ¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee."
+              : "❌ PIN incorrecto";
+            toast(pinFailureMessage(verification, forgotHint));
+            return;
+          }
+          loginPinMisses.delete(p.id);
           currentUserPinCache = cleanEntered;
         }
         currentUser = p;
@@ -5702,7 +5728,7 @@
         alternative: "Es el máximo de tu plan. Tus jornadas, resultados y tabla siguen aquí y funcionando.",
       });
     }
-    toast(humanizeError(body.error));
+    toast(humanizeError(body.error, body));
     return Promise.resolve(false);
   }
 
@@ -6025,7 +6051,7 @@
         penalty.startsAtRound = previousStartsAtRound;
         penalty.pointsPerRound = previousPointsPerRound;
         meta.participants = participantsSnapshot;
-        toast(humanizeError(result.error));
+        toast(humanizeError(result.error, result));
       }
     });
   }
@@ -6288,7 +6314,7 @@
       meta.rounds = snapshot;
       meta.participants = participantsSnapshot;
       btn.disabled = false;
-      toast(humanizeError(result.error));
+      toast(humanizeError(result.error, result));
     }
   }
 
@@ -6487,7 +6513,7 @@
             // MON-002B: a competition/entitlement refusal is a commercial
             // answer, not a provider outage. It gets its own copy and never
             // points at the manual builder as a way around it.
-            syncStatus.textContent = humanizeError(data.error);
+            syncStatus.textContent = humanizeError(data.error, data);
             syncStatus.style.color = "var(--red)";
           } else {
             syncStatus.textContent = sportsDataFailureMessage(data.reliabilityState) + " O crea las jornadas manualmente.";
@@ -6516,7 +6542,7 @@
         }else{
           round.published = false; // roll back the in-memory flip on failure
           if(result.error === "plan_lifecycle_limit_reached") showPlanBlock(result);
-          else toast(humanizeError(result.error));
+          else toast(humanizeError(result.error, result));
           btn.disabled = false;
         }
       });
@@ -7122,7 +7148,7 @@
         saveDraftBtn.disabled = true;
         const result = await setMetaWithError(meta);
         if(result.ok) round._hadSavedDraftChecked = true;
-        toast(result.ok ? "✅ Listo, tu borrador quedó guardado." : humanizeError(result.error));
+        toast(result.ok ? "✅ Listo, tu borrador quedó guardado." : humanizeError(result.error, result));
         saveDraftBtn.disabled = false;
         renderAdminResultados(body);
       });
@@ -7187,7 +7213,7 @@
           round.resultsPublished = wasAlreadyPublished;
           round.results = previousResults;
           if(wasAlreadyPublished) round.draftResults = editable;
-          toast(humanizeError(result.error));
+          toast(humanizeError(result.error, result));
         }
         publishBtn.disabled = false;
         renderAdminResultados(body);
@@ -7243,7 +7269,7 @@
           round.resultsPublished = previousResultsPublished;
           round.deadline = previousDeadline;
           meta.participants = participantsSnapshot;
-          toast(humanizeError(result.error));
+          toast(humanizeError(result.error, result));
         }
         reopenBtn.disabled = false;
         renderAdminResultados(body);
@@ -7414,7 +7440,7 @@
         }else{
           p.name = previousName;
           e.target.value = previousName;
-          toast(humanizeError(result.error));
+          toast(humanizeError(result.error, result));
         }
       });
       const adminCheckbox = row.querySelector("[data-role=admin]");
@@ -7442,7 +7468,7 @@
         }else{
           p.isAdmin = previousValue;
           e.target.checked = previousValue;
-          toast(humanizeError(result.error));
+          toast(humanizeError(result.error, result));
         }
       });
       const resetBtn = row.querySelector("[data-role=resetpin]");
@@ -7469,7 +7495,7 @@
             p.pin = previousPin;
             p.hasPin = previousHasPin;
             resetBtn.disabled = false;
-            toast(humanizeError(result.error));
+            toast(humanizeError(result.error, result));
           }
         });
       }
@@ -7499,7 +7525,7 @@
         if(!result.ok){
           meta.participants = participantsSnapshot;
           e.target.checked = previousValue;
-          toast(humanizeError(result.error));
+          toast(humanizeError(result.error, result));
         }
       });
       const removeBtn = row.querySelector("[data-role=remove]");
@@ -7517,7 +7543,7 @@
         }else{
           meta.participants = snapshot;
           removeBtn.disabled = false;
-          toast(humanizeError(result.error));
+          toast(humanizeError(result.error, result));
         }
       });
     });
