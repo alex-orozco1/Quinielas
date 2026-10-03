@@ -50,6 +50,18 @@ Espera progresiva por credencial (`target`, una credencial desde cualquier red; 
 
 - Un dispositivo de confianza usa sólo su presupuesto `device`; no le afectan `ip`, `net` ni la espera
   de la credencial, y entrar desde él tampoco la cambia.
+- **La confianza es por versión de la credencial.** La cookie (`trusted_device_v3`, firmada) nombra cada
+  credencial junto con su versión (`credentialVersion()` del hash guardado). El servidor la compara con
+  la credencial tal como está guardada en ese momento. Al cambiar o resetear un PIN o una contraseña
+  (de admin o de plataforma), la confianza ganada con el valor anterior deja de valer en el servidor, sin
+  revocar nada. Las cookies obtenidas mientras se conocía el valor viejo vuelven a ser navegadores
+  normales (10 libres y luego espera).
+  - El dispositivo que completa el cambio recibe confianza para la versión nueva: set-pin, Ajustes al
+    cambiar la contraseña de admin y el panel al cambiar la de plataforma.
+  - Guardar el mismo valor conserva el hash, la versión, los contadores y la confianza.
+  - Antes (P1 de la revisión independiente sobre `8753f8c`): tres cookies de antes del cambio daban 30
+    adivinanzas contra el PIN nuevo desde una IP. `test/trustedDeviceVersion.integration.test.js` lo
+    reproduce contra el servidor real.
 - La reserva del intento ocurre antes de scrypt; con N peticiones en paralelo sólo se comparan las
   que caben.
 - Respuesta cuando hay que esperar: `429 {"error":"too_many_attempts","retryAfterSeconds":N}` y

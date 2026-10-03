@@ -401,10 +401,19 @@ function boundParticipantId(req) {
 // signed HttpOnly cookie naming it, so an attack on that credential can't lock
 // its owner out of the devices they already use (credentialAttempts.js). It
 // only changes which attempt budget applies; it never authenticates anything.
-// v2: targets are namespaced ("owner" / "pin:<id>"); a token from before that
-// is simply not recognised.
-const TRUSTED_DEVICE_PURPOSE = "trusted_device_v2";
+// Each entry names ONE VERSION of one credential ("pin:<id>@<version>",
+// "owner@<version>"; the version is credentialVersion() of the stored hash).
+// The server compares it with the credential as stored NOW, so changing or
+// resetting a PIN or password ends the trust earned with the old one, on the
+// server, with nothing to revoke: cookies collected while the old value was
+// known are ordinary browsers again. Saving the same value keeps the hash,
+// the version and the trust. v3: a v2 token (unversioned entries) is simply
+// not recognised.
+const TRUSTED_DEVICE_PURPOSE = "trusted_device_v3";
 const TRUSTED_DEVICE_MAX_TARGETS = 8;
+function trustedEntry(tKey, version) {
+  return tKey + "@" + version;
+}
 function trustedDeviceCookieName(slug) {
   return "qracks_trust_" + (slug || "_root");
 }
@@ -419,11 +428,15 @@ function readTrustedDevice(req, slug) {
   req.qzTrustedDevice = { slug: slug || "_root", token: ok ? token : null };
   return ok ? token : null;
 }
-function trustDevice(req, res, slug, target) {
+// `stored` is the credential as stored right after it was proven (or set):
+// the trust is for that version only.
+function trustDevice(req, res, slug, target, stored) {
+  if (!stored) return;
   const current = readTrustedDevice(req, slug);
   const key = targetKey(target);
-  const targets = (current ? current.targets : []).filter((t) => t !== key);
-  targets.push(key);
+  // One entry per credential: the new version replaces any older one.
+  const targets = (current ? current.targets : []).filter((t) => String(t).slice(0, String(t).lastIndexOf("@")) !== key);
+  targets.push(trustedEntry(key, credentialVersion(stored)));
   const token = {
     purpose: TRUSTED_DEVICE_PURPOSE,
     slug: slug || "_root",
@@ -443,9 +456,9 @@ function credentialContext(req, slug, target, plain, stored) {
   const key = quiniela + "\0" + tKey + "@" + version + "\0" + plain;
   let ctx = req.qzCredentialContexts.get(key);
   if (ctx) return ctx;
-  // Trust follows the person (the target), not one version of their PIN.
+  // Trust is for this version of the credential only (see trustDevice).
   const device = readTrustedDevice(req, slug);
-  const trustedDeviceId = device && device.targets.includes(tKey) ? device.id : null;
+  const trustedDeviceId = device && device.targets.includes(trustedEntry(tKey, version)) ? device.id : null;
   // No success, however it was sent, resets the credential's wait
   // (credentialAttempts.js): an attacker's budget never grows with the
   // owner's logins.
@@ -1696,6 +1709,13 @@ app.post("/api/kv/:key", async (req, res) => {
 
         await putRow(req.params.key, finalValue, client);
         await client.query("COMMIT");
+        // A new platform password ends every device's trust in the old one
+        // (trustDevice); the panel that typed it is trusted for the new one.
+        if (req.params.key === "platform_settings" && typeof value.dashboardPassword === "string"
+          && value.dashboardPassword && !isHashed(value.dashboardPassword)
+          && finalValue.dashboardPassword && finalValue.dashboardPassword !== (current && current.dashboardPassword)) {
+          trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET, finalValue.dashboardPassword);
+        }
         return res.json({ key: req.params.key, ok: true, version: finalValue.version });
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
@@ -1963,6 +1983,19 @@ app.post("/api/kv/:key", async (req, res) => {
 
         await putRow(info.metaKey, mergedValue, client);
         await client.query("COMMIT");
+        // A new admin password: every device's trust in the old one is over
+        // (trustDevice). The device that set it is trusted for the new one --
+        // only when THIS writer typed it and was allowed to change it (not,
+        // say, a legacy plaintext value being migrated to a hash on someone
+        // else's save: that writer never knew it).
+        const oldOwnerPw = oldValue.settings ? oldValue.settings.ownerPassword : null;
+        const newOwnerPw = mergedValue.settings ? mergedValue.settings.ownerPassword : null;
+        const typedOwnerPw = value.settings ? value.settings.ownerPassword : null;
+        const mayChangeOwnerPw = authTier === "owner" || authTier === "platform" || (authTier === "admin-pin" && !oldOwnerPw);
+        if (mayChangeOwnerPw && typeof typedOwnerPw === "string" && typedOwnerPw && !isHashed(typedOwnerPw)
+          && newOwnerPw && newOwnerPw !== oldOwnerPw) {
+          trustDevice(req, res, info.slug, OWNER_TARGET, newOwnerPw);
+        }
         // participantsRevision goes back so the browser's copy stays current
         // and its NEXT write is judged fresh; participantsRestored tells it
         // that entries it did not know about were kept, which is its cue to
@@ -2099,7 +2132,7 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
     const credSlug = slugFromMetaKey(metaKey);
     const stored = value.settings ? value.settings.ownerPassword : null;
     if (checkCredential(req, credSlug, OWNER_TARGET, password, stored)) {
-      trustDevice(req, res, credSlug, OWNER_TARGET);
+      trustDevice(req, res, credSlug, OWNER_TARGET, stored);
       return res.json({ ok: true });
     }
     // Recovery fallback — reachable ONLY when there is currently no owner
@@ -2119,7 +2152,7 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
         (p) => p.isAdmin && p.pin && p.id === bound && checkCredential(req, credSlug, p.id, providedAuth, p.pin)
       );
       if (admin) {
-        trustDevice(req, res, credSlug, admin.id);
+        trustDevice(req, res, credSlug, admin.id, admin.pin);
         return res.json({ ok: true });
       }
     }
@@ -2137,7 +2170,7 @@ app.post("/api/verify-platform", rateLimit("verify-platform"), async (req, res) 
     const stored = await getPlatformHash();
     const ok = checkPlatformCredential(req, password, stored);
     if (!ok && sendIfCredentialThrottled(req, res)) return;
-    if (ok) trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET);
+    if (ok) trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET, stored);
     res.json({ ok });
   } catch (err) {
     console.error(err);
@@ -2160,7 +2193,7 @@ app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
     if (ok) {
       // Scoped to the quiniela whose row was checked, never the body's slug.
       issueSessionCookie(res, credSlug, participant);
-      trustDevice(req, res, credSlug, participant.id);
+      trustDevice(req, res, credSlug, participant.id, participant.pin);
     }
     res.json({ ok });
   } catch (err) {
@@ -2251,7 +2284,9 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
       // Same rule as self-register: the session is scoped to the quiniela
       // whose row was written, never to the client-supplied `slug`.
       issueSessionCookie(res, claimSlug, participant);
-      trustDevice(req, res, claimSlug, participant.id);
+      // The device that completed the change is trusted for the NEW PIN; every
+      // other device's trust was for the old version and no longer counts.
+      trustDevice(req, res, claimSlug, participant.id, participant.pin);
       res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
@@ -2421,7 +2456,7 @@ app.post("/api/self-register", async (req, res) => {
     // slug-less by design; issueSessionCookie handles that null the same
     // way it always has.
     issueSessionCookie(res, derivedSlug, newParticipant);
-    trustDevice(req, res, derivedSlug, newParticipant.id);
+    trustDevice(req, res, derivedSlug, newParticipant.id, newParticipant.pin);
     res.json({ ok: true, participant: { id: newParticipant.id, name: newParticipant.name, isAdmin: false, paid: false, hasPin: true } });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -3103,7 +3138,7 @@ app.post("/api/create-quiniela", async (req, res) => {
     // opened the link first if the creator left before the PIN step.
     issueAdminSetupClaim(res, cleanSlug, creatorId);
     // The creator just chose the admin password on this device.
-    trustDevice(req, res, cleanSlug, OWNER_TARGET);
+    trustDevice(req, res, cleanSlug, OWNER_TARGET, meta.settings.ownerPassword);
     res.json({ ok: true, slug: cleanSlug });
   } catch (err) {
     await client.query("ROLLBACK");

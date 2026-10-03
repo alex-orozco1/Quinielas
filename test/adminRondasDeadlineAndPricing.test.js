@@ -51,7 +51,13 @@ test("CASE A: yesterday is rejected", () => {
 });
 
 test("CASE B: today but an already-past hour is rejected", () => {
-  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", NOW + 1), false);
+  // A datetime-local value is the admin's LOCAL wall-clock time, and the
+  // product reads it that way (new Date("2026-08-22T14:00")). "Now" is built
+  // the same way -- 15:00 local on the same day -- so the case holds in any
+  // time zone (UTC, America/Mexico_City...), not only when local time is UTC.
+  const localNow = new Date(2026, 7, 22, 15, 0).getTime();
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", localNow), false);
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T16:00", localNow), true, "and an hour later today is still valid");
 });
 
 test("CASE C: a genuine future datetime is accepted", () => {
