@@ -185,18 +185,34 @@ Lectura:
   ambos: sus dispositivos de confianza, la sesión abierta, y resetear la credencial.
 
 **Recomendación: espera progresiva** (10 libres, 15 s × 2^n, tope 15 min, olvido a las 24 h), manteniendo
-los límites por red y la exención de dispositivos de confianza, más dos cambios de UX:
+los límites por red y la exención de dispositivos de confianza. Product QA está de acuerdo con cambios;
+estos son los cambios y lo que el dueño del producto tiene que decidir:
 
-1. Tras 5 fallos, la pantalla de PIN ofrece la salida en lugar de otro intento: "¿Olvidaste tu PIN?
-   Pide a otro admin que lo resetee" / "usa la contraseña de administrador".
-2. El mensaje de bloqueo muestra el tiempo real que dice `Retry-After` ("Intenta de nuevo en 8 min").
+1. **Mensaje con el tiempo real.** Hoy el cliente no lee `Retry-After` y dice "Espera un rato…", que con la
+   progresiva puede ser 15 s o 15 min. Debe decir "Intenta de nuevo en N min" (login, Ajustes,
+   reautenticación y primer PIN de admin).
+2. **"¿Olvidaste tu PIN?" tras 5 fallos**, ofreciendo sólo salidas que existen hoy: "Pide a otro admin
+   que lo resetee". **No** "usa la contraseña de administrador": hoy esa contraseña sólo se pide dentro
+   de Ajustes, con sesión abierta (ver pendiente abajo).
+3. Reglas a fijar antes de implementar:
+   - un intento hecho durante la espera se rechaza **sin** contar como fallo y **sin** alargar la espera
+     (como hoy los bloqueados);
+   - un acierto pone a cero el contador de **esa** credencial (no los de red);
+   - el olvido a las 24 h es por credencial y lo reinicia cualquier fallo nuevo;
+   - el estado (`n`, último fallo) se persiste como hoy; al migrar, todas las credenciales empiezan con
+     contador nuevo una sola vez.
+4. Contexto para decidir: la sesión dura 1 año, así que el bloqueo sólo afecta a quien entra desde un
+   teléfono nuevo o borró cookies; en ráfagas rápidas desde una red manda el límite por red
+   (20/15 min) en ambas opciones.
 
 No implementado en este PR: pendiente de decisión del dueño del producto.
 
-Pendiente detectado al evaluar el acceso del admin (independiente de esta decisión): un admin único
-que olvidó su PIN y no tiene dispositivo de confianza no tiene un camino de autoservicio para
-resetearlo con la contraseña de administrador; hoy depende de otro admin (reset en Participantes) o de
-una intervención con la contraseña de plataforma (no verifiqué si el panel lo ofrece en la UI).
+**Pendiente de producto, independiente de esta decisión (P2, verificado por Product QA):** un admin único
+que olvidó su PIN y no tiene sesión ni dispositivo de confianza **no tiene recuperación de autoservicio**:
+el login sólo acepta 4 dígitos, la contraseña de administrador sólo se pide en Ajustes (con sesión) y el
+Panel de plataforma no ofrece resetear PINs. Hoy sólo lo rescata otro admin (Participantes → Resetear) o
+una intervención manual. Opciones: reset del propio PIN con la contraseña de administrador desde el login,
+o un botón "resetear PIN" en el Panel de plataforma. Un admin secundario sí se recupera (verificado).
 
 ## 6. Fuera de alcance de esta entrega
 
