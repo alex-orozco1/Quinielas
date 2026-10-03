@@ -81,9 +81,22 @@ CF-Connecting-IP: <cliente>     (lo fija Cloudflare desde la conexión TCP)
 ```
 GET /api/platform/client-ip-check                       → ip = tu IP pública, via = "cf-connecting-ip"
 GET /api/platform/client-ip-check
-    con X-Forwarded-For: 1.2.3.4, CF-Connecting-IP: 5.6.7.8, True-Client-IP: 9.9.9.9
+    con X-Forwarded-For: 1.2.3.4, True-Client-IP: 9.9.9.9, X-Real-IP: 8.8.8.8
                                                         → misma ip que arriba
 ```
+
+No incluir `CF-Connecting-IP` en esa prueba: Cloudflare rechaza en el borde una petición que lo trae
+escrito por el cliente (`403 "DNS points to prohibited IP"`), así que nunca llega a la app.
+
+**Verificado en el sandbox real** (2026-10-03, 3 IPs reales de GitHub Actions, commit `3ee2187` = PR #28):
+falsificar `X-Forwarded-For`, `True-Client-IP`, `X-Real-IP` y `Forwarded` en cada intento no cambió el
+cubo (20 `ok:false` y luego 429, también para el PIN correcto de otra persona desde esa red); otras dos
+IPs entraron normalmente con su PIN y con el del admin atacado; `CF-Connecting-IP` falso fue rechazado
+por Cloudflare. No verificado: el dominio `qracks.net`, IPv6 real y el valor de `via` del diagnóstico.
+
+**Redes compartidas** (wifi común, CGNAT): quien comparte red con otros puede, con 20 PINs equivocados,
+dejar en 429 durante 15 min el login por PIN de todos los de esa red en esa quiniela (24 h con 100). No
+afecta otras quinielas, sesiones abiertas ni dispositivos de confianza.
 
 La respuesta incluye también `expressReqIp` (lo que `req.ip` habría usado) y la cadena de
 `X-Forwarded-For` vista desde la derecha, para confirmar la forma documentada.
@@ -139,7 +152,10 @@ Comportamiento implementado hoy, a confirmar o cambiar por el dueño del product
   - en todos los casos, esperar el fin de la ventana.
 ### 5.1 Evaluación: bloqueo de 24 h frente a espera progresiva
 
-Simulación por credencial, dispositivos no confiables (script `lockout-sim.js` en la evidencia del PR).
+Simulación por credencial, dispositivos no confiables (script `lockout-sim.js` en la evidencia del PR). Las filas
+del admin incluyen los límites por red (20/15 min y 100/24 h) que también le aplican desde un solo teléfono. El
+modelo usa ventanas rodantes; las ventanas fijas reales permiten ráfagas en el borde de la ventana (hasta ~299
+intentos en 4 h alrededor del corte de 24 h) sin cambiar el promedio diario.
 "Progresiva" = 10 fallos libres, luego espera de 15 s × 2^n entre intentos, con tope de 15 min; el
 contador se olvida tras 24 h sin fallos. Ambas conservan los límites por red y la exención de
 dispositivos de confianza.
@@ -148,9 +164,10 @@ dispositivos de confianza.
 |---|---|---|
 | Atacante sostenido, IPs ilimitadas | 150 adivinanzas/día | **96/día** |
 | 50 % de probabilidad de dar con un PIN de 4 dígitos | ~33 días | **~52 días** |
-| Admin sin atacante, 8 intentos fallidos y luego el correcto | 0 de espera | 0 |
-| Admin sin atacante, 20 fallidos | 0 | ~1 h 30 min acumulada (ninguna espera > 15 min) |
-| Admin sin atacante, 35 fallidos | ~10 min | ~5 h acumuladas |
+| Admin sin atacante, desde una red, 8 intentos fallidos y luego el correcto | 0 de espera | 0 |
+| Admin sin atacante, desde una red, 20 fallidos | ~12 min (límite por red 20/15 min) | ~1 h 30 min acumulada (ninguna espera > 15 min) |
+| Admin sin atacante, desde una red, 35 fallidos | ~12 min | ~5 h acumuladas |
+| Admin sin atacante, desde una red, 160 fallidos | ~24 h (límite por red 100/24 h) | ~38 h acumuladas |
 | Admin en dispositivo nuevo durante un ataque: `Retry-After` al llegar | mediana ~10 h, peor ~23 h | **mediana ~8 min, peor 15 min** |
 | ¿Un atacante óptimo puede seguir negándole la entrada en dispositivo nuevo? | Sí | Sí |
 | Salidas que no dependen del limitador | dispositivo de confianza, sesión abierta, reset del PIN / cambio de contraseña (versión nueva) | igual |
@@ -160,8 +177,9 @@ Lectura:
 - **Seguridad:** la espera progresiva es más estricta en régimen (96 contra 150 adivinanzas por día):
   el tope de 15 min por intento limita más que el cupo diario.
 - **Acceso del admin:** la progresiva nunca anuncia horas de bloqueo; con un atacante activo, el
-  admin ve "intenta en X min" en lugar de "mañana". Sólo pierde frente al bloqueo duro cuando alguien
-  legítimo encadena más de 10 errores, caso en que la salida correcta es resetear, no seguir probando.
+  admin ve "intenta en X min" en lugar de "mañana". Pierde frente al bloqueo duro cuando alguien
+  legítimo encadena más de 10 errores (con 20, ~1 h 30 min acumulada frente a ~12 min), caso en que la
+  salida correcta es resetear, no seguir probando.
 - **Lo que ninguna de las dos resuelve:** un atacante sostenido y óptimo puede tomar cada apertura
   antes que el admin en un dispositivo nuevo. La protección real del acceso del admin es la misma en
   ambos: sus dispositivos de confianza, la sesión abierta, y resetear la credencial.
