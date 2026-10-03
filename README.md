@@ -465,11 +465,12 @@ Critical areas covered include:
 
 High-risk lifecycle and commercial changes are additionally validated against a real PostgreSQL instance and through browser-based end-to-end testing.
 
-Some tests start the real server against a throwaway **local** PostgreSQL database (they create it and drop it; any host other than localhost is refused). Without `QRACKS_TEST_DATABASE_URL` they are skipped:
+Some tests start the real server against a throwaway **local** PostgreSQL database (they create it and drop it; any host other than localhost is refused). Without `QRACKS_TEST_DATABASE_URL` each of them is reported as skipped, with the reason, so a run without PostgreSQL never reads as a pass. Credentials go in the standard libpq variables (or `~/.pgpass`), never in the URL:
 
 ```bash
 pg_ctlcluster 16 main start
-QRACKS_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres node --test test/*.test.js
+export PGUSER=postgres PGPASSWORD='<local password>'   # or ~/.pgpass
+QRACKS_TEST_DATABASE_URL=postgres://localhost:5432/postgres node --test test/*.test.js
 ```
 
 ---

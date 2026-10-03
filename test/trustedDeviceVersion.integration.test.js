@@ -10,14 +10,21 @@
 // Needs a local PostgreSQL the test may create a throwaway database in:
 //
 //   pg_ctlcluster 16 main start
-//   QRACKS_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres \
+//   export PGUSER=postgres PGPASSWORD='<local password>'   # or ~/.pgpass
+//   QRACKS_TEST_DATABASE_URL=postgres://localhost:5432/postgres \
 //     node --test test/trustedDeviceVersion.integration.test.js
 //
-// Without QRACKS_TEST_DATABASE_URL it is skipped. Any host other than
-// localhost is refused: this test never points at a shared or production
-// database. It starts server.js itself on a free port, with
-// QRACKS_CLIENT_IP_SOURCE=xff:1 so each simulated client can have its own
+// Credentials never go in the URL (scripts/security/pre-commit-secret-check.sh
+// blocks connection strings with an embedded password): node-postgres takes
+// them from PGUSER/PGPASSWORD or ~/.pgpass, here and in the server this test
+// starts. Any host other than localhost is refused: this test never points at
+// a shared or production database. It starts server.js itself on a free port,
+// with QRACKS_CLIENT_IP_SOURCE=xff:1 so each simulated client can have its own
 // address, and drops its database at the end.
+//
+// Without QRACKS_TEST_DATABASE_URL every test here is reported as SKIPPED,
+// with the reason ("# skipped 9" in the summary): never as a pass, and never
+// as a suite that silently ran 0 tests.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -29,8 +36,11 @@ const { spawn } = require("node:child_process");
 const ADMIN_URL = process.env.QRACKS_TEST_DATABASE_URL || "";
 const SKIP = !ADMIN_URL
   ? "set QRACKS_TEST_DATABASE_URL to a LOCAL postgres (see the header of this file)"
-  : (!/^postgres(ql)?:\/\/[^@]*@(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//.test(ADMIN_URL)
+  : (!/^postgres(ql)?:\/\/([^@/]*@)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//.test(ADMIN_URL)
     ? "QRACKS_TEST_DATABASE_URL must point at localhost" : false);
+// Each test carries the skip itself, so a run without PostgreSQL reports
+// every one of them as skipped (with the reason) instead of an empty suite.
+const itest = (name, fn) => test(name, { skip: SKIP }, fn);
 
 const PLATFORM_PASSWORD = "it-platform-" + crypto.randomBytes(6).toString("hex");
 const SERVER_JS = path.join(__dirname, "..", "server.js");
@@ -146,8 +156,9 @@ async function guessFrom(browsers, perBrowser, guess, { parallel = false } = {})
 const wrongPin = (k, avoid) => { let p = String(5000 + k); while (avoid.includes(p)) p = String(Number(p) + 1); return p; };
 const pinGuess = (q, who) => (b, k) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q[who].id, pin: wrongPin(k, [q[who].pin]) } });
 
-test.describe("trusted-device cookies after a credential change (real server)", { skip: SKIP }, () => {
+test.describe("trusted-device cookies after a credential change (real server)", () => {
   test.before(async () => {
+    if (SKIP) return;
     pg = require("pg");
     dbName = "qracks_it_" + crypto.randomBytes(5).toString("hex");
     await adminQuery(`CREATE DATABASE ${dbName}`);
@@ -156,11 +167,12 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     await startServer();
   });
   test.after(async () => {
+    if (SKIP) return;
     await stopServer();
     if (pg && dbName) await adminQuery(`DROP DATABASE IF EXISTS ${dbName}`).catch(() => {});
   });
 
-  test("participant PIN: three cookies earned before the change get no more than a cookie-less attacker", async () => {
+  itest("participant PIN: three cookies earned before the change get no more than a cookie-less attacker", async () => {
     const q = await quiniela("pin");
     const net1 = freshIp();
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q.beto.id, pin: q.beto.pin } }));
@@ -181,7 +193,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([phone.status, phone.body], [200, { ok: true }]);
   });
 
-  test("admin PIN, through verify-pin and the header-PIN admin view: old cookies are not trusted after the change", async () => {
+  itest("admin PIN, through verify-pin and the header-PIN admin view: old cookies are not trusted after the change", async () => {
     const q = await quiniela("admin");
     const net1 = freshIp();
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q.ana.id, pin: q.ana.pin } }));
@@ -203,7 +215,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.ok("roundsRevision" in view.body.value);
   });
 
-  test("a PIN reset by an admin, then a new PIN, also ends the old trust", async () => {
+  itest("a PIN reset by an admin, then a new PIN, also ends the old trust", async () => {
     const q = await quiniela("reset");
     const net1 = freshIp();
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q.beto.id, pin: q.beto.pin } }));
@@ -220,7 +232,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([t.compared, t.refused, t.other], [10, 20, []]);
   });
 
-  test("admin password: cookies from verify-owner stop counting once the password changes in Ajustes", async () => {
+  itest("admin password: cookies from verify-owner stop counting once the password changes in Ajustes", async () => {
     const q = await quiniela("owner");
     const net1 = freshIp();
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-owner", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, password: q.owner } }));
@@ -237,7 +249,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([mine.status, mine.body], [200, { ok: true }]);
   });
 
-  test("new trust only for the writer who typed the new admin password: an admin by PIN saving over a legacy one gets none", async () => {
+  itest("new trust only for the writer who typed the new admin password: an admin by PIN saving over a legacy one gets none", async () => {
     const q = await quiniela("legacy");
     // A legacy quiniela whose admin password is still stored in plaintext.
     const legacyPw = "legacy-" + crypto.randomBytes(4).toString("hex");
@@ -260,7 +272,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([still.status, still.body], [200, { ok: true }], "the admin password did not change (only its storage)");
   });
 
-  test("platform password: cookies from verify-platform stop counting once it changes", async () => {
+  itest("platform password: cookies from verify-platform stop counting once it changes", async () => {
     const net1 = freshIp();
     let current = PLATFORM_PASSWORD;
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-platform", { ip: b.ip, cookie: b.cookie, body: { password: current } }));
@@ -279,7 +291,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([mine.status, mine.body], [200, { ok: true }], "the panel that changed it was trusted for the new password");
   });
 
-  test("saving the SAME PIN keeps the counters (and the credential, so its trusted devices too)", async () => {
+  itest("saving the SAME PIN keeps the counters (and the credential, so its trusted devices too)", async () => {
     const q = await quiniela("same");
     const net1 = freshIp();
     const kept = await trustedBrowsers(1, net1, (b) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q.beto.id, pin: q.beto.pin } }));
@@ -293,7 +305,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([stillTrusted.status, stillTrusted.body], [200, { ok: true }], "same credential, same trust");
   });
 
-  test("concurrency: 30 parallel guesses through three old cookies right after the change", async () => {
+  itest("concurrency: 30 parallel guesses through three old cookies right after the change", async () => {
     const q = await quiniela("conc");
     const net1 = freshIp();
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q.beto.id, pin: q.beto.pin } }));
@@ -304,7 +316,7 @@ test.describe("trusted-device cookies after a credential change (real server)", 
     assert.deepEqual([t.compared, t.refused], [10, 20], JSON.stringify(t));
   });
 
-  test("restart: old cookies stay untrusted and the new trust survives (state from the database, trust from the version)", async () => {
+  itest("restart: old cookies stay untrusted and the new trust survives (state from the database, trust from the version)", async () => {
     const q = await quiniela("restart");
     const net1 = freshIp();
     const old = await trustedBrowsers(3, net1, (b) => call("POST", "/api/verify-pin", { ip: b.ip, cookie: b.cookie, body: { metaKey: q.metaKey, participantId: q.beto.id, pin: q.beto.pin } }));
