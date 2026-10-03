@@ -130,26 +130,26 @@ test("a trusted device keeps working while its credential is under attack", () =
   const { limiter } = limiterAt(0);
   for (let i = 0; i < 40; i++) fail(limiter, "10.2.0." + i, "q", "g" + i, "p_admin");
   assert.equal(limiter.begin({ ip: "10.2.0.1", quiniela: "q", target: "p_admin", value: "1234" }).blocked, true, "untrusted: has to wait");
-  const trusted = limiter.begin({ ip: "10.2.0.1", quiniela: "q", target: "p_admin", value: "1234", trustedDeviceId: "dev1" });
+  const trusted = limiter.begin({ ip: "10.2.0.1", quiniela: "q", target: "p_admin", value: "1234", trustedDeviceId: "dev1", resetOnSuccess: true });
   assert.equal(trusted.blocked, false, "same IP, but a device that already proved this credential");
   trusted.settle(true);
-  // ...the success from the trusted device resets the credential's wait for everyone
+  // ...an explicit login from the trusted device resets the credential's wait for everyone
   assert.equal(limiter.begin({ ip: "10.2.9.9", quiniela: "q", target: "p_admin", value: "x" }).blocked, false);
   // ...and a trusted device has its own small budget, so a stolen device cookie is not a free pass.
   for (let i = 0; i < 10; i++) fail(limiter, "x", "q", "t" + i, "p_admin", "dev1");
   assert.equal(limiter.begin({ ip: "x", quiniela: "q", target: "p_admin", value: "t99", trustedDeviceId: "dev1" }).blocked, true);
 });
 
-test("a success resets the credential's wait, so the owner starts from zero after logging in", () => {
+test("an explicit login resets the credential's wait, so the owner starts from zero after logging in", () => {
   const { limiter, advance } = limiterAt(0);
   for (let i = 0; i < 12; i++) { const a = limiter.begin({ ip: "10.5.0." + i, quiniela: "q", target: "p_admin", value: "g" + i }); if (!a.blocked) a.settle(false); else advance(a.retryAfterMs); }
   const w = limiter.begin({ ip: "203.0.113.5", quiniela: "q", target: "p_admin", value: "right" });
   assert.equal(w.blocked, true, "the right PIN also waits its turn on a new device");
   advance(w.retryAfterMs);
-  const ok = limiter.begin({ ip: "203.0.113.5", quiniela: "q", target: "p_admin", value: "right" });
+  const ok = limiter.begin({ ip: "203.0.113.5", quiniela: "q", target: "p_admin", value: "right", resetOnSuccess: true });
   assert.equal(ok.blocked, false);
   ok.settle(true);
-  for (let i = 0; i < 10; i++) assert.equal(fail(limiter, "10.5.1." + i, "q", "after" + i).blocked, false, "10 free again after a success");
+  for (let i = 0; i < 10; i++) assert.equal(fail(limiter, "10.5.1." + i, "q", "after" + i).blocked, false, "10 free again after an explicit login");
 });
 
 test("concurrency: a parallel burst against one credential reserves before it is judged", () => {
@@ -165,7 +165,7 @@ test("concurrency: a parallel burst against one credential reserves before it is
 test("concurrency: a success settling while failures are in flight does not let more through", () => {
   const { limiter } = limiterAt(0);
   const a = [];
-  for (let i = 0; i < 10; i++) a.push(limiter.begin({ ip: "10.8.0." + i, quiniela: "q", target: "p_admin", value: i === 0 ? "right" : "w" + i }));
+  for (let i = 0; i < 10; i++) a.push(limiter.begin({ ip: "10.8.0." + i, quiniela: "q", target: "p_admin", value: i === 0 ? "right" : "w" + i, resetOnSuccess: i === 0 }));
   a[0].settle(true); // the right one finishes first: state reset
   a.slice(1).forEach((x) => x.settle(false)); // in-flight failures settle after: already recorded? no — reset cleared them
   for (let i = 0; i < 10; i++) assert.equal(fail(limiter, "10.8.1." + i, "q", "n" + i).blocked, false);
@@ -339,7 +339,12 @@ test("SERVER: every checkCredential call names one target", () => {
 
 test("SERVER: the budget is reserved before scrypt, only for a credential that exists, and settled when the response ends", () => {
   const ctxFn = serverSrc.slice(serverSrc.indexOf("function credentialContext("), serverSrc.indexOf("function checkCredential("));
-  assert.ok(ctxFn.includes("credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId })"));
+  assert.ok(ctxFn.includes("credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId,"));
+  assert.ok(ctxFn.includes("resetOnSuccess: req.qzExplicitLogin === true });"), "only an explicit login resets the wait");
+  for (const marker of ['app.post("/api/verify-pin"', 'app.post("/api/verify-owner"', 'app.post("/api/verify-platform"', 'app.post("/api/set-pin"']) {
+    assert.ok(routeBody(marker).includes("req.qzExplicitLogin = true;"), marker);
+  }
+  assert.equal((serverSrc.match(/req\.qzExplicitLogin = true;/g) || []).length, 4, "and nowhere else");
   assert.ok(ctxFn.includes('req.res.once("finish", settle)') && ctxFn.includes('req.res.once("close", settle)'));
   const check = serverSrc.slice(serverSrc.indexOf("function checkCredential("), serverSrc.indexOf("function headerIsOwnerPassword("));
   const guardAt = check.indexOf("if (!value || !stored) return false;");
@@ -630,4 +635,46 @@ test("FRONTEND: after 5 wrong PINs the login points at the way out that exists (
   assert.ok(block.includes("¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee."));
   assert.ok(!block.includes("contraseña de administrador"), "does not offer a recovery that does not exist yet");
   assert.ok(block.includes("loginPinMisses.delete(p.id);"));
+});
+
+
+// ---- Technical QA findings on d1a05a9 ----------------------------------------
+
+test("P1: the PIN a browser resends on every request does not reset the wait (only an explicit login does)", () => {
+  const { limiter, advance } = limiterAt(0);
+  let guesses = 0;
+  for (let cycle = 0; cycle < 5; cycle++) {
+    // attacker until told to wait
+    while (true) {
+      const a = limiter.begin({ ip: "10.9." + cycle + "." + guesses, quiniela: "q", target: "p_admin", value: "g" + guesses });
+      if (a.blocked) break;
+      a.settle(false); guesses++;
+    }
+    // the owner keeps using the app: header-borne successes, not logins
+    for (let k = 0; k < 20; k++) { const ok = limiter.begin({ ip: "203.0.113.7", quiniela: "q", target: "p_admin", value: "right" }); if (!ok.blocked) ok.settle(true); advance(100); }
+  }
+  assert.equal(guesses, 10, "the owner's activity hands the attacker nothing beyond the first 10");
+});
+
+test("P1: a header-borne success gives back its own reservation, so the owner's own tries never pile up", () => {
+  const { limiter } = limiterAt(0);
+  for (let i = 0; i < 9; i++) fail(limiter, "10.10.0." + i, "q", "g" + i);
+  for (let k = 0; k < 50; k++) { const ok = limiter.begin({ ip: "203.0.113.8", quiniela: "q", target: "p_admin", value: "right" }); assert.equal(ok.blocked, false); ok.settle(true); }
+  assert.equal(fail(limiter, "10.10.1.1", "q", "tenth").blocked, false, "still the 10th failure, not the 60th");
+  assert.equal(limiter.begin({ ip: "10.10.1.2", quiniela: "q", target: "p_admin", value: "eleventh" }).blocked, true);
+});
+
+test("P2: a value tried before waits like any other — no free 'was this tried?' oracle", () => {
+  const { limiter } = limiterAt(0);
+  fail(limiter, "203.0.113.9", "q", "4312"); // the owner's typo
+  for (let i = 0; i < 9; i++) fail(limiter, "10.11.0." + i, "q", "g" + i);
+  const probes = ["4312", "1111", "2222", "g3"].map((v) => limiter.begin({ ip: "6.6.6.6", quiniela: "q", target: "p_admin", value: v }));
+  assert.ok(probes.every((p) => p.blocked), "every probe, seen or not, gets the same 429");
+  assert.ok(probes.every((p) => p.retryAfterMs === probes[0].retryAfterMs), "and the same time left");
+});
+
+test("P2: same for the per-network windows", () => {
+  const { limiter } = limiterAt(0);
+  for (let i = 0; i < 20; i++) fail(limiter, "6.6.6.7", "q", "v" + i, "t" + i);
+  assert.equal(limiter.begin({ ip: "6.6.6.7", quiniela: "q", target: "t0", value: "v0" }).blocked, true, "a value already counted from this network is still blocked");
 });

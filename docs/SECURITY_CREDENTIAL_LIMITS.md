@@ -49,7 +49,7 @@ Espera progresiva por credencial (`target`, una credencial desde cualquier red; 
 | 16 o más | 15 min (tope) |
 
 - Un dispositivo de confianza usa sólo su presupuesto `device`; no le afectan `ip`, `net` ni la espera
-  de la credencial (y un acierto desde él la pone a cero).
+  de la credencial (y un login explícito desde él la pone a cero).
 - La reserva del intento ocurre antes de scrypt; con N peticiones en paralelo sólo se comparan las
   que caben.
 - Respuesta cuando hay que esperar: `429 {"error":"too_many_attempts","retryAfterSeconds":N}` y
@@ -146,8 +146,14 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   último fallo, con tope de 15 min. Aplica a dispositivos **no** de confianza.
 - **Los rechazos no prolongan:** una petición que llega mientras hay que esperar recibe el tiempo que
   falta y no cuenta como fallo ni mueve la espera.
-- **Vuelve a cero:** con un acierto (desde cualquier dispositivo), con una versión nueva de la credencial
-  (reset del PIN, cambio de contraseña) o tras 24 h sin fallos.
+- **Vuelve a cero:** con un **login explícito** correcto (alguien escribe la credencial en el login,
+  Ajustes, el Panel de plataforma o al cambiar el PIN), con una versión nueva de la credencial (reset del
+  PIN, cambio de contraseña) o tras 24 h sin fallos. El PIN que el navegador reenvía en cada petición
+  no pone nada a cero: un acierto así sólo devuelve su propia reserva (si no, cada carga de página del
+  titular le regalaría al atacante 10 intentos libres; Technical QA lo reprodujo sobre `d1a05a9`).
+- **Valores repetidos:** el mismo valor equivocado no se cuenta dos veces, pero espera como cualquier
+  otro; preguntar durante la espera por un valor ya probado recibe el mismo 429 (sin oráculo de "¿esto
+  ya se probó?").
 - **No cambia:** los límites por red (`ip`, `net`), los dispositivos de confianza y la ligadura de
   identidad. En ráfagas rápidas desde una sola red manda el límite por red (20/15 min).
 - **Persistencia:** el estado (fallos, último fallo, versión) se guarda en `credential_attempt_buckets`
@@ -156,7 +162,7 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   credencial empieza con contador nuevo una sola vez.
 - **Quién puede provocar esperas:** cualquiera con el link. No da acceso a nada; un atacante sostenido
   puede mantener la credencial en la espera de 15 min y adelantarse al titular en un dispositivo nuevo.
-  Como un acierto pone el contador a cero, cada login del titular le devuelve al atacante sus 10 intentos
+  Como un login explícito pone el contador a cero, cada uno le devuelve al atacante sus 10 intentos
   libres; con sesiones de 1 año esos logins son raros, y el ritmo sostenido sigue siendo ~96 por día.
 - **Recuperación:**
   - entrar desde un dispositivo de confianza o con la sesión abierta (dura 1 año);

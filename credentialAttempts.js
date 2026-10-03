@@ -23,7 +23,13 @@
 //           The first FREE failures cost nothing; after that each attempt has
 //           to wait base × 2^(failures − FREE) since the last failure, capped
 //           at cap. The count is forgotten after forget without failures, on
-//           a successful check, and when the credential changes (new version).
+//           a successful EXPLICIT login (resetOnSuccess: a person typed the
+//           credential into verify-pin / verify-owner / verify-platform /
+//           set-pin), and when the credential changes (new version). Any
+//           other success (the PIN a browser resends in X-Qracks-Auth on
+//           every request) only gives back its own reservation: otherwise an
+//           active owner would hand an attacker a fresh 10 free guesses on
+//           every page load.
 //           With the defaults a sustained attacker gets about 96 guesses a day
 //           (one per 15 minutes); a person never waits more than 15 minutes
 //           for their next try.
@@ -38,9 +44,11 @@
 // match, counts.
 //
 // How it avoids locking out real people:
-//   - Only failures count; a correct credential resets its target state.
+//   - Only failures count; an explicit login resets the credential's state.
 //   - The SAME wrong value counts once: a tab that keeps a stale PIN in memory
-//     resends it on every request; that is one failure, not hundreds.
+//     resends it on every request; that is one failure, not hundreds. It is
+//     still subject to the wait (otherwise "was this value tried before?"
+//     could be asked for free while everyone else waits).
 //   - Being throttled only switches off header/body credentials. Session
 //     cookies still work.
 //
@@ -167,7 +175,7 @@ function createCredentialAttemptLimiter(options = {}) {
   //   { blocked: false, settle(matched) } otherwise.
   // settle(true) undoes the window reservations and resets the credential's
   // progressive state; settle(false) keeps the failure. settle is idempotent.
-  function begin({ ip, quiniela, target, version, value, trustedDeviceId }) {
+  function begin({ ip, quiniela, target, version, value, trustedDeviceId, resetOnSuccess }) {
     const now = clock();
     const q = quiniela || "_root";
     const tKey = String(target);
@@ -185,25 +193,26 @@ function createCredentialAttemptLimiter(options = {}) {
     for (const rule of rules) {
       if (!(rule.scope in windowScopes)) continue;
       const bucket = windowFor(rule, windowScopes[rule.scope], now);
-      if (bucket.seen.has(fp)) continue; // this exact value already counted here
       if (bucket.count >= rule.max) {
         blocked = true;
         retryAfterMs = Math.max(retryAfterMs, bucket.windowStart + rule.windowMs - now);
       }
-      touched.push({ bucket, generation: bucket.generation });
+      // This exact value already counted here: it waits like any other, but
+      // is not counted twice.
+      if (!bucket.seen.has(fp)) touched.push({ bucket, generation: bucket.generation });
     }
 
     // A trusted device does not wait on the credential's state, but a success
     // from it still resets that state.
     const t = targetFor(targetScope, v, now, !trustedDeviceId);
     let countsOnTarget = false;
-    if (!trustedDeviceId && !t.seen.has(fp)) {
+    if (!trustedDeviceId) {
       const allowedAt = t.lastFailAt + progressiveWaitMs(t.failures, cfg);
       if (t.failures >= cfg.free && now < allowedAt) {
         blocked = true;
         retryAfterMs = Math.max(retryAfterMs, allowedAt - now);
       }
-      countsOnTarget = true;
+      countsOnTarget = !t.seen.has(fp);
     }
 
     // Rejected: nothing is recorded, so waiting is never prolonged by asking.
@@ -214,7 +223,9 @@ function createCredentialAttemptLimiter(options = {}) {
       x.bucket.seen.add(fp);
       changed(windowSnapshot(x.bucket));
     }
+    let undo = null;
     if (countsOnTarget) {
+      undo = { failuresAfter: t.failures + 1, lastFailBefore: t.lastFailAt };
       t.failures++;
       t.lastFailAt = now;
       t.seen.add(fp);
@@ -236,10 +247,18 @@ function createCredentialAttemptLimiter(options = {}) {
             changed(windowSnapshot(x.bucket));
           }
         }
-        // Proven: this credential starts over. Only if it is still the same
-        // version that was checked (a reset in the meantime already did it).
-        if (t && t.generation === targetGeneration && t.version === v && t.failures > 0) {
-          t.failures = 0; t.seen = new Set(); t.generation++; t.lastFailAt = clock();
+        if (!t || t.generation !== targetGeneration || t.version !== v) return;
+        if (resetOnSuccess) {
+          // A person typed the right credential: it starts over.
+          if (t.failures > 0) {
+            t.failures = 0; t.seen = new Set(); t.generation++; t.lastFailAt = clock();
+            changed(targetSnapshot(t));
+          }
+        } else if (undo && t.seen.delete(fp)) {
+          // Any other success only gives back its own reservation; the last
+          // failure time is restored only if nothing was recorded after it.
+          if (t.failures === undo.failuresAfter) t.lastFailAt = undo.lastFailBefore;
+          t.failures = Math.max(0, t.failures - 1);
           changed(targetSnapshot(t));
         }
       },
