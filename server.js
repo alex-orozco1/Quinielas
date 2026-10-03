@@ -42,6 +42,9 @@ const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
 const { currentDefaultSeason } = require("./seasonDefaults");
 const { isRoundEligibleForAutoResults } = require("./autoResults");
+const adminPinClaim = require("./adminPinClaim");
+const { createCredentialAttemptLimiter } = require("./credentialAttempts");
+const clientIp = require("./clientIp");
 
 // ---------- required configuration ----------
 // No default secrets, ever. If these aren't set, the server refuses to boot
@@ -70,7 +73,13 @@ function isHashed(value) {
 }
 function verifyPassword(plain, stored) {
   if (plain == null || plain === "" || !stored) return false;
-  if (!isHashed(stored)) return String(plain) === String(stored);
+  if (!isHashed(stored)) {
+    // Legacy plaintext (or the PLATFORM_PASSWORD env bootstrap): compare
+    // digests in constant time rather than the strings themselves.
+    const a = crypto.createHash("sha256").update(String(plain)).digest();
+    const b = crypto.createHash("sha256").update(String(stored)).digest();
+    return crypto.timingSafeEqual(a, b);
+  }
   const parts = stored.split("$");
   if (parts.length !== 3) return false;
   const [, salt, hash] = parts;
@@ -178,16 +187,314 @@ function readSessionFromCookie(req, slug) {
   if (!raw) return null;
   const session = verifySessionToken(raw);
   if (!session || session.slug !== (slug || "_root")) return null;
+  // A token signed for another purpose (the admin setup claim below) is never
+  // a session, even if someone moves it into this cookie by hand.
+  if (session.purpose) return null;
   if (!session.issuedAt || Date.now() - session.issuedAt > SESSION_TOKEN_MAX_AGE_MS) return null;
   return session;
+}
+// Admin setup claim (see adminPinClaim.js): proof, held only by the browser
+// that created the quiniela, that it may choose the creator's first PIN.
+function issueAdminSetupClaim(res, slug, participantId) {
+  const token = signSessionToken(adminPinClaim.buildAdminSetupClaimPayload({
+    slug, participantId, now: Date.now()
+  }));
+  res.cookie(adminPinClaim.adminSetupClaimCookieName(slug), token, {
+    ...SESSION_COOKIE_CLEAR_OPTIONS,
+    maxAge: adminPinClaim.ADMIN_SETUP_CLAIM_MAX_AGE_MS
+  });
+}
+function hasValidAdminSetupClaim(req, slug, participantId) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const raw = cookies[adminPinClaim.adminSetupClaimCookieName(slug)];
+  if (!raw) return false;
+  return adminPinClaim.isValidAdminSetupClaim(verifySessionToken(raw), {
+    slug, participantId, now: Date.now()
+  });
+}
+function clearAdminSetupClaim(res, slug) {
+  res.clearCookie(adminPinClaim.adminSetupClaimCookieName(slug), SESSION_COOKIE_CLEAR_OPTIONS);
 }
 // The extra check alongside a PIN header, everywhere a participant needs to
 // prove it's them: either their PIN matches, OR they have a valid session
 // cookie for this exact participant whose fingerprint still matches their
 // CURRENT pin (so resetting someone's PIN silently logs out every device
 // that was resting on the old one).
+// ---------- failed-credential limit (see credentialAttempts.js) ----------
+// Every comparison of a PIN or owner password that a caller supplied goes
+// through checkCredential(), so one budget covers every route: the X-Qracks-Auth
+// header on GET/POST /api/kv, picks, bets and admin actions, and the body
+// fields of verify-pin, set-pin and verify-owner.
+//
+// A supplied value is compared against ONE named target per check: "owner"
+// (the admin password) or one participant id (that participant's PIN). The
+// header is bound the same way: X-Qracks-Auth WITH X-Qracks-Participant is
+// that participant's PIN and nothing else; X-Qracks-Auth alone is the admin
+// password and nothing else. Comparing one value against every participant
+// at once let a guess that matched the guesser's own PIN cost nothing while
+// still revealing whether it was also an admin's.
+//
+// The counters survive restarts: every change is written (in batches, a few
+// hundred ms later) to credential_attempt_buckets and read back at boot, so
+// redeploys, crashes and Render free's spin-down after idle time do not hand
+// out a fresh budget. Live counts are per process: N instances would each
+// enforce their own copy (render.yaml: one). See
+// docs/SECURITY_CREDENTIAL_LIMITS.md.
+const credentialAttemptsDirty = new Map();
+let credentialAttemptsFlushTimer = null;
+const credentialLimiter = createCredentialAttemptLimiter({
+  // Derived from the server secret (read at boot, before any request), so a
+  // persisted bucket id names no IP, quiniela or participant and is the same
+  // after a restart.
+  idKey: () => crypto.createHmac("sha256", sessionSecret).update("credential-attempt-bucket-id").digest(),
+  onChange: (snap) => {
+    credentialAttemptsDirty.delete(snap.id);
+    credentialAttemptsDirty.set(snap.id, snap);
+    // While the database is unreachable the queue must not grow without end:
+    // drop the oldest pending writes (memory still enforces the limit).
+    if (credentialAttemptsDirty.size > 100000) credentialAttemptsDirty.delete(credentialAttemptsDirty.keys().next().value);
+    if (!credentialAttemptsFlushTimer) {
+      credentialAttemptsFlushTimer = setTimeout(() => { flushCredentialAttempts().catch(() => {}); }, 250);
+      credentialAttemptsFlushTimer.unref();
+    }
+  },
+});
+// One flush at a time: a failed flush re-queues its rows only if nothing
+// newer for the same bucket was queued meanwhile, and no later flush can have
+// written a newer value in between.
+let credentialAttemptsFlushing = null;
+async function flushCredentialAttempts() {
+  credentialAttemptsFlushTimer = null;
+  if (credentialAttemptsFlushing) {
+    await credentialAttemptsFlushing.catch(() => {});
+    return flushCredentialAttempts();
+  }
+  if (!credentialAttemptsDirty.size) return;
+  credentialAttemptsFlushing = writeCredentialAttempts();
+  try { await credentialAttemptsFlushing; } finally { credentialAttemptsFlushing = null; }
+}
+async function writeCredentialAttempts() {
+  const rows = [...credentialAttemptsDirty.values()];
+  credentialAttemptsDirty.clear();
+  try {
+    await pool.query(
+      `INSERT INTO credential_attempt_buckets (id, rule, scope, window_start, window_ms, count, version, updated_at)
+       SELECT r.id, r.rule, r.scope, r."windowStart", r."windowMs", r.count, r.version, now()
+         FROM jsonb_to_recordset($1::jsonb)
+           AS r(id text, rule text, scope text, "windowStart" bigint, "windowMs" bigint, count int, version text)
+       ON CONFLICT (id) DO UPDATE SET rule = EXCLUDED.rule, scope = EXCLUDED.scope,
+         window_start = EXCLUDED.window_start, window_ms = EXCLUDED.window_ms,
+         count = EXCLUDED.count, version = EXCLUDED.version, updated_at = now()`,
+      [JSON.stringify(rows)]
+    );
+  } catch (err) {
+    // The in-memory limit still applies; only restart-survival is degraded.
+    // Re-queue what was not written unless something newer replaced it.
+    rows.forEach((r) => { if (!credentialAttemptsDirty.has(r.id) && credentialAttemptsDirty.size < 100000) credentialAttemptsDirty.set(r.id, r); });
+    console.error("credential_attempts_persist_failed", { rows: rows.length, code: err && err.code });
+    if (!credentialAttemptsFlushTimer) {
+      credentialAttemptsFlushTimer = setTimeout(() => { flushCredentialAttempts().catch(() => {}); }, 5000);
+      credentialAttemptsFlushTimer.unref();
+    }
+  }
+}
+async function loadCredentialAttempts() {
+  const cols = `id, rule, scope, window_start AS "windowStart", window_ms AS "windowMs", count, version`;
+  const now = Date.now();
+  // Credential (target) buckets: all of them. They are bounded by the number
+  // of credentials that exist, and losing one would hand that credential a
+  // fresh budget after a restart.
+  const targets = await pool.query(
+    `SELECT ${cols} FROM credential_attempt_buckets
+      WHERE scope = 'target' AND window_start + window_ms > $1`,
+    [now]
+  );
+  // Network/device buckets: the most recent 200k, loaded oldest-first so that,
+  // past the in-memory cap, it is the oldest that get evicted.
+  const others = await pool.query(
+    `SELECT * FROM (
+       SELECT ${cols}, updated_at FROM credential_attempt_buckets
+        WHERE scope <> 'target' AND window_start + window_ms > $1
+        ORDER BY updated_at DESC
+        LIMIT 200000
+     ) recent ORDER BY updated_at ASC`,
+    [now]
+  );
+  const rows = [...others.rows, ...targets.rows];
+  const restored = credentialLimiter.load(rows.map((row) => ({
+    id: row.id, rule: row.rule, scope: row.scope, count: row.count, version: row.version,
+    windowStart: Number(row.windowStart), windowMs: Number(row.windowMs),
+  })));
+  console.log("credential_attempts_loaded", JSON.stringify({ rows: rows.length, restored }));
+}
+setInterval(() => {
+  credentialLimiter.sweep();
+  pool.query("DELETE FROM credential_attempt_buckets WHERE window_start + window_ms <= $1", [Date.now()])
+    .catch((err) => console.error("credential_attempts_sweep_failed", { code: err && err.code }));
+}, 5 * 60 * 1000).unref();
+// Render stops the process with SIGTERM (deploys, spin-down). Write what is
+// pending first, with a short deadline so shutdown is never held hostage.
+process.once("SIGTERM", () => {
+  const deadline = new Promise((resolve) => setTimeout(resolve, 3000).unref());
+  Promise.race([flushCredentialAttempts().catch(() => {}), deadline]).finally(() => process.exit(0));
+});
+
+// A target is one credential. The owner password is a sentinel that is not a
+// string, and participants are namespaced ("pin:<id>"), so no participant id
+// a writer chooses (say, "owner") can ever stand for the admin password.
+const OWNER_TARGET = Object.freeze({ credential: "owner" });
+// The platform password (Panel de plataforma) is its own credential in its
+// own scope, which no quiniela slug can equal (slugs are [a-z0-9-]).
+const PLATFORM_TARGET = Object.freeze({ credential: "platform" });
+const PLATFORM_SCOPE = "__platform__";
+function targetKey(target) {
+  if (target === OWNER_TARGET) return "owner";
+  if (target === PLATFORM_TARGET) return "platform";
+  return "pin:" + String(target);
+}
+// Which version of a credential an attempt is against. Each new PIN or admin
+// password gets its own budget (the scrypt string changes on every set), so a
+// credential under attack can be recovered by resetting it; the attacker has
+// to start over against the new one.
+//
+// Keyed with the server secret, and only ever over a scrypt hash: the
+// attempt counters are persisted (credentialAttempts.js), and a fast digest
+// of a plaintext credential (a legacy PIN, the PLATFORM_PASSWORD env
+// bootstrap) would hand anyone reading that table a fast offline check. A
+// plaintext credential is first run through scrypt (once per process per
+// value, memoized), so rotating PLATFORM_PASSWORD still yields a fresh budget
+// while exposing no more than a hashed password already does.
+const plainCredentialVersions = new Map();
+function credentialVersion(stored) {
+  let material = String(stored);
+  if (!isHashed(stored)) {
+    let v = plainCredentialVersions.get(material);
+    if (!v) {
+      const salt = crypto.createHmac("sha256", sessionSecret).update("plain-credential-version-salt").digest("hex").slice(0, 32);
+      v = "plain$" + crypto.scryptSync(material, salt, 32).toString("hex");
+      if (plainCredentialVersions.size > 1000) plainCredentialVersions.clear();
+      plainCredentialVersions.set(material, v);
+    }
+    material = v;
+  }
+  return crypto.createHmac("sha256", sessionSecret).update("credential-version\0" + material).digest("hex").slice(0, 16);
+}
+// The participant a header PIN claims to be, or null when the header carries
+// the admin password.
+function boundParticipantId(req) {
+  const raw = req && typeof req.get === "function" ? req.get("x-qracks-participant") : null;
+  return raw ? String(raw) : null;
+}
+
+// Trusted device: a browser that has already proven a credential gets a
+// signed HttpOnly cookie naming it, so an attack on that credential can't lock
+// its owner out of the devices they already use (credentialAttempts.js). It
+// only changes which attempt budget applies; it never authenticates anything.
+// v2: targets are namespaced ("owner" / "pin:<id>"); a token from before that
+// is simply not recognised.
+const TRUSTED_DEVICE_PURPOSE = "trusted_device_v2";
+const TRUSTED_DEVICE_MAX_TARGETS = 8;
+function trustedDeviceCookieName(slug) {
+  return "qracks_trust_" + (slug || "_root");
+}
+function readTrustedDevice(req, slug) {
+  if (!req || !req.headers) return null;
+  if (req.qzTrustedDevice && req.qzTrustedDevice.slug === (slug || "_root")) return req.qzTrustedDevice.token;
+  const raw = parseCookies(req.headers.cookie || "")[trustedDeviceCookieName(slug)];
+  const token = raw ? verifySessionToken(raw) : null;
+  const ok = token && token.purpose === TRUSTED_DEVICE_PURPOSE && token.slug === (slug || "_root")
+    && typeof token.id === "string" && Array.isArray(token.targets)
+    && Number.isFinite(token.issuedAt) && Date.now() - token.issuedAt <= SESSION_TOKEN_MAX_AGE_MS;
+  req.qzTrustedDevice = { slug: slug || "_root", token: ok ? token : null };
+  return ok ? token : null;
+}
+function trustDevice(req, res, slug, target) {
+  const current = readTrustedDevice(req, slug);
+  const key = targetKey(target);
+  const targets = (current ? current.targets : []).filter((t) => t !== key);
+  targets.push(key);
+  const token = {
+    purpose: TRUSTED_DEVICE_PURPOSE,
+    slug: slug || "_root",
+    id: current ? current.id : crypto.randomBytes(12).toString("hex"),
+    targets: targets.slice(-TRUSTED_DEVICE_MAX_TARGETS),
+    issuedAt: Date.now()
+  };
+  res.cookie(trustedDeviceCookieName(slug), signSessionToken(token), SESSION_COOKIE_OPTIONS);
+  req.qzTrustedDevice = { slug: token.slug, token };
+}
+
+function credentialContext(req, slug, target, plain, stored) {
+  if (!req.qzCredentialContexts) req.qzCredentialContexts = new Map();
+  const quiniela = slug || "_root";
+  const tKey = targetKey(target);
+  const version = credentialVersion(stored);
+  const key = quiniela + "\0" + tKey + "@" + version + "\0" + plain;
+  let ctx = req.qzCredentialContexts.get(key);
+  if (ctx) return ctx;
+  // Trust follows the person (the target), not one version of their PIN.
+  const device = readTrustedDevice(req, slug);
+  const trustedDeviceId = device && device.targets.includes(tKey) ? device.id : null;
+  const attempt = credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId });
+  ctx = { blocked: attempt.blocked, matched: false, memo: new Map() };
+  req.qzCredentialContexts.set(key, ctx);
+  if (attempt.blocked) {
+    req.qzCredentialThrottled = true;
+    req.qzCredentialRetryAfterMs = Math.max(req.qzCredentialRetryAfterMs || 0, attempt.retryAfterMs);
+  } else if (req.res) {
+    // 'close' also fires for a client that hangs up mid-request; the attempt
+    // stays counted unless it matched before that.
+    const settle = () => attempt.settle(ctx.matched);
+    req.res.once("finish", settle);
+    req.res.once("close", settle);
+  } else {
+    attempt.settle(false);
+  }
+  return ctx;
+}
+// verifyPassword() for a credential the CALLER supplied, against ONE target.
+// No value, or nothing stored to compare with, is not an attempt. While
+// throttled, supplied credentials simply don't match; session cookies are
+// unaffected.
+function checkCredential(req, slug, target, plain, stored) {
+  // A JSON body can carry an array or object where a string belongs;
+  // String(["x"]) === "x", so only strings (and numbers) count as a credential.
+  if (plain != null && typeof plain !== "string" && typeof plain !== "number") return false;
+  const value = plain == null ? "" : String(plain);
+  if (!value || !stored) return false;
+  if (!req) return verifyPassword(value, stored);
+  const ctx = credentialContext(req, slug, target, value, stored);
+  if (ctx.blocked) return false;
+  if (ctx.memo.has(stored)) return ctx.memo.get(stored);
+  const ok = verifyPassword(value, stored);
+  ctx.memo.set(stored, ok);
+  if (ok) ctx.matched = true;
+  return ok;
+}
+// The X-Qracks-Auth header as the admin password: only when it is NOT bound
+// to a participant.
+function headerIsOwnerPassword(req, slug, value) {
+  if (!req || boundParticipantId(req)) return false;
+  const stored = value && value.settings ? value.settings.ownerPassword : null;
+  return checkCredential(req, slug, OWNER_TARGET, req.get("x-qracks-auth") || "", stored);
+}
+// The X-Qracks-Platform-Auth header (or verify-platform's body) as the
+// platform password, under the same failed-attempt limits.
+function checkPlatformCredential(req, plain, stored) {
+  return checkCredential(req, PLATFORM_SCOPE, PLATFORM_TARGET, plain, stored);
+}
+// For routes whose whole job is checking a credential: when the limit is what
+// made it fail, say so (429 + Retry-After) instead of "wrong PIN".
+function sendIfCredentialThrottled(req, res) {
+  if (!req.qzCredentialThrottled) return false;
+  res.set("Retry-After", String(Math.max(1, Math.ceil((req.qzCredentialRetryAfterMs || 0) / 1000))));
+  res.status(429).json({ error: "too_many_attempts" });
+  return true;
+}
+
 function isAuthenticatedAsParticipantReq(req, slug, participant) {
-  if (isAuthenticatedAsParticipant(participant, req.get("x-qracks-auth") || "")) return true;
+  if (participant && participant.pin && boundParticipantId(req) === participant.id
+    && checkCredential(req, slug, participant.id, req.get("x-qracks-auth") || "", participant.pin)) return true;
   const session = readSessionFromCookie(req, slug);
   if (!session || !participant) return false;
   return session.participantId === participant.id && session.pinFp === pinFingerprint(participant.pin);
@@ -251,11 +558,20 @@ async function checkPaymentsProvider() {
 }
 
 const app = express();
-// Render puts exactly one reverse proxy in front of this app. Trusting only
-// that one hop (instead of blindly trusting any X-Forwarded-For a client
-// sends) is what makes req.ip a real client IP instead of something a client
-// could spoof to dodge rate limiting.
+// Kept for req.protocol / req.secure (X-Forwarded-Proto from Render's proxy).
+// It is NOT what attempt limits key on: on Render, req.ip under this setting
+// is the right-most X-Forwarded-For entry, an address inside Render shared by
+// everyone. Limits use requestClientIp() (clientIp.js) instead.
 app.set("trust proxy", 1);
+
+// Which network a request comes from (see clientIp.js). Computed once per
+// request; the source is fixed at boot.
+const CLIENT_IP_SOURCE = clientIp.resolveSource(process.env);
+console.log("client_ip_source", JSON.stringify({ source: CLIENT_IP_SOURCE.kind, hops: CLIENT_IP_SOURCE.hops || null }));
+function requestClientIp(req) {
+  if (!req.qzClientIp) req.qzClientIp = clientIp.clientIpInfo(req, CLIENT_IP_SOURCE);
+  return req.qzClientIp.ip;
+}
 
 // ---------- MON-003: el cuerpo CRUDO del webhook de Stripe ----------
 //
@@ -293,6 +609,24 @@ const pool = new Pool({
 });
 
 async function ensureTable() {
+  // Failed-credential counters (credentialAttempts.js). Ids are keyed hashes:
+  // the table holds no IP address, quiniela, participant or credential.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS credential_attempt_buckets (
+      id TEXT PRIMARY KEY,
+      rule TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      window_start BIGINT NOT NULL,
+      window_ms BIGINT NOT NULL,
+      count INTEGER NOT NULL,
+      version TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  // Same posture as kv / analytics_events (docs/security/sec-002-hardening.sql):
+  // only this server, which owns the table, may touch it. With RLS on and no
+  // policy, Supabase's anon/authenticated API roles see nothing.
+  await pool.query(`ALTER TABLE credential_attempt_buckets ENABLE ROW LEVEL SECURITY`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kv (
       key TEXT PRIMARY KEY,
@@ -524,13 +858,17 @@ setInterval(() => {
 
 function rateLimit(name) {
   return (req, res, next) => {
-    const ip = req.ip || "unknown";
+    const ip = requestClientIp(req);
     const bucketKey = name + ":" + ip;
     const now = Date.now();
     let bucket = rateBuckets.get(bucketKey);
     if (!bucket || now - bucket.windowStart > RATE_LIMIT_WINDOW_MS) {
       bucket = { count: 0, windowStart: now };
+      rateBuckets.delete(bucketKey);
       rateBuckets.set(bucketKey, bucket);
+      // Keyed per real client now (clientIp.js), so bounded: past the cap the
+      // oldest window is dropped.
+      if (rateBuckets.size > 100000) rateBuckets.delete(rateBuckets.keys().next().value);
     }
     bucket.count++;
     if (bucket.count > RATE_LIMIT_MAX) {
@@ -626,8 +964,7 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
 // Used only for GET — is this request proven to be the quiniela's own admin
 // or owner (PIN or password, header or session cookie — same rules as writes)?
 function isRequestAdminOrOwner(req, slug, value) {
-  const providedAuth = req.get("x-qracks-auth") || "";
-  if (value && value.settings && verifyPassword(providedAuth, value.settings.ownerPassword)) return true;
+  if (headerIsOwnerPassword(req, slug, value)) return true;
   return (value && value.participants || []).some(
     (p) => p.isAdmin && p.pin && isAuthenticatedAsParticipantReq(req, slug, p)
   );
@@ -665,10 +1002,11 @@ function stripPlatformIndexForPublic(value) {
 
 // ---------- auth tiers ----------
 function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, slug) {
-  if (oldValue && oldValue.settings && verifyPassword(providedOwnerAuth, oldValue.settings.ownerPassword)) {
+  if (oldValue && oldValue.settings && !boundParticipantId(req)
+    && checkCredential(req, slug, OWNER_TARGET, providedOwnerAuth, oldValue.settings.ownerPassword)) {
     return "owner";
   }
-  if (providedPlatformAuth && verifyPassword(providedPlatformAuth, platformHash)) {
+  if (providedPlatformAuth && checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
     return "platform";
   }
   if (oldValue && (oldValue.participants || []).some(
@@ -799,6 +1137,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
   merged.participants = participantMerge.participants;
 
   const oldParticipants = (oldValue && Array.isArray(oldValue.participants)) ? oldValue.participants : [];
+  let adminRoleChangesRefused = 0;
   const oldById = {};
   oldParticipants.forEach((p) => { oldById[p.id] = p; });
   if (Array.isArray(merged.participants)) {
@@ -813,7 +1152,20 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
       } else if (p.pin && !isHashed(p.pin)) {
         p.pin = hashPassword(p.pin);
       }
+      if (!canChangeOwnerFields && !old && p.isAdmin) {
+        // Adding someone who is already an admin is the same owner action as
+        // promoting them (it used to slip through: there was no `old` to
+        // compare with).
+        adminRoleChangesRefused += 1;
+        p.isAdmin = false;
+      }
       if (!canChangeOwnerFields && old && p.isAdmin !== old.isAdmin) {
+        // Counted, not just reverted: the caller refuses the whole write so
+        // the Admin is told the change needs the owner password instead of
+        // seeing "ahora es admin" while nothing changed. Only a real change
+        // counts (a missing flag vs false is not one), and stale entries were
+        // already replaced by the stored ones in mergeParticipants above.
+        if (!!p.isAdmin !== !!old.isAdmin) adminRoleChangesRefused += 1;
         p.isAdmin = old.isAdmin;
       }
       // customBetAnswers: whoever is saving may only have had a masked view of
@@ -846,6 +1198,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
     participantsRestored: participantMerge.restored,
     participantsRefreshed: participantMerge.refreshed,
     roundsRestored: roundsAreStale,
+    adminRoleChangesRefused,
   };
 }
 
@@ -865,12 +1218,10 @@ function mergeProtectedPlatformFields(oldValue, newValue) {
 }
 
 // A participant only counts as "authenticated as themselves" if they have a
-// PIN AND it matches. No PIN does NOT mean open access anymore — it means
-// they haven't activated yet, and activation only happens through
-// /api/set-pin (see below), never implicitly via a public request.
-function isAuthenticatedAsParticipant(participant, providedAuth) {
-  return !!(participant && participant.pin && verifyPassword(providedAuth, participant.pin));
-}
+// PIN AND it matches (isAuthenticatedAsParticipantReq, verify-pin). No PIN
+// does NOT mean open access anymore — it means they haven't activated yet,
+// and activation only happens through /api/set-pin (see below), never
+// implicitly via a public request.
 
 // Who is asking — computed ONCE per request. Figuring this out involves
 // comparing a PIN against scrypt hashes, which is deliberately slow (that's
@@ -888,19 +1239,18 @@ function computeRequesterIdentity(req, slug, meta) {
       return { isAdminOrOwner: !!p.isAdmin, selfParticipantIds: new Set([p.id]) };
     }
   }
+  // The header is the admin password when unbound, or the PIN of exactly the
+  // participant X-Qracks-Participant names — never "whoever has this PIN"
+  // (see checkCredential).
   const providedAuth = req.get("x-qracks-auth") || "";
-  let isAdminOrOwner = !!(meta.settings && verifyPassword(providedAuth, meta.settings.ownerPassword));
-  // One pass over every participant, not one pass per participant being
-  // filtered. Two different participants could coincidentally share the same
-  // 4-digit PIN, so every match is recorded — not just the first one found —
-  // to match the exact semantics the old per-participant checks had.
+  const bound = boundParticipantId(req);
+  let isAdminOrOwner = headerIsOwnerPassword(req, slug, meta);
   const selfParticipantIds = new Set();
-  (meta.participants || []).forEach((p) => {
-    if (p.pin && verifyPassword(providedAuth, p.pin)) {
-      selfParticipantIds.add(p.id);
-      if (p.isAdmin) isAdminOrOwner = true;
-    }
-  });
+  const p = bound ? (meta.participants || []).find((x) => x.id === bound) : null;
+  if (p && p.pin && checkCredential(req, slug, p.id, providedAuth, p.pin)) {
+    selfParticipantIds.add(p.id);
+    if (p.isAdmin) isAdminOrOwner = true;
+  }
   return { isAdminOrOwner, selfParticipantIds };
 }
 
@@ -1061,11 +1411,11 @@ app.get("/api/kv/:key", async (req, res) => {
       if (req.params.key === "platform_settings") {
         const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
         const platformHash = await getPlatformHash();
-        value = stripPlatformSecrets(value, verifyPassword(providedPlatformAuth, platformHash));
+        value = stripPlatformSecrets(value, checkPlatformCredential(req, providedPlatformAuth, platformHash));
       } else if (req.params.key === "platform_index") {
         const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
         const platformHash = await getPlatformHash();
-        const isPlatformAuthed = verifyPassword(providedPlatformAuth, platformHash);
+        const isPlatformAuthed = checkPlatformCredential(req, providedPlatformAuth, platformHash);
         value = isPlatformAuthed ? value : stripPlatformIndexForPublic(value);
       } else if (req.params.key === "platform_payment_log"
         || req.params.key === "platform_payment_intents") {
@@ -1075,7 +1425,8 @@ app.get("/api/kv/:key", async (req, res) => {
         // quiniela, y no son de nadie más.
         const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
         const platformHash = await getPlatformHash();
-        if (!verifyPassword(providedPlatformAuth, platformHash)) {
+        if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+          if (sendIfCredentialThrottled(req, res)) return;
           return res.status(403).json({ error: "unauthorized" });
         }
       }
@@ -1197,6 +1548,7 @@ app.post("/api/submit-bet-answer", async (req, res) => {
       }
       if (!isAuthenticatedAsParticipantReq(req, slug, participant)) {
         await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
         return res.status(403).json({ error: "unauthorized" });
       }
       const bet = (value.customBets || []).find((b) => b.id === betId && b.scope === "temporada");
@@ -1255,7 +1607,8 @@ app.post("/api/kv/:key", async (req, res) => {
       // changing the password once in the dashboard immediately applies
       // everywhere, consistently.
       const platformHash = await getPlatformHash();
-      if (!verifyPassword(providedPlatformAuth, platformHash)) {
+      if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+        if (sendIfCredentialThrottled(req, res)) return;
         return res.status(403).json({ error: "unauthorized" });
       }
       // Every platform row is a JSON OBJECT. Enforced explicitly because the
@@ -1357,6 +1710,7 @@ app.post("/api/kv/:key", async (req, res) => {
         const authTier = resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, platformHash, req, info.slug);
         if (!authTier) {
           await client.query("ROLLBACK");
+          if (sendIfCredentialThrottled(req, res)) return;
           return res.status(403).json({ error: "unauthorized" });
         }
         // HOTFIX-001. Un documento de quiniela es siempre un OBJETO. Se exige
@@ -1410,6 +1764,15 @@ app.post("/api/kv/:key", async (req, res) => {
         }
 
         const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier, roundsWrite);
+        if (metaMerge.adminRoleChangesRefused > 0) {
+          // Making or unmaking an admin is an owner action. Refusing the whole
+          // write (nothing half-applied) is what lets the browser say so.
+          await client.query("ROLLBACK");
+          // If the admin password WAS sent but the attempt limit kept it from
+          // being checked, say that — not "wrong password".
+          if (sendIfCredentialThrottled(req, res)) return;
+          return res.status(403).json({ error: "owner_password_required" });
+        }
         const mergedValue = metaMerge.value;
         const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
         if (!roundsCheck.ok) {
@@ -1636,6 +1999,7 @@ app.post("/api/kv/:key", async (req, res) => {
           const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
           if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
             await client.query("ROLLBACK");
+            if (sendIfCredentialThrottled(req, res)) return;
             return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
           }
         }
@@ -1682,7 +2046,8 @@ app.delete("/api/kv/:key", async (req, res) => {
     if (info.kind === "quiniela-meta" || info.kind === "picks" || info.kind === "platform") {
       const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
       const platHash = await getPlatformHash();
-      if (!verifyPassword(providedPlatformAuth, platHash)) {
+      if (!checkPlatformCredential(req, providedPlatformAuth, platHash)) {
+        if (sendIfCredentialThrottled(req, res)) return;
         return res.status(403).json({ error: "unauthorized" });
       }
     }
@@ -1696,13 +2061,26 @@ app.delete("/api/kv/:key", async (req, res) => {
 
 // ---------- narrow self-service endpoints ----------
 
+// The quiniela a metaKey names: its slug, or null for the legacy root key.
+// Used to scope credential checks to the row actually being read or written,
+// never to a client-supplied `slug`.
+function slugFromMetaKey(metaKey) {
+  const m = String(metaKey || "").match(/^quiniela:([a-z0-9-]{1,60}):meta$/);
+  return m ? m[1] : null;
+}
+
 app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
   try {
     const { metaKey, password } = req.body || {};
     if (!metaKey) return res.status(400).json({ error: "missing_metaKey" });
     const value = await getRow(metaKey);
-    const stored = value && value.settings ? value.settings.ownerPassword : null;
-    if (verifyPassword(password, stored)) return res.json({ ok: true });
+    if (!value) return res.json({ ok: false });
+    const credSlug = slugFromMetaKey(metaKey);
+    const stored = value.settings ? value.settings.ownerPassword : null;
+    if (checkCredential(req, credSlug, OWNER_TARGET, password, stored)) {
+      trustDevice(req, res, credSlug, OWNER_TARGET);
+      return res.json({ ok: true });
+    }
     // Recovery fallback — reachable ONLY when there is currently no owner
     // password set at all (never as a bypass while a real one exists, since
     // this whole branch is gated behind `!stored`). In that specific state,
@@ -1715,11 +2093,16 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
     // PIN-based credential rotation.
     if (!stored) {
       const providedAuth = req.get("x-qracks-auth") || "";
-      const adminViaPin = (value.participants || []).some(
-        (p) => p.isAdmin && p.pin && verifyPassword(providedAuth, p.pin)
+      const bound = boundParticipantId(req);
+      const admin = (value.participants || []).find(
+        (p) => p.isAdmin && p.pin && p.id === bound && checkCredential(req, credSlug, p.id, providedAuth, p.pin)
       );
-      if (adminViaPin) return res.json({ ok: true });
+      if (admin) {
+        trustDevice(req, res, credSlug, admin.id);
+        return res.json({ ok: true });
+      }
     }
+    if (sendIfCredentialThrottled(req, res)) return;
     res.json({ ok: false });
   } catch (err) {
     console.error(err);
@@ -1731,7 +2114,10 @@ app.post("/api/verify-platform", rateLimit("verify-platform"), async (req, res) 
   try {
     const { password } = req.body || {};
     const stored = await getPlatformHash();
-    res.json({ ok: verifyPassword(password, stored) });
+    const ok = checkPlatformCredential(req, password, stored);
+    if (!ok && sendIfCredentialThrottled(req, res)) return;
+    if (ok) trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET);
+    res.json({ ok });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "server_error" });
@@ -1740,14 +2126,21 @@ app.post("/api/verify-platform", rateLimit("verify-platform"), async (req, res) 
 
 app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
-    const { metaKey, participantId, pin, slug } = req.body || {};
+    const { metaKey, participantId, pin } = req.body || {};
     if (!metaKey || !participantId) return res.status(400).json({ error: "missing_params" });
     const value = await getRow(metaKey);
     const participant = value ? (value.participants || []).find((p) => p.id === participantId) : null;
     // A participant with no PIN yet isn't "verified" — the frontend should
     // route them to /api/set-pin instead of treating this as a pass.
-    const ok = isAuthenticatedAsParticipant(participant, pin);
-    if (ok) issueSessionCookie(res, slug, participant);
+    const credSlug = slugFromMetaKey(metaKey);
+    const ok = !!(participant && participant.pin
+      && checkCredential(req, credSlug, participant.id, pin, participant.pin));
+    if (!ok && sendIfCredentialThrottled(req, res)) return;
+    if (ok) {
+      // Scoped to the quiniela whose row was checked, never the body's slug.
+      issueSessionCookie(res, credSlug, participant);
+      trustDevice(req, res, credSlug, participant.id);
+    }
     res.json({ ok });
   } catch (err) {
     console.error(err);
@@ -1755,14 +2148,33 @@ app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
   }
 });
 
+// Who may choose the first PIN of an admin besides the setup-claim holder
+// (adminPinClaim.js): the admin password, an admin's own session or bound PIN
+// (isRequestAdminOrOwner) — or, unbound, ANY admin's PIN typed on this device
+// ("pide a otro admin que escriba aquí su PIN"). Every value here is compared
+// only against admin-level credentials, each as its own target, so a match is
+// always the authorization itself and never a free guess.
+function isAdminClaimAuthorized(req, slug, value) {
+  if (isRequestAdminOrOwner(req, slug, value)) return true;
+  if (boundParticipantId(req)) return false;
+  const provided = req.get("x-qracks-auth") || "";
+  return (value.participants || []).some(
+    (p) => p.isAdmin && p.pin && checkCredential(req, slug, p.id, provided, p.pin)
+  );
+}
+
 // This IS the controlled activation path for participants who don't have a
 // PIN yet (old or new): if they have no PIN on file, no proof is required to
 // set their first one (there's nothing to prove yet); if they already have
 // one, the current PIN must match. Either way, this is the only way a PIN
 // ever gets set — never implicitly through a public picks request.
+// Exception: an ADMIN with no PIN is not up for grabs. Their first PIN needs
+// the setup claim from create-quiniela or an admin/owner credential (see
+// adminPinClaim.js) — otherwise whoever opened the link first after the
+// creator left the onboarding would become the admin.
 app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
-    const { metaKey, participantId, currentPin, newPin, slug } = req.body || {};
+    const { metaKey, participantId, currentPin, newPin } = req.body || {};
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
@@ -1784,10 +2196,25 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(404).json({ error: "participant_not_found" });
       }
-      if (participant.pin && !verifyPassword(currentPin, participant.pin)) {
+      // The slug the claim and the credentials are judged against comes from
+      // the metaKey actually being written, never from the client's `slug`.
+      const claimSlug = slugFromMetaKey(metaKey);
+      if (participant.pin && !checkCredential(req, claimSlug, participant.id, currentPin, participant.pin)) {
         await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
         return res.status(403).json({ error: "wrong_current_pin" });
       }
+      const firstPin = adminPinClaim.decideFirstPin({
+        participant,
+        hasValidSetupClaim: !participant.pin && hasValidAdminSetupClaim(req, claimSlug, participant.id),
+        isAdminOrOwner: !participant.pin && participant.isAdmin && isAdminClaimAuthorized(req, claimSlug, value)
+      });
+      if (!firstPin.ok) {
+        await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
+        return res.status(403).json({ error: firstPin.error });
+      }
+      const claimingAdmin = !participant.pin && !!participant.isAdmin;
       // MON-002B QA fix: the snapshot is taken BEFORE the change so the
       // revision stamp can see it. Without advancing this participant's rev,
       // an Admin tab loaded before the reset would still look fresh, and its
@@ -1797,7 +2224,11 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
       const storedAfterPin = stampMetaWrite(value, beforePinChange);
       await putRow(metaKey, storedAfterPin, client);
       await client.query("COMMIT");
-      issueSessionCookie(res, slug, participant);
+      if (claimingAdmin) clearAdminSetupClaim(res, claimSlug);
+      // Same rule as self-register: the session is scoped to the quiniela
+      // whose row was written, never to the client-supplied `slug`.
+      issueSessionCookie(res, claimSlug, participant);
+      trustDevice(req, res, claimSlug, participant.id);
       res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
@@ -1967,6 +2398,7 @@ app.post("/api/self-register", async (req, res) => {
     // slug-less by design; issueSessionCookie handles that null the same
     // way it always has.
     issueSessionCookie(res, derivedSlug, newParticipant);
+    trustDevice(req, res, derivedSlug, newParticipant.id);
     res.json({ ok: true, participant: { id: newParticipant.id, name: newParticipant.name, isAdmin: false, paid: false, hasPin: true } });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -2005,7 +2437,7 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
     // Admin/owner only. A participant has no business seeing what the
     // organizer pays QRACKS, and this is the response that carries the price.
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
-    if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+    if (!isAdminOrOwner) return sendIfCredentialThrottled(req, res) || res.status(403).json({ error: "forbidden" });
 
     const idx = await getRow("platform_index");
     const entry = idx && Array.isArray(idx.quinielas)
@@ -2236,6 +2668,7 @@ app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), as
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
     if (!isAdminOrOwner) {
       await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
       return res.status(403).json({ error: "forbidden" });
     }
     // Shape before freshness: a body that is not a whole positive number is not
@@ -2395,6 +2828,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, metaBefore);
     if (!isAdminOrOwner) {
       await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
       return res.status(403).json({ error: "forbidden" });
     }
     if (!isUsableIntentId(intentId)) {
@@ -2641,6 +3075,12 @@ app.post("/api/create-quiniela", async (req, res) => {
     await putRow("platform_index", idx, client);
 
     await client.query("COMMIT");
+    // Only this browser may choose the creator's first PIN (see
+    // adminPinClaim.js); without it the admin seat would be open to whoever
+    // opened the link first if the creator left before the PIN step.
+    issueAdminSetupClaim(res, cleanSlug, creatorId);
+    // The creator just chose the admin password on this device.
+    trustDevice(req, res, cleanSlug, OWNER_TARGET);
     res.json({ ok: true, slug: cleanSlug });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -2666,8 +3106,10 @@ app.post("/api/migrate-quiniela", async (req, res) => {
     await client.query("BEGIN");
     const meta = await getRow(fromKey, client);
     if (!meta) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); }
-    if (!(meta.settings && verifyPassword(providedOwnerAuth, meta.settings.ownerPassword))) {
+    if (!(meta.settings && !boundParticipantId(req)
+      && checkCredential(req, null, OWNER_TARGET, providedOwnerAuth, meta.settings.ownerPassword))) {
       await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
       return res.status(403).json({ error: "unauthorized" });
     }
 
@@ -2755,7 +3197,8 @@ app.post("/api/delete-quiniela", async (req, res) => {
   if (!cleanSlug) return res.status(400).json({ error: "invalid_slug" });
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
-  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
     return res.status(403).json({ error: "unauthorized" });
   }
 
@@ -2837,7 +3280,8 @@ function isUsableGrantId(value) {
 app.post("/api/platform/quinielas/:slug/entitlement", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
-  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
     return res.status(403).json({ error: "unauthorized" });
   }
   const body = req.body || {};
@@ -3116,7 +3560,7 @@ app.post("/api/quinielas/:slug/checkout", rateLimit("checkout"), async (req, res
     const meta = await getRow(`quiniela:${slug}:meta`);
     if (!meta) return res.status(404).json({ error: "not_found" });
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
-    if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+    if (!isAdminOrOwner) return sendIfCredentialThrottled(req, res) || res.status(403).json({ error: "forbidden" });
 
     // Sin Stripe configurado no se finge un checkout. Y el respaldo manual sólo
     // se ofrece si NADA del torneo puede estar cobrando (Correction 09): con una
@@ -4739,7 +5183,7 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
     const meta = await getRow(`quiniela:${slug}:meta`);
     if (!meta) return res.status(404).json({ error: "not_found" });
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
-    if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+    if (!isAdminOrOwner) return sendIfCredentialThrottled(req, res) || res.status(403).json({ error: "forbidden" });
 
     const store = await readPaymentIntents();
     let intent = paymentsDomain.findIntentById(store.purchases, purchaseId);
@@ -4843,7 +5287,8 @@ app.get("/api/quinielas/:slug/checkout/:purchaseId", rateLimit("checkout"), asyn
 app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
-  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
     return res.status(403).json({ error: "unauthorized" });
   }
   const body = req.body || {};
@@ -5044,7 +5489,7 @@ app.get("/api/quinielas/:slug/rounds/:roundId/sports-results", rateLimit("sports
   if (!meta) return res.status(404).json({ error: "not_found" });
 
   const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
-  if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+  if (!isAdminOrOwner) return sendIfCredentialThrottled(req, res) || res.status(403).json({ error: "forbidden" });
 
   const round = (meta.rounds || []).find((r) => r.id === roundId);
   if (!round) return res.status(404).json({ error: "round_not_found" });
@@ -5122,7 +5567,7 @@ app.get("/api/quinielas/:slug/sports-results", rateLimit("sports-results"), asyn
   if (!meta) return res.status(404).json({ error: "not_found" });
 
   const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
-  if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });
+  if (!isAdminOrOwner) return sendIfCredentialThrottled(req, res) || res.status(403).json({ error: "forbidden" });
 
   const eligibleRounds = (meta.rounds || []).filter((r) => isRoundEligibleForAutoResults(r));
   if (!eligibleRounds.length) {
@@ -5210,6 +5655,7 @@ app.post("/api/quinielas/:slug/sync-competition", rateLimit("sync-competition"),
     const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
     if (!isAdminOrOwner) {
       await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -5611,17 +6057,50 @@ const FUNNEL_EVENT_NAMES = [
 app.get("/api/platform/payments-readiness", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
-  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
     return res.status(403).json({ error: "unauthorized" });
   }
   res.set("Cache-Control", "no-store");
   res.json({ ok: true, payments: paymentsDiagnostic() });
 });
 
+// Which network the attempt limits think this request came from, and how
+// that was decided (clientIp.js). For checking a deployment: call it twice,
+// once plainly and once with a made-up X-Forwarded-For / CF-Connecting-IP /
+// True-Client-IP, and `ip` must not change. Platform-only; it only ever
+// describes the caller's own request.
+app.get("/api/platform/client-ip-check", rateLimit("client-ip-check"), async (req, res) => {
+  const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
+  const platformHash = await getPlatformHash();
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  requestClientIp(req);
+  const entries = clientIp.xffEntries(req);
+  res.set("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    source: CLIENT_IP_SOURCE.kind,
+    via: req.qzClientIp.via,
+    ip: req.qzClientIp.ip,
+    headers: {
+      cfConnectingIp: req.get("cf-connecting-ip") ? clientIp.normalizeIp(req.get("cf-connecting-ip")) : null,
+      trueClientIp: req.get("true-client-ip") ? clientIp.normalizeIp(req.get("true-client-ip")) : null,
+      xForwardedForEntries: entries.length,
+      // Right to left, the shape Render documents: [Render internal, Cloudflare, client, ...client-written].
+      xForwardedForFromRight: entries.slice().reverse().map((e) => clientIp.normalizeIp(e) || "invalid"),
+    },
+    expressReqIp: req.ip || null,
+  });
+});
+
 app.get("/api/platform-sports-health", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
-  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
     return res.status(403).json({ error: "unauthorized" });
   }
   try {
@@ -5644,7 +6123,8 @@ app.get("/api/platform-sports-health", async (req, res) => {
 app.get("/api/platform-analytics", async (req, res) => {
   const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";
   const platformHash = await getPlatformHash();
-  if (!verifyPassword(providedPlatformAuth, platformHash)) {
+  if (!checkPlatformCredential(req, providedPlatformAuth, platformHash)) {
+    if (sendIfCredentialThrottled(req, res)) return;
     return res.status(403).json({ error: "unauthorized" });
   }
   try {
@@ -5769,6 +6249,8 @@ const PORT = process.env.PORT || 3000;
 async function start(retriesLeft){
   try{
     await ensureTable();
+    // Before listening: a restart must not start with an empty attempt budget.
+    await loadCredentialAttempts();
     await checkPaymentsProvider().catch(() => {});
     app.listen(PORT, () => {
       console.log("Quiniela server listening on port " + PORT);

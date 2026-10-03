@@ -213,7 +213,7 @@ test("C10 · el diagnóstico nunca lleva valores de credenciales", () => {
   assert.ok(!JSON.stringify(c).includes("SECRETO"));
   // El endpoint del panel exige la credencial de plataforma.
   const ep = SRC.slice(SRC.indexOf('app.get("/api/platform/payments-readiness"'));
-  assert.ok(ep.slice(0, 600).includes("verifyPassword(providedPlatformAuth, platformHash)"));
+  assert.ok(ep.slice(0, 600).includes("checkPlatformCredential(req, providedPlatformAuth, platformHash)"));
 });
 
 test("C10 · la UI: mal configurado no es 'sin pasarela' ni ofrece contacto", () => {

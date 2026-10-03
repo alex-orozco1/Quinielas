@@ -1080,7 +1080,7 @@ test("PREMISE: the two multi-row admin endpoints DO bump the version, because th
     assert.ok(slice.includes('await client.query("COMMIT")'), `${marker}: commit`);
     assert.ok(slice.includes('await client.query("ROLLBACK").catch(() => {})'), `${marker}: rollback ante error`);
     assert.ok(slice.includes("client.release()"), `${marker}: libera conexión`);
-    assert.ok(slice.includes("verifyPassword(providedPlatformAuth, platformHash)"), `${marker}: exige auth de plataforma`);
+    assert.ok(slice.includes("checkPlatformCredential(req, providedPlatformAuth, platformHash)"), `${marker}: exige auth de plataforma`);
   }
   // stampVersion lives inside the shared logic both endpoints delegate to.
   const src = fs.readFileSync(path.join(__dirname, "..", "platformState.js"), "utf8");
@@ -1339,7 +1339,7 @@ test("GRANT: the rev/version guards are concurrency controls, not authorisation"
   assert.ok(tier.includes('return "owner"') && tier.includes('return "platform"') && tier.includes('return "admin-pin"'));
   assert.ok(tier.trimEnd().endsWith("return null;\n}"), "anyone else gets no tier at all");
   const granting = blockFrom(serverSrc, 'app.post("/api/platform/quinielas/:slug/entitlement"');
-  assert.ok(granting.includes("verifyPassword(providedPlatformAuth, platformHash)"));
+  assert.ok(granting.includes("checkPlatformCredential(req, providedPlatformAuth, platformHash)"));
 });
 
 test("PURCHASE HISTORY 11: the history is append-only and server-owned, so a purchase cannot be edited away", () => {

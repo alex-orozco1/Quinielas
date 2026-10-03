@@ -1394,7 +1394,7 @@
     try{
       const res = await fetch("/api/migrate-quiniela", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Qracks-Auth": ownerPasswordCache || "" },
+        headers: setAuthHeaders({ "Content-Type": "application/json" }, ownerPasswordCache),
         body: JSON.stringify({ toSlug })
       });
       const data = await res.json().catch(() => ({}));
@@ -1409,7 +1409,7 @@
   // doing so would silently overwrite real data on a transient failure.
   async function kvGet(key, creds){
     const headers = {};
-    if(creds && creds.owner) headers["X-Qracks-Auth"] = creds.owner;
+    setAuthHeaders(headers, creds && creds.owner);
     if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
     const res = await fetch("/api/kv/" + encodeURIComponent(key), { headers, credentials: "same-origin" });
     if(res.status === 404) return { found: false };
@@ -1425,6 +1425,9 @@
     round_locked: "Esta jornada ya cerró — ya no se puede cambiar.",
     unauthorized: "No pudimos confirmar quién eres. Vuelve a intentar o cambia de usuario desde tu nombre, arriba.",
     pin_required: "Necesitas activar tu PIN antes de continuar.",
+    too_many_attempts: "Demasiados intentos. Espera un rato e intenta de nuevo, o entra desde un dispositivo donde ya hayas entrado.",
+    owner_password_required: "Para cambiar quién es admin se necesita la contraseña de administrador.",
+    wrong_owner_password: "❌ Contraseña de administrador incorrecta",
     wrong_current_pin: "Ese PIN no es correcto.",
     stale_version: "La información cambió mientras estabas editando. Actualizamos los datos; intenta de nuevo.",
     payment_id_conflict: "Ese registro de pago ya existe. Actualizamos los datos; vuelve a intentarlo.",
@@ -1527,7 +1530,7 @@
   // ever needed the boolean).
   async function kvSetWithError(key, value, creds){
     const headers = { "Content-Type": "application/json" };
-    if(creds && creds.owner) headers["X-Qracks-Auth"] = creds.owner;
+    setAuthHeaders(headers, creds && creds.owner);
     if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
     try{
       const res = await fetch("/api/kv/" + encodeURIComponent(key), {
@@ -1549,7 +1552,7 @@
 
   async function kvSet(key, value, creds){
     const headers = { "Content-Type": "application/json" };
-    if(creds && creds.owner) headers["X-Qracks-Auth"] = creds.owner;
+    setAuthHeaders(headers, creds && creds.owner);
     if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
     const res = await fetch("/api/kv/" + encodeURIComponent(key), {
       method: "POST",
@@ -1575,6 +1578,20 @@
   function adminOrOwnerCred(){
     return ownerPasswordCache || ((currentUser && currentUser.isAdmin) ? currentUserPinCache : null);
   }
+  // The server only compares a PIN against the participant it names: a PIN
+  // goes out with X-Qracks-Participant (this user's id), anything else (the
+  // admin password) goes out alone and is only ever compared against the
+  // admin password. Without that binding, one value was checked against every
+  // participant at once, so a guess that matched the guesser's own PIN cost
+  // nothing and still revealed whether it was also an admin's.
+  function setAuthHeaders(headers, cred){
+    if(!cred) return headers;
+    headers["X-Qracks-Auth"] = cred;
+    if(cred === currentUserPinCache && cred !== ownerPasswordCache && currentUser && currentUser.id != null){
+      headers["X-Qracks-Participant"] = String(currentUser.id);
+    }
+    return headers;
+  }
   // MON-002B: every meta save routes through the same place so the server's
   // participants revision is adopted after each write. Without that, this
   // tab's own successful save would leave it holding the PREVIOUS revision
@@ -1583,6 +1600,22 @@
   async function setMeta(meta, opts){
     const result = await setMetaWithError(meta, opts);
     return result.ok;
+  }
+  // Brings `target` (the live meta every screen holds) up to `fresh` IN PLACE,
+  // participants included: an existing participant keeps its object and has
+  // its fields replaced. Rows already on screen hold those objects in their
+  // handlers; swapping in new objects left them editing detached copies, so a
+  // rename after "Se agregaron N participantes mientras editabas" said
+  // "✅ actualizado" while the save carried the old name.
+  function adoptFreshMeta(target, fresh){
+    const current = new Map((Array.isArray(target.participants) ? target.participants : []).map(p => [p && p.id, p]));
+    const participants = (Array.isArray(fresh.participants) ? fresh.participants : []).map(fp => {
+      const cur = fp && current.get(fp.id);
+      if(!cur || cur === fp) return fp;
+      Object.keys(cur).forEach(k => { if(!(k in fp)) delete cur[k]; });
+      return Object.assign(cur, fp);
+    });
+    Object.assign(target, fresh, { participants });
   }
   async function setMetaWithError(meta, opts){
     try{
@@ -1600,7 +1633,7 @@
           const fresh = await getMeta({ owner: adminOrOwnerCred() });
           // Mutado en sitio: cada pantalla que tenga este mismo objeto ve la
           // corrección sin necesidad de cambiar la referencia.
-          if(fresh) Object.assign(meta, fresh);
+          if(fresh) adoptFreshMeta(meta, fresh);
         }catch(e){ console.error("refresh tras rounds_conflict falló", e); }
         invalidatePlan();
         // Repintar ANTES del aviso, y el aviso colgado de document.body: al
@@ -1633,7 +1666,7 @@
           // Mutated in place, so every screen holding this same object sees
           // the corrected list without a reference swap.
           const fresh = await getMeta({ owner: adminOrOwnerCred() });
-          if(fresh) Object.assign(meta, fresh);
+          if(fresh) adoptFreshMeta(meta, fresh);
           invalidatePlan();
         }
       }
@@ -1652,7 +1685,7 @@
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
-      if(cred) headers["X-Qracks-Auth"] = cred;
+      setAuthHeaders(headers, cred);
       const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/new-cycle", {
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ name: name || null, expectedCycle })
@@ -1699,7 +1732,7 @@
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
-      if(cred) headers["X-Qracks-Auth"] = cred;
+      setAuthHeaders(headers, cred);
       const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/close", {
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings })
@@ -1812,27 +1845,38 @@
   }
 
 
-  async function verifyOwnerPassword(password){
+  // { ok, error }: error is "too_many_attempts" when the server's limit on
+  // failed credentials is what said no, so the screen can say that instead
+  // of "wrong password".
+  async function verifyOwnerPasswordResult(password){
     try{
       const res = await fetch("/api/verify-owner", {
-        method: "POST", headers: { "Content-Type": "application/json", "X-Qracks-Auth": adminOrOwnerCred() || "" },
+        method: "POST", headers: setAuthHeaders({ "Content-Type": "application/json" }, adminOrOwnerCred()),
         body: JSON.stringify({ metaKey: currentMetaKey(), password })
       });
-      if(!res.ok) return false;
-      const data = await res.json();
-      return !!data.ok;
-    }catch(e){ console.error("verifyOwnerPassword failed", e); return false; }
+      const data = await res.json().catch(() => ({}));
+      if(!res.ok) return { ok: false, error: data.error || null };
+      return { ok: !!data.ok, error: null };
+    }catch(e){ console.error("verifyOwnerPassword failed", e); return { ok: false, error: null }; }
   }
-  async function verifyPlatformPassword(password){
+  async function verifyOwnerPassword(password){
+    return (await verifyOwnerPasswordResult(password)).ok;
+  }
+  // { ok, error }: error is "too_many_attempts" when the server's limit on
+  // failed platform-password checks is what said no.
+  async function verifyPlatformPasswordResult(password){
     try{
       const res = await fetch("/api/verify-platform", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
         body: JSON.stringify({ password })
       });
-      if(!res.ok) return false;
-      const data = await res.json();
-      return !!data.ok;
-    }catch(e){ console.error("verifyPlatformPassword failed", e); return false; }
+      const data = await res.json().catch(() => ({}));
+      if(!res.ok) return { ok: false, error: data.error || null };
+      return { ok: !!data.ok, error: null };
+    }catch(e){ console.error("verifyPlatformPassword failed", e); return { ok: false, error: null }; }
+  }
+  function pinFailureMessage(result, fallback){
+    return result && result.error === "too_many_attempts" ? humanizeError(result.error) : fallback;
   }
   async function verifyParticipantPin(participantId, pin){
     try{
@@ -1840,7 +1884,10 @@
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
         body: JSON.stringify({ metaKey: currentMetaKey(), participantId, pin, slug: SLUG || "_root" })
       });
-      if(!res.ok) return { ok: false };
+      if(!res.ok){
+        const data = await res.json().catch(() => ({}));
+        return { ok: false, error: data.error || null };
+      }
       return await res.json();
     }catch(e){ console.error("verifyParticipantPin failed", e); return { ok: false }; }
   }
@@ -1856,18 +1903,34 @@
       if(p && p.id != null && Number.isSafeInteger(revs[p.id])) p.rev = revs[p.id];
     });
   }
-  async function apiSetPin(participantId, currentPin, newPin){
+  // { ok, error }. `adminPassword` is only sent when choosing the first PIN of
+  // an admin from a browser that doesn't hold the setup claim cookie
+  // create-quiniela hands out — the server answers "admin_claim_required"
+  // until one of the two proves it's really the admin.
+  async function apiSetPinResult(participantId, currentPin, newPin, adminPassword){
     try{
+      const headers = { "Content-Type": "application/json" };
+      setAuthHeaders(headers, adminPassword);
       const res = await fetch("/api/set-pin", {
-        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ metaKey: currentMetaKey(), participantId, currentPin, newPin, slug: SLUG || "_root" })
       });
-      if(res.ok){
-        const data = await res.json().catch(() => ({}));
-        adoptParticipantRevs(data.participantRevs);
-      }
-      return res.ok;
-    }catch(e){ console.error("apiSetPin failed", e); return false; }
+      const data = await res.json().catch(() => ({}));
+      if(res.ok) adoptParticipantRevs(data.participantRevs);
+      return { ok: res.ok, error: res.ok ? null : (data.error || null) };
+    }catch(e){ console.error("apiSetPin failed", e); return { ok: false, error: null }; }
+  }
+  async function apiSetPin(participantId, currentPin, newPin){
+    return (await apiSetPinResult(participantId, currentPin, newPin)).ok;
+  }
+  // First PIN of an admin: tries the setup claim cookie first, then asks for
+  // the admin password chosen at creation. Resolves to { ok, error, canceled }.
+  async function setFirstAdminPin(participantId, newPin){
+    const first = await apiSetPinResult(participantId, null, newPin);
+    if(first.ok || first.error !== "admin_claim_required") return first;
+    const password = await qzPrompt("Por seguridad, escribe la contraseña de administrador que se eligió al crear la quiniela. Si no la tienes, pide a otro admin que escriba aquí su PIN.", { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true });
+    if(password === null) return { ok: false, error: "admin_claim_required", canceled: true };
+    return apiSetPinResult(participantId, null, newPin, password.trim());
   }
   // Anonymous, non-sensitive — just enough to tell "same device came back"
   // apart in the funnel numbers. Not the session cookie, no security role.
@@ -1939,7 +2002,7 @@
   async function apiSubmitBetAnswer(participantId, betId, guess){
     try{
       const headers = { "Content-Type": "application/json" };
-      if(currentUserPinCache) headers["X-Qracks-Auth"] = currentUserPinCache;
+      setAuthHeaders(headers, currentUserPinCache);
       const res = await fetch("/api/submit-bet-answer", {
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ metaKey: currentMetaKey(), participantId, betId, guess })
@@ -2134,6 +2197,7 @@
   function qzPrompt(message, opts){
     opts = opts || {};
     const isPin = !!opts.pin; // masks the value on screen, restricts to 4 digits
+    const isSecret = isPin || !!opts.secret; // masks the value on screen
     const confirmLabel = opts.confirmLabel || "Aceptar";
     const cancelLabel = opts.cancelLabel || "Cancelar";
     return new Promise((resolve) => {
@@ -2145,7 +2209,7 @@
           <div class="qz-modal-message"><p>${esc(message)}</p></div>
           <input
             class="qz-modal-input" id="qz-prompt-input"
-            type="${isPin ? "password" : "text"}"
+            type="${isSecret ? "password" : "text"}"
             inputmode="${isPin ? "numeric" : "text"}"
             autocomplete="off"
             ${isPin ? 'maxlength="4" pattern="[0-9]*"' : ""}
@@ -2647,7 +2711,7 @@
         const isAdmin = !!(currentUser && currentUser.isAdmin);
         const cred = isAdmin ? adminOrOwnerCred() : currentUserPinCache;
         const headers = { "Content-Type": "application/json" };
-        if(cred) headers["X-Qracks-Auth"] = cred;
+        setAuthHeaders(headers, cred);
         const res = await fetch("/api/picks-batch", {
           method: "POST", headers, credentials: "same-origin",
           body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
@@ -3209,10 +3273,16 @@
       const creator = meta.participants.find(p => p.isAdmin) || meta.participants[0];
       continueBtn.disabled = true;
       continueBtn.textContent = "Guardando...";
-      const ok = await apiSetPin(creator.id, null, currentValue);
-      if(!ok){
+      const result = await setFirstAdminPin(creator.id, currentValue);
+      if(!result.ok){
         // Never clear the PIN the admin already typed -- just let them retry.
-        errorEl.textContent = "No pudimos guardar tu PIN. Intenta de nuevo.";
+        errorEl.textContent = result.canceled
+          ? "Necesitamos tu contraseña de administrador para proteger la quiniela."
+          : result.error === "admin_claim_required"
+            ? "Esa no es la contraseña de administrador. Intenta de nuevo."
+            : result.error === "too_many_attempts"
+              ? humanizeError(result.error)
+              : "No pudimos guardar tu PIN. Intenta de nuevo.";
         errorEl.style.display = "block";
         continueBtn.disabled = false;
         continueBtn.textContent = "Continuar";
@@ -3622,7 +3692,7 @@
           <div class="login-sub">Toca tu nombre para entrar 👇</div>
           <div class="name-grid">${names}</div>
           <button class="btn btn-gold btn-sm" id="qz-self-register" style="width:100%;margin-top:14px;">+ No apareces? Agrégate aquí</button>
-          <p class="muted" style="text-align:center;margin-top:14px;">🔒 = ya tiene PIN configurado. Si es tu nombre y no tiene candado, tócalo y ponle un PIN antes que alguien más lo haga.</p>
+          <p class="muted" style="text-align:center;margin-top:14px;">🔒 = ya tiene PIN configurado. Si es tu nombre y no tiene candado, tócalo y ponle un PIN antes que alguien más lo haga. Si eres admin, te pediremos la contraseña de administrador.</p>
           <p class="muted" style="text-align:center;margin-top:8px;">¿Quieres tu propia quiniela? <a href="/crear" style="color:var(--pitch-light);font-weight:700;">Créala aquí</a></p>
         </div>
       </div>
@@ -3676,8 +3746,21 @@
           if(newPin === null) return;
           const cleanPin = newPin.trim();
           if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
-          const ok = await apiSetPin(p.id, null, cleanPin);
-          if(!ok){ toast("No se pudo guardar el PIN, intenta de nuevo"); return; }
+          if(p.isAdmin){
+            const result = await setFirstAdminPin(p.id, cleanPin);
+            if(!result.ok){
+              if(result.canceled) return;
+              toast(result.error === "admin_claim_required"
+                ? "Contraseña de administrador incorrecta"
+                : result.error === "too_many_attempts"
+                  ? humanizeError(result.error)
+                  : "No se pudo guardar el PIN, intenta de nuevo");
+              return;
+            }
+          }else{
+            const ok = await apiSetPin(p.id, null, cleanPin);
+            if(!ok){ toast("No se pudo guardar el PIN, intenta de nuevo"); return; }
+          }
           p.hasPin = true;
           currentUserPinCache = cleanPin;
           toast("PIN configurado ✅ — no lo olvides");
@@ -3686,7 +3769,7 @@
           if(entered === null) return;
           const cleanEntered = entered.trim();
           const verification = await verifyParticipantPin(p.id, cleanEntered);
-          if(!verification.ok){ toast("❌ PIN incorrecto"); return; }
+          if(!verification.ok){ toast(pinFailureMessage(verification, "❌ PIN incorrecto")); return; }
           currentUserPinCache = cleanEntered;
         }
         currentUser = p;
@@ -3802,7 +3885,7 @@
         const current = await qzPrompt("Escribe tu PIN actual:", { title: "Cambiar tu PIN", confirmLabel: "Continuar", pin: true });
         if(current === null) return;
         const verification = await verifyParticipantPin(currentUser.id, current.trim());
-        if(!verification.ok){ toast("PIN actual incorrecto"); return; }
+        if(!verification.ok){ toast(pinFailureMessage(verification, "PIN actual incorrecto")); return; }
       }
       const newPin = await qzPrompt("Escribe tu nuevo PIN (4 dígitos):", { title: "Cambiar tu PIN", confirmLabel: "Guardar", pin: true });
       if(newPin === null) return;
@@ -4771,7 +4854,7 @@
       try{
         const headers = {};
         const cred = adminOrOwnerCred();
-        if(cred) headers["X-Qracks-Auth"] = cred;
+        setAuthHeaders(headers, cred);
         const res = await fetch("/api/quinielas/" + encodeURIComponent(slugAlPedir) + "/plan", {
           headers, credentials: "same-origin"
         });
@@ -4842,7 +4925,7 @@
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
-      if(cred) headers["X-Qracks-Auth"] = cred;
+      setAuthHeaders(headers, cred);
       const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/checkout", {
         method: "POST", headers, credentials: "same-origin", body: "{}"
       });
@@ -4893,7 +4976,7 @@
   async function readCheckoutStatus(purchaseId, sessionHint){
     const headers = {};
     const cred = adminOrOwnerCred();
-    if(cred) headers["X-Qracks-Auth"] = cred;
+    setAuthHeaders(headers, cred);
     // La pista del id de sesión, si el proveedor la puso en la URL de vuelta. El
     // servidor la VERIFICA contra la compra antes de usarla para nada, así que
     // mandarla sólo puede acelerar el rescate; inventarla no consigue nada.
@@ -6337,7 +6420,7 @@
         syncStatus.style.color = "var(--ink-soft)";
         try{
           const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sync-competition`, {
-            method: "POST", headers: { "X-Qracks-Auth": adminOrOwnerCred() || "" }, credentials: "same-origin"
+            method: "POST", headers: setAuthHeaders({}, adminOrOwnerCred()), credentials: "same-origin"
           });
           const data = await res.json().catch(() => ({}));
           if(res.ok && data.ok && !data.reliabilityState){
@@ -6386,7 +6469,7 @@
               // navegador real.
               try{
                 const fresh = await getMeta({ owner: adminOrOwnerCred() });
-                if(fresh) Object.assign(meta, fresh);
+                if(fresh) adoptFreshMeta(meta, fresh);
               }catch(e){ console.error("refresh tras importar falló", e); }
               invalidatePlan();
               await renderAdmin(document.getElementById("qz-main"));
@@ -6685,7 +6768,7 @@
   // provider hiccups — a failed lookup here must never block manual capture.
   async function fetchSportsResults(roundId){
     const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/rounds/${encodeURIComponent(roundId)}/sports-results`, {
-      headers: { "X-Qracks-Auth": adminOrOwnerCred() || "" },
+      headers: setAuthHeaders({}, adminOrOwnerCred()),
       credentials: "same-origin"
     });
     if(!res.ok) throw new Error("HTTP " + res.status);
@@ -6838,7 +6921,7 @@
       bulkStatusEl.textContent = "Buscando resultados pendientes en todas las jornadas…";
       try{
         const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sports-results`, {
-          headers: { "X-Qracks-Auth": adminOrOwnerCred() || "" }, credentials: "same-origin"
+          headers: setAuthHeaders({}, adminOrOwnerCred()), credentials: "same-origin"
         });
         const data = await res.json();
         if(!res.ok || !data.ok || data.reliabilityState){
@@ -7339,10 +7422,23 @@
         const previousValue = p.isAdmin;
         adminCheckbox.disabled = true;
         p.isAdmin = e.target.checked;
-        const result = await setMetaWithError(meta);
+        let result = await setMetaWithError(meta);
+        if(!result.ok && result.error === "owner_password_required"){
+          // Making someone admin is an owner action; an admin signed in with
+          // their PIN is asked for the admin password right here instead of
+          // being told it worked while the server kept the old role.
+          const pw = await qzPrompt("Para cambiar quién es admin, escribe la contraseña de administrador de la quiniela.", { title: "Contraseña de administrador", confirmLabel: "Continuar", secret: true });
+          if(pw !== null && pw.trim()){
+            result = await setMetaWithError(meta, { owner: pw.trim() });
+            if(result.ok){ ownerUnlocked = true; ownerPasswordCache = pw.trim(); }
+            else if(result.error === "owner_password_required" || result.error === "unauthorized") result = { ...result, error: "wrong_owner_password" };
+          }
+        }
         adminCheckbox.disabled = false;
         if(result.ok){
-          toast(p.isAdmin ? ("✅ " + esc(p.name) + " ahora es admin") : ("✅ " + esc(p.name) + " ya no es admin"));
+          toast(p.isAdmin
+            ? ("✅ " + esc(p.name) + " ahora es admin" + (p.hasPin ? "" : ". Para poner su PIN necesitará la contraseña de administrador o que otro admin escriba su PIN en su teléfono."))
+            : ("✅ " + esc(p.name) + " ya no es admin"));
         }else{
           p.isAdmin = previousValue;
           e.target.checked = previousValue;
@@ -7352,7 +7448,12 @@
       const resetBtn = row.querySelector("[data-role=resetpin]");
       if(resetBtn){
         resetBtn.addEventListener("click", async () => {
-          if(!(await qzConfirm(`La próxima vez que toque su nombre podrá poner uno nuevo.`, { title: `¿Resetear el PIN de ${p.name}?`, confirmLabel: "Resetear" }))) return;
+          // An admin's first PIN needs proof (see setFirstAdminPin), so say up
+          // front what they'll need instead of promising an open reset.
+          const resetMessage = p.isAdmin
+            ? `Como es admin, para poner uno nuevo necesitará la contraseña de administrador o que otro admin escriba su PIN en su teléfono.`
+            : `La próxima vez que toque su nombre podrá poner uno nuevo.`;
+          if(!(await qzConfirm(resetMessage, { title: `¿Resetear el PIN de ${p.name}?`, confirmLabel: "Resetear" }))) return;
           const previousPin = p.pin;
           const previousHasPin = p.hasPin;
           resetBtn.disabled = true;
@@ -7360,7 +7461,9 @@
           p.hasPin = false;
           const result = await setMetaWithError(meta);
           if(result.ok){
-            toast("🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
+            toast(p.isAdmin
+              ? "🔒 PIN reseteado — para poner uno nuevo necesitará la contraseña de administrador o el PIN de otro admin"
+              : "🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
             renderAdminParticipantes(body);
           }else{
             p.pin = previousPin;
@@ -7437,13 +7540,13 @@
       `;
       document.getElementById("qz-owner-unlock").addEventListener("click", async () => {
         const val = document.getElementById("qz-owner-pw").value;
-        const ok = await verifyOwnerPassword(val);
-        if(ok){
+        const result = await verifyOwnerPasswordResult(val);
+        if(result.ok){
           ownerUnlocked = true;
           ownerPasswordCache = val;
           renderAdminOwner(body);
         } else {
-          toast("❌ Contraseña incorrecta");
+          toast(pinFailureMessage(result, "❌ Contraseña incorrecta"));
         }
       });
       enterSubmits("qz-owner-pw", "qz-owner-unlock");
@@ -7462,7 +7565,7 @@
           if(pin === null) return;
           const cleanPin = pin.trim();
           const verification = await verifyParticipantPin(currentUser.id, cleanPin);
-          if(!verification.ok){ toast("❌ PIN incorrecto"); return; }
+          if(!verification.ok){ toast(pinFailureMessage(verification, "❌ PIN incorrecto")); return; }
           currentUserPinCache = cleanPin;
           const ok = await verifyOwnerPassword("");
           if(ok){
@@ -7641,7 +7744,7 @@
       // guardado chocaría contra un tablero que ya no es el que tiene.
       try{
         const fresh = await getMeta({ owner: adminOrOwnerCred() });
-        if(fresh) Object.assign(meta, fresh);
+        if(fresh) adoptFreshMeta(meta, fresh);
       }catch(e){ console.error("refresh tras cierre falló", e); }
       renderAdmin(document.getElementById("qz-main"));
       const who = r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
@@ -7660,7 +7763,7 @@
       // hablen de lo que hay, no de lo que esta pestaña recordaba.
       try{
         const fresh = await getMeta({ owner: adminOrOwnerCred() });
-        if(fresh) Object.assign(meta, fresh);
+        if(fresh) adoptFreshMeta(meta, fresh);
       }catch(e){ console.error("refresh tras cierre incierto falló", e); }
       renderAdmin(document.getElementById("qz-main"));
       toast("No pudimos confirmar si el torneo se cerró. Revisa el estado abajo y verifica.");
@@ -8165,9 +8268,9 @@
       `;
       document.getElementById("qz-p-unlock").addEventListener("click", async () => {
         const val = document.getElementById("qz-p-pass").value;
-        const ok = await verifyPlatformPassword(val);
-        if(ok){ platformUnlocked = true; platformPasswordCache = val; renderPlatformDashboard(); }
-        else toast("❌ Contraseña incorrecta");
+        const result = await verifyPlatformPasswordResult(val);
+        if(result.ok){ platformUnlocked = true; platformPasswordCache = val; renderPlatformDashboard(); }
+        else toast(pinFailureMessage(result, "❌ Contraseña incorrecta"));
       });
       enterSubmits("qz-p-pass", "qz-p-unlock");
       return;
