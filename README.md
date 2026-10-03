@@ -291,6 +291,20 @@ Prediction pools only work when participants trust the system.
 - Legacy pools remain compatible with the current lifecycle
 - QRACKS never holds or distributes prize money
 
+### Repeated PIN and password attempts
+
+Every PIN, administrator password and platform password check goes through the same limit on **failed** attempts:
+
+- **First 10 failures:** no wait.
+- **After the 10th failure:** a progressive wait, counted from the last failure: 15 s → 30 s → 1 min → 2 min → 4 min → 8 min → **15 min maximum**.
+- **Attempts during an active wait** are rejected with the real time left (`429`, `Retry-After`, shown next to the form as a countdown). They do not count as failures and do not extend the wait.
+- **Repeating a PIN or password already tried** does not get around it: it is counted once, but it waits like any other attempt.
+- **The history resets after 24 h without failures**, or when the credential changes to a different value (a PIN reset, a new password). Saving the same value again does not reset it (except another participant's PIN written by an admin, where telling "same" from "different" would reveal it).
+- **No successful login resets the counter**, whether typed into a login form or resent by the browser (a stored session or PIN). Otherwise every login by the owner would hand an attacker a fresh set of free attempts.
+- **Per credential:** an attack on one person's PIN never locks out anyone else, and devices that already signed in with that credential keep working during the wait. Looser per-network limits (by the real client IP) slow down spraying across many people.
+
+Details, limits and recovery: [`docs/SECURITY_CREDENTIAL_LIMITS.md`](docs/SECURITY_CREDENTIAL_LIMITS.md).
+
 ---
 
 ## Supported competitions
