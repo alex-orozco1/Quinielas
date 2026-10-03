@@ -84,12 +84,16 @@ async function quiniela(tag) {
     console.log(ts(), `3a. quiniela ${q.slug}, attacker on Ana's PIN: ${k} accepted, then ${fmt(r)}`);
     const s = await call("POST", "/api/set-pin", { metaKey: q.metaKey, participantId: q.ana.id, currentPin: q.anaPin, newPin: q.anaPin }, { cookie: q.phone.h });
     console.log(ts(), "3b. Ana saves the same PIN again (trusted phone):", s.status, "| attacker right after:", fmt(await guessPin(wrongPin())), "(33809d4: 10 accepted again)");
-    k = 0; while ((r = await guessPw("x-" + rnd(6))).status !== 429) k++;
-    console.log(ts(), `3c. attacker on the admin password: ${k} accepted, then ${fmt(r)}`);
-    const meta = (await call("GET", q.K, null, { cookie: q.phone.h, auth: q.owner })).body.value;
-    meta.settings.ownerPassword = q.owner;
-    const w = await call("POST", q.K, { value: meta }, { cookie: q.phone.h, auth: q.owner });
-    console.log(ts(), "3d. Ajustes saved with the same admin password typed again:", w.status, "| attacker right after:", fmt(await guessPw("x-" + rnd(6))));
+    // The admin password in its own quiniela: the per-network window (20 per quiniela) would
+    // otherwise answer first, since the PIN failures above already count in it.
+    const q2 = await quiniela("svpw");
+    const guessPw2 = (v) => call("POST", "/api/verify-owner", { metaKey: q2.metaKey, password: v }, { xff: forged() });
+    k = 0; while ((r = await guessPw2("x-" + rnd(6))).status !== 429) k++;
+    console.log(ts(), `3c. quiniela ${q2.slug}, attacker on the admin password: ${k} accepted, then ${fmt(r)}`);
+    const meta = (await call("GET", q2.K, null, { cookie: q2.phone.h, auth: q2.owner })).body.value;
+    meta.settings.ownerPassword = q2.owner;
+    const w = await call("POST", q2.K, { value: meta }, { cookie: q2.phone.h, auth: q2.owner });
+    console.log(ts(), "3d. Ajustes saved with the same admin password typed again:", w.status, "| attacker right after:", fmt(await guessPw2("x-" + rnd(6))), "(33809d4: 10 accepted again)");
   }
 
   if (which === "all" || which === "ipguard") {
