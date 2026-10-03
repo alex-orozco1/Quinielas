@@ -356,9 +356,14 @@ test("SERVER: no PIN or owner password is compared outside checkCredential", () 
     // /api/verify-platform: the platform password, behind rateLimit("verify-platform").
     .filter(({ line }) => !(line === "res.json({ ok: verifyPassword(password, stored) });"
       && routeBody('app.post("/api/verify-platform"').includes(line)));
+  // hashUnlessUnchanged compares a NEW value the caller is setting with the one
+  // stored, only after the caller proved the current credential (or holds
+  // platform rights): no guess is answered there (see its tests).
   const allowed = offenders.filter(({ line }) =>
-    line === "if (!req) return verifyPassword(value, stored);" || line === "const ok = verifyPassword(value, stored);");
-  assert.deepEqual(offenders, allowed, "every remaining call must be the two inside checkCredential");
+    line === "if (!req) return verifyPassword(value, stored);" || line === "const ok = verifyPassword(value, stored);"
+    || line === "if (isHashed(stored) && verifyPassword(String(plain), stored)) return stored;");
+  assert.deepEqual(offenders, allowed, "every remaining call must be the two inside checkCredential (or hashUnlessUnchanged)");
+  assert.equal(serverSrc.split("hashUnlessUnchanged(").length - 1, 5, "the definition and its four callers, nothing else");
   assert.ok(!/function isAuthenticatedAsParticipant\(/.test(serverSrc), "the unguarded helper is gone");
 });
 
@@ -779,6 +784,9 @@ test("FRONTEND: the wait notice counts down the real time left and frees the but
   assert.equal(ui.formatCountdown(45), "45 s");
   assert.equal(ui.formatCountdown(65), "1:05 min");
   assert.equal(ui.formatCountdown(900), "15:00 min");
+  assert.equal(ui.formatCountdown(3599), "59:59\u00a0min");
+  assert.equal(ui.formatCountdown(3600), "1:00:00\u00a0h", "the 24 h network windows read as hours, not '1439:59 min'");
+  assert.equal(ui.formatCountdown(86399), "23:59:59\u00a0h");
   const notice = el();
   const button = { disabled: false };
   let ready = 0;
@@ -817,9 +825,10 @@ test("FRONTEND: every credential form keeps the wait next to it instead of a toa
   for (const call of [
     '"pin:" + p.id, (pin) => verifyParticipantPin(p.id, pin));',
     '"owner", (password) => apiSetPinResult(participantId, null, newPin, password));',
-    '"pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));',
+    'waitKey, (pin) => verifyParticipantPin(currentUser.id, pin));',
+    'pinWaitKey, (pin) => verifyParticipantPin(currentUser.id, pin));',
   ]) assert.ok(indexSrc.includes(call), call);
-  assert.equal(indexSrc.split('"pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));').length - 1, 2, "change PIN and Ajustes re-auth");
+  assert.ok(indexSrc.includes('const waitKey = "pin:" + currentUser.id;') && indexSrc.includes('const pinWaitKey = "pin:" + currentUser.id;'), "change PIN and Ajustes re-auth");
   // Closing the modal leaves the countdown next to the names on the login.
   assert.ok(indexSrc.includes('if(attempt === null){ showLoginWait("pin:" + p.id, "PIN de " + p.name); return; }'));
   assert.ok(indexSrc.includes('${credentialWaitNoticeHtml("qz-login-wait")}'));
@@ -840,4 +849,58 @@ test("FRONTEND: every credential form keeps the wait next to it instead of a toa
   // The notice is a status region, styled, and the number never wraps.
   assert.ok(indexSrc.includes('<div class="qz-wait-notice" id="${id}" role="status" aria-live="polite" hidden></div>'));
   assert.ok(indexSrc.includes(".qz-wait-notice .qz-wait-left{ font-variant-numeric:tabular-nums; white-space:nowrap; }"));
+});
+
+
+// ---- Technical QA on 33809d4 (P3s) ----------------------------------------------
+
+// The real helpers from server.js.
+const credHash = new Function("crypto",
+  extractFunction(serverSrc, "function hashPassword(plain)") + "\n" +
+  extractFunction(serverSrc, "function isHashed(value)") + "\n" +
+  extractFunction(serverSrc, "function verifyPassword(plain, stored)") + "\n" +
+  extractFunction(serverSrc, "function hashUnlessUnchanged(plain, stored)") + "\n" +
+  "return { hashPassword, isHashed, verifyPassword, hashUnlessUnchanged };"
+)(require("crypto"));
+
+test("setting a credential to the value it already has keeps its hash, so its failed-attempt state stays", () => {
+  const { hashPassword, hashUnlessUnchanged, verifyPassword } = credHash;
+  const stored = hashPassword("4321");
+  assert.equal(hashUnlessUnchanged("4321", stored), stored, "same PIN: same hash, same version");
+  const changed = hashUnlessUnchanged("1234", stored);
+  assert.notEqual(changed, stored, "a real change is a new credential");
+  assert.ok(verifyPassword("1234", changed));
+  assert.ok(verifyPassword("4321", hashUnlessUnchanged("4321", null)), "nothing stored yet: hashed as usual");
+  assert.notEqual(hashUnlessUnchanged("legacy", "legacy"), "legacy", "a plaintext legacy value is still upgraded to a hash");
+});
+
+test("SERVER: set-pin, the admin password, the panel password and platform settings keep an unchanged hash", () => {
+  assert.ok(serverSrc.includes("participant.pin = hashUnlessUnchanged(newPin, participant.pin);"), "set-pin (the current PIN was proven first)");
+  assert.ok(serverSrc.includes("merged.settings.ownerPassword = hashUnlessUnchanged(incomingPw, oldSettings && oldSettings.ownerPassword);"));
+  assert.ok(serverSrc.includes("merged.dashboardPassword = hashUnlessUnchanged(incomingPw, oldValue && oldValue.dashboardPassword);"));
+  assert.ok(serverSrc.includes("hashedOwnerPassword: wantsPassword ? hashUnlessUnchanged(body.ownerPassword.trim(), meta.settings && meta.settings.ownerPassword) : null,"));
+  // Not for another participant's PIN written through meta: an admin could tell
+  // "same" from "different" by the participant's rev, a free guess at their PIN.
+  assert.ok(serverSrc.includes("} else if (p.pin && !isHashed(p.pin)) {\n        p.pin = hashPassword(p.pin);"));
+  // set-pin proves the current PIN before it gets there.
+  const route = serverSrc.slice(serverSrc.indexOf('app.post("/api/set-pin"'), serverSrc.indexOf("participant.pin = hashUnlessUnchanged(newPin, participant.pin);"));
+  assert.ok(route.includes("if (participant.pin && !checkCredential(req, claimSlug, participant.id, currentPin, participant.pin)) {"));
+});
+
+test("FRONTEND: Enter on the first-admin-PIN screen does nothing while the button is off", () => {
+  const body = extractFunction(indexSrc, "async function renderAdminSetupPin()");
+  assert.ok(body.includes("if(currentValue.length !== 4 || continueBtn.disabled) return;"));
+});
+
+test("FRONTEND: 'Cambiar mi PIN' proves the current PIN with the one just typed, not only the one in memory", () => {
+  // After a reload the session restores the user but not their PIN (memory only).
+  assert.ok(indexSrc.includes("verifiedCurrentPin = attempt.value;"));
+  assert.ok(indexSrc.includes("const ok = await apiSetPin(currentUser.id, verifiedCurrentPin || currentUserPinCache, cleanPin);"));
+});
+
+test("FRONTEND: closing a PIN modal during a wait leaves the countdown where it can still be seen", () => {
+  assert.ok(indexSrc.includes('if(attempt === null){ mountCredentialWait(pinWaitEl, pinWaitKey, { label: "Tu PIN", reveal: true }); return; }'), "Ajustes re-auth");
+  assert.ok(indexSrc.includes('${credentialWaitNoticeHtml("qz-owner-pin-wait")}'));
+  assert.ok(indexSrc.includes("if(left > 0) toast(tooManyAttemptsMessage(left));"), "the user menu has no form: one message");
+  assert.ok(indexSrc.includes("#qz-login-wait{ margin-bottom:14px; }"));
 });

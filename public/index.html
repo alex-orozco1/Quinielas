@@ -387,6 +387,7 @@
     font-family:'Manrope', sans-serif; font-size:13.5px; line-height:1.45; font-weight:600;
   }
   .qz-wait-notice[hidden]{ display:none; }
+  #qz-login-wait{ margin-bottom:14px; }
   .qz-wait-notice.qz-wait-over{ background:#EAF6EE; border-color:#9CCFAE; color:#1C5233; }
   .qz-wait-notice .qz-wait-left{ font-variant-numeric:tabular-nums; white-space:nowrap; }
   .qz-sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
@@ -1532,11 +1533,13 @@
     const until = credentialWaitUntil.get(key);
     return until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0;
   }
-  // Live countdown: "45 s", "1:05 min", "14:59 min".
+  // Live countdown: "45 s", "1:05 min", "14:59 min", "23:59:59 h".
   function formatCountdown(seconds){
     const s = Math.max(0, Math.ceil(Number(seconds) || 0));
+    const two = (n) => String(n).padStart(2, "0");
     if(s < 60) return s + "\u00a0s";
-    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "\u00a0min";
+    if(s < 3600) return Math.floor(s / 60) + ":" + two(s % 60) + "\u00a0min";
+    return Math.floor(s / 3600) + ":" + two(Math.floor(s / 60) % 60) + ":" + two(s % 60) + "\u00a0h";
   }
   function credentialWaitNoticeHtml(id){
     return `<div class="qz-wait-notice" id="${id}" role="status" aria-live="polite" hidden></div>`;
@@ -3385,7 +3388,9 @@
       errorEl.style.display = "none";
     });
     const submit = async () => {
-      if(currentValue.length !== 4) return;
+      // Enter goes through here too: nothing while the button is off (a wait
+      // on screen, or a save already in flight).
+      if(currentValue.length !== 4 || continueBtn.disabled) return;
       const creator = meta.participants.find(p => p.isAdmin) || meta.participants[0];
       continueBtn.disabled = true;
       continueBtn.textContent = "Guardando...";
@@ -4032,18 +4037,29 @@
       render();
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
+      // The PIN just verified here is the one set-pin needs as proof: after a
+      // reload the session cookie restores the user but not their PIN, so
+      // currentUserPinCache can be empty.
+      let verifiedCurrentPin = null;
       if(currentUser.hasPin){
+        const waitKey = "pin:" + currentUser.id;
         const attempt = await promptCredential("Escribe tu PIN actual:", { title: "Cambiar tu PIN", confirmLabel: "Continuar", pin: true },
-          "pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));
-        if(attempt === null) return;
+          waitKey, (pin) => verifyParticipantPin(currentUser.id, pin));
+        if(attempt === null){
+          // This menu has no form to keep the countdown next to: say it once.
+          const left = credentialWaitLeft(waitKey);
+          if(left > 0) toast(tooManyAttemptsMessage(left));
+          return;
+        }
         const verification = attempt.result;
         if(!verification.ok){ toast(pinFailureMessage(verification, "PIN actual incorrecto")); return; }
+        verifiedCurrentPin = attempt.value;
       }
       const newPin = await qzPrompt("Escribe tu nuevo PIN (4 dígitos):", { title: "Cambiar tu PIN", confirmLabel: "Guardar", pin: true });
       if(newPin === null) return;
       const cleanPin = newPin.trim();
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
-      const ok = await apiSetPin(currentUser.id, currentUserPinCache, cleanPin);
+      const ok = await apiSetPin(currentUser.id, verifiedCurrentPin || currentUserPinCache, cleanPin);
       if(!ok){ toast("No se pudo cambiar el PIN, intenta de nuevo"); return; }
       currentUser.hasPin = true;
       currentUserPinCache = cleanPin;
@@ -7688,6 +7704,7 @@
           <button class="btn btn-primary" id="qz-owner-unlock" style="margin-top:12px;">Entrar</button>
           ${currentUser.isAdmin ? `
             <button class="btn btn-ghost btn-sm" id="qz-owner-pin-recover" style="margin-top:10px;width:100%;">¿Eres admin y no tienes la contraseña? Reautentícate con tu PIN</button>
+            ${credentialWaitNoticeHtml("qz-owner-pin-wait")}
           ` : ``}
         </div>
       `;
@@ -7719,10 +7736,14 @@
       // cualquier otra escritura de admin.
       const pinRecoverBtn = document.getElementById("qz-owner-pin-recover");
       if(pinRecoverBtn){
+        const pinWaitKey = "pin:" + currentUser.id;
+        const pinWaitEl = document.getElementById("qz-owner-pin-wait");
+        mountCredentialWait(pinWaitEl, pinWaitKey, { label: "Tu PIN" });
         pinRecoverBtn.addEventListener("click", async () => {
           const attempt = await promptCredential("Vuelve a escribir tu PIN para confirmar que eres tú:", { title: "Reautenticación de administrador", confirmLabel: "Continuar", pin: true },
-            "pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));
-          if(attempt === null) return;
+            pinWaitKey, (pin) => verifyParticipantPin(currentUser.id, pin));
+          // Closing the modal during a wait leaves the countdown under this button.
+          if(attempt === null){ mountCredentialWait(pinWaitEl, pinWaitKey, { label: "Tu PIN", reveal: true }); return; }
           const cleanPin = attempt.value;
           const verification = attempt.result;
           if(!verification.ok){ toast(pinFailureMessage(verification, "❌ PIN incorrecto")); return; }

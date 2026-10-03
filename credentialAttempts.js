@@ -124,10 +124,12 @@ function createCredentialAttemptLimiter(options = {}) {
   const buckets = { ip: new Map(), net: new Map(), device: new Map() };
   const targets = new Map();
 
+  // 128 bits: plenty to tell values apart, half the memory of a full digest
+  // (a credential under a long attack keeps up to maxSeenPerTarget of them).
   function fingerprint(quiniela, target, value) {
     return crypto.createHmac("sha256", fingerprintKey)
       .update(String(quiniela) + "\0" + String(target) + "\0" + String(value))
-      .digest("hex");
+      .digest("hex").slice(0, 32);
   }
   function hashId(label, scopeValue) {
     return crypto.createHmac("sha256", idKey())
