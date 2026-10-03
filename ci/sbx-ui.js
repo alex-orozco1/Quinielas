@@ -46,7 +46,7 @@ const log = (k, v) => console.log("UI " + k + ": " + v);
   await p.screenshot({ path: "shots/sbx-2-login-wait.png" });
   await sleep(4000);
   log("4 four seconds later (a toast would be gone)", (await p.locator("#qz-login-wait").isVisible()) + " | " + await txt("#qz-login-wait .qz-wait-left"));
-  for (let i = 0; i < 60 && !(await txt("#qz-login-wait")).includes("Ya puedes"); i++) await sleep(1000);
+  for (let i = 0; i < 300 && !(await txt("#qz-login-wait")).includes("Ya puedes"); i++) await sleep(1000);
   log("5 at zero", await txt("#qz-login-wait"));
   await p.screenshot({ path: "shots/sbx-3-login-ready.png" });
   await p.click(".name-btn:has-text('Beto')"); await p.waitForSelector("#qz-prompt-input");

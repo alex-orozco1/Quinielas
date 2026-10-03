@@ -74,6 +74,24 @@ async function quiniela(tag) {
     console.log(ts(), `1k. TOTAL accepted: PIN ${acc + acc2} (10 free + 1 slot), admin password ${accPw}`);
   }
 
+  if (which === "all" || which === "samevalue") {
+    // ---- 3. Saving the same PIN / admin password again keeps the attacker waiting ----
+    const q = await quiniela("sv");
+    const guessPin = (v) => call("POST", "/api/verify-pin", { metaKey: q.metaKey, participantId: q.ana.id, pin: v }, { xff: forged() });
+    const guessPw = (v) => call("POST", "/api/verify-owner", { metaKey: q.metaKey, password: v }, { xff: forged() });
+    const used = new Set([q.anaPin]); const wrongPin = () => { let p; do p = pin4(); while (used.has(p)); used.add(p); return p; };
+    let k = 0, r; while ((r = await guessPin(wrongPin())).status !== 429) k++;
+    console.log(ts(), `3a. quiniela ${q.slug}, attacker on Ana's PIN: ${k} accepted, then ${fmt(r)}`);
+    const s = await call("POST", "/api/set-pin", { metaKey: q.metaKey, participantId: q.ana.id, currentPin: q.anaPin, newPin: q.anaPin }, { cookie: q.phone.h });
+    console.log(ts(), "3b. Ana saves the same PIN again (trusted phone):", s.status, "| attacker right after:", fmt(await guessPin(wrongPin())), "(33809d4: 10 accepted again)");
+    k = 0; while ((r = await guessPw("x-" + rnd(6))).status !== 429) k++;
+    console.log(ts(), `3c. attacker on the admin password: ${k} accepted, then ${fmt(r)}`);
+    const meta = (await call("GET", q.K, null, { cookie: q.phone.h, auth: q.owner })).body.value;
+    meta.settings.ownerPassword = q.owner;
+    const w = await call("POST", q.K, { value: meta }, { cookie: q.phone.h, auth: q.owner });
+    console.log(ts(), "3d. Ajustes saved with the same admin password typed again:", w.status, "| attacker right after:", fmt(await guessPw("x-" + rnd(6))));
+  }
+
   if (which === "all" || which === "ipguard") {
     // ---- 2. The per-network window holds with forged IP headers, on the new version ----
     const q = await quiniela("ip");

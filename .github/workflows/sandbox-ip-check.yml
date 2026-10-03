@@ -1,9 +1,10 @@
 name: sandbox-validate (temporal, PR #28)
 
 # Prueba temporal contra el SANDBOX (qracks-mon003-sandbox), nunca producción.
-# Valida el commit 33809d4 del PR #28 desplegado como 93d906f. Rama temporal; el
-# workflow se quita al terminar. No forma parte del PR. No usa secretos y no
-# imprime PINs ni contraseñas (son aleatorios y desechables).
+# Valida el commit final del PR #28 (351019f) desplegado en el sandbox como a8cb5fa. Un job por escenario
+# (runners distintos) para que ninguno gaste el límite por IP de otro. Rama
+# temporal; el workflow se quita al terminar. No usa secretos y no imprime PINs
+# ni contraseñas (son aleatorios y desechables).
 on:
   push:
     branches: [ci/sandbox-ip-check]
@@ -13,27 +14,51 @@ permissions:
 
 env:
   SANDBOX: https://qracks-mon003-sandbox.onrender.com
-  EXPECTED_INDEX_SHA256: 253070adca5ec616651b5634add15948b3505acbd55c5e092d542f3d94d28e8c
+  EXPECTED_INDEX_SHA256: 472a3d1f768b8b950432927c53ace6cffbf35aba28b3551724bc627ffa0d0ac5
 
 jobs:
-  validate:
+  noreset:
+    name: Logins frecuentes y Ajustes no reinician la espera
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: El sandbox sirve el index.html de 33809d4
+        with: { node-version: 22 }
+      - name: El sandbox sirve el index.html del commit
         run: |
           curl -sS "$SANDBOX/a/x" -o served.html
           echo "served   $(sha256sum served.html | cut -d' ' -f1)"
           echo "expected $EXPECTED_INDEX_SHA256"
           test "$(sha256sum served.html | cut -d' ' -f1)" = "$EXPECTED_INDEX_SHA256" && echo "MATCH"
-      - name: Logins frecuentes no reinician la espera; IP falsificada no evade el límite
-        run: node ci/sbx-validate.js all
-      - name: Navegador (375 px) — aviso de espera junto al formulario
-        run: |
+      - run: node ci/sbx-validate.js noreset
+  samevalue:
+    name: Guardar el mismo PIN o contraseña no da intentos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node ci/sbx-validate.js samevalue
+  ipguard:
+    name: IP falsificada no evade el límite por red
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node ci/sbx-validate.js ipguard
+  ui:
+    name: Navegador 375 px — aviso junto al formulario
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: |
           mkdir -p shots
           npm install --no-save --silent playwright@1.56.1
           npx playwright install --with-deps chromium > /dev/null
