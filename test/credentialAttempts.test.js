@@ -394,10 +394,12 @@ test("SERVER: the admin password and participant PINs can never share a target",
   const ctxFn = serverSrc.slice(serverSrc.indexOf("function credentialContext("), serverSrc.indexOf("function checkCredential("));
   assert.ok(ctxFn.includes("const tKey = targetKey(target);"));
   assert.ok(ctxFn.includes("const version = credentialVersion(stored);"), "the budget knows which version of the credential it counts against");
-  assert.ok(ctxFn.includes("device.targets.includes(tKey)"));
+  // Trust names one VERSION of the credential: a changed PIN or password ends it.
+  assert.ok(ctxFn.includes("device.targets.includes(trustedEntry(tKey, version))"));
   const trust = serverSrc.slice(serverSrc.indexOf("function trustDevice("), serverSrc.indexOf("function credentialContext("));
-  assert.ok(trust.includes("const key = targetKey(target);") && trust.includes("targets.push(key);"));
-  assert.ok(serverSrc.includes('const TRUSTED_DEVICE_PURPOSE = "trusted_device_v2";'));
+  assert.ok(trust.includes("const key = targetKey(target);") && trust.includes("targets.push(trustedEntry(key, credentialVersion(stored)));"));
+  assert.ok(trust.includes("if (!stored) return;"), "nothing stored, nothing to trust");
+  assert.ok(serverSrc.includes('const TRUSTED_DEVICE_PURPOSE = "trusted_device_v3";'), "v2 tokens (unversioned) are not recognised");
 });
 
 test("SERVER: every checkCredential call names one target", () => {
@@ -428,11 +430,21 @@ test("SERVER: trusted-device cookies are signed, scoped, and handed out only aft
   assert.ok(read.includes("verifySessionToken(raw)") && read.includes("token.purpose === TRUSTED_DEVICE_PURPOSE") && read.includes('token.slug === (slug || "_root")'));
   const issue = serverSrc.slice(serverSrc.indexOf("function trustDevice("), serverSrc.indexOf("function credentialContext("));
   assert.ok(issue.includes("SESSION_COOKIE_OPTIONS") && issue.includes(".slice(-TRUSTED_DEVICE_MAX_TARGETS)"));
-  assert.ok(routeBody('app.post("/api/verify-pin"').includes("trustDevice(req, res, credSlug, participant.id);"));
-  assert.ok(routeBody('app.post("/api/verify-owner"').includes("trustDevice(req, res, credSlug, OWNER_TARGET);"));
-  assert.ok(routeBody('app.post("/api/set-pin"').includes("trustDevice(req, res, claimSlug, participant.id);"));
-  assert.ok(routeBody('app.post("/api/self-register"').includes("trustDevice(req, res, derivedSlug, newParticipant.id);"));
-  assert.ok(routeBody('app.post("/api/create-quiniela"').includes("trustDevice(req, res, cleanSlug, OWNER_TARGET);"));
+  // Each grant names the stored credential it was proven (or set) against.
+  assert.ok(routeBody('app.post("/api/verify-pin"').includes("trustDevice(req, res, credSlug, participant.id, participant.pin);"));
+  assert.ok(routeBody('app.post("/api/verify-owner"').includes("trustDevice(req, res, credSlug, OWNER_TARGET, stored);"));
+  assert.ok(routeBody('app.post("/api/verify-owner"').includes("trustDevice(req, res, credSlug, admin.id, admin.pin);"));
+  const setPin = routeBody('app.post("/api/set-pin"');
+  assert.ok(setPin.indexOf("participant.pin = hashUnlessUnchanged(newPin, participant.pin);") < setPin.indexOf("trustDevice(req, res, claimSlug, participant.id, participant.pin);"), "the device that changed the PIN is trusted for the NEW one");
+  assert.ok(routeBody('app.post("/api/self-register"').includes("trustDevice(req, res, derivedSlug, newParticipant.id, newParticipant.pin);"));
+  assert.ok(routeBody('app.post("/api/create-quiniela"').includes("trustDevice(req, res, cleanSlug, OWNER_TARGET, meta.settings.ownerPassword);"));
+  const kv = routeBody('app.post("/api/kv/:key"');
+  assert.ok(kv.includes('const mayChangeOwnerPw = authTier === "owner" || authTier === "platform" || (authTier === "admin-pin" && !oldOwnerPw);'));
+  assert.ok(kv.includes("if (mayChangeOwnerPw && typeof typedOwnerPw === \"string\" && typedOwnerPw && !isHashed(typedOwnerPw)"), "only the writer who typed the new admin password, and may change it, is trusted for it");
+  assert.ok(kv.includes("trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET, finalValue.dashboardPassword);"), "a new platform password: the panel that set it is trusted for it");
+  const grants = (serverSrc.match(/trustDevice\(req, res, [^)]*\)/g) || []).filter((g) => !g.includes("slug, target, stored"));
+  assert.equal(grants.length, 9, "the nine grants above, each naming a stored credential: " + grants.join(" | "));
+  assert.ok(grants.every((g) => g.split(",").length === 5), "five arguments: the last is the stored credential");
   // A trust token is never a session or a setup claim.
   assert.ok(serverSrc.includes("if (session.purpose) return null;"));
 });
@@ -556,7 +568,7 @@ test("SERVER: every platform-password check goes through the limiter", () => {
   const vp = routeBody('app.post("/api/verify-platform"');
   assert.ok(vp.includes("const ok = checkPlatformCredential(req, password, stored);"));
   assert.ok(vp.includes("if (!ok && sendIfCredentialThrottled(req, res)) return;"));
-  assert.ok(vp.includes("if (ok) trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET);"));
+  assert.ok(vp.includes("if (ok) trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET, stored);"));
   assert.ok(/function resolveMetaAuthTier[\s\S]{0,400}checkPlatformCredential\(req, providedPlatformAuth, platformHash\)/.test(serverSrc));
 });
 

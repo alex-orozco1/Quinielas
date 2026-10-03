@@ -390,8 +390,12 @@ test("CASE A: a datetime-local value from yesterday is rejected", () => {
 });
 
 test("CASE B: today but an hour that already passed is rejected", () => {
-  // NOW is 15:00 UTC -- 14:00 same day must be rejected.
-  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", new Date("2026-08-22T14:00:00.000Z").getTime() + 1), false);
+  // The input is local wall-clock time and the product parses it as local
+  // time; "now" is 1 ms after 14:00 LOCAL, so 14:00 the same day is already
+  // past in any time zone (UTC, America/Mexico_City...).
+  const justAfter = new Date(2026, 7, 22, 14, 0).getTime() + 1;
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", justAfter), false);
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:01", justAfter), true, "a minute later is still ahead");
 });
 
 test("CASE C: a genuinely future datetime is accepted", () => {

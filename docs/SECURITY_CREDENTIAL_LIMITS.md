@@ -50,6 +50,18 @@ Espera progresiva por credencial (`target`, una credencial desde cualquier red; 
 
 - Un dispositivo de confianza usa sólo su presupuesto `device`; no le afectan `ip`, `net` ni la espera
   de la credencial, y entrar desde él tampoco la cambia.
+- **La confianza es por versión de la credencial.** La cookie (`trusted_device_v3`, firmada) nombra cada
+  credencial junto con su versión (`credentialVersion()` del hash guardado). El servidor la compara con
+  la credencial tal como está guardada en ese momento. Al cambiar o resetear un PIN o una contraseña
+  (de admin o de plataforma), la confianza ganada con el valor anterior deja de valer en el servidor, sin
+  revocar nada. Las cookies obtenidas mientras se conocía el valor viejo vuelven a ser navegadores
+  normales (10 libres y luego espera).
+  - El dispositivo que completa el cambio recibe confianza para la versión nueva: set-pin, Ajustes al
+    cambiar la contraseña de admin y el panel al cambiar la de plataforma.
+  - Guardar el mismo valor conserva el hash, la versión, los contadores y la confianza.
+  - Antes (P1 de la revisión independiente sobre `8753f8c`): tres cookies de antes del cambio daban 30
+    adivinanzas contra el PIN nuevo desde una IP. `test/trustedDeviceVersion.integration.test.js` lo
+    reproduce contra el servidor real.
 - La reserva del intento ocurre antes de scrypt; con N peticiones en paralelo sólo se comparan las
   que caben.
 - Respuesta cuando hay que esperar: `429 {"error":"too_many_attempts","retryAfterSeconds":N}` y
@@ -151,20 +163,21 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   y, con él, el estado. Esto aplica en set-pin, en la contraseña de administrador desde Ajustes, en la del
   panel y en la de una quiniela desde el panel. No se aplica al PIN de otra persona escrito por un admin
   vía meta: ahí "igual o distinto" se notaría en el `rev` y sería un intento gratis.
-  Consecuencias:
-  - Guardar el mismo PIN no cierra las sesiones de otros dispositivos, porque las sesiones van atadas al
-    hash. "Cambiar mi PIN" con el mismo valor ahora lo dice en pantalla y no llama al servidor. Un reset
-    del admin o un PIN distinto sí las cierran.
-  - Una credencial heredada en texto plano se migra a hash en su primera escritura. Eso cambia su
-    versión una vez, y en ese momento el atacante recupera sus 10 intentos libres una sola vez. No se
-    comprobó si quedan valores así en producción (NOT PROVEN). **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes,
-  Panel de plataforma, cambio de PIN), del PIN que el navegador reenvía en cada petición o de un
-  dispositivo de confianza: un acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto
-  del atacante depende sólo de sus propios fallos, y los logins frecuentes del titular no le dan nada.
+- **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes, Panel de plataforma,
+  cambio de PIN), del PIN que el navegador reenvía en cada petición o de un dispositivo de confianza: un
+  acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto del atacante depende sólo de sus
+  propios fallos, y los logins frecuentes del titular no le dan nada.
   Historial: sobre `d1a05a9`, Technical QA reprodujo que cualquier acierto reiniciaba la espera.
   `c3c586d` lo limitó a los logins explícitos, y aun así cada login devolvía 10 intentos libres
   (~433/día con un login por hora). El dueño del producto pidió cerrarlo: desde este cambio ningún
   acierto reinicia.
+- **Consecuencias de conservar el hash al guardar el mismo valor:**
+  - Guardar el mismo PIN no cierra las sesiones de otros dispositivos, porque las sesiones van atadas al
+    hash. "Cambiar mi PIN" con el mismo valor lo dice en pantalla y no llama al servidor. Un reset del
+    admin o un PIN distinto sí las cierran.
+  - Una credencial heredada en texto plano se migra a hash en su primera escritura. Eso cambia su
+    versión una vez, y en ese momento el atacante recupera sus 10 intentos libres una sola vez. No se
+    comprobó si quedan valores así en producción (NOT PROVEN).
 - **Valores repetidos:** el mismo valor equivocado no se cuenta dos veces, pero espera como cualquier
   otro; preguntar durante la espera por un valor ya probado recibe el mismo 429 (sin oráculo de "¿esto
   ya se probó?").
