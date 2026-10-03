@@ -137,14 +137,48 @@ Comportamiento implementado hoy, a confirmar o cambiar por el dueño del product
   - último recurso del operador (requiere autorización, toca datos de producción): vaciar las filas
     `scope = 'target'` de `credential_attempt_buckets` y reiniciar el servicio;
   - en todos los casos, esperar el fin de la ventana.
-- **Alternativa: retraso progresivo** (no implementada). En vez de un corte duro, tras K fallos cada
-  intento exige esperar un tiempo creciente (p. ej. 2^n s, tope 15 min) indicado en `Retry-After`.
-  - A favor: un usuario legítimo nunca queda fuera más que el retraso vigente; no hay un estado
-    "bloqueado 24 h".
-  - En contra: un atacante sostenido obtiene un flujo continuo de intentos (≈96 por día con tope de
-    15 min, frente a 150 hoy por versión); hay que guardar el estado por credencial igual que hoy.
-  - Combinación posible: retraso progresivo para dispositivos nuevos + exención de dispositivos de
-    confianza (como hoy).
+### 5.1 Evaluación: bloqueo de 24 h frente a espera progresiva
+
+Simulación por credencial, dispositivos no confiables (script `lockout-sim.js` en la evidencia del PR).
+"Progresiva" = 10 fallos libres, luego espera de 15 s × 2^n entre intentos, con tope de 15 min; el
+contador se olvida tras 24 h sin fallos. Ambas conservan los límites por red y la exención de
+dispositivos de confianza.
+
+| | Bloqueo duro (implementado) | Espera progresiva (propuesta) |
+|---|---|---|
+| Atacante sostenido, IPs ilimitadas | 150 adivinanzas/día | **96/día** |
+| 50 % de probabilidad de dar con un PIN de 4 dígitos | ~33 días | **~52 días** |
+| Admin sin atacante, 8 intentos fallidos y luego el correcto | 0 de espera | 0 |
+| Admin sin atacante, 20 fallidos | 0 | ~1 h 30 min acumulada (ninguna espera > 15 min) |
+| Admin sin atacante, 35 fallidos | ~10 min | ~5 h acumuladas |
+| Admin en dispositivo nuevo durante un ataque: `Retry-After` al llegar | mediana ~10 h, peor ~23 h | **mediana ~8 min, peor 15 min** |
+| ¿Un atacante óptimo puede seguir negándole la entrada en dispositivo nuevo? | Sí | Sí |
+| Salidas que no dependen del limitador | dispositivo de confianza, sesión abierta, reset del PIN / cambio de contraseña (versión nueva) | igual |
+
+Lectura:
+
+- **Seguridad:** la espera progresiva es más estricta en régimen (96 contra 150 adivinanzas por día):
+  el tope de 15 min por intento limita más que el cupo diario.
+- **Acceso del admin:** la progresiva nunca anuncia horas de bloqueo; con un atacante activo, el
+  admin ve "intenta en X min" en lugar de "mañana". Sólo pierde frente al bloqueo duro cuando alguien
+  legítimo encadena más de 10 errores, caso en que la salida correcta es resetear, no seguir probando.
+- **Lo que ninguna de las dos resuelve:** un atacante sostenido y óptimo puede tomar cada apertura
+  antes que el admin en un dispositivo nuevo. La protección real del acceso del admin es la misma en
+  ambos: sus dispositivos de confianza, la sesión abierta, y resetear la credencial.
+
+**Recomendación: espera progresiva** (10 libres, 15 s × 2^n, tope 15 min, olvido a las 24 h), manteniendo
+los límites por red y la exención de dispositivos de confianza, más dos cambios de UX:
+
+1. Tras 5 fallos, la pantalla de PIN ofrece la salida en lugar de otro intento: "¿Olvidaste tu PIN?
+   Pide a otro admin que lo resetee" / "usa la contraseña de administrador".
+2. El mensaje de bloqueo muestra el tiempo real que dice `Retry-After` ("Intenta de nuevo en 8 min").
+
+No implementado en este PR: pendiente de decisión del dueño del producto.
+
+Pendiente detectado al evaluar el acceso del admin (independiente de esta decisión): un admin único
+que olvidó su PIN y no tiene dispositivo de confianza no tiene un camino de autoservicio para
+resetearlo con la contraseña de administrador; hoy depende de otro admin (reset en Participantes) o de
+una intervención con la contraseña de plataforma (no verifiqué si el panel lo ofrece en la UI).
 
 ## 6. Fuera de alcance de esta entrega
 
