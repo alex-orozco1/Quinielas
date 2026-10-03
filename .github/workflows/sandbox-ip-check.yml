@@ -33,16 +33,18 @@ jobs:
           async function call(method, path, body, { cookie, forge } = {}) {
             const headers = { "Content-Type": "application/json" };
             if (cookie) headers.Cookie = cookie;
-            if (forge) {
+            if (forge === "xff" || forge === true) {
               headers["X-Forwarded-For"] = rnd() + ", " + rnd();
-              headers["CF-Connecting-IP"] = rnd();
               headers["True-Client-IP"] = rnd();
               headers["X-Real-IP"] = rnd();
+              headers["Forwarded"] = "for=" + rnd();
             }
+            if (forge === "cf") headers["CF-Connecting-IP"] = rnd();
             await new Promise((r) => setTimeout(r, 300));
             const r = await fetch(B + path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(90000) });
             const text = await r.text();
             const res = { status: r.status, text, sc: r.headers.getSetCookie ? r.headers.getSetCookie() : [] };
+            res.kind = () => { try { JSON.parse(text); return "json"; } catch (e) { return "html(" + (r.headers.get("server") || "?") + "): " + text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 60).trim(); } };
             res.json = () => {
               try { return JSON.parse(text); }
               catch (e) {
@@ -80,18 +82,26 @@ jobs:
             const bob = await reg("Bob"), carla = await reg("Carla");
             // PINs are never printed here (masking them would make GitHub drop the
             // job output that carries them to the other runners).
-            // 25 wrong guesses at the admin PIN, forging every IP header each time.
+            // A client-written CF-Connecting-IP: what does the edge do with it?
+            const cfTally = {};
+            for (let i = 0; i < 3; i++) {
+              let g; do { g = pin(); } while (g === ana.pin);
+              const r = await call("POST", "/api/verify-pin", { metaKey, participantId: ana.id, pin: g }, { forge: "cf" });
+              const k = r.status + " " + r.kind(); cfTally[k] = (cfTally[k] || 0) + 1;
+            }
+            log({ step: "3 guesses with a client-written CF-Connecting-IP", tally: cfTally });
+            // 25 wrong guesses at the admin PIN, forging every other IP header each time.
             const tally = {};
             for (let i = 0; i < 25; i++) {
               let g; do { g = pin(); } while (g === ana.pin);
-              const r = await call("POST", "/api/verify-pin", { metaKey, participantId: ana.id, pin: g }, { forge: true });
-              const j = r.json(); const k = r.status + " " + (r.status === 200 ? j.ok : j.error);
+              const r = await call("POST", "/api/verify-pin", { metaKey, participantId: ana.id, pin: g }, { forge: "xff" });
+              let k; try { const j = r.json(); k = r.status + " " + (r.status === 200 ? j.ok : j.error); } catch (e) { k = r.status + " " + r.kind(); }
               tally[k] = (tally[k] || 0) + 1;
             }
-            log({ step: "25 wrong guesses at the admin PIN, forged XFF/CF-Connecting-IP/True-Client-IP/X-Real-IP on each", tally });
+            log({ step: "25 wrong guesses at the admin PIN, forged X-Forwarded-For/True-Client-IP/X-Real-IP/Forwarded on each", tally });
             const bobHere = await call("POST", "/api/verify-pin", { metaKey, participantId: bob.id, pin: bob.pin });
             log({ step: "same runner, Bob's CORRECT PIN, no forging", status: bobHere.status, body: bobHere.text });
-            const anaForged = await call("POST", "/api/verify-pin", { metaKey, participantId: ana.id, pin: ana.pin }, { forge: true });
+            const anaForged = await call("POST", "/api/verify-pin", { metaKey, participantId: ana.id, pin: ana.pin }, { forge: "xff" });
             log({ step: "same runner, admin's CORRECT PIN with fresh forged headers", status: anaForged.status, body: anaForged.text });
             out("state", Buffer.from(JSON.stringify({ metaKey, slug, ana, bob, carla })).toString("base64"));
           })().catch((e) => { console.error(e); process.exit(1); });
