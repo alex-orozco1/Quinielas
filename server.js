@@ -435,11 +435,10 @@ function credentialContext(req, slug, target, plain, stored) {
   // Trust follows the person (the target), not one version of their PIN.
   const device = readTrustedDevice(req, slug);
   const trustedDeviceId = device && device.targets.includes(tKey) ? device.id : null;
-  // Only a credential a person typed into a login form (req.qzExplicitLogin,
-  // set by those routes) resets the credential's wait when it matches; the
-  // PIN a browser resends on every request must not (credentialAttempts.js).
-  const attempt = credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId,
-    resetOnSuccess: req.qzExplicitLogin === true });
+  // No success, however it was sent, resets the credential's wait
+  // (credentialAttempts.js): an attacker's budget never grows with the
+  // owner's logins.
+  const attempt = credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId });
   ctx = { blocked: attempt.blocked, matched: false, memo: new Map() };
   req.qzCredentialContexts.set(key, ctx);
   if (attempt.blocked) {
@@ -2080,8 +2079,6 @@ function slugFromMetaKey(metaKey) {
 
 app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
   try {
-    // A person is typing a credential here: a match resets its wait.
-    req.qzExplicitLogin = true;
     const { metaKey, password } = req.body || {};
     if (!metaKey) return res.status(400).json({ error: "missing_metaKey" });
     const value = await getRow(metaKey);
@@ -2123,8 +2120,6 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
 
 app.post("/api/verify-platform", rateLimit("verify-platform"), async (req, res) => {
   try {
-    // A person is typing a credential here: a match resets its wait.
-    req.qzExplicitLogin = true;
     const { password } = req.body || {};
     const stored = await getPlatformHash();
     const ok = checkPlatformCredential(req, password, stored);
@@ -2139,8 +2134,6 @@ app.post("/api/verify-platform", rateLimit("verify-platform"), async (req, res) 
 
 app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
-    // A person is typing a credential here: a match resets its wait.
-    req.qzExplicitLogin = true;
     const { metaKey, participantId, pin } = req.body || {};
     if (!metaKey || !participantId) return res.status(400).json({ error: "missing_params" });
     const value = await getRow(metaKey);
@@ -2189,8 +2182,6 @@ function isAdminClaimAuthorized(req, slug, value) {
 // creator left the onboarding would become the admin.
 app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
-    // A person is typing a credential here: a match resets its wait.
-    req.qzExplicitLogin = true;
     const { metaKey, participantId, currentPin, newPin } = req.body || {};
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });

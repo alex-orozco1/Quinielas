@@ -124,7 +124,7 @@ test("FRONTEND: both first-PIN paths for an admin go through setFirstAdminPin", 
 test("FRONTEND: the admin password is asked for in a masked field and sent only as a header", () => {
   const fn = indexSrc.slice(indexSrc.indexOf("async function setFirstAdminPin("), indexSrc.indexOf("async function setFirstAdminPin(") + 1200);
   assert.ok(fn.includes('first.error !== "admin_claim_required"'), "asks only when the server says so");
-  assert.ok(/qzPrompt\([^)]*secret: true/.test(fn), "masked input");
+  assert.ok(/promptCredential\([^)]*secret: true/.test(fn), "masked input (qzPrompt via promptCredential)");
   const api = indexSrc.slice(indexSrc.indexOf("async function apiSetPinResult("), indexSrc.indexOf("async function apiSetPin("));
   assert.ok(api.includes("setAuthHeaders(headers, adminPassword);"));
   assert.ok(!/body: JSON\.stringify\([^)]*adminPassword/.test(api), "never in the body");

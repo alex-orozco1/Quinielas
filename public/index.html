@@ -377,6 +377,20 @@
   }
   #quiniela-root .toast.show{ opacity:1; transform:translateX(-50%) translateY(-4px); }
 
+  /* Aviso de espera por demasiados intentos: fijo junto al formulario, con
+     cuenta atrás (ver mountCredentialWait). Sin escopar: también va dentro
+     del modal, que cuelga de document.body. */
+  .qz-wait-notice{
+    display:flex; gap:8px; align-items:flex-start; text-align:left;
+    margin:12px 0 0; padding:10px 12px; border-radius:10px;
+    background:#FFF4E5; border:1px solid #F0C36D; color:#5C3B00;
+    font-family:'Manrope', sans-serif; font-size:13.5px; line-height:1.45; font-weight:600;
+  }
+  .qz-wait-notice[hidden]{ display:none; }
+  .qz-wait-notice.qz-wait-over{ background:#EAF6EE; border-color:#9CCFAE; color:#1C5233; }
+  .qz-wait-notice .qz-wait-left{ font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .qz-sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
   /* HOTFIX-001: aviso de reconciliación. Igual que el modal de abajo, va
      colgado de document.body y por eso NO se escopa bajo #quiniela-root: un
      re-render (root.innerHTML se reemplaza entero al cambiar de pantalla) lo
@@ -1489,16 +1503,96 @@
     if(code === "too_many_attempts") return tooManyAttemptsMessage(result && result.retryAfterSeconds);
     return ERROR_MESSAGES[code] || "No se pudo completar la acción. Intenta de nuevo.";
   }
+  // A non-breaking space keeps "15 s" on one line on narrow screens.
   function formatWait(seconds){
     const s = Math.max(1, Math.ceil(Number(seconds) || 0));
-    if(s < 60) return s + " s";
+    if(s < 60) return s + "\u00a0s";
     const m = Math.ceil(s / 60);
-    if(m < 120) return m + " min";
-    return Math.round(m / 60) + " h";
+    if(m < 120) return m + "\u00a0min";
+    return Math.round(m / 60) + "\u00a0h";
   }
   function tooManyAttemptsMessage(retryAfterSeconds){
     if(!Number.isFinite(Number(retryAfterSeconds)) || Number(retryAfterSeconds) <= 0) return ERROR_MESSAGES.too_many_attempts;
     return "Demasiados intentos. Intenta de nuevo en " + formatWait(retryAfterSeconds) + ", o entra desde un dispositivo donde ya hayas entrado.";
+  }
+  // Waits the server asked for (429 too_many_attempts), per credential
+  // ("pin:<id>", "owner", "platform"), in memory. The notice stays next to the
+  // form with a live countdown until the wait is over -- a toast that vanishes
+  // in 2 s is not enough to read it -- survives re-renders, and keeps the
+  // submit button off meanwhile. The server stays the authority: this only
+  // shows the time it said is left.
+  const credentialWaitUntil = new Map();
+  function startCredentialWait(key, result){
+    const s = Number(result && result.retryAfterSeconds);
+    if(!Number.isFinite(s) || s <= 0) return false;
+    credentialWaitUntil.set(key, Date.now() + Math.ceil(s) * 1000);
+    return true;
+  }
+  function credentialWaitLeft(key){
+    const until = credentialWaitUntil.get(key);
+    return until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0;
+  }
+  // Live countdown: "45 s", "1:05 min", "14:59 min".
+  function formatCountdown(seconds){
+    const s = Math.max(0, Math.ceil(Number(seconds) || 0));
+    if(s < 60) return s + "\u00a0s";
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "\u00a0min";
+  }
+  function credentialWaitNoticeHtml(id){
+    return `<div class="qz-wait-notice" id="${id}" role="status" aria-live="polite" hidden></div>`;
+  }
+  // Paints the wait for `key` into `el` and keeps it current every second.
+  // `button` (optional) stays disabled while the wait lasts; `onReady` runs
+  // once it is over (to re-enable the button by the form's own rules);
+  // `reveal` scrolls it into view (for a 429 that just arrived).
+  // Screen readers get the message once, with the rounded time (the ticking
+  // number is hidden from them). Returns whether a wait is on.
+  function mountCredentialWait(el, key, opts){
+    if(!el) return false;
+    opts = opts || {};
+    clearInterval(el._qzWaitTimer);
+    if(credentialWaitLeft(key) <= 0){ el.hidden = true; return false; }
+    const label = opts.label ? esc(opts.label) + ": " : "";
+    el.innerHTML = `<span class="qz-wait-icon" aria-hidden="true">⏳</span><span>${label}Demasiados intentos. Intenta de nuevo en <b class="qz-wait-left" aria-hidden="true"></b><span class="qz-sr-only">${esc(formatWait(credentialWaitLeft(key)))}</span>, o entra desde un dispositivo donde ya hayas entrado.</span>`;
+    el.classList.remove("qz-wait-over");
+    el.hidden = false;
+    const leftEl = el.querySelector(".qz-wait-left");
+    const tick = () => {
+      if(!el.isConnected){ clearInterval(el._qzWaitTimer); return; }
+      const left = credentialWaitLeft(key);
+      if(left > 0){
+        leftEl.textContent = formatCountdown(left);
+        if(opts.button) opts.button.disabled = true;
+        return;
+      }
+      clearInterval(el._qzWaitTimer);
+      credentialWaitUntil.delete(key);
+      el.classList.add("qz-wait-over");
+      el.innerHTML = `<span class="qz-wait-icon" aria-hidden="true">✅</span><span>${label}Ya puedes intentarlo de nuevo.</span>`;
+      if(opts.button) opts.button.disabled = false;
+      if(typeof opts.onReady === "function") opts.onReady();
+    };
+    tick();
+    el._qzWaitTimer = setInterval(tick, 1000);
+    // A fresh 429: bring the notice on screen (the field may be near the
+    // fold). The button sits right under it, so showing the button shows both.
+    const revealTarget = opts.button && opts.button.compareDocumentPosition && (el.compareDocumentPosition(opts.button) & 4) ? opts.button : el;
+    if(opts.reveal && typeof revealTarget.scrollIntoView === "function") revealTarget.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+  // A credential typed into a modal: when the server says to wait, the modal
+  // comes straight back with the countdown and its button off until the wait
+  // is over, instead of closing on a toast. Resolves to null if canceled,
+  // else { value, result } with the server's last answer.
+  async function promptCredential(message, opts, waitKey, check){
+    while(true){
+      const raw = await qzPrompt(message, { ...opts, waitKey });
+      if(raw === null) return null;
+      const value = raw.trim();
+      const result = await check(value);
+      if(result && result.error === "too_many_attempts" && startCredentialWait(waitKey, result)) continue;
+      return { value, result };
+    }
   }
 
   // AUTO-004: groups the 9 possible reliabilityState values TheSportsDB
@@ -1942,9 +2036,10 @@
   async function setFirstAdminPin(participantId, newPin){
     const first = await apiSetPinResult(participantId, null, newPin);
     if(first.ok || first.error !== "admin_claim_required") return first;
-    const password = await qzPrompt("Por seguridad, escribe la contraseña de administrador que se eligió al crear la quiniela. Si no la tienes, pide a otro admin que escriba aquí su PIN.", { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true });
-    if(password === null) return { ok: false, error: "admin_claim_required", canceled: true };
-    return apiSetPinResult(participantId, null, newPin, password.trim());
+    const attempt = await promptCredential("Por seguridad, escribe la contraseña de administrador que se eligió al crear la quiniela. Si no la tienes, pide a otro admin que escriba aquí su PIN.", { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true },
+      "owner", (password) => apiSetPinResult(participantId, null, newPin, password));
+    if(attempt === null) return { ok: false, error: "admin_claim_required", canceled: true };
+    return attempt.result;
   }
   // Anonymous, non-sensitive — just enough to tell "same device came back"
   // apart in the funnel numbers. Not the session cookie, no security role.
@@ -2228,6 +2323,7 @@
             autocomplete="off"
             ${isPin ? 'maxlength="4" pattern="[0-9]*"' : ""}
           >
+          ${opts.waitKey ? credentialWaitNoticeHtml("qz-prompt-wait") : ""}
           <div class="qz-modal-actions">
             <button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>
             <button class="qz-modal-confirm qz-modal-not-destructive" id="qz-modal-confirm-btn">${esc(confirmLabel)}</button>
@@ -2236,6 +2332,8 @@
       `;
       document.body.appendChild(overlay);
       const input = overlay.querySelector("#qz-prompt-input");
+      const confirmBtn = overlay.querySelector("#qz-modal-confirm-btn");
+      if(opts.waitKey) mountCredentialWait(overlay.querySelector("#qz-prompt-wait"), opts.waitKey, { button: confirmBtn });
       const focusTrap = attachModalFocusTrap(overlay);
       const cleanup = (result) => {
         document.removeEventListener("keydown", onKey);
@@ -2243,7 +2341,8 @@
         overlay.remove();
         resolve(result);
       };
-      const submit = () => cleanup(input.value);
+      // While a wait is on, Enter does nothing, same as the disabled button.
+      const submit = () => { if(!confirmBtn.disabled) cleanup(input.value); };
       const onKey = (e) => {
         if(e.key === "Escape") cleanup(null);
         else if(e.key === "Enter") submit();
@@ -2251,7 +2350,7 @@
       document.addEventListener("keydown", onKey);
       overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(null); });
       overlay.querySelector("#qz-modal-cancel-btn").addEventListener("click", () => cleanup(null));
-      overlay.querySelector("#qz-modal-confirm-btn").addEventListener("click", submit);
+      confirmBtn.addEventListener("click", submit);
       if(isPin){
         input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 4); });
       }
@@ -3270,6 +3369,7 @@
           <p class="login-sub">Usarás estos 4 números para volver a entrar a tu quiniela.</p>
           ${pinBoxesHtml("qz-setup-pin-input", "qz-setup-pin-boxes")}
           <p class="muted" id="qz-setup-pin-error" style="color:var(--red);display:none;margin-top:10px;"></p>
+          ${credentialWaitNoticeHtml("qz-setup-pin-wait")}
           <button class="btn btn-primary" id="qz-setup-pin-continue" style="width:100%;padding:12px;margin-top:20px;" disabled>Continuar</button>
         </div>
       </div>
@@ -3277,9 +3377,11 @@
     const continueBtn = document.getElementById("qz-setup-pin-continue");
     const errorEl = document.getElementById("qz-setup-pin-error");
     let currentValue = "";
+    const waitEl = document.getElementById("qz-setup-pin-wait");
+    const readyToContinue = () => { continueBtn.disabled = currentValue.length !== 4 || credentialWaitLeft("owner") > 0; };
     const input = wirePinBoxes("qz-setup-pin-input", "qz-setup-pin-boxes", (val) => {
       currentValue = val;
-      continueBtn.disabled = val.length !== 4;
+      readyToContinue();
       errorEl.style.display = "none";
     });
     const submit = async () => {
@@ -3290,6 +3392,14 @@
       const result = await setFirstAdminPin(creator.id, currentValue);
       if(!result.ok){
         // Never clear the PIN the admin already typed -- just let them retry.
+        continueBtn.textContent = "Continuar";
+        if(result.error === "too_many_attempts") startCredentialWait("owner", result);
+        // A wait (now, or still on after canceling the password modal) stays
+        // next to the button with its countdown, instead of an error line.
+        if(mountCredentialWait(waitEl, "owner", { button: continueBtn, onReady: readyToContinue, reveal: true })){
+          errorEl.style.display = "none";
+          return;
+        }
         errorEl.textContent = result.canceled
           ? "Necesitamos tu contraseña de administrador para proteger la quiniela."
           : result.error === "admin_claim_required"
@@ -3299,7 +3409,6 @@
               : "No pudimos guardar tu PIN. Intenta de nuevo.";
         errorEl.style.display = "block";
         continueBtn.disabled = false;
-        continueBtn.textContent = "Continuar";
         return;
       }
       currentUser = { ...creator, hasPin: true };
@@ -3692,6 +3801,14 @@
 
   // Wrong PINs typed on this screen, per participant (memory only).
   const loginPinMisses = new Map();
+  // The wait the login screen is showing next to the names, if any.
+  let loginWait = null;
+  function showLoginWait(key, label){
+    if(credentialWaitLeft(key) <= 0) return false;
+    loginWait = { key, label };
+    const el = document.getElementById("qz-login-wait");
+    return mountCredentialWait(el, key, { label, reveal: true });
+  }
   function renderLogin(){
     const sortedParticipants = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     const names = sortedParticipants.map(p => `
@@ -3706,6 +3823,7 @@
           <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
           <div class="login-title display">${esc(meta.groupName)}</div>
           <div class="login-sub">Toca tu nombre para entrar 👇</div>
+          ${credentialWaitNoticeHtml("qz-login-wait")}
           <div class="name-grid">${names}</div>
           <button class="btn btn-gold btn-sm" id="qz-self-register" style="width:100%;margin-top:14px;">+ No apareces? Agrégate aquí</button>
           <p class="muted" style="text-align:center;margin-top:14px;">🔒 = ya tiene PIN configurado. Si es tu nombre y no tiene candado, tócalo y ponle un PIN antes que alguien más lo haga. Si eres admin y tu nombre no tiene candado, te pediremos la contraseña de administrador.</p>
@@ -3713,6 +3831,7 @@
         </div>
       </div>
     `;
+    if(loginWait) showLoginWait(loginWait.key, loginWait.label);
     document.getElementById("qz-self-register").addEventListener("click", async () => {
       trackEvent("join_started", { isNewUser: true });
       const newName = await qzPrompt("¿Cuál es tu nombre?", { title: "Únete a la quiniela", confirmLabel: "Continuar" });
@@ -3765,6 +3884,8 @@
           if(p.isAdmin){
             const result = await setFirstAdminPin(p.id, cleanPin);
             if(!result.ok){
+              if(result.error === "too_many_attempts") startCredentialWait("owner", result);
+              if(showLoginWait("owner", "Contraseña de administrador")) return;
               if(result.canceled) return;
               toast(result.error === "admin_claim_required"
                 ? "Contraseña de administrador incorrecta"
@@ -3781,10 +3902,13 @@
           currentUserPinCache = cleanPin;
           toast("PIN configurado ✅ — no lo olvides");
         } else {
-          const entered = await qzPrompt("Escribe el PIN de " + p.name + " para entrar:", { title: "Entrar", confirmLabel: "Entrar", pin: true });
-          if(entered === null) return;
-          const cleanEntered = entered.trim();
-          const verification = await verifyParticipantPin(p.id, cleanEntered);
+          // A wait keeps the PIN modal up with its countdown; closing it leaves
+          // the same countdown next to the names.
+          const attempt = await promptCredential("Escribe el PIN de " + p.name + " para entrar:", { title: "Entrar", confirmLabel: "Entrar", pin: true },
+            "pin:" + p.id, (pin) => verifyParticipantPin(p.id, pin));
+          if(attempt === null){ showLoginWait("pin:" + p.id, "PIN de " + p.name); return; }
+          const cleanEntered = attempt.value;
+          const verification = attempt.result;
           if(!verification.ok){
             // After a few misses, point at the way out that exists today
             // instead of inviting more guesses.
@@ -3796,6 +3920,7 @@
             return;
           }
           loginPinMisses.delete(p.id);
+          if(loginWait && loginWait.key === "pin:" + p.id) loginWait = null;
           currentUserPinCache = cleanEntered;
         }
         currentUser = p;
@@ -3908,9 +4033,10 @@
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
       if(currentUser.hasPin){
-        const current = await qzPrompt("Escribe tu PIN actual:", { title: "Cambiar tu PIN", confirmLabel: "Continuar", pin: true });
-        if(current === null) return;
-        const verification = await verifyParticipantPin(currentUser.id, current.trim());
+        const attempt = await promptCredential("Escribe tu PIN actual:", { title: "Cambiar tu PIN", confirmLabel: "Continuar", pin: true },
+          "pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));
+        if(attempt === null) return;
+        const verification = attempt.result;
         if(!verification.ok){ toast(pinFailureMessage(verification, "PIN actual incorrecto")); return; }
       }
       const newPin = await qzPrompt("Escribe tu nuevo PIN (4 dígitos):", { title: "Cambiar tu PIN", confirmLabel: "Guardar", pin: true });
@@ -7558,19 +7684,26 @@
           <div class="eyebrow">Ajustes del dueño</div>
           <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de dueño.</p>
           <div class="field"><input type="password" id="qz-owner-pw" placeholder="Contraseña de dueño"></div>
-          <button class="btn btn-primary" id="qz-owner-unlock">Entrar</button>
+          ${credentialWaitNoticeHtml("qz-owner-wait")}
+          <button class="btn btn-primary" id="qz-owner-unlock" style="margin-top:12px;">Entrar</button>
           ${currentUser.isAdmin ? `
             <button class="btn btn-ghost btn-sm" id="qz-owner-pin-recover" style="margin-top:10px;width:100%;">¿Eres admin y no tienes la contraseña? Reautentícate con tu PIN</button>
           ` : ``}
         </div>
       `;
-      document.getElementById("qz-owner-unlock").addEventListener("click", async () => {
+      const ownerUnlockBtn = document.getElementById("qz-owner-unlock");
+      const ownerWaitEl = document.getElementById("qz-owner-wait");
+      mountCredentialWait(ownerWaitEl, "owner", { button: ownerUnlockBtn });
+      ownerUnlockBtn.addEventListener("click", async () => {
+        if(ownerUnlockBtn.disabled) return;
         const val = document.getElementById("qz-owner-pw").value;
         const result = await verifyOwnerPasswordResult(val);
         if(result.ok){
           ownerUnlocked = true;
           ownerPasswordCache = val;
           renderAdminOwner(body);
+        } else if(result.error === "too_many_attempts" && startCredentialWait("owner", result)){
+          mountCredentialWait(ownerWaitEl, "owner", { button: ownerUnlockBtn, reveal: true });
         } else {
           toast(pinFailureMessage(result, "❌ Contraseña incorrecta"));
         }
@@ -7587,10 +7720,11 @@
       const pinRecoverBtn = document.getElementById("qz-owner-pin-recover");
       if(pinRecoverBtn){
         pinRecoverBtn.addEventListener("click", async () => {
-          const pin = await qzPrompt("Vuelve a escribir tu PIN para confirmar que eres tú:", { title: "Reautenticación de administrador", confirmLabel: "Continuar", pin: true });
-          if(pin === null) return;
-          const cleanPin = pin.trim();
-          const verification = await verifyParticipantPin(currentUser.id, cleanPin);
+          const attempt = await promptCredential("Vuelve a escribir tu PIN para confirmar que eres tú:", { title: "Reautenticación de administrador", confirmLabel: "Continuar", pin: true },
+            "pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));
+          if(attempt === null) return;
+          const cleanPin = attempt.value;
+          const verification = attempt.result;
           if(!verification.ok){ toast(pinFailureMessage(verification, "❌ PIN incorrecto")); return; }
           currentUserPinCache = cleanPin;
           const ok = await verifyOwnerPassword("");
@@ -8288,14 +8422,20 @@
             <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
             <div class="login-title display" style="font-size:28px;">Panel de la plataforma</div>
             <div class="field"><input type="password" id="qz-p-pass" placeholder="Contraseña del panel"></div>
-            <button class="btn btn-primary" id="qz-p-unlock" style="width:100%;padding:12px;">Entrar</button>
+            ${credentialWaitNoticeHtml("qz-p-wait")}
+            <button class="btn btn-primary" id="qz-p-unlock" style="width:100%;padding:12px;margin-top:12px;">Entrar</button>
           </div>
         </div>
       `;
-      document.getElementById("qz-p-unlock").addEventListener("click", async () => {
+      const platformUnlockBtn = document.getElementById("qz-p-unlock");
+      const platformWaitEl = document.getElementById("qz-p-wait");
+      mountCredentialWait(platformWaitEl, "platform", { button: platformUnlockBtn });
+      platformUnlockBtn.addEventListener("click", async () => {
+        if(platformUnlockBtn.disabled) return;
         const val = document.getElementById("qz-p-pass").value;
         const result = await verifyPlatformPasswordResult(val);
         if(result.ok){ platformUnlocked = true; platformPasswordCache = val; renderPlatformDashboard(); }
+        else if(result.error === "too_many_attempts" && startCredentialWait("platform", result)) mountCredentialWait(platformWaitEl, "platform", { button: platformUnlockBtn, reveal: true });
         else toast(pinFailureMessage(result, "❌ Contraseña incorrecta"));
       });
       enterSubmits("qz-p-pass", "qz-p-unlock");

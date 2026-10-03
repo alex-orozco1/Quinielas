@@ -49,7 +49,7 @@ Espera progresiva por credencial (`target`, una credencial desde cualquier red; 
 | 16 o más | 15 min (tope) |
 
 - Un dispositivo de confianza usa sólo su presupuesto `device`; no le afectan `ip`, `net` ni la espera
-  de la credencial (y un login explícito desde él la pone a cero).
+  de la credencial, y entrar desde él tampoco la cambia.
 - La reserva del intento ocurre antes de scrypt; con N peticiones en paralelo sólo se comparan las
   que caben.
 - Respuesta cuando hay que esperar: `429 {"error":"too_many_attempts","retryAfterSeconds":N}` y
@@ -146,11 +146,15 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   último fallo, con tope de 15 min. Aplica a dispositivos **no** de confianza.
 - **Los rechazos no prolongan:** una petición que llega mientras hay que esperar recibe el tiempo que
   falta y no cuenta como fallo ni mueve la espera.
-- **Vuelve a cero:** con un **login explícito** correcto (alguien escribe la credencial en el login,
-  Ajustes, el Panel de plataforma o al cambiar el PIN), con una versión nueva de la credencial (reset del
-  PIN, cambio de contraseña) o tras 24 h sin fallos. El PIN que el navegador reenvía en cada petición
-  no pone nada a cero: un acierto así sólo devuelve su propia reserva (si no, cada carga de página del
-  titular le regalaría al atacante 10 intentos libres; Technical QA lo reprodujo sobre `d1a05a9`).
+- **Vuelve a cero sólo** con una versión nueva de la credencial (reset del PIN, cambio de contraseña) o
+  tras 24 h sin fallos. **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes,
+  Panel de plataforma, cambio de PIN), del PIN que el navegador reenvía en cada petición o de un
+  dispositivo de confianza: un acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto
+  del atacante depende sólo de sus propios fallos, y los logins frecuentes del titular no le dan nada.
+  Historial: sobre `d1a05a9`, Technical QA reprodujo que cualquier acierto reiniciaba la espera.
+  `c3c586d` lo limitó a los logins explícitos, y aun así cada login devolvía 10 intentos libres
+  (~433/día con un login por hora). El dueño del producto pidió cerrarlo: desde este cambio ningún
+  acierto reinicia.
 - **Valores repetidos:** el mismo valor equivocado no se cuenta dos veces, pero espera como cualquier
   otro; preguntar durante la espera por un valor ya probado recibe el mismo 429 (sin oráculo de "¿esto
   ya se probó?").
@@ -162,8 +166,13 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   credencial empieza con contador nuevo una sola vez.
 - **Quién puede provocar esperas:** cualquiera con el link. No da acceso a nada; un atacante sostenido
   puede mantener la credencial en la espera de 15 min y adelantarse al titular en un dispositivo nuevo.
-  Como un login explícito pone el contador a cero, cada uno le devuelve al atacante sus 10 intentos
-  libres; con sesiones de 1 año esos logins son raros, y el ritmo sostenido sigue siendo ~96 por día.
+  El ritmo sostenido es ~96 por día por credencial, **con o sin actividad del titular**. Un test lo
+  comprueba: 7 días de ataque contra el PIN y la contraseña de administrador, con un titular que
+  recarga Ajustes cada 10 min y entra desde un dispositivo nuevo cada hora (más de 2000 logins), dan
+  exactamente los mismos intentos que sin titular.
+- **Costo para el titular:** tras entrar, sus fallos previos siguen contando hasta 24 h. Si en ese
+  tiempo se equivoca desde **otro** dispositivo nuevo, la espera sigue escalando desde donde estaba.
+  El dispositivo con el que entró queda de confianza y no espera.
 - **Recuperación:**
   - entrar desde un dispositivo de confianza o con la sesión abierta (dura 1 año);
   - esperar lo que indica la pantalla (máximo 15 min por intento);
@@ -174,9 +183,14 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
     al panel justo después del deploy desde el dispositivo habitual;
   - último recurso del operador (requiere autorización, toca datos de producción): vaciar las filas
     `scope = 'target'` de `credential_attempt_buckets` y reiniciar el servicio.
-- **En la pantalla:** el mensaje dice el tiempo real ("Intenta de nuevo en 2 min, o entra desde un
-  dispositivo donde ya hayas entrado"); tras 5 PINs incorrectos en el login sugiere "¿Olvidaste tu PIN?
-  Pide a quien organiza (o a otro admin) que lo resetee".
+- **En la pantalla:** el aviso de espera queda **fijo junto al formulario** (login por PIN, PIN actual al
+  cambiarlo, Ajustes, Panel de plataforma) con una cuenta atrás en vivo. Por ejemplo: "Demasiados
+  intentos. Intenta de nuevo en 1:45, o entra desde un dispositivo donde ya hayas entrado".
+  - Mientras dura, el botón de enviar queda desactivado.
+  - Al llegar a cero, el aviso cambia a "Ya puedes intentarlo de nuevo".
+  - El toast de 2,2 s ya no es el único aviso.
+  - Tras 5 PINs incorrectos en el login sugiere "¿Olvidaste tu PIN? Pide a quien organiza (o a otro
+    admin) que lo resetee".
 
 ### 5.1 Evaluación: bloqueo de 24 h frente a espera progresiva
 
@@ -225,7 +239,8 @@ estos son los cambios y lo que el dueño del producto tiene que decidir:
 3. Reglas a fijar antes de implementar:
    - un intento hecho durante la espera se rechaza **sin** contar como fallo y **sin** alargar la espera
      (como hoy los bloqueados);
-   - un acierto pone a cero el contador de **esa** credencial (no los de red);
+   - ~~un acierto pone a cero el contador de **esa** credencial~~. Sustituida: ningún acierto lo pone a
+     cero; ver §5, "Vuelve a cero sólo";
    - el olvido a las 24 h es por credencial y lo reinicia cualquier fallo nuevo;
    - el estado (`n`, último fallo) se persiste como hoy; al migrar, todas las credenciales empiezan con
      contador nuevo una sola vez.

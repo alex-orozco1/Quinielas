@@ -22,21 +22,24 @@
 //           a PROGRESSIVE WAIT, not a hard lockout (see PROGRESSIVE below).
 //           The first FREE failures cost nothing; after that each attempt has
 //           to wait base × 2^(failures − FREE) since the last failure, capped
-//           at cap. The count is forgotten after forget without failures, on
-//           a successful EXPLICIT login (resetOnSuccess: a person typed the
-//           credential into verify-pin / verify-owner / verify-platform /
-//           set-pin), and when the credential changes (new version). Any
-//           other success (the PIN a browser resends in X-Qracks-Auth on
-//           every request) only gives back its own reservation: otherwise an
-//           active owner would hand an attacker a fresh 10 free guesses on
-//           every page load.
-//           With the defaults a sustained attacker gets about 96 guesses a day
-//           (one per 15 minutes); a person never waits more than 15 minutes
-//           for their next try.
+//           at cap. The count is forgotten only after forget without
+//           failures, or when the credential changes (new version: a PIN
+//           reset, a new password).
+//           A SUCCESS NEVER RESETS IT, however the credential was sent (a
+//           login form, a PIN the browser resends on every request, the
+//           admin password typed again to open Ajustes). A success only gives
+//           back the reservation it made itself. Otherwise the owner's own
+//           activity would hand an attacker a fresh FREE guesses on every
+//           login. So what an attacker gets depends only on the attacker's
+//           own failures: with the defaults about 96 guesses a day (one per
+//           15 minutes), however often the owner logs in. A person never
+//           waits more than 15 minutes for their next try, and not at all on
+//           a device they already used (see device).
 //   device  a browser that has already proven this exact credential (signed
 //           trusted-device cookie). It skips the ip, net and target budgets
 //           and has its own windows, so an attack on a credential cannot lock
-//           its owner out of the devices they already use.
+//           its owner out of the devices they already use. It neither waits
+//           on nor changes the credential's progressive state.
 //
 // Rejected requests change nothing: a request that arrives while it has to
 // wait is answered with the time left and neither counts as a failure nor
@@ -44,7 +47,7 @@
 // match, counts.
 //
 // How it avoids locking out real people:
-//   - Only failures count; an explicit login resets the credential's state.
+//   - Only failures count. Devices that already logged in are exempt.
 //   - The SAME wrong value counts once: a tab that keeps a stale PIN in memory
 //     resends it on every request; that is one failure, not hundreds. It is
 //     still subject to the wait (otherwise "was this value tried before?"
@@ -106,6 +109,10 @@ function createCredentialAttemptLimiter(options = {}) {
   // cookie id), so they are capped; target states only exist for credentials
   // that exist (server.js never reserves against a missing one).
   const maxOpenBuckets = options.maxOpenBuckets || 50000;
+  // A credential under a sustained attack is never reset, so the values it
+  // remembers are capped; forgetting an old one only means that value counts
+  // again if it is ever retried (stricter, never looser).
+  const maxSeenPerTarget = options.maxSeenPerTarget || 4096;
   const fingerprintKey = options.fingerprintKey || crypto.randomBytes(32);
   // Ids are keyed hashes, so what gets persisted (see onChange/load) names no
   // IP address, quiniela or participant. The key must be the same across
@@ -173,9 +180,9 @@ function createCredentialAttemptLimiter(options = {}) {
   // Reserve one attempt of `value` against `target`. Returns
   //   { blocked: true, retryAfterMs }     when it has to wait (nothing changes), or
   //   { blocked: false, settle(matched) } otherwise.
-  // settle(true) undoes the window reservations and resets the credential's
-  // progressive state; settle(false) keeps the failure. settle is idempotent.
-  function begin({ ip, quiniela, target, version, value, trustedDeviceId, resetOnSuccess }) {
+  // settle(true) undoes this request's own reservations and nothing else;
+  // settle(false) keeps the failure. settle is idempotent.
+  function begin({ ip, quiniela, target, version, value, trustedDeviceId }) {
     const now = clock();
     const q = quiniela || "_root";
     const tKey = String(target);
@@ -202,11 +209,10 @@ function createCredentialAttemptLimiter(options = {}) {
       if (!bucket.seen.has(fp)) touched.push({ bucket, generation: bucket.generation });
     }
 
-    // A trusted device does not wait on the credential's state, but a success
-    // from it still resets that state.
-    const t = targetFor(targetScope, v, now, !trustedDeviceId);
+    // A trusted device neither waits on the credential's state nor changes it.
+    const t = trustedDeviceId ? null : targetFor(targetScope, v, now, true);
     let countsOnTarget = false;
-    if (!trustedDeviceId) {
+    if (t) {
       const allowedAt = t.lastFailAt + progressiveWaitMs(t.failures, cfg);
       if (t.failures >= cfg.free && now < allowedAt) {
         blocked = true;
@@ -229,6 +235,7 @@ function createCredentialAttemptLimiter(options = {}) {
       t.failures++;
       t.lastFailAt = now;
       t.seen.add(fp);
+      if (t.seen.size > maxSeenPerTarget) t.seen.delete(t.seen.values().next().value);
       changed(targetSnapshot(t));
     }
     const targetGeneration = t ? t.generation : null;
@@ -247,16 +254,11 @@ function createCredentialAttemptLimiter(options = {}) {
             changed(windowSnapshot(x.bucket));
           }
         }
-        if (!t || t.generation !== targetGeneration || t.version !== v) return;
-        if (resetOnSuccess) {
-          // A person typed the right credential: it starts over.
-          if (t.failures > 0) {
-            t.failures = 0; t.seen = new Set(); t.generation++; t.lastFailAt = clock();
-            changed(targetSnapshot(t));
-          }
-        } else if (undo && t.seen.delete(fp)) {
-          // Any other success only gives back its own reservation; the last
-          // failure time is restored only if nothing was recorded after it.
+        // A success gives back its own reservation and nothing more: the
+        // failures before it stay, whoever logged in and however. The last
+        // failure time is restored only if nothing was recorded after it.
+        if (!undo || !t || t.generation !== targetGeneration || t.version !== v) return;
+        if (t.seen.delete(fp)) {
           if (t.failures === undo.failuresAfter) t.lastFailAt = undo.lastFailBefore;
           t.failures = Math.max(0, t.failures - 1);
           changed(targetSnapshot(t));
