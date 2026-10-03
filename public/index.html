@@ -4059,6 +4059,9 @@
       if(newPin === null) return;
       const cleanPin = newPin.trim();
       if(!/^\d{4}$/.test(cleanPin)){ toast("El PIN debe ser exactamente 4 números"); return; }
+      // The same PIN changes nothing (the server keeps its hash, and with it
+      // the sessions on other devices): say so instead of "actualizado".
+      if(cleanPin === (verifiedCurrentPin || currentUserPinCache)){ toast("Ese ya es tu PIN. Elige uno distinto para cambiarlo."); return; }
       const ok = await apiSetPin(currentUser.id, verifiedCurrentPin || currentUserPinCache, cleanPin);
       if(!ok){ toast("No se pudo cambiar el PIN, intenta de nuevo"); return; }
       currentUser.hasPin = true;

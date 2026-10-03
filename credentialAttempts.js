@@ -124,12 +124,14 @@ function createCredentialAttemptLimiter(options = {}) {
   const buckets = { ip: new Map(), net: new Map(), device: new Map() };
   const targets = new Map();
 
-  // 128 bits: plenty to tell values apart, half the memory of a full digest
+  // 128 bits: plenty to tell values apart, and less memory than a full digest
   // (a credential under a long attack keeps up to maxSeenPerTarget of them).
+  // Encoded from the first 16 bytes directly: slicing a 64-char hex string
+  // would keep the whole parent string alive in V8 and cost MORE memory.
   function fingerprint(quiniela, target, value) {
     return crypto.createHmac("sha256", fingerprintKey)
       .update(String(quiniela) + "\0" + String(target) + "\0" + String(value))
-      .digest("hex").slice(0, 32);
+      .digest().toString("hex", 0, 16);
   }
   function hashId(label, scopeValue) {
     return crypto.createHmac("sha256", idKey())

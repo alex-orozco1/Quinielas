@@ -904,3 +904,19 @@ test("FRONTEND: closing a PIN modal during a wait leaves the countdown where it 
   assert.ok(indexSrc.includes("if(left > 0) toast(tooManyAttemptsMessage(left));"), "the user menu has no form: one message");
   assert.ok(indexSrc.includes("#qz-login-wait{ margin-bottom:14px; }"));
 });
+
+// ---- Technical QA on 351019f (P3s) ----------------------------------------------
+
+test("fingerprints are encoded from 16 bytes, not sliced from a 64-char string (V8 would keep the parent alive)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "credentialAttempts.js"), "utf8");
+  const fn = extractFunction(src, "function fingerprint(quiniela, target, value)");
+  assert.ok(fn.includes('.digest().toString("hex", 0, 16);'));
+  assert.ok(!/\.slice\(/.test(fn), "one per value tried, up to maxSeenPerTarget per credential");
+});
+
+test("FRONTEND: 'Cambiar mi PIN' to the PIN you already have says so instead of 'actualizado'", () => {
+  const start = indexSrc.indexOf('document.getElementById("qz-change-pin").addEventListener("click"');
+  const block = indexSrc.slice(start, start + 2600);
+  const same = block.indexOf('if(cleanPin === (verifiedCurrentPin || currentUserPinCache)){ toast("Ese ya es tu PIN. Elige uno distinto para cambiarlo."); return; }');
+  assert.ok(same !== -1 && same < block.indexOf("await apiSetPin("), "checked before calling the server");
+});
