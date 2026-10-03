@@ -87,7 +87,7 @@ test("SERVER: set-pin runs decideFirstPin under the lock and refuses with 403", 
   const body = routeBody('app.post("/api/set-pin"');
   const lockIdx = body.indexOf("getRowLocked(metaKey, client)");
   const decideIdx = body.indexOf("adminPinClaim.decideFirstPin(");
-  const writeIdx = body.indexOf("participant.pin = hashPassword(newPin);");
+  const writeIdx = body.indexOf("participant.pin = hashUnlessUnchanged(newPin, participant.pin);");
   assert.ok(lockIdx !== -1 && lockIdx < decideIdx && decideIdx < writeIdx, "decide on the locked row, before writing");
   assert.ok(body.includes("res.status(403).json({ error: firstPin.error })"));
   assert.ok(body.includes("hasValidAdminSetupClaim(req, claimSlug, participant.id)"));

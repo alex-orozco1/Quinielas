@@ -146,8 +146,11 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   último fallo, con tope de 15 min. Aplica a dispositivos **no** de confianza.
 - **Los rechazos no prolongan:** una petición que llega mientras hay que esperar recibe el tiempo que
   falta y no cuenta como fallo ni mueve la espera.
-- **Vuelve a cero sólo** con una versión nueva de la credencial (reset del PIN, cambio de contraseña) o
-  tras 24 h sin fallos. **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes,
+- **Vuelve a cero sólo** con una versión nueva de la credencial (reset del PIN, cambio de contraseña **a
+  un valor distinto**) o tras 24 h sin fallos. Guardar el mismo PIN o la misma contraseña conserva el hash
+  y, con él, el estado. Esto aplica en set-pin, en la contraseña de administrador desde Ajustes, en la del
+  panel y en la de una quiniela desde el panel. No se aplica al PIN de otra persona escrito por un admin
+  vía meta: ahí "igual o distinto" se notaría en el `rev` y sería un intento gratis. **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes,
   Panel de plataforma, cambio de PIN), del PIN que el navegador reenvía en cada petición o de un
   dispositivo de confianza: un acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto
   del atacante depende sólo de sus propios fallos, y los logins frecuentes del titular no le dan nada.

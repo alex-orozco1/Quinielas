@@ -71,6 +71,17 @@ function hashPassword(plain) {
 function isHashed(value) {
   return typeof value === "string" && value.startsWith("scrypt$");
 }
+// A credential set to the value it already has keeps its stored hash. A new
+// hash is a new credential version, and a new version starts the failed-
+// attempt state from zero (credentialAttempts.js): re-typing the same PIN or
+// password as the "new" one would hand an attacker a fresh set of free
+// guesses. Only for callers that already proved the current credential (or
+// hold platform rights): telling "same" from "different" is no oracle for
+// them.
+function hashUnlessUnchanged(plain, stored) {
+  if (isHashed(stored) && verifyPassword(String(plain), stored)) return stored;
+  return hashPassword(plain);
+}
 function verifyPassword(plain, stored) {
   if (plain == null || plain === "" || !stored) return false;
   if (!isHashed(stored)) {
@@ -1131,7 +1142,9 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
         : hashPassword(oldSettings.ownerPassword);
     }
   } else if (!isHashed(incomingPw)) {
-    merged.settings.ownerPassword = hashPassword(incomingPw);
+    // canChangeOwnerFields: the writer proved the admin password (or is the
+    // platform, or there is none yet), so keeping an unchanged hash is safe.
+    merged.settings.ownerPassword = hashUnlessUnchanged(incomingPw, oldSettings && oldSettings.ownerPassword);
   }
 
   // MON-002B: the participant LIST no longer comes from the request as-is.
@@ -1220,7 +1233,7 @@ function mergeProtectedPlatformFields(oldValue, newValue) {
         : hashPassword(oldValue.dashboardPassword);
     }
   } else if (!isHashed(incomingPw)) {
-    merged.dashboardPassword = hashPassword(incomingPw);
+    merged.dashboardPassword = hashUnlessUnchanged(incomingPw, oldValue && oldValue.dashboardPassword);
   }
   return merged;
 }
@@ -2228,7 +2241,9 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
       // an Admin tab loaded before the reset would still look fresh, and its
       // next ordinary save would write the OLD pin straight back over it.
       const beforePinChange = JSON.parse(JSON.stringify(value));
-      participant.pin = hashPassword(newPin);
+      // The same PIN again keeps its hash (and so its failed-attempt state).
+      // The caller proved the current PIN above, so this tells them nothing.
+      participant.pin = hashUnlessUnchanged(newPin, participant.pin);
       const storedAfterPin = stampMetaWrite(value, beforePinChange);
       await putRow(metaKey, storedAfterPin, client);
       await client.query("COMMIT");
@@ -5328,7 +5343,7 @@ app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
     const result = applyQuinielaSettings({
       index: idx, meta, slug: req.params.slug,
       name: wantsName ? body.name.trim().slice(0, 120) : null,
-      hashedOwnerPassword: wantsPassword ? hashPassword(body.ownerPassword.trim()) : null,
+      hashedOwnerPassword: wantsPassword ? hashUnlessUnchanged(body.ownerPassword.trim(), meta.settings && meta.settings.ownerPassword) : null,
     });
     if (!result.ok) {
       await client.query("ROLLBACK");
