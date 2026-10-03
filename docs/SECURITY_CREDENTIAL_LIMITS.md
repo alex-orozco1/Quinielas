@@ -1,8 +1,7 @@
 # Límites de intentos fallidos de credenciales
 
-Estado: implementado en la rama `security/credential-bruteforce-limits`. El bloqueo por credencial
-(§5) es una **propuesta provisional pendiente de decisión del dueño del producto**; no es un riesgo
-aceptado.
+Estado: implementado en la rama `security/credential-bruteforce-limits`. Por credencial se aplica una
+**espera progresiva** (§5), elegida por el dueño del producto el 2026-10-03 en lugar del bloqueo duro.
 
 ## 1. Qué se protege
 
@@ -28,27 +27,37 @@ adivinanza real.
 
 ## 2. Presupuestos
 
-Sólo cuentan los **fallos**, y el mismo valor equivocado cuenta una sola vez por ventana (una pestaña
-con un PIN viejo no bloquea a nadie).
+Sólo cuentan los **fallos**, y el mismo valor equivocado cuenta una sola vez (una pestaña con un PIN
+viejo no bloquea a nadie).
+
+Ventanas fijas (cupo por ventana):
 
 | Alcance | Qué agrupa | 15 min | 24 h |
 |---|---|---|---|
 | `ip` | una red contra una quiniela | 20 | 100 |
 | `net` | una red contra todas las quinielas | 60 | 300 |
-| `target` | una credencial (una versión), desde cualquier red | 30 | 150 |
 | `device` | un navegador que ya probó esa credencial (cookie `qracks_trust_<slug>`) | 10 | 50 |
 
-- Un dispositivo de confianza usa sólo su presupuesto `device`; no le afectan `ip`, `net` ni `target`.
-- Cada versión de una credencial (cada PIN o contraseña tal como está guardado) tiene su propio
-  presupuesto `target`: resetear un PIN o cambiar una contraseña la recupera.
+Espera progresiva por credencial (`target`, una credencial desde cualquier red; ver §5):
+
+| Fallos registrados | Espera desde el último fallo |
+|---|---|
+| 0–9 | ninguna |
+| 10 | 15 s |
+| 11 | 30 s |
+| 12 / 13 / 14 / 15 | 1 / 2 / 4 / 8 min |
+| 16 o más | 15 min (tope) |
+
+- Un dispositivo de confianza usa sólo su presupuesto `device`; no le afectan `ip`, `net` ni la espera
+  de la credencial, y entrar desde él tampoco la cambia.
 - La reserva del intento ocurre antes de scrypt; con N peticiones en paralelo sólo se comparan las
   que caben.
-- Respuesta al agotarse: `429 {"error":"too_many_attempts"}` con `Retry-After`. Las lecturas (`GET`)
-  no responden 429: tratan la credencial como no enviada (vista pública).
+- Respuesta cuando hay que esperar: `429 {"error":"too_many_attempts","retryAfterSeconds":N}` y
+  `Retry-After: N`, con el tiempo que realmente falta. La pantalla dice "Intenta de nuevo en N s/min".
+  Las lecturas (`GET`) no responden 429: tratan la credencial como no enviada (vista pública).
 
-Ritmo máximo para un atacante contra **un** PIN de 4 dígitos: 150 valores por día y por versión →
-recorrer los 10 000 valores toma más de 66 días (la mitad, en promedio, ~33 días), sin importar
-cuántas IPs use.
+Ritmo máximo para un atacante contra **un** PIN de 4 dígitos, con IPs ilimitadas: ~96 valores por día
+(uno cada 15 min, más los 10 libres tras cada olvido de 24 h) → la mitad del espacio en ~52 días.
 
 ## 3. De qué IP viene una petición (Render)
 
@@ -81,9 +90,22 @@ CF-Connecting-IP: <cliente>     (lo fija Cloudflare desde la conexión TCP)
 ```
 GET /api/platform/client-ip-check                       → ip = tu IP pública, via = "cf-connecting-ip"
 GET /api/platform/client-ip-check
-    con X-Forwarded-For: 1.2.3.4, CF-Connecting-IP: 5.6.7.8, True-Client-IP: 9.9.9.9
+    con X-Forwarded-For: 1.2.3.4, True-Client-IP: 9.9.9.9, X-Real-IP: 8.8.8.8
                                                         → misma ip que arriba
 ```
+
+No incluir `CF-Connecting-IP` en esa prueba: Cloudflare rechaza en el borde una petición que lo trae
+escrito por el cliente (`403 "DNS points to prohibited IP"`), así que nunca llega a la app.
+
+**Verificado en el sandbox real** (2026-10-03, 3 IPs reales de GitHub Actions, commit `3ee2187` = PR #28):
+falsificar `X-Forwarded-For`, `True-Client-IP`, `X-Real-IP` y `Forwarded` en cada intento no cambió el
+cubo (20 `ok:false` y luego 429, también para el PIN correcto de otra persona desde esa red); otras dos
+IPs entraron normalmente con su PIN y con el del admin atacado; `CF-Connecting-IP` falso fue rechazado
+por Cloudflare. No verificado: el dominio `qracks.net`, IPv6 real y el valor de `via` del diagnóstico.
+
+**Redes compartidas** (wifi común, CGNAT): quien comparte red con otros puede, con 20 PINs equivocados,
+dejar en 429 durante 15 min el login por PIN de todos los de esa red en esa quiniela (24 h con 100). No
+afecta otras quinielas, sesiones abiertas ni dispositivos de confianza.
 
 La respuesta incluye también `expressReqIp` (lo que `req.ip` habría usado) y la cadena de
 `X-Forwarded-For` vista desde la derecha, para confirmar la forma documentada.
@@ -115,36 +137,126 @@ La respuesta incluye también `expressReqIp` (lo que `req.ip` habría usado) y l
 - **Base de datos caída:** el límite en memoria sigue aplicando; sólo se degrada la supervivencia a
   reinicios (se registra `credential_attempts_persist_failed` y se reintenta).
 
-## 5. Bloqueo por credencial — PROPUESTA PROVISIONAL (pendiente de decisión)
+## 5. Espera progresiva por credencial (implementada)
 
-Comportamiento implementado hoy, a confirmar o cambiar por el dueño del producto:
+Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 h, tras la evaluación de
+§5.1.
 
-- **Qué se bloquea:** sólo el login con esa credencial desde dispositivos **no** de confianza.
-  Sesiones abiertas y dispositivos donde ya se entró siguen funcionando. Las demás credenciales de la
-  quiniela no se ven afectadas.
-- **Duración:** hasta que termina la ventana: como máximo 15 min (30 fallos) o, si se alcanzan 150
-  fallos en el día, hasta 24 h desde el primer fallo de esa ventana. `Retry-After` lo indica.
-- **Quién puede provocarlo:** cualquiera con el link y unas pocas IPs (≈2 para la ventana de 15 min).
-  No da acceso a nada. Un atacante sostenido puede repetirlo.
+- **Regla:** 10 fallos libres; después, cada intento tiene que esperar 15 s × 2^(fallos − 10) desde el
+  último fallo, con tope de 15 min. Aplica a dispositivos **no** de confianza.
+- **Los rechazos no prolongan:** una petición que llega mientras hay que esperar recibe el tiempo que
+  falta y no cuenta como fallo ni mueve la espera.
+- **Vuelve a cero sólo** con una versión nueva de la credencial (reset del PIN, cambio de contraseña) o
+  tras 24 h sin fallos. **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes,
+  Panel de plataforma, cambio de PIN), del PIN que el navegador reenvía en cada petición o de un
+  dispositivo de confianza: un acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto
+  del atacante depende sólo de sus propios fallos, y los logins frecuentes del titular no le dan nada.
+  Historial: sobre `d1a05a9`, Technical QA reprodujo que cualquier acierto reiniciaba la espera.
+  `c3c586d` lo limitó a los logins explícitos, y aun así cada login devolvía 10 intentos libres
+  (~433/día con un login por hora). El dueño del producto pidió cerrarlo: desde este cambio ningún
+  acierto reinicia.
+- **Valores repetidos:** el mismo valor equivocado no se cuenta dos veces, pero espera como cualquier
+  otro; preguntar durante la espera por un valor ya probado recibe el mismo 429 (sin oráculo de "¿esto
+  ya se probó?").
+- **No cambia:** los límites por red (`ip`, `net`), los dispositivos de confianza y la ligadura de
+  identidad. En ráfagas rápidas desde una sola red manda el límite por red (20/15 min).
+- **Persistencia:** el estado (fallos, último fallo, versión) se guarda en `credential_attempt_buckets`
+  con la regla `target-progressive` y se recarga al arrancar: un reinicio no acorta la espera. Las
+  filas del bloqueo duro anterior (`target-15m`, `target-24h`) se ignoran: al desplegar, cada
+  credencial empieza con contador nuevo una sola vez.
+- **Quién puede provocar esperas:** cualquiera con el link. No da acceso a nada; un atacante sostenido
+  puede mantener la credencial en la espera de 15 min y adelantarse al titular en un dispositivo nuevo.
+  El ritmo sostenido es ~96 por día por credencial, **con o sin actividad del titular**. Un test lo
+  comprueba: 7 días de ataque contra el PIN y la contraseña de administrador, con un titular que
+  recarga Ajustes cada 10 min y entra desde un dispositivo nuevo cada hora (más de 2000 logins), dan
+  exactamente los mismos intentos que sin titular.
+- **Costo para el titular:** tras entrar, sus fallos previos siguen contando hasta 24 h. Si en ese
+  tiempo se equivoca desde **otro** dispositivo nuevo, la espera sigue escalando desde donde estaba.
+  El dispositivo con el que entró queda de confianza y no espera.
 - **Recuperación:**
-  - entrar desde un dispositivo de confianza o con la sesión abierta;
-  - PIN de participante: un admin lo resetea y la persona pone uno nuevo (presupuesto nuevo);
+  - entrar desde un dispositivo de confianza o con la sesión abierta (dura 1 año);
+  - esperar lo que indica la pantalla (máximo 15 min por intento);
+  - PIN de participante: un admin lo resetea y la persona pone uno nuevo (contador nuevo);
   - contraseña de administrador: el owner la cambia desde un dispositivo de confianza;
-  - contraseña de plataforma: cambiarla desde un dispositivo de confianza del panel; si sigue siendo
-    la de `PLATFORM_PASSWORD` (no se fijó una desde el panel), rotar esa variable y reiniciar.
-    Recomendación operativa: entrar al panel justo después del deploy desde el dispositivo habitual
-    para que quede como dispositivo de confianza;
+  - contraseña de plataforma: cambiarla desde un dispositivo de confianza del panel, o rotar
+    `PLATFORM_PASSWORD` y reiniciar si no se fijó una desde el panel. Recomendación operativa: entrar
+    al panel justo después del deploy desde el dispositivo habitual;
   - último recurso del operador (requiere autorización, toca datos de producción): vaciar las filas
-    `scope = 'target'` de `credential_attempt_buckets` y reiniciar el servicio;
-  - en todos los casos, esperar el fin de la ventana.
-- **Alternativa: retraso progresivo** (no implementada). En vez de un corte duro, tras K fallos cada
-  intento exige esperar un tiempo creciente (p. ej. 2^n s, tope 15 min) indicado en `Retry-After`.
-  - A favor: un usuario legítimo nunca queda fuera más que el retraso vigente; no hay un estado
-    "bloqueado 24 h".
-  - En contra: un atacante sostenido obtiene un flujo continuo de intentos (≈96 por día con tope de
-    15 min, frente a 150 hoy por versión); hay que guardar el estado por credencial igual que hoy.
-  - Combinación posible: retraso progresivo para dispositivos nuevos + exención de dispositivos de
-    confianza (como hoy).
+    `scope = 'target'` de `credential_attempt_buckets` y reiniciar el servicio.
+- **En la pantalla:** el aviso de espera queda **fijo junto al formulario** (login por PIN, PIN actual al
+  cambiarlo, Ajustes, Panel de plataforma) con una cuenta atrás en vivo. Por ejemplo: "Demasiados
+  intentos. Intenta de nuevo en 1:45, o entra desde un dispositivo donde ya hayas entrado".
+  - Mientras dura, el botón de enviar queda desactivado.
+  - Al llegar a cero, el aviso cambia a "Ya puedes intentarlo de nuevo".
+  - El toast de 2,2 s ya no es el único aviso.
+  - Tras 5 PINs incorrectos en el login sugiere "¿Olvidaste tu PIN? Pide a quien organiza (o a otro
+    admin) que lo resetee".
+
+### 5.1 Evaluación: bloqueo de 24 h frente a espera progresiva
+
+Simulación por credencial, dispositivos no confiables (script `lockout-sim.js` en la evidencia del PR). Las filas
+del admin incluyen los límites por red (20/15 min y 100/24 h) que también le aplican desde un solo teléfono. El
+modelo usa ventanas rodantes; las ventanas fijas reales permiten ráfagas en el borde de la ventana (hasta ~299
+intentos en 4 h alrededor del corte de 24 h) sin cambiar el promedio diario.
+"Progresiva" = 10 fallos libres, luego espera de 15 s × 2^n entre intentos, con tope de 15 min; el
+contador se olvida tras 24 h sin fallos. Ambas conservan los límites por red y la exención de
+dispositivos de confianza.
+
+| | Bloqueo duro (implementado) | Espera progresiva (propuesta) |
+|---|---|---|
+| Atacante sostenido, IPs ilimitadas | 150 adivinanzas/día | **96/día** |
+| 50 % de probabilidad de dar con un PIN de 4 dígitos | ~33 días | **~52 días** |
+| Admin sin atacante, desde una red, 8 intentos fallidos y luego el correcto | 0 de espera | 0 |
+| Admin sin atacante, desde una red, 20 fallidos | ~12 min (límite por red 20/15 min) | ~1 h 30 min acumulada (ninguna espera > 15 min) |
+| Admin sin atacante, desde una red, 35 fallidos | ~12 min | ~5 h acumuladas |
+| Admin sin atacante, desde una red, 160 fallidos | ~24 h (límite por red 100/24 h) | ~38 h acumuladas |
+| Admin en dispositivo nuevo durante un ataque: `Retry-After` al llegar | mediana ~10–12 h (varía por muestreo), peor ~23 h | **mediana ~7–8 min, peor 15 min** |
+| ¿Un atacante óptimo puede seguir negándole la entrada en dispositivo nuevo? | Sí | Sí |
+| Salidas que no dependen del limitador | dispositivo de confianza, sesión abierta, reset del PIN / cambio de contraseña (versión nueva) | igual |
+
+Lectura:
+
+- **Seguridad:** la espera progresiva es más estricta en régimen (96 contra 150 adivinanzas por día):
+  el tope de 15 min por intento limita más que el cupo diario.
+- **Acceso del admin:** la progresiva nunca anuncia horas de bloqueo; con un atacante activo, el
+  admin ve "intenta en X min" en lugar de "mañana". Pierde frente al bloqueo duro cuando alguien
+  legítimo encadena más de 10 errores (con 20, ~1 h 30 min acumulada frente a ~12 min), caso en que la
+  salida correcta es resetear, no seguir probando.
+- **Lo que ninguna de las dos resuelve:** un atacante sostenido y óptimo puede tomar cada apertura
+  antes que el admin en un dispositivo nuevo. La protección real del acceso del admin es la misma en
+  ambos: sus dispositivos de confianza, la sesión abierta, y resetear la credencial.
+
+**Recomendación: espera progresiva** (10 libres, 15 s × 2^n, tope 15 min, olvido a las 24 h), manteniendo
+los límites por red y la exención de dispositivos de confianza. Product QA está de acuerdo con cambios;
+estos son los cambios y lo que el dueño del producto tiene que decidir:
+
+1. **Mensaje con el tiempo real.** Hoy el cliente no lee `Retry-After` y dice "Espera un rato…", que con la
+   progresiva puede ser 15 s o 15 min. Debe decir "Intenta de nuevo en N min" (login, Ajustes,
+   reautenticación y primer PIN de admin).
+2. **"¿Olvidaste tu PIN?" tras 5 fallos**, ofreciendo sólo salidas que existen hoy: "Pide a otro admin
+   que lo resetee". **No** "usa la contraseña de administrador": hoy esa contraseña sólo se pide dentro
+   de Ajustes, con sesión abierta (ver pendiente abajo).
+3. Reglas a fijar antes de implementar:
+   - un intento hecho durante la espera se rechaza **sin** contar como fallo y **sin** alargar la espera
+     (como hoy los bloqueados);
+   - ~~un acierto pone a cero el contador de **esa** credencial~~. Sustituida: ningún acierto lo pone a
+     cero; ver §5, "Vuelve a cero sólo";
+   - el olvido a las 24 h es por credencial y lo reinicia cualquier fallo nuevo;
+   - el estado (`n`, último fallo) se persiste como hoy; al migrar, todas las credenciales empiezan con
+     contador nuevo una sola vez.
+4. Contexto para decidir: la sesión dura 1 año, así que el bloqueo sólo afecta a quien entra desde un
+   teléfono nuevo o borró cookies; en ráfagas rápidas desde una red manda el límite por red
+   (20/15 min) en ambas opciones.
+
+**Decisión:** implementada en este PR (2026-10-03) con las reglas del punto 3 y los cambios de pantalla de
+los puntos 1 y 2.
+
+**Siguiente tarea (registrada, fuera de este PR; P2 verificado por Product QA):** un admin único
+que olvidó su PIN y no tiene sesión ni dispositivo de confianza **no tiene recuperación de autoservicio**:
+el login sólo acepta 4 dígitos, la contraseña de administrador sólo se pide en Ajustes (con sesión) y el
+Panel de plataforma no ofrece resetear PINs. Hoy sólo lo rescata otro admin (Participantes → Resetear) o
+una intervención manual. Opciones: reset del propio PIN con la contraseña de administrador desde el login,
+o un botón "resetear PIN" en el Panel de plataforma. Un admin secundario sí se recupera (verificado).
 
 ## 6. Fuera de alcance de esta entrega
 

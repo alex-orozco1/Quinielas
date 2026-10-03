@@ -158,7 +158,7 @@ test("CASE G/H: deleteRoundWithRollback snapshots the full rounds array, uses se
   assert.ok(body.includes("await setMetaWithError(meta);"));
   assert.ok(body.includes("if(result.ok){"));
   assert.ok(body.includes("meta.rounds = snapshot;"), "failure path must restore the exact prior rounds array, same objects, same order");
-  assert.ok(!body.includes("toast(") || body.includes("toast(humanizeError(result.error));"), "no success toast is shown here (existing pattern relies on the re-render itself), but failures must surface a real error message");
+  assert.ok(!body.includes("toast(") || body.includes("toast(humanizeError(result.error, result));"), "no success toast is shown here (existing pattern relies on the re-render itself), but failures must surface a real error message");
 });
 
 test("CASE I: deleteRoundWithRollback disables the trigger button while the delete is in flight, re-enables it only on failure", () => {

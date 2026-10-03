@@ -9,7 +9,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { createCredentialAttemptLimiter, DEFAULT_RULES } = require("../credentialAttempts");
+const { createCredentialAttemptLimiter, DEFAULT_RULES, PROGRESSIVE, progressiveWaitMs } = require("../credentialAttempts");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
@@ -27,16 +27,21 @@ const fail = (limiter, ip, q, value, target = "p_admin", trustedDeviceId) => {
   return a;
 };
 
-test("defaults: per IP, per credential (target) and per trusted device, short and long windows", () => {
+test("defaults: hard windows per network and per trusted device; a progressive wait per credential", () => {
   const byName = Object.fromEntries(DEFAULT_RULES.map((r) => [r.name, r]));
   assert.deepEqual(byName["ip-15m"], { name: "ip-15m", scope: "ip", windowMs: 15 * MIN, max: 20 });
   assert.equal(byName["ip-24h"].max, 100);
   assert.equal(byName["net-15m"].max, 60);
   assert.equal(byName["net-24h"].max, 300);
-  assert.equal(byName["target-15m"].max, 30);
-  assert.equal(byName["target-24h"].max, 150);
   assert.equal(byName["device-15m"].max, 10);
   assert.equal(byName["device-24h"].max, 50);
+  assert.ok(!DEFAULT_RULES.some((r) => r.scope === "target"), "no hard lockout per credential any more");
+  assert.deepEqual(PROGRESSIVE, { rule: "target-progressive", free: 10, baseMs: 15000, capMs: 15 * MIN, forgetMs: 24 * 60 * MIN });
+});
+
+test("progressive wait: 10 free, then 15 s × 2^n since the last failure, never more than 15 min", () => {
+  const waits = [9, 10, 11, 12, 13, 14, 15, 16, 30].map((n) => progressiveWaitMs(n) / 1000);
+  assert.deepEqual(waits, [0, 15, 30, 60, 120, 240, 480, 900, 900]);
 });
 
 test("the 21st distinct wrong value from one IP within 15 min is blocked, with a Retry-After", () => {
@@ -47,7 +52,33 @@ test("the 21st distinct wrong value from one IP within 15 min is blocked, with a
   assert.ok(eleventh.retryAfterMs > 0 && eleventh.retryAfterMs <= 15 * MIN);
 });
 
-test("the reproduced attack — a 4-digit search from one IP — stops after the budget", () => {
+test("against one credential: 10 free failures, then the 11th has to wait 15 s, with the exact time left", () => {
+  const { limiter, advance } = limiterAt(0);
+  for (let i = 0; i < 10; i++) { assert.equal(fail(limiter, "10.0.0." + i, "q", "g" + i).blocked, false); advance(1000); }
+  // last failure at t=9s; the 11th is allowed at 9 s + 15 s = 24 s
+  const now11 = limiter.begin({ ip: "10.0.1.1", quiniela: "q", target: "p_admin", value: "g10" });
+  assert.equal(now11.blocked, true);
+  assert.equal(now11.retryAfterMs, 14000, "10 s now, allowed at 24 s");
+});
+
+test("asking while you have to wait changes nothing: the wait is not extended and nothing is counted", () => {
+  const { limiter, advance } = limiterAt(0);
+  for (let i = 0; i < 10; i++) fail(limiter, "10.0.0." + i, "q", "g" + i);
+  for (let s = 0; s < 14; s++) {
+    const r = limiter.begin({ ip: "10.0.2." + s, quiniela: "q", target: "p_admin", value: "spam" + s });
+    assert.equal(r.blocked, true);
+    assert.equal(r.retryAfterMs, (15 - s) * 1000, "the countdown keeps going down");
+    advance(1000);
+  }
+  advance(1000); // 15 s after the last real failure
+  const allowed = limiter.begin({ ip: "10.0.3.1", quiniela: "q", target: "p_admin", value: "next" });
+  assert.equal(allowed.blocked, false, "allowed exactly when it said, despite 14 rejected requests");
+  allowed.settle(false);
+  // 11 failures on record now: the next wait is 30 s, not more.
+  assert.equal(limiter.begin({ ip: "10.0.3.2", quiniela: "q", target: "p_admin", value: "n2" }).retryAfterMs, 30000);
+});
+
+test("the reproduced attack — a 4-digit search from one IP — is slowed to a crawl", () => {
   const { limiter } = limiterAt(0);
   let answered = 0;
   for (let pin = 0; pin < 10000; pin++) {
@@ -56,33 +87,35 @@ test("the reproduced attack — a 4-digit search from one IP — stops after the
     answered++;
     a.settle(false);
   }
-  assert.equal(answered, 20, "only 20 guesses per 15 minutes are ever compared");
+  assert.equal(answered, 10, "an instant burst gets only the 10 free attempts");
 });
 
-test("a search spread across many IPs is stopped by the credential's own budget", () => {
+test("a burst spread across many IPs gets the same 10 free attempts", () => {
   const { limiter } = limiterAt(0);
   let answered = 0;
   for (let pin = 0; pin < 10000; pin++) {
-    const ip = "10.0." + Math.floor(pin / 5) + "." + (pin % 5); // 5 guesses per IP
+    const ip = "10.0." + Math.floor(pin / 5) + "." + (pin % 5);
     const a = limiter.begin({ ip, quiniela: "victima", target: "p_admin", value: String(pin).padStart(4, "0") });
     if (a.blocked) continue;
     answered++;
     a.settle(false);
   }
-  assert.equal(answered, 30);
+  assert.equal(answered, 10);
 });
 
-test("over a full day one credential gets at most 150 distinct guesses", () => {
+test("sustained attack over 30 days with unlimited IPs, firing the instant it is allowed: ~96 guesses a day", () => {
   const { limiter, advance } = limiterAt(0);
-  let answered = 0, pin = 0;
-  for (let slot = 0; slot < 96; slot++) { // 96 × 15 min = 24 h
-    for (let k = 0; k < 40; k++, pin++) {
-      const a = limiter.begin({ ip: "10.9." + pin, quiniela: "victima", target: "p_admin", value: String(pin) });
-      if (!a.blocked) { answered++; a.settle(false); }
-    }
-    advance(15 * MIN);
+  let answered = 0, ipN = 0;
+  const end = 30 * 24 * 60 * MIN;
+  for (let t = 0; t < end;) {
+    const a = limiter.begin({ ip: "10." + (ipN >> 16 & 255) + "." + (ipN >> 8 & 255) + "." + (ipN++ & 255), quiniela: "victima", target: "p_admin", value: "v" + answered });
+    if (a.blocked) { advance(a.retryAfterMs); t += a.retryAfterMs; continue; }
+    answered++; a.settle(false); advance(1000); t += 1000;
   }
-  assert.equal(answered, 150);
+  const perDay = answered / 30;
+  assert.ok(perDay > 95 && perDay < 98, `perDay=${perDay}`);
+  // At that pace, 50 % of a 4-digit PIN space takes about 52 days.
+  assert.ok(5000 / perDay > 50);
 });
 
 test("an attack on one credential does not lock the others of the same quiniela", () => {
@@ -96,13 +129,121 @@ test("an attack on one credential does not lock the others of the same quiniela"
 test("a trusted device keeps working while its credential is under attack", () => {
   const { limiter } = limiterAt(0);
   for (let i = 0; i < 40; i++) fail(limiter, "10.2.0." + i, "q", "g" + i, "p_admin");
-  assert.equal(limiter.begin({ ip: "10.2.0.1", quiniela: "q", target: "p_admin", value: "1234" }).blocked, true, "untrusted: blocked");
+  assert.equal(limiter.begin({ ip: "10.2.0.1", quiniela: "q", target: "p_admin", value: "1234" }).blocked, true, "untrusted: has to wait");
   const trusted = limiter.begin({ ip: "10.2.0.1", quiniela: "q", target: "p_admin", value: "1234", trustedDeviceId: "dev1" });
   assert.equal(trusted.blocked, false, "same IP, but a device that already proved this credential");
   trusted.settle(true);
-  // ...and it has its own small budget, so a stolen device cookie is not a free pass.
+  // ...and logging in from it changes nothing for anyone else: the attacker still waits
+  assert.equal(limiter.begin({ ip: "10.2.9.9", quiniela: "q", target: "p_admin", value: "x" }).blocked, true);
+  // ...and a trusted device has its own small budget, so a stolen device cookie is not a free pass.
   for (let i = 0; i < 10; i++) fail(limiter, "x", "q", "t" + i, "p_admin", "dev1");
   assert.equal(limiter.begin({ ip: "x", quiniela: "q", target: "p_admin", value: "t99", trustedDeviceId: "dev1" }).blocked, true);
+});
+
+test("a login never resets the credential's wait: the owner's success hands the attacker nothing", () => {
+  const { limiter, advance } = limiterAt(0);
+  for (let i = 0; i < 12; i++) { const a = limiter.begin({ ip: "10.5.0." + i, quiniela: "q", target: "p_admin", value: "g" + i }); if (!a.blocked) a.settle(false); else advance(a.retryAfterMs); }
+  const w = limiter.begin({ ip: "203.0.113.5", quiniela: "q", target: "p_admin", value: "right" });
+  assert.equal(w.blocked, true, "the right PIN also waits its turn on a new device");
+  advance(w.retryAfterMs);
+  const ok = limiter.begin({ ip: "203.0.113.5", quiniela: "q", target: "p_admin", value: "right" });
+  assert.equal(ok.blocked, false, "once allowed, the owner gets in");
+  ok.settle(true);
+  // The attacker gets exactly the one slot that was due anyway, then waits longer.
+  assert.equal(fail(limiter, "10.5.1.1", "q", "after1").blocked, false, "the slot the owner did not use up");
+  const next = limiter.begin({ ip: "10.5.1.2", quiniela: "q", target: "p_admin", value: "after2" });
+  assert.equal(next.blocked, true, "no 10 free guesses after the owner's login");
+  assert.equal(next.retryAfterMs, progressiveWaitMs(12), "12 failures on record (11 before the login, 1 after): the wait keeps escalating");
+});
+
+test("frequent legitimate logins and Ajustes reloads do not add a single guess to the attacker's budget", () => {
+  // Same attacker, same 7 days, against the PIN and the admin password at once;
+  // once alone, once with an owner who never stops logging in.
+  function run(withOwner) {
+    const { limiter, advance } = limiterAt(0);
+    const end = 7 * 24 * 60 * MIN;
+    let t = 0, n = 0, ipN = 0;
+    const guesses = { p_admin: 0, owner: 0 };
+    const nextFor = { p_admin: 0, owner: 0 };
+    const ownerEvery = 10 * MIN;
+    let nextOwner = 0, ownerLogins = 0;
+    while (t < end) {
+      const target = nextFor.p_admin <= nextFor.owner ? "p_admin" : "owner";
+      const due = Math.min(nextFor[target], withOwner ? nextOwner : Infinity);
+      if (due >= end) break;
+      if (due > t) { advance(due - t); t = due; }
+      if (withOwner && t >= nextOwner) {
+        // Every 10 min: Ajustes reload on the trusted phone (admin password),
+        // the PIN resent with each request, and, every hour, an explicit login
+        // from a NEW device that waits its turn when it has to.
+        for (const [tg, value] of [["owner", "the-password"], ["p_admin", "4321"]]) {
+          const trusted = limiter.begin({ ip: "203.0.113.50", quiniela: "q", target: tg, value, trustedDeviceId: "owner-phone" });
+          if (!trusted.blocked) { trusted.settle(true); ownerLogins++; }
+          const header = limiter.begin({ ip: "203.0.113.50", quiniela: "q", target: tg, value });
+          if (!header.blocked) { header.settle(true); ownerLogins++; }
+        }
+        if (Math.floor(nextOwner / (60 * MIN)) !== Math.floor((nextOwner - ownerEvery) / (60 * MIN))) {
+          const fresh = limiter.begin({ ip: "198.51.100." + (ownerLogins & 255), quiniela: "q", target: "p_admin", value: "4321" });
+          if (!fresh.blocked) { fresh.settle(true); ownerLogins++; }
+        }
+        nextOwner += ownerEvery;
+        continue;
+      }
+      const a = limiter.begin({ ip: "10." + (ipN >> 16 & 255) + "." + (ipN >> 8 & 255) + "." + (ipN++ & 255), quiniela: "q", target, value: "g" + n++ });
+      if (a.blocked) { nextFor[target] = t + a.retryAfterMs; continue; }
+      a.settle(false); guesses[target]++; nextFor[target] = t + 1000;
+    }
+    return { guesses, ownerLogins };
+  }
+  const alone = run(false);
+  const busy = run(true);
+  assert.ok(busy.ownerLogins > 2000, `the owner really was busy: ${busy.ownerLogins} successful logins`);
+  assert.deepEqual(busy.guesses, alone.guesses, "exactly the same number of guesses, per credential");
+  assert.ok(alone.guesses.p_admin / 7 < 100, `about 96 a day plus the first day's ramp: ${alone.guesses.p_admin / 7}`);
+});
+
+test("concurrency: a parallel burst against one credential reserves before it is judged", () => {
+  const { limiter } = limiterAt(0);
+  const pending = [];
+  for (let i = 0; i < 50; i++) pending.push(limiter.begin({ ip: "10.7." + i + ".1", quiniela: "q", target: "p_admin", value: "p" + i }));
+  const admitted = pending.filter((a) => !a.blocked);
+  assert.equal(admitted.length, 10, "only the 10 free attempts are compared, even all at once");
+  assert.ok(pending.filter((a) => a.blocked).every((a) => a.retryAfterMs === 15000));
+  admitted.forEach((a) => a.settle(false));
+});
+
+test("concurrency: a success settling while failures are in flight does not let more through", () => {
+  const { limiter } = limiterAt(0);
+  const a = [];
+  for (let i = 0; i < 10; i++) a.push(limiter.begin({ ip: "10.8.0." + i, quiniela: "q", target: "p_admin", value: i === 0 ? "right" : "w" + i }));
+  assert.equal(limiter.begin({ ip: "10.8.9.9", quiniela: "q", target: "p_admin", value: "z0" }).blocked, true, "all 10 slots reserved while in flight");
+  a[0].settle(true); // the right one finishes first: only its own slot comes back
+  a.slice(1).forEach((x) => x.settle(false));
+  assert.equal(fail(limiter, "10.8.1.1", "q", "n1").blocked, false, "the one slot the success gave back");
+  assert.equal(limiter.begin({ ip: "10.8.2.1", quiniela: "q", target: "p_admin", value: "z" }).blocked, true, "and then the wait");
+});
+
+test("a credential under a long attack remembers a bounded number of values", () => {
+  const { limiter, advance } = limiterAt(0, { maxSeenPerTarget: 50 });
+  for (let i = 0; i < 300; i++) {
+    const a = limiter.begin({ ip: "10.12." + (i >> 8) + "." + (i & 255), quiniela: "q", target: "p_admin", value: "v" + i });
+    if (a.blocked) { advance(a.retryAfterMs); i--; continue; }
+    a.settle(false);
+  }
+  // A value forgotten from the list is counted again if retried: stricter, never looser.
+  advance(PROGRESSIVE.capMs);
+  const again = limiter.begin({ ip: "10.12.9.9", quiniela: "q", target: "p_admin", value: "v0" });
+  assert.equal(again.blocked, false);
+  again.settle(false);
+  assert.equal(limiter.begin({ ip: "10.12.9.10", quiniela: "q", target: "p_admin", value: "v1" }).retryAfterMs, PROGRESSIVE.capMs, "it counted: the wait started over at the cap");
+});
+
+test("forgotten after 24 h without failures", () => {
+  const { limiter, advance } = limiterAt(0);
+  for (let i = 0; i < 16; i++) { advance(20 * MIN); const a = limiter.begin({ ip: "10.6.0." + i, quiniela: "q", target: "p_admin", value: "g" + i }); if (!a.blocked) a.settle(false); }
+  assert.ok(limiter.begin({ ip: "10.6.1.1", quiniela: "q", target: "p_admin", value: "y" }).blocked);
+  advance(24 * 60 * MIN);
+  for (let i = 0; i < 10; i++) assert.equal(fail(limiter, "10.6.2." + i, "q", "f" + i).blocked, false, "10 free again");
 });
 
 test("a correct credential never consumes budget", () => {
@@ -264,7 +405,9 @@ test("SERVER: every checkCredential call names one target", () => {
 
 test("SERVER: the budget is reserved before scrypt, only for a credential that exists, and settled when the response ends", () => {
   const ctxFn = serverSrc.slice(serverSrc.indexOf("function credentialContext("), serverSrc.indexOf("function checkCredential("));
-  assert.ok(ctxFn.includes("credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId })"));
+  assert.ok(ctxFn.includes("credentialLimiter.begin({ ip: requestClientIp(req), quiniela, target: tKey, version, value: plain, trustedDeviceId });"));
+  assert.ok(!/resetOnSuccess|qzExplicitLogin/.test(serverSrc), "no route can reset a credential's wait by logging in");
+  assert.ok(!/resetOnSuccess/.test(fs.readFileSync(path.join(__dirname, "..", "credentialAttempts.js"), "utf8")));
   assert.ok(ctxFn.includes('req.res.once("finish", settle)') && ctxFn.includes('req.res.once("close", settle)'));
   const check = serverSrc.slice(serverSrc.indexOf("function checkCredential("), serverSrc.indexOf("function headerIsOwnerPassword("));
   const guardAt = check.indexOf("if (!value || !stored) return false;");
@@ -291,8 +434,10 @@ test("SERVER: trusted-device cookies are signed, scoped, and handed out only aft
 
 test("SERVER: credential endpoints answer 429 too_many_attempts when the limit is the reason", () => {
   const send = serverSrc.slice(serverSrc.indexOf("function sendIfCredentialThrottled("), serverSrc.indexOf("function isAuthenticatedAsParticipantReq("));
-  assert.ok(send.includes('res.status(429).json({ error: "too_many_attempts" })'));
-  assert.ok(send.includes('res.set("Retry-After"'));
+  assert.ok(send.includes('res.status(429).json({ error: "too_many_attempts", retryAfterSeconds })'), "the time left travels in the body too");
+  assert.ok(send.includes('res.set("Retry-After", String(retryAfterSeconds));'));
+  const rate = serverSrc.slice(serverSrc.indexOf("function rateLimit(name)"), serverSrc.indexOf("function rateLimit(name)") + 1200);
+  assert.ok(rate.includes('return res.status(429).json({ error: "too_many_attempts", retryAfterSeconds });'), "the old request-count limiter says how long too");
   for (const marker of ['app.post("/api/verify-pin"', 'app.post("/api/verify-owner"', 'app.post("/api/set-pin"', 'app.post("/api/migrate-quiniela"', 'app.post("/api/kv/:key"', 'app.post("/api/submit-bet-answer"']) {
     assert.ok(routeBody(marker).includes("sendIfCredentialThrottled(req, res)"), marker);
   }
@@ -418,26 +563,44 @@ test("SERVER: a plaintext platform password (env bootstrap) is compared in const
 
 // ---- persistence ------------------------------------------------------------
 
-test("counters survive a restart: a reloaded limiter keeps blocking", () => {
+test("counters survive a restart: the wait continues where it was, with the same time left", () => {
   let now = 1_000_000;
   const saved = new Map();
   const opts = { now: () => now, idKey: () => "stable-secret", onChange: (snap) => saved.set(snap.id, snap) };
   const before = createCredentialAttemptLimiter(opts);
-  for (let i = 0; i < 30; i++) {
-    const a = before.begin({ ip: "10.4.0." + Math.floor(i / 5), quiniela: "q", target: "pin:p_admin", version: "v1", value: "g" + i });
-    if (!a.blocked) a.settle(false);
+  for (let i = 0; i < 13; i++) {
+    const a = before.begin({ ip: "10.4.0." + i, quiniela: "q", target: "pin:p_admin", version: "v1", value: "g" + i });
+    if (a.blocked) { now += a.retryAfterMs; i--; continue; }
+    a.settle(false);
   }
-  assert.equal(before.begin({ ip: "203.0.113.1", quiniela: "q", target: "pin:p_admin", version: "v1", value: "x" }).blocked, true);
+  // 13 failures: the next one waits 15 s × 2^3 = 120 s after the last.
+  const w1 = before.begin({ ip: "203.0.113.1", quiniela: "q", target: "pin:p_admin", version: "v1", value: "x" });
+  assert.equal(w1.retryAfterMs, 120000);
   for (const snap of saved.values()) {
     assert.deepEqual(Object.keys(snap).sort(), ["count", "id", "rule", "scope", "version", "windowMs", "windowStart"]);
     assert.ok(!JSON.stringify(snap).includes("10.4.0."), "no IP in what is persisted");
     assert.ok(!JSON.stringify(snap).includes("p_admin"), "no participant in what is persisted");
   }
-  now += 60 * 1000; // a restart a minute later
+  now += 30 * 1000; // a restart 30 s later
   const after = createCredentialAttemptLimiter({ now: () => now, idKey: () => "stable-secret" });
   after.load([...saved.values()]);
-  assert.equal(after.begin({ ip: "203.0.113.1", quiniela: "q", target: "pin:p_admin", version: "v1", value: "y" }).blocked, true, "still blocked after the restart");
+  const w2 = after.begin({ ip: "203.0.113.1", quiniela: "q", target: "pin:p_admin", version: "v1", value: "y" });
+  assert.equal(w2.blocked, true, "still waiting after the restart");
+  assert.equal(w2.retryAfterMs, 90000, "same deadline: 120 s − 30 s");
   assert.equal(after.begin({ ip: "203.0.113.1", quiniela: "q", target: "pin:p_admin", version: "v2", value: "y" }).blocked, false, "a reset still recovers");
+});
+
+test("load: the old hard-lockout rows (target-15m/24h) are ignored once; progressive rows are restored", () => {
+  const now = 10_000_000;
+  const l = createCredentialAttemptLimiter({ now: () => now, idKey: () => "k" });
+  const restored = l.load([
+    { id: "old1", rule: "target-15m", windowStart: now - 1000, windowMs: 15 * MIN, count: 30, version: "v" },
+    { id: "old2", rule: "target-24h", windowStart: now - 1000, windowMs: 24 * 60 * MIN, count: 150, version: "v" },
+    { id: "p1", rule: "target-progressive", windowStart: now - 1000, windowMs: 24 * 60 * MIN, count: 12, version: "v" },
+    { id: "p2", rule: "target-progressive", windowStart: now - 25 * 60 * MIN, windowMs: 24 * 60 * MIN, count: 12, version: "v" },
+    { id: "p3", rule: "target-progressive", windowStart: now - 1000, windowMs: 24 * 60 * MIN, count: 0, version: "v" },
+  ]);
+  assert.equal(restored, 1, "only the live progressive row with failures");
 });
 
 test("load ignores expired rows, unknown rules, changed windows and future timestamps", () => {
@@ -493,4 +656,188 @@ test("load keeps the newest network buckets when they exceed the in-memory cap (
   assert.equal(blocked("net4"), true);
   assert.equal(blocked("net3"), true);
   assert.equal(blocked("net1"), false, "oldest evicted by the cap");
+});
+
+// ---- the time left, as people see it ----------------------------------------
+
+const uiFns = new Function(
+  "const ERROR_MESSAGES = { too_many_attempts: 'GENERIC', unauthorized: 'NOPE' };\n" +
+  extractFunction(indexSrc, "function humanizeError(code, result)") + "\n" +
+  extractFunction(indexSrc, "function formatWait(seconds)") + "\n" +
+  extractFunction(indexSrc, "function tooManyAttemptsMessage(retryAfterSeconds)") + "\n" +
+  "return { humanizeError, formatWait, tooManyAttemptsMessage };"
+)();
+
+test("FRONTEND: the wait is shown as the real time left", () => {
+  const { formatWait, tooManyAttemptsMessage, humanizeError } = uiFns;
+  // A non-breaking space between number and unit: "15 s" never wraps at 375 px.
+  assert.equal(formatWait(15), "15\u00a0s");
+  assert.equal(formatWait(59), "59\u00a0s");
+  assert.equal(formatWait(60), "1\u00a0min");
+  assert.equal(formatWait(61), "2\u00a0min", "rounded up: never promises less than the real wait");
+  assert.equal(formatWait(900), "15\u00a0min");
+  assert.equal(formatWait(7199), "2\u00a0h");
+  assert.equal(tooManyAttemptsMessage(120), "Demasiados intentos. Intenta de nuevo en 2\u00a0min, o entra desde un dispositivo donde ya hayas entrado.");
+  assert.equal(tooManyAttemptsMessage(undefined), "GENERIC", "no number from the server: the generic copy");
+  assert.equal(humanizeError("too_many_attempts", { retryAfterSeconds: 30 }), "Demasiados intentos. Intenta de nuevo en 30\u00a0s, o entra desde un dispositivo donde ya hayas entrado.");
+  assert.equal(humanizeError("unauthorized", { retryAfterSeconds: 30 }), "NOPE");
+});
+
+test("FRONTEND: every response that can carry too_many_attempts hands retryAfterSeconds to the message", () => {
+  assert.equal((indexSrc.match(/if\(!res\.ok\) return \{ ok: false, error: data\.error \|\| null, retryAfterSeconds: data\.retryAfterSeconds \};/g) || []).length, 2, "verify-owner, verify-platform");
+  assert.ok(indexSrc.includes("return { ok: false, error: data.error || null, retryAfterSeconds: data.retryAfterSeconds };"), "verify-pin");
+  assert.ok(indexSrc.includes("return { ok: res.ok, error: res.ok ? null : (data.error || null), retryAfterSeconds: res.ok ? null : data.retryAfterSeconds };"), "set-pin");
+  assert.ok(!/humanizeError\(result\.error\)[^,]/.test(indexSrc), "no call drops the server's answer");
+  assert.ok(indexSrc.includes("return result && result.error === \"too_many_attempts\" ? humanizeError(result.error, result) : fallback;"));
+});
+
+test("FRONTEND: after 5 wrong PINs the login points at the way out that exists (another admin resets it)", () => {
+  const start = indexSrc.indexOf('"pin:" + p.id, (pin) => verifyParticipantPin(p.id, pin));');
+  assert.ok(start > 0);
+  const block = indexSrc.slice(start, start + 1300);
+  assert.ok(block.includes('if(verification.error !== "too_many_attempts") loginPinMisses.set(p.id, (loginPinMisses.get(p.id) || 0) + 1);'));
+  assert.ok(block.includes("(loginPinMisses.get(p.id) || 0) >= 5"));
+  assert.ok(block.includes("¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee."));
+  assert.ok(!block.includes("contraseña de administrador"), "does not offer a recovery that does not exist yet");
+  assert.ok(block.includes("loginPinMisses.delete(p.id);"));
+});
+
+
+// ---- Technical QA findings on d1a05a9 ----------------------------------------
+
+test("P1: the PIN a browser resends on every request does not reset the wait", () => {
+  const { limiter, advance } = limiterAt(0);
+  let guesses = 0;
+  for (let cycle = 0; cycle < 5; cycle++) {
+    // attacker until told to wait
+    while (true) {
+      const a = limiter.begin({ ip: "10.9." + cycle + "." + guesses, quiniela: "q", target: "p_admin", value: "g" + guesses });
+      if (a.blocked) break;
+      a.settle(false); guesses++;
+    }
+    // the owner keeps using the app: header-borne successes, not logins
+    for (let k = 0; k < 20; k++) { const ok = limiter.begin({ ip: "203.0.113.7", quiniela: "q", target: "p_admin", value: "right" }); if (!ok.blocked) ok.settle(true); advance(100); }
+  }
+  assert.equal(guesses, 10, "the owner's activity hands the attacker nothing beyond the first 10");
+});
+
+test("P1: a header-borne success gives back its own reservation, so the owner's own tries never pile up", () => {
+  const { limiter } = limiterAt(0);
+  for (let i = 0; i < 9; i++) fail(limiter, "10.10.0." + i, "q", "g" + i);
+  for (let k = 0; k < 50; k++) { const ok = limiter.begin({ ip: "203.0.113.8", quiniela: "q", target: "p_admin", value: "right" }); assert.equal(ok.blocked, false); ok.settle(true); }
+  assert.equal(fail(limiter, "10.10.1.1", "q", "tenth").blocked, false, "still the 10th failure, not the 60th");
+  assert.equal(limiter.begin({ ip: "10.10.1.2", quiniela: "q", target: "p_admin", value: "eleventh" }).blocked, true);
+});
+
+test("P2: a value tried before waits like any other — no free 'was this tried?' oracle", () => {
+  const { limiter } = limiterAt(0);
+  fail(limiter, "203.0.113.9", "q", "4312"); // the owner's typo
+  for (let i = 0; i < 9; i++) fail(limiter, "10.11.0." + i, "q", "g" + i);
+  const probes = ["4312", "1111", "2222", "g3"].map((v) => limiter.begin({ ip: "6.6.6.6", quiniela: "q", target: "p_admin", value: v }));
+  assert.ok(probes.every((p) => p.blocked), "every probe, seen or not, gets the same 429");
+  assert.ok(probes.every((p) => p.retryAfterMs === probes[0].retryAfterMs), "and the same time left");
+});
+
+test("P2: same for the per-network windows", () => {
+  const { limiter } = limiterAt(0);
+  for (let i = 0; i < 20; i++) fail(limiter, "6.6.6.7", "q", "v" + i, "t" + i);
+  assert.equal(limiter.begin({ ip: "6.6.6.7", quiniela: "q", target: "t0", value: "v0" }).blocked, true, "a value already counted from this network is still blocked");
+});
+
+
+// ---- The wait stays next to the form (Product QA: a 2.2 s toast is not enough) ----
+
+// The real helpers from index.html, with a fake clock and a minimal element.
+function waitUi() {
+  let now = 1_000_000;
+  const timers = [];
+  const ui = new Function("Date", "setInterval", "clearInterval",
+    "const esc = (s) => String(s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[c]);\n" +
+    "const ERROR_MESSAGES = { too_many_attempts: 'GENERIC' };\n" +
+    extractFunction(indexSrc, "function formatWait(seconds)") + "\n" +
+    "const credentialWaitUntil = new Map();\n" +
+    extractFunction(indexSrc, "function startCredentialWait(key, result)") + "\n" +
+    extractFunction(indexSrc, "function credentialWaitLeft(key)") + "\n" +
+    extractFunction(indexSrc, "function formatCountdown(seconds)") + "\n" +
+    extractFunction(indexSrc, "function mountCredentialWait(el, key, opts)") + "\n" +
+    "return { startCredentialWait, credentialWaitLeft, formatCountdown, mountCredentialWait };"
+  )({ now: () => now }, (fn) => { timers.push(fn); return timers.length; }, () => {});
+  function el() {
+    const left = { textContent: "" };
+    const cls = new Set();
+    return {
+      isConnected: true, hidden: true, innerHTML: "", cls,
+      classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c) },
+      querySelector: () => left, left,
+    };
+  }
+  return { ui, advance(ms) { now += ms; timers.forEach((t) => t()); }, el };
+}
+
+test("FRONTEND: the wait notice counts down the real time left and frees the button at zero", () => {
+  const { ui, advance, el } = waitUi();
+  assert.equal(ui.formatCountdown(45), "45 s");
+  assert.equal(ui.formatCountdown(65), "1:05 min");
+  assert.equal(ui.formatCountdown(900), "15:00 min");
+  const notice = el();
+  const button = { disabled: false };
+  let ready = 0;
+  assert.equal(ui.mountCredentialWait(notice, "owner", { button }), false, "no wait: nothing shown");
+  assert.equal(notice.hidden, true);
+  assert.equal(ui.startCredentialWait("owner", { retryAfterSeconds: 65 }), true);
+  assert.equal(ui.mountCredentialWait(notice, "owner", { button, onReady: () => ready++ }), true);
+  assert.equal(notice.hidden, false);
+  assert.ok(notice.innerHTML.includes("Demasiados intentos. Intenta de nuevo en"));
+  assert.ok(notice.innerHTML.includes("o entra desde un dispositivo donde ya hayas entrado."));
+  assert.ok(notice.innerHTML.includes('<b class="qz-wait-left" aria-hidden="true"></b><span class="qz-sr-only">2 min</span>'), "screen readers hear it once, rounded up");
+  assert.equal(notice.left.textContent, "1:05 min");
+  assert.equal(button.disabled, true);
+  advance(20000);
+  assert.equal(notice.left.textContent, "45 s", "it goes down with the clock");
+  assert.equal(button.disabled, true);
+  advance(45000);
+  assert.ok(notice.innerHTML.includes("Ya puedes intentarlo de nuevo."));
+  assert.ok(notice.cls.has("qz-wait-over"));
+  assert.equal(button.disabled, false);
+  assert.equal(ready, 1);
+  assert.equal(ui.credentialWaitLeft("owner"), 0);
+  assert.equal(ui.startCredentialWait("owner", {}), false, "no number from the server: no countdown");
+});
+
+test("FRONTEND: every credential form keeps the wait next to it instead of a toast", () => {
+  // The modal itself: a wait shows inside it and keeps confirm (and Enter) off.
+  const prompt = extractFunction(indexSrc, "function qzPrompt(message, opts)");
+  assert.ok(prompt.includes('${opts.waitKey ? credentialWaitNoticeHtml("qz-prompt-wait") : ""}'));
+  assert.ok(prompt.includes('if(opts.waitKey) mountCredentialWait(overlay.querySelector("#qz-prompt-wait"), opts.waitKey, { button: confirmBtn });'));
+  assert.ok(prompt.includes("const submit = () => { if(!confirmBtn.disabled) cleanup(input.value); };"));
+  // A 429 brings the same modal straight back with the countdown.
+  const pc = extractFunction(indexSrc, "async function promptCredential(message, opts, waitKey, check)");
+  assert.ok(pc.includes('if(result && result.error === "too_many_attempts" && startCredentialWait(waitKey, result)) continue;'));
+  // Login by PIN, first admin PIN (admin password), change PIN, Ajustes re-auth.
+  for (const call of [
+    '"pin:" + p.id, (pin) => verifyParticipantPin(p.id, pin));',
+    '"owner", (password) => apiSetPinResult(participantId, null, newPin, password));',
+    '"pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));',
+  ]) assert.ok(indexSrc.includes(call), call);
+  assert.equal(indexSrc.split('"pin:" + currentUser.id, (pin) => verifyParticipantPin(currentUser.id, pin));').length - 1, 2, "change PIN and Ajustes re-auth");
+  // Closing the modal leaves the countdown next to the names on the login.
+  assert.ok(indexSrc.includes('if(attempt === null){ showLoginWait("pin:" + p.id, "PIN de " + p.name); return; }'));
+  assert.ok(indexSrc.includes('${credentialWaitNoticeHtml("qz-login-wait")}'));
+  assert.ok(indexSrc.includes("if(loginWait) showLoginWait(loginWait.key, loginWait.label);"), "and it survives a re-render");
+  // Inline forms: Ajustes, Panel de plataforma, first admin PIN after creating.
+  for (const [id, key] of [["qz-owner-wait", "owner"], ["qz-p-wait", "platform"], ["qz-setup-pin-wait", "owner"]]) {
+    assert.ok(indexSrc.includes('${credentialWaitNoticeHtml("' + id + '")}'), id);
+  }
+  assert.ok(indexSrc.includes('mountCredentialWait(ownerWaitEl, "owner", { button: ownerUnlockBtn, reveal: true });'));
+  assert.ok(indexSrc.includes('else if(result.error === "too_many_attempts" && startCredentialWait("platform", result)) mountCredentialWait(platformWaitEl, "platform", { button: platformUnlockBtn, reveal: true });'));
+  assert.ok(indexSrc.includes('if(mountCredentialWait(waitEl, "owner", { button: continueBtn, onReady: readyToContinue, reveal: true })){'));
+  // On screen at 375 px: between the field and its button, and above the list of names.
+  for (const [field, id, btn] of [['id="qz-owner-pw"', "qz-owner-wait", 'id="qz-owner-unlock"'], ['id="qz-p-pass"', "qz-p-wait", 'id="qz-p-unlock"']]) {
+    const f = indexSrc.indexOf(field), w = indexSrc.indexOf('credentialWaitNoticeHtml("' + id + '")'), b = indexSrc.indexOf(btn);
+    assert.ok(f < w && w < b, id + " sits between the field and the button");
+  }
+  assert.ok(indexSrc.indexOf('credentialWaitNoticeHtml("qz-login-wait")') < indexSrc.indexOf('<div class="name-grid">${names}</div>'));
+  // The notice is a status region, styled, and the number never wraps.
+  assert.ok(indexSrc.includes('<div class="qz-wait-notice" id="${id}" role="status" aria-live="polite" hidden></div>'));
+  assert.ok(indexSrc.includes(".qz-wait-notice .qz-wait-left{ font-variant-numeric:tabular-nums; white-space:nowrap; }"));
 });

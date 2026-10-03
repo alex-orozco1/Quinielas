@@ -171,7 +171,10 @@ test("CASE E: the setup PIN input only accepts digits and is capped at 4 charact
 
 test("CASE E: the Continuar button is disabled until exactly 4 digits are entered", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminSetupPin()");
-  assert.ok(body.includes("continueBtn.disabled = val.length !== 4;"));
+  assert.ok(body.includes('const readyToContinue = () => { continueBtn.disabled = currentValue.length !== 4 || credentialWaitLeft("owner") > 0; };'),
+    "4 digits, and no wait for too many attempts on screen");
+  const onInput = body.slice(body.indexOf('wirePinBoxes("qz-setup-pin-input"'), body.indexOf('wirePinBoxes("qz-setup-pin-input"') + 200);
+  assert.ok(onInput.includes("currentValue = val;") && onInput.indexOf("currentValue = val;") < onInput.indexOf("readyToContinue();"));
 });
 
 test("CASE N: navigator.share()'s catch block does nothing -- cancelling the share sheet must stay silent, not show an error", () => {
