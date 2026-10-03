@@ -168,7 +168,7 @@ test("CASE N: /api/platform-sports-health uses the exact same auth check as /api
   const idx = serverSrc.indexOf('app.get("/api/platform-sports-health"');
   const body = serverSrc.slice(idx, idx + 500);
   assert.ok(body.includes('req.get("x-qracks-platform-auth")'));
-  assert.ok(body.includes("verifyPassword(providedPlatformAuth, platformHash)"));
+  assert.ok(body.includes("checkPlatformCredential(req, providedPlatformAuth, platformHash)"));
   assert.ok(body.includes('res.status(403).json({ error: "unauthorized" })'));
 });
 

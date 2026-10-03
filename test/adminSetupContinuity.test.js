@@ -112,7 +112,8 @@ test("CASE F (PIN save failure): the PIN input's value/state is never cleared on
   const submitBody = body.slice(submitIdx);
   assert.ok(!submitBody.includes('currentValue = ""'), "must never reset currentValue back to empty on failure");
   assert.ok(!/input\.value\s*=\s*["']{2}/.test(submitBody), "must never clear the actual input element's value on failure");
-  assert.ok(submitBody.includes('errorEl.textContent = "No pudimos guardar tu PIN. Intenta de nuevo.";'));
+  assert.ok(submitBody.includes("errorEl.textContent ="));
+  assert.ok(submitBody.includes('"No pudimos guardar tu PIN. Intenta de nuevo."'), "the generic failure copy stays for every non-claim failure");
 });
 
 test("CASE G: renderAdminSetupReview's publish failure restores the round from a snapshot AND keeps the admin on the same screen", () => {
@@ -170,7 +171,10 @@ test("CASE E: the setup PIN input only accepts digits and is capped at 4 charact
 
 test("CASE E: the Continuar button is disabled until exactly 4 digits are entered", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminSetupPin()");
-  assert.ok(body.includes("continueBtn.disabled = val.length !== 4;"));
+  assert.ok(body.includes('const readyToContinue = () => { continueBtn.disabled = currentValue.length !== 4 || credentialWaitLeft("owner") > 0; };'),
+    "4 digits, and no wait for too many attempts on screen");
+  const onInput = body.slice(body.indexOf('wirePinBoxes("qz-setup-pin-input"'), body.indexOf('wirePinBoxes("qz-setup-pin-input"') + 200);
+  assert.ok(onInput.includes("currentValue = val;") && onInput.indexOf("currentValue = val;") < onInput.indexOf("readyToContinue();"));
 });
 
 test("CASE N: navigator.share()'s catch block does nothing -- cancelling the share sheet must stay silent, not show an error", () => {
@@ -386,8 +390,12 @@ test("CASE A: a datetime-local value from yesterday is rejected", () => {
 });
 
 test("CASE B: today but an hour that already passed is rejected", () => {
-  // NOW is 15:00 UTC -- 14:00 same day must be rejected.
-  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", new Date("2026-08-22T14:00:00.000Z").getTime() + 1), false);
+  // The input is local wall-clock time and the product parses it as local
+  // time; "now" is 1 ms after 14:00 LOCAL, so 14:00 the same day is already
+  // past in any time zone (UTC, America/Mexico_City...).
+  const justAfter = new Date(2026, 7, 22, 14, 0).getTime() + 1;
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:00", justAfter), false);
+  assert.equal(runIsSetupDeadlineValid("2026-08-22T14:01", justAfter), true, "a minute later is still ahead");
 });
 
 test("CASE C: a genuinely future datetime is accepted", () => {

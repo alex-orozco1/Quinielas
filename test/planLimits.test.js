@@ -612,7 +612,7 @@ test("MON-001D: a binding violation in sync-competition ROLLBACKs and returns 40
 
 test("MON-001D: adoption persists the identity onto the ENTITLEMENT (platform_index, platform-tier) and appends an audit-trail entry -- never into owner-writable meta", () => {
   const idx = serverSrc.indexOf('app.post("/api/quinielas/:slug/sync-competition"');
-  const body = serverSrc.slice(idx, idx + 6000);
+  const body = serverSrc.slice(idx, idx + 6200);
   assert.ok(body.includes("bindingEntry.entitlement.competitionIdentity = binding.identity;"));
   assert.ok(body.includes('action: "competition_bound"'));
   assert.ok(body.includes('await putRow("platform_index", platformIdx, client);'));
