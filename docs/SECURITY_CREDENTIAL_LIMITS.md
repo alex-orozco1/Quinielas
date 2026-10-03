@@ -168,7 +168,7 @@ dispositivos de confianza.
 | Admin sin atacante, desde una red, 20 fallidos | ~12 min (límite por red 20/15 min) | ~1 h 30 min acumulada (ninguna espera > 15 min) |
 | Admin sin atacante, desde una red, 35 fallidos | ~12 min | ~5 h acumuladas |
 | Admin sin atacante, desde una red, 160 fallidos | ~24 h (límite por red 100/24 h) | ~38 h acumuladas |
-| Admin en dispositivo nuevo durante un ataque: `Retry-After` al llegar | mediana ~10 h, peor ~23 h | **mediana ~8 min, peor 15 min** |
+| Admin en dispositivo nuevo durante un ataque: `Retry-After` al llegar | mediana ~10–12 h (varía por muestreo), peor ~23 h | **mediana ~7–8 min, peor 15 min** |
 | ¿Un atacante óptimo puede seguir negándole la entrada en dispositivo nuevo? | Sí | Sí |
 | Salidas que no dependen del limitador | dispositivo de confianza, sesión abierta, reset del PIN / cambio de contraseña (versión nueva) | igual |
 
