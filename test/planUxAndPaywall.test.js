@@ -140,7 +140,7 @@ test("PLAN READ: usage never goes negative when a limit was lowered under an exi
 test("PLAN READ: the endpoint is Admin/owner only, and 404s an unknown quiniela before anything else", () => {
   const handler = blockFrom(serverSrc, 'app.get("/api/quinielas/:slug/plan"');
   assert.ok(handler.includes("computeRequesterIdentity(req, slug, meta)"), "must resolve who is asking");
-  assert.ok(handler.includes('if (!isAdminOrOwner) return res.status(403).json({ error: "forbidden" });'),
+  assert.ok(handler.includes('if (!isAdminOrOwner) return sendIfCredentialThrottled(req, res) || res.status(403).json({ error: "forbidden" });'),
     "a participant must be refused: this response carries the price the organizer pays QRACKS");
   const notFoundAt = handler.indexOf('res.status(404)');
   const authAt = handler.indexOf("isAdminOrOwner");
@@ -405,7 +405,7 @@ test("LEGACY: platform_settings is no longer readable without the platform passw
   assert.ok(fn.includes('if ("dashboardPassword" in clone) delete clone.dashboardPassword;'),
     "and the hash never leaves the server even for an authenticated read");
   const call = serverSrc.slice(serverSrc.indexOf('if (req.params.key === "platform_settings") {'), serverSrc.indexOf('} else if (req.params.key === "platform_index")'));
-  assert.ok(call.includes("verifyPassword(providedPlatformAuth, platformHash)"), "the projection is chosen by real auth");
+  assert.ok(call.includes("checkPlatformCredential(req, providedPlatformAuth, platformHash)"), "the projection is chosen by real auth");
 });
 
 test("LEGACY: the dashboard reads platform_settings WITH credentials", () => {
@@ -587,7 +587,7 @@ test("UX: a commercial refusal from the import flow is not dressed up as a provi
   // de revisión. La afirmación es la misma.
   const slice = indexSrc.slice(at, at + 6000);
   assert.ok(slice.includes("res.status === 402"), "402 must be handled on its own");
-  assert.ok(slice.includes("humanizeError(data.error)"), "with the commercial copy");
+  assert.ok(slice.includes("humanizeError(data.error, data)"), "with the commercial copy");
   const at402 = slice.indexOf("res.status === 402");
   const branch = slice.slice(at402, slice.indexOf("} else {", at402));
   assert.ok(!branch.includes("sportsDataFailureMessage"), "and never through the provider-failure message");
@@ -626,7 +626,7 @@ test("SECURITY: the grant endpoint and every commercial write require the platfo
     'app.post("/api/platform/quinielas/:slug/settings"',
   ]) {
     const handler = blockFrom(serverSrc, marker);
-    const authAt = handler.indexOf("verifyPassword(providedPlatformAuth, platformHash)");
+    const authAt = handler.indexOf("checkPlatformCredential(req, providedPlatformAuth, platformHash)");
     const workAt = handler.indexOf("pool.connect()");
     assert.ok(authAt !== -1, `${marker}: debe exigir auth de plataforma`);
     assert.ok(workAt === -1 || authAt < workAt, `${marker}: la auth va antes de tocar la base`);
@@ -634,7 +634,7 @@ test("SECURITY: the grant endpoint and every commercial write require the platfo
   // commercial_config goes through the platform branch of POST /api/kv/:key,
   // which authenticates every platform key against the same hash.
   const kv = serverSrc.slice(serverSrc.indexOf('if (info.kind === "platform") {'), serverSrc.indexOf('if (req.params.key === "commercial_config")'));
-  assert.ok(kv.includes("verifyPassword(providedPlatformAuth, platformHash)"));
+  assert.ok(kv.includes("checkPlatformCredential(req, providedPlatformAuth, platformHash)"));
   assert.ok(kv.includes('return res.status(403).json({ error: "unauthorized" });'));
 });
 
