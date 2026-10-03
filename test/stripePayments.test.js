@@ -3335,7 +3335,7 @@ test("MON003 · C8.10 — SERVER: la fila de compras sólo la escribe el servido
   const del = src.slice(src.indexOf('app.delete("/api/kv/:key"'));
   const delHead = del.slice(0, del.indexOf("DELETE FROM kv"));
   assert.ok(delHead.includes("SERVER_OWNED_KEYS.has(req.params.key)"));
-  assert.ok(delHead.indexOf("SERVER_OWNED_KEYS") < delHead.indexOf("verifyPassword"));
+  assert.ok(delHead.indexOf("SERVER_OWNED_KEYS") < delHead.indexOf("checkPlatformCredential"));
 });
 
 test("MON003 · C8.11 — el dominio sigue sin vocabulario del proveedor", () => {

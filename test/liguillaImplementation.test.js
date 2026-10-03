@@ -648,7 +648,7 @@ test("UX · tras importar, la pestaña trae el estado nuevo antes de repintar", 
   assert.ok(at !== -1);
   const block = ui.slice(at, at + 700);
   assert.ok(block.includes("await getMeta({ owner: adminOrOwnerCred() })"), "hay que traer lo que el servidor importó");
-  assert.ok(block.includes("Object.assign(meta, fresh)"));
+  assert.ok(block.includes("adoptFreshMeta(meta, fresh)"));
   assert.ok(block.includes("await renderAdmin("), "y esperar al repintado, que es asíncrono");
   const statusAt = ui.indexOf("const statusEl = document.getElementById(\"qz-sync-status\")");
   assert.ok(statusAt > at, "el mensaje se escribe DESPUÉS de repintar, o se borra solo");

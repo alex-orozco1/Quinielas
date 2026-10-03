@@ -74,7 +74,7 @@ test("CASE C/D: remove-participant snapshots the full array and restores it (sam
 
 test("CASE E/F: PIN reset snapshots pin+hasPin together and restores both on failure", () => {
   const idx = participantesBody.indexOf('resetBtn.addEventListener("click"');
-  const slice = participantesBody.slice(idx, idx + 900);
+  const slice = participantesBody.slice(idx, idx + 1600);
   assert.ok(slice.includes("const previousPin = p.pin;"));
   assert.ok(slice.includes("const previousHasPin = p.hasPin;"));
   assert.ok(slice.includes("await setMetaWithError(meta);"));
@@ -93,7 +93,7 @@ test("rename: restores both the meta field AND the visible input value on failur
 
 test("admin-toggle: restores both meta.isAdmin AND the checkbox's checked state on failure", () => {
   const idx = participantesBody.indexOf("adminCheckbox.addEventListener(\"change\"");
-  const slice = participantesBody.slice(idx, idx + 700);
+  const slice = participantesBody.slice(idx, idx + 1800);
   assert.ok(slice.includes("const previousValue = p.isAdmin;"));
   assert.ok(slice.includes("await setMetaWithError(meta);"));
   assert.ok(slice.includes("p.isAdmin = previousValue;") && slice.includes("e.target.checked = previousValue;"), "must restore both the data model AND the checkbox's own already-flipped DOM state");

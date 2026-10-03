@@ -112,7 +112,8 @@ test("CASE F (PIN save failure): the PIN input's value/state is never cleared on
   const submitBody = body.slice(submitIdx);
   assert.ok(!submitBody.includes('currentValue = ""'), "must never reset currentValue back to empty on failure");
   assert.ok(!/input\.value\s*=\s*["']{2}/.test(submitBody), "must never clear the actual input element's value on failure");
-  assert.ok(submitBody.includes('errorEl.textContent = "No pudimos guardar tu PIN. Intenta de nuevo.";'));
+  assert.ok(submitBody.includes("errorEl.textContent ="));
+  assert.ok(submitBody.includes('"No pudimos guardar tu PIN. Intenta de nuevo."'), "the generic failure copy stays for every non-claim failure");
 });
 
 test("CASE G: renderAdminSetupReview's publish failure restores the round from a snapshot AND keeps the admin on the same screen", () => {

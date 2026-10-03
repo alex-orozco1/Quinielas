@@ -468,7 +468,7 @@ test("UI: un conflicto refresca, repinta y avisa — y no dice 'se guardó'", ()
   assert.ok(at !== -1, "setMetaWithError debe manejar el conflicto en un solo lugar");
   const branch = ui.slice(at, at + 1200);
   assert.ok(branch.includes("getMeta({ owner: adminOrOwnerCred() })"), "debe traer el estado bueno del servidor");
-  assert.ok(branch.includes("Object.assign(meta, fresh)"), "mutado en sitio: toda pantalla con este objeto se corrige");
+  assert.ok(branch.includes("adoptFreshMeta(meta, fresh)"), "mutado en sitio: toda pantalla con este objeto se corrige");
   assert.ok(branch.includes("invalidatePlan()"));
   const renderAt = branch.indexOf("await render()");
   const noticeAt = branch.indexOf("notice(");
