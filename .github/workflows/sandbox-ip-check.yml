@@ -39,8 +39,20 @@ jobs:
               headers["True-Client-IP"] = rnd();
               headers["X-Real-IP"] = rnd();
             }
+            await new Promise((r) => setTimeout(r, 300));
             const r = await fetch(B + path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(90000) });
-            return { status: r.status, text: await r.text(), sc: r.headers.getSetCookie ? r.headers.getSetCookie() : [] };
+            const text = await r.text();
+            const res = { status: r.status, text, sc: r.headers.getSetCookie ? r.headers.getSetCookie() : [] };
+            res.json = () => {
+              try { return JSON.parse(text); }
+              catch (e) {
+                log({ nonJson: path, status: r.status, contentType: r.headers.get("content-type"), server: r.headers.get("server"),
+                  cfMitigated: r.headers.get("cf-mitigated"), xRender: r.headers.get("x-render-routing"),
+                  snippet: text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 160) });
+                throw e;
+              }
+            };
+            return res;
           }
           const jar = (sc) => sc.map((c) => c.split(";")[0]).join("; ");
           (async () => {
@@ -60,11 +72,11 @@ jobs:
             const ownerPw = crypto.randomBytes(18).toString("base64url"); // never printed
             const c = await call("POST", "/api/create-quiniela", { slug, groupName: "IP check " + process.env.GITHUB_RUN_ID, creatorName: "Ana", contact: "ci", password: ownerPw });
             log({ create: c.status });
-            const meta = JSON.parse((await call("GET", K)).text).value;
+            const meta = (await call("GET", K)).json().value;
             const ana = { id: meta.participants[0].id, pin: pin() };
             const sp = await call("POST", "/api/set-pin", { metaKey, participantId: ana.id, newPin: ana.pin }, { cookie: jar(c.sc) });
             log({ claimAdminPin: sp.status });
-            const reg = async (name) => { const p = pin(); const r = JSON.parse((await call("POST", "/api/self-register", { metaKey, name, pin: p, slug })).text); return { id: r.participant.id, pin: p }; };
+            const reg = async (name) => { const p = pin(); const resp = await call("POST", "/api/self-register", { metaKey, name, pin: p, slug }); const r = resp.json(); log({ selfRegister: name, status: resp.status, ok: r.ok, error: r.error || null }); return { id: r.participant.id, pin: p }; };
             const bob = await reg("Bob"), carla = await reg("Carla");
             // PINs are never printed here (masking them would make GitHub drop the
             // job output that carries them to the other runners).
@@ -73,7 +85,7 @@ jobs:
             for (let i = 0; i < 25; i++) {
               let g; do { g = pin(); } while (g === ana.pin);
               const r = await call("POST", "/api/verify-pin", { metaKey, participantId: ana.id, pin: g }, { forge: true });
-              const k = r.status + " " + (r.status === 200 ? JSON.parse(r.text).ok : JSON.parse(r.text).error);
+              const j = r.json(); const k = r.status + " " + (r.status === 200 ? j.ok : j.error);
               tally[k] = (tally[k] || 0) + 1;
             }
             log({ step: "25 wrong guesses at the admin PIN, forged XFF/CF-Connecting-IP/True-Client-IP/X-Real-IP on each", tally });
