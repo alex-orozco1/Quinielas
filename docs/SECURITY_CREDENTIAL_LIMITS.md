@@ -151,20 +151,21 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   y, con él, el estado. Esto aplica en set-pin, en la contraseña de administrador desde Ajustes, en la del
   panel y en la de una quiniela desde el panel. No se aplica al PIN de otra persona escrito por un admin
   vía meta: ahí "igual o distinto" se notaría en el `rev` y sería un intento gratis.
-  Consecuencias:
-  - Guardar el mismo PIN no cierra las sesiones de otros dispositivos, porque las sesiones van atadas al
-    hash. "Cambiar mi PIN" con el mismo valor ahora lo dice en pantalla y no llama al servidor. Un reset
-    del admin o un PIN distinto sí las cierran.
-  - Una credencial heredada en texto plano se migra a hash en su primera escritura. Eso cambia su
-    versión una vez, y en ese momento el atacante recupera sus 10 intentos libres una sola vez. No se
-    comprobó si quedan valores así en producción (NOT PROVEN). **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes,
-  Panel de plataforma, cambio de PIN), del PIN que el navegador reenvía en cada petición o de un
-  dispositivo de confianza: un acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto
-  del atacante depende sólo de sus propios fallos, y los logins frecuentes del titular no le dan nada.
+- **Ningún acierto lo pone a cero.** Da igual si viene de un login (PIN, Ajustes, Panel de plataforma,
+  cambio de PIN), del PIN que el navegador reenvía en cada petición o de un dispositivo de confianza: un
+  acierto sólo devuelve la reserva que hizo él mismo. Así el presupuesto del atacante depende sólo de sus
+  propios fallos, y los logins frecuentes del titular no le dan nada.
   Historial: sobre `d1a05a9`, Technical QA reprodujo que cualquier acierto reiniciaba la espera.
   `c3c586d` lo limitó a los logins explícitos, y aun así cada login devolvía 10 intentos libres
   (~433/día con un login por hora). El dueño del producto pidió cerrarlo: desde este cambio ningún
   acierto reinicia.
+- **Consecuencias de conservar el hash al guardar el mismo valor:**
+  - Guardar el mismo PIN no cierra las sesiones de otros dispositivos, porque las sesiones van atadas al
+    hash. "Cambiar mi PIN" con el mismo valor lo dice en pantalla y no llama al servidor. Un reset del
+    admin o un PIN distinto sí las cierran.
+  - Una credencial heredada en texto plano se migra a hash en su primera escritura. Eso cambia su
+    versión una vez, y en ese momento el atacante recupera sus 10 intentos libres una sola vez. No se
+    comprobó si quedan valores así en producción (NOT PROVEN).
 - **Valores repetidos:** el mismo valor equivocado no se cuenta dos veces, pero espera como cualquier
   otro; preguntar durante la espera por un valor ya probado recibe el mismo 429 (sin oráculo de "¿esto
   ya se probó?").
