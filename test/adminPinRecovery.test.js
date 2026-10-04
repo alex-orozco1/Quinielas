@@ -108,3 +108,13 @@ test("FRONTEND: the recovery asks the admin password first (with the wait notice
   assert.ok(api.includes('headers: setAuthHeaders({ "Content-Type": "application/json" }, adminPassword),'));
   assert.ok(api.includes("body: JSON.stringify({ metaKey: currentMetaKey(), participantId, newPin })"), "the admin password is not in the body");
 });
+
+test("FRONTEND: Enter in a prompt is handled once (keyboard-only recovery does not reopen the PIN modal)", () => {
+  const prompt = extractFunction(indexSrc, "function qzPrompt(message, opts)");
+  const onKey = prompt.slice(prompt.indexOf("const onKey = (e) => {"), prompt.indexOf('document.addEventListener("keydown", onKey);'));
+  // Enter on the modal's own buttons (Cancelar, «¿Olvidaste tu PIN?») is their click, not a submit.
+  assert.ok(onKey.includes('if(e.target !== input && e.target.tagName === "BUTTON" && overlay.contains(e.target)) return;'));
+  // Otherwise it submits and the browser must not act on it as well: cleanup() returns the focus to the
+  // button that opened the modal, and the same Enter would click it.
+  assert.ok(onKey.indexOf("e.preventDefault();") !== -1 && onKey.indexOf("e.preventDefault();") < onKey.indexOf("submit();"));
+});

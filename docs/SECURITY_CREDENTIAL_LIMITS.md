@@ -309,8 +309,16 @@ demostrando la contraseña de administrador de la quiniela.
   en la respuesta, en las cookies ni en el log (`admin_pin_recovered { slug, hadPin }`).
 - **Quién puede usarlo:** quien conoce la contraseña de administrador. Esa contraseña ya permite
   administrar la quiniela entera, incluido resetear PINs, así que no da acceso nuevo.
-- **Sin contraseña de administrador** (quinielas heredadas) no hay recuperación por esta vía: la
-  pantalla pide ayuda al equipo de QRACKS.
+- **Teclado:** Enter avanza cada paso. Enter sobre el enlace lo abre y sobre «Cancelar» cancela; nunca
+  reabre el modal del PIN por detrás (Product QA lo encontró sobre `b67a0ce`).
+- **Sin contraseña de administrador** (quinielas heredadas; crear una quiniela la exige) no hay
+  recuperación por esta vía. P3 conocidos, sin corregir:
+  - La pantalla se queda en "Esa no es la contraseña de administrador.": el primer paso
+    (`verify-owner`) no distingue ese caso, y el texto de ayuda para `409 no_admin_password` no se llega
+    a mostrar.
+  - `409 no_admin_password` dice sin credencial que esa quiniela no tiene contraseña. `verify-owner` ya
+    lo revelaba por tiempo (mediana local: 43 ms con contraseña, 1,9 ms sin ella), así que no añade
+    información nueva. Ocultarlo del todo exigiría un scrypt falso y contar el intento.
 - Pruebas: `test/adminPinRecovery.test.js` (estructura) y `test/adminPinRecovery.integration.test.js`
   (servidor real con PostgreSQL local: sesiones y cookies viejas, mismo PIN, limitador compartido,
   concurrencia, reinicio).

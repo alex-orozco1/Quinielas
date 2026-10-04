@@ -2414,7 +2414,17 @@
       const submit = () => { if(!confirmBtn.disabled) cleanup(input.value); };
       const onKey = (e) => {
         if(e.key === "Escape") cleanup(null);
-        else if(e.key === "Enter") submit();
+        else if(e.key === "Enter"){
+          // Enter on one of the modal's own buttons (Cancelar, the secondary
+          // link) is that button's click, not a submit.
+          if(e.target !== input && e.target.tagName === "BUTTON" && overlay.contains(e.target)) return;
+          // Handled here, so the browser must not act on it too: cleanup()
+          // hands the focus back to the button that opened the modal, and the
+          // same Enter would then click it (reopening the PIN modal on top of
+          // the next step of «¿Olvidaste tu PIN?»).
+          e.preventDefault();
+          submit();
+        }
       };
       document.addEventListener("keydown", onKey);
       overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(null); });
