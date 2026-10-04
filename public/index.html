@@ -448,6 +448,11 @@
   .qz-modal-confirm{ background:#C1443A; color:#fff; }
   .qz-modal-confirm.qz-modal-not-destructive{ background:#0F2E22; }
   .qz-modal-confirm:hover{ opacity:0.9; }
+  /* Secondary action inside a modal ("¿Olvidaste tu PIN?"): a link, not a third button. */
+  .qz-modal-alt{
+    display:block; margin:12px auto 0; padding:6px 8px; background:none; border:none; cursor:pointer;
+    font-family:'Manrope', sans-serif; font-size:13.5px; font-weight:700; color:#1C5233; text-decoration:underline;
+  }
   .qz-modal-input{
     width:100%; padding:9px 11px; border-radius:8px; border:1.5px solid #E7E3D6;
     font-family:'Manrope', sans-serif; font-size:16px; background:#FFFFFF; color:#10231C;
@@ -1591,6 +1596,8 @@
     while(true){
       const raw = await qzPrompt(message, { ...opts, waitKey });
       if(raw === null) return null;
+      // The modal's secondary action (opts.altLabel) was chosen instead.
+      if(raw === QZ_PROMPT_ALT) return { alt: true };
       const value = raw.trim();
       const result = await check(value);
       if(result && result.error === "too_many_attempts" && startCredentialWait(waitKey, result)) continue;
@@ -2034,6 +2041,66 @@
   async function apiSetPin(participantId, currentPin, newPin){
     return (await apiSetPinResult(participantId, currentPin, newPin)).ok;
   }
+  // "¿Olvidaste tu PIN?" for an admin: the admin password (header only, never
+  // the body) proves who may choose a new one. { ok, error, retryAfterSeconds }.
+  async function apiRecoverAdminPin(participantId, adminPassword, newPin){
+    try{
+      const res = await fetch("/api/recover-admin-pin", {
+        method: "POST", credentials: "same-origin",
+        // Unbound (no participant header): it is the admin password, not a PIN.
+        headers: setAuthHeaders({ "Content-Type": "application/json" }, adminPassword),
+        body: JSON.stringify({ metaKey: currentMetaKey(), participantId, newPin })
+      });
+      const data = await res.json().catch(() => ({}));
+      if(res.ok) adoptParticipantRevs(data.participantRevs);
+      return { ok: res.ok && !!data.ok, error: res.ok ? null : (data.error || null), retryAfterSeconds: res.ok ? null : data.retryAfterSeconds };
+    }catch(e){ console.error("recoverAdminPin failed", e); return { ok: false, error: null }; }
+  }
+  // The whole "¿Olvidaste tu PIN?" flow for an admin, from the login screen,
+  // with no session and no other admin: prove the admin password, then choose
+  // a new PIN twice. The old PIN is never shown or needed. Resolves to the new
+  // PIN when it is saved, or null (canceled / not possible: the reason is
+  // already on screen).
+  async function recoverAdminPin(p){
+    const pw = await promptCredential(
+      "Para elegir un PIN nuevo, escribe la contraseña de administrador de esta quiniela (la que se eligió al crearla).",
+      { title: "¿Olvidaste tu PIN?", confirmLabel: "Continuar", secret: true },
+      "owner", (password) => verifyOwnerPasswordResult(password));
+    if(pw === null){ showLoginWait("owner", "Contraseña de administrador"); return null; }
+    if(!pw.result.ok){ toast(pinFailureMessage(pw.result, "Esa no es la contraseña de administrador.")); return null; }
+    const password = pw.value;
+    while(true){
+      const first = await qzPrompt("Elige tu nuevo PIN (4 números):", { title: "Nuevo PIN", confirmLabel: "Continuar", pin: true });
+      if(first === null) return null;
+      const newPin = first.trim();
+      if(!/^\d{4}$/.test(newPin)){ toast("El PIN debe ser exactamente 4 números"); continue; }
+      // An empty confirmation (a second Enter right after the first PIN) is
+      // not a mismatch: it just asks again.
+      let again = "";
+      while(!again.trim()){
+        again = await qzPrompt("Escríbelo otra vez para confirmarlo:", { title: "Nuevo PIN", confirmLabel: "Guardar", pin: true });
+        if(again === null) return null;
+      }
+      if(again.trim() !== newPin){ toast("Los dos PIN no coinciden. Elige uno otra vez."); continue; }
+      const result = await apiRecoverAdminPin(p.id, password, newPin);
+      if(result.ok){
+        // The admin password was just proven on this device too.
+        ownerPasswordCache = password;
+        ownerUnlocked = true;
+        return newPin;
+      }
+      if(result.error === "too_many_attempts" && startCredentialWait("owner", result)){
+        showLoginWait("owner", "Contraseña de administrador");
+        return null;
+      }
+      toast(result.error === "wrong_admin_password"
+        ? "La contraseña de administrador cambió mientras tanto. Inténtalo de nuevo."
+        : result.error === "no_admin_password"
+          ? "Esta quiniela no tiene contraseña de administrador. Pide ayuda al equipo de QRACKS para recuperar el acceso."
+          : "No se pudo guardar el PIN nuevo. Intenta de nuevo.");
+      return null;
+    }
+  }
   // First PIN of an admin: tries the setup claim cookie first, then asks for
   // the admin password chosen at creation. Resolves to { ok, error, canceled }.
   async function setFirstAdminPin(participantId, newPin){
@@ -2306,6 +2373,9 @@
   // the raw typed string if confirmed (Enter or the button) — including an
   // empty string if they submit blank, same as the native prompt(). Every
   // validation rule stays exactly where it already lived, in the caller.
+  // What qzPrompt resolves to when its secondary action (opts.altLabel) is
+  // chosen: an object, so it can never be mistaken for anything typed.
+  const QZ_PROMPT_ALT = Object.freeze({ qzPromptAlt: true });
   function qzPrompt(message, opts){
     opts = opts || {};
     const isPin = !!opts.pin; // masks the value on screen, restricts to 4 digits
@@ -2327,6 +2397,7 @@
             ${isPin ? 'maxlength="4" pattern="[0-9]*"' : ""}
           >
           ${opts.waitKey ? credentialWaitNoticeHtml("qz-prompt-wait") : ""}
+          ${opts.altLabel ? `<button type="button" class="qz-modal-alt" id="qz-modal-alt-btn">${esc(opts.altLabel)}</button>` : ""}
           <div class="qz-modal-actions">
             <button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>
             <button class="qz-modal-confirm qz-modal-not-destructive" id="qz-modal-confirm-btn">${esc(confirmLabel)}</button>
@@ -2348,12 +2419,26 @@
       const submit = () => { if(!confirmBtn.disabled) cleanup(input.value); };
       const onKey = (e) => {
         if(e.key === "Escape") cleanup(null);
-        else if(e.key === "Enter") submit();
+        else if(e.key === "Enter"){
+          // Enter on one of the modal's own buttons (Cancelar, the secondary
+          // link) is that button's click, not a submit.
+          if(e.target !== input && e.target.tagName === "BUTTON" && overlay.contains(e.target)) return;
+          // Handled here, so the browser must not act on it too: cleanup()
+          // hands the focus back to the button that opened the modal, and the
+          // same Enter would then click it (reopening the PIN modal on top of
+          // the next step of «¿Olvidaste tu PIN?»).
+          e.preventDefault();
+          submit();
+        }
       };
       document.addEventListener("keydown", onKey);
       overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(null); });
       overlay.querySelector("#qz-modal-cancel-btn").addEventListener("click", () => cleanup(null));
       confirmBtn.addEventListener("click", submit);
+      // Secondary action: resolves to QZ_PROMPT_ALT (never a typed value). It
+      // works during a wait too -- that is when "¿Olvidaste tu PIN?" matters.
+      const altBtn = overlay.querySelector("#qz-modal-alt-btn");
+      if(altBtn) altBtn.addEventListener("click", () => cleanup(QZ_PROMPT_ALT));
       if(isPin){
         input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 4); });
       }
@@ -3808,6 +3893,18 @@
   const loginPinMisses = new Map();
   // The wait the login screen is showing next to the names, if any.
   let loginWait = null;
+  // One login at a time. Between two modals of a login (a request in flight)
+  // the focus is back on the name the person tapped, so a second Enter or
+  // click would start another login on top, and what they type next (a new
+  // PIN, say) would land in the wrong modal.
+  let loginInProgress = false;
+  function oneLoginAtATime(fn){
+    return async (...args) => {
+      if(loginInProgress) return;
+      loginInProgress = true;
+      try { return await fn(...args); } finally { loginInProgress = false; }
+    };
+  }
   function showLoginWait(key, label){
     if(credentialWaitLeft(key) <= 0) return false;
     loginWait = { key, label };
@@ -3879,8 +3976,11 @@
       render();
     });
     root.querySelectorAll(".name-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", oneLoginAtATime(async () => {
         const p = meta.participants.find(x => x.id === btn.dataset.id);
+        // Said once the app is on screen: rendering it replaces the login
+        // screen, toast included.
+        let afterEntry = null;
         if(!p.hasPin){
           const newPin = await qzPrompt("Este nombre todavía no tiene PIN. Ponle uno de 4 dígitos para que nadie más pueda entrar como tú:", { title: "Activa tu PIN", confirmLabel: "Continuar", pin: true });
           if(newPin === null) return;
@@ -3908,34 +4008,51 @@
           toast("PIN configurado ✅ — no lo olvides");
         } else {
           // A wait keeps the PIN modal up with its countdown; closing it leaves
-          // the same countdown next to the names.
-          const attempt = await promptCredential("Escribe el PIN de " + p.name + " para entrar:", { title: "Entrar", confirmLabel: "Entrar", pin: true },
+          // the same countdown next to the names. "¿Olvidaste tu PIN?" is there
+          // for everyone, during a wait too.
+          const attempt = await promptCredential("Escribe el PIN de " + p.name + " para entrar:", { title: "Entrar", confirmLabel: "Entrar", pin: true, altLabel: "¿Olvidaste tu PIN?" },
             "pin:" + p.id, (pin) => verifyParticipantPin(p.id, pin));
           if(attempt === null){ showLoginWait("pin:" + p.id, "PIN de " + p.name); return; }
-          const cleanEntered = attempt.value;
-          const verification = attempt.result;
-          if(!verification.ok){
-            // After a few misses, point at the way out that exists today
-            // instead of inviting more guesses.
-            if(verification.error !== "too_many_attempts") loginPinMisses.set(p.id, (loginPinMisses.get(p.id) || 0) + 1);
-            const forgotHint = (loginPinMisses.get(p.id) || 0) >= 5
-              ? "❌ PIN incorrecto. ¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee."
-              : "❌ PIN incorrecto";
-            toast(pinFailureMessage(verification, forgotHint));
-            return;
+          if(attempt.alt){
+            if(!p.isAdmin){
+              await qzConfirm("Pide a quien organiza la quiniela (o a otro admin) que resetee tu PIN desde Participantes. Después podrás elegir uno nuevo al tocar tu nombre.", { title: "¿Olvidaste tu PIN?", confirmLabel: "Entendido", cancelLabel: "Cerrar", destructive: false });
+              return;
+            }
+            const newPin = await recoverAdminPin(p);
+            if(!newPin) return;
+            loginPinMisses.delete(p.id);
+            if(loginWait && (loginWait.key === "pin:" + p.id || loginWait.key === "owner")) loginWait = null;
+            p.hasPin = true;
+            currentUserPinCache = newPin;
+            afterEntry = "✅ Listo. Tu PIN nuevo quedó guardado.";
+          } else {
+            const cleanEntered = attempt.value;
+            const verification = attempt.result;
+            if(!verification.ok){
+              // After a few misses, point at the way out that exists.
+              if(verification.error !== "too_many_attempts") loginPinMisses.set(p.id, (loginPinMisses.get(p.id) || 0) + 1);
+              const forgotHint = (loginPinMisses.get(p.id) || 0) >= 5
+                ? (p.isAdmin
+                  ? "❌ PIN incorrecto. ¿Lo olvidaste? Toca «¿Olvidaste tu PIN?» y elige uno nuevo con la contraseña de administrador."
+                  : "❌ PIN incorrecto. ¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee.")
+                : "❌ PIN incorrecto";
+              toast(pinFailureMessage(verification, forgotHint));
+              return;
+            }
+            loginPinMisses.delete(p.id);
+            if(loginWait && loginWait.key === "pin:" + p.id) loginWait = null;
+            currentUserPinCache = cleanEntered;
           }
-          loginPinMisses.delete(p.id);
-          if(loginWait && loginWait.key === "pin:" + p.id) loginWait = null;
-          currentUserPinCache = cleanEntered;
         }
         currentUser = p;
         myPicks = await getPicks(p.id);
         activeTab = (ADMIN_ENTRY && p.isAdmin) ? "admin" : "jornada";
         await render();
+        if(afterEntry) toast(afterEntry);
         // Si entró a pedir identificación al volver del pago, ahora se puede
         // confirmar la compra.
         resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
-      });
+      }));
     });
   }
 

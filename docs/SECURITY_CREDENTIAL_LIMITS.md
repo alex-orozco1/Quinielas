@@ -200,6 +200,7 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   - entrar desde un dispositivo de confianza o con la sesión abierta (dura 1 año);
   - esperar lo que indica la pantalla (máximo 15 min por intento);
   - PIN de participante: un admin lo resetea y la persona pone uno nuevo (contador nuevo);
+  - PIN de un admin: «¿Olvidaste tu PIN?» en el login, con la contraseña de administrador (§5.2);
   - contraseña de administrador: el owner la cambia desde un dispositivo de confianza;
   - contraseña de plataforma: cambiarla desde un dispositivo de confianza del panel, o rotar
     `PLATFORM_PASSWORD` y reiniciar si no se fijó una desde el panel. Recomendación operativa: entrar
@@ -212,7 +213,9 @@ Elegida por el dueño del producto (2026-10-03) en lugar del bloqueo duro de 24 
   - Mientras dura, el botón de enviar queda desactivado.
   - Al llegar a cero, el aviso cambia a "Ya puedes intentarlo de nuevo".
   - El toast de 2,2 s ya no es el único aviso.
-  - Tras 5 PINs incorrectos en el login sugiere "¿Olvidaste tu PIN? Pide a quien organiza (o a otro
+  - El modal del PIN tiene el enlace «¿Olvidaste tu PIN?», también durante una espera (§5.2).
+  - Tras 5 PINs incorrectos en el login lo recuerda: a un admin, "Toca «¿Olvidaste tu PIN?» y elige uno
+    nuevo con la contraseña de administrador"; a un participante, "Pide a quien organiza (o a otro
     admin) que lo resetee".
 
 ### 5.1 Evaluación: bloqueo de 24 h frente a espera progresiva
@@ -274,12 +277,55 @@ estos son los cambios y lo que el dueño del producto tiene que decidir:
 **Decisión:** implementada en este PR (2026-10-03) con las reglas del punto 3 y los cambios de pantalla de
 los puntos 1 y 2.
 
-**Siguiente tarea (registrada, fuera de este PR; P2 verificado por Product QA):** un admin único
-que olvidó su PIN y no tiene sesión ni dispositivo de confianza **no tiene recuperación de autoservicio**:
-el login sólo acepta 4 dígitos, la contraseña de administrador sólo se pide en Ajustes (con sesión) y el
-Panel de plataforma no ofrece resetear PINs. Hoy sólo lo rescata otro admin (Participantes → Resetear) o
-una intervención manual. Opciones: reset del propio PIN con la contraseña de administrador desde el login,
-o un botón "resetear PIN" en el Panel de plataforma. Un admin secundario sí se recupera (verificado).
+**Siguiente tarea (registrada en el PR #28; P2 verificado por Product QA):** un admin único que olvidó su
+PIN y no tenía sesión ni dispositivo de confianza no tenía recuperación de autoservicio. **Resuelta** con
+«¿Olvidaste tu PIN?» (§5.2).
+
+### 5.2 «¿Olvidaste tu PIN?» (admin)
+
+Un admin que olvidó su PIN, sin sesión, sin dispositivo de confianza y sin otro admin, elige uno nuevo
+demostrando la contraseña de administrador de la quiniela.
+
+- **En la pantalla:** el modal del PIN del login tiene el enlace «¿Olvidaste tu PIN?» (también durante
+  una espera). Para un admin pide la contraseña de administrador, luego el PIN nuevo dos veces, y entra.
+  Para un participante explica que un admin se lo resetea desde Participantes; no pide nada.
+- **Servidor:** `POST /api/recover-admin-pin` con `{ metaKey, participantId, newPin }` y la contraseña en
+  `X-Qracks-Auth` (nunca en el cuerpo; si va ligada a un participante con `X-Qracks-Participant` es un
+  PIN y no cuenta). Bajo el bloqueo de la fila: el participante tiene que ser admin (`403 not_admin`
+  antes de mirar la contraseña, así que probar contra un no admin no cuesta ni dice nada), la quiniela
+  tiene que tener contraseña (`409 no_admin_password`) y la contraseña pasa por el limitador.
+- **Limitador:** el mismo de la contraseña de administrador (objetivo `owner`), compartido con
+  `verify-owner`, Ajustes y las escrituras con esa contraseña. 10 fallos libres y después la espera
+  progresiva (`429 too_many_attempts` con `retryAfterSeconds`). La recuperación (un acierto) **no** lo
+  pone a cero. Además, `rateLimit` de 40 peticiones / 5 min por IP.
+- **Versión nueva siempre:** el PIN nuevo se guarda con sal nueva, aunque sea el mismo valor. Con eso:
+  - terminan las sesiones de ese admin en otros dispositivos;
+  - su confianza anterior deja de valer (las cookies viejas vuelven a ser navegadores normales);
+  - la respuesta no dice si el PIN era el mismo;
+  - el estado del limitador **del PIN** empieza de cero (regla de §5: versión nueva). El atacante no
+    conoce el PIN nuevo, y provocarlo requiere la contraseña de administrador.
+- **El dispositivo que recupera** recibe sesión y confianza para el PIN nuevo y para la contraseña.
+- **Nunca se muestra el PIN viejo:** la respuesta sólo trae `ok` y `participantRevs`; no hay PIN ni hash
+  en la respuesta, en las cookies ni en el log (`admin_pin_recovered { slug, hadPin }`).
+- **Quién puede usarlo:** quien conoce la contraseña de administrador. Esa contraseña ya permite
+  administrar la quiniela entera, incluido resetear PINs, así que no da acceso nuevo.
+- **Teclado y toques dobles:**
+  - Enter avanza cada paso. Enter sobre el enlace lo abre y sobre «Cancelar» cancela.
+  - Hay un solo login a la vez: un segundo Enter o toque mientras una petición está en vuelo no abre
+    otro modal encima.
+  - Una confirmación vacía vuelve a pedirse, sin decir "no coinciden".
+  - Lo encontraron Product QA sobre `b67a0ce` y Technical QA sobre `26366a7`.
+- **Sin contraseña de administrador** (quinielas heredadas; crear una quiniela la exige) no hay
+  recuperación por esta vía. P3 conocidos, sin corregir:
+  - La pantalla se queda en "Esa no es la contraseña de administrador.": el primer paso
+    (`verify-owner`) no distingue ese caso, y el texto de ayuda para `409 no_admin_password` no se llega
+    a mostrar.
+  - `409 no_admin_password` dice sin credencial que esa quiniela no tiene contraseña. `verify-owner` ya
+    lo revelaba por tiempo (mediana local: 43 ms con contraseña, 1,9 ms sin ella), así que no añade
+    información nueva. Ocultarlo del todo exigiría un scrypt falso y contar el intento.
+- Pruebas: `test/adminPinRecovery.test.js` (estructura) y `test/adminPinRecovery.integration.test.js`
+  (servidor real con PostgreSQL local: sesiones y cookies viejas, mismo PIN, limitador compartido,
+  concurrencia, reinicio).
 
 ## 6. Fuera de alcance de esta entrega
 

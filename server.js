@@ -2300,6 +2300,81 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
   }
 });
 
+// "¿Olvidaste tu PIN?" for an admin: a new PIN chosen by proving the ADMIN
+// PASSWORD, with no session and no other admin needed (the sole admin who
+// forgot their PIN had no way back before this). It grants nothing new: the
+// admin password can already set any participant's PIN through Ajustes; this
+// is the same power, reachable from the login screen.
+// - Only for a participant who is an admin; anyone else asks an admin.
+// - The admin password goes in X-Qracks-Auth, never in the body, unbound to a
+//   participant, and is checked through checkCredential: the failed-attempt
+//   limiter applies exactly as on verify-owner (429 with the time left).
+// - The new PIN is ALWAYS hashed with a fresh salt, never kept even if it is
+//   the same value: the credential gets a new version, so every other device's
+//   trust in the old PIN and every old session for this person end
+//   (trustDevice, pinFingerprint), and the answer never tells whether the
+//   chosen PIN equals the old one. Nothing about the old PIN is ever returned.
+// - The device that completes it gets a session and trust for the new PIN
+//   (and for the admin password it just proved).
+app.post("/api/recover-admin-pin", rateLimit("recover-admin-pin"), async (req, res) => {
+  try {
+    const { metaKey, participantId, newPin } = req.body || {};
+    if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
+      return res.status(400).json({ error: "invalid_params" });
+    }
+    const slug = slugFromMetaKey(metaKey);
+    if (!slug) return res.status(400).json({ error: "invalid_params" });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const value = await getRowLocked(metaKey, client);
+      if (!value) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "not_found" });
+      }
+      const participant = (value.participants || []).find((p) => p.id === participantId);
+      if (!participant || !participant.isAdmin) {
+        // Checked before the password, so a non-admin target costs nothing
+        // and answers nothing about the password.
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "not_admin" });
+      }
+      const ownerPassword = value.settings ? value.settings.ownerPassword : null;
+      if (!ownerPassword) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "no_admin_password" });
+      }
+      // Against the row read under lock: a password changed a moment ago is
+      // the one that counts.
+      if (!headerIsOwnerPassword(req, slug, value)) {
+        await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
+        return res.status(403).json({ error: "wrong_admin_password" });
+      }
+      const hadPin = !!participant.pin;
+      const beforePinChange = JSON.parse(JSON.stringify(value));
+      participant.pin = hashPassword(newPin);
+      const storedAfterPin = stampMetaWrite(value, beforePinChange);
+      await putRow(metaKey, storedAfterPin, client);
+      await client.query("COMMIT");
+      if (!hadPin) clearAdminSetupClaim(res, slug);
+      console.log("admin_pin_recovered", { slug, hadPin });
+      issueSessionCookie(res, slug, participant);
+      trustDevice(req, res, slug, participant.id, participant.pin);
+      trustDevice(req, res, slug, OWNER_TARGET, ownerPassword);
+      res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
 // Silent, read-only check used when the Access Link is opened: is there a
 // still-valid session for this device? Only the resulting user state goes
 // back to the frontend — the token itself never leaves this handler.
