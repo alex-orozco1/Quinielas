@@ -309,8 +309,12 @@ demostrando la contraseña de administrador de la quiniela.
   en la respuesta, en las cookies ni en el log (`admin_pin_recovered { slug, hadPin }`).
 - **Quién puede usarlo:** quien conoce la contraseña de administrador. Esa contraseña ya permite
   administrar la quiniela entera, incluido resetear PINs, así que no da acceso nuevo.
-- **Teclado:** Enter avanza cada paso. Enter sobre el enlace lo abre y sobre «Cancelar» cancela; nunca
-  reabre el modal del PIN por detrás (Product QA lo encontró sobre `b67a0ce`).
+- **Teclado y toques dobles:**
+  - Enter avanza cada paso. Enter sobre el enlace lo abre y sobre «Cancelar» cancela.
+  - Hay un solo login a la vez: un segundo Enter o toque mientras una petición está en vuelo no abre
+    otro modal encima.
+  - Una confirmación vacía vuelve a pedirse, sin decir "no coinciden".
+  - Lo encontraron Product QA sobre `b67a0ce` y Technical QA sobre `26366a7`.
 - **Sin contraseña de administrador** (quinielas heredadas; crear una quiniela la exige) no hay
   recuperación por esta vía. P3 conocidos, sin corregir:
   - La pantalla se queda en "Esa no es la contraseña de administrador.": el primer paso

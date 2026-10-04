@@ -2074,8 +2074,13 @@
       if(first === null) return null;
       const newPin = first.trim();
       if(!/^\d{4}$/.test(newPin)){ toast("El PIN debe ser exactamente 4 números"); continue; }
-      const again = await qzPrompt("Escríbelo otra vez para confirmarlo:", { title: "Nuevo PIN", confirmLabel: "Guardar", pin: true });
-      if(again === null) return null;
+      // An empty confirmation (a second Enter right after the first PIN) is
+      // not a mismatch: it just asks again.
+      let again = "";
+      while(!again.trim()){
+        again = await qzPrompt("Escríbelo otra vez para confirmarlo:", { title: "Nuevo PIN", confirmLabel: "Guardar", pin: true });
+        if(again === null) return null;
+      }
       if(again.trim() !== newPin){ toast("Los dos PIN no coinciden. Elige uno otra vez."); continue; }
       const result = await apiRecoverAdminPin(p.id, password, newPin);
       if(result.ok){
@@ -3888,6 +3893,18 @@
   const loginPinMisses = new Map();
   // The wait the login screen is showing next to the names, if any.
   let loginWait = null;
+  // One login at a time. Between two modals of a login (a request in flight)
+  // the focus is back on the name the person tapped, so a second Enter or
+  // click would start another login on top, and what they type next (a new
+  // PIN, say) would land in the wrong modal.
+  let loginInProgress = false;
+  function oneLoginAtATime(fn){
+    return async (...args) => {
+      if(loginInProgress) return;
+      loginInProgress = true;
+      try { return await fn(...args); } finally { loginInProgress = false; }
+    };
+  }
   function showLoginWait(key, label){
     if(credentialWaitLeft(key) <= 0) return false;
     loginWait = { key, label };
@@ -3959,7 +3976,7 @@
       render();
     });
     root.querySelectorAll(".name-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", oneLoginAtATime(async () => {
         const p = meta.participants.find(x => x.id === btn.dataset.id);
         // Said once the app is on screen: rendering it replaces the login
         // screen, toast included.
@@ -4035,7 +4052,7 @@
         // Si entró a pedir identificación al volver del pago, ahora se puede
         // confirmar la compra.
         resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
-      });
+      }));
     });
   }
 

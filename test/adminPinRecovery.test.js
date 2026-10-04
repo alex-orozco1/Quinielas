@@ -118,3 +118,13 @@ test("FRONTEND: Enter in a prompt is handled once (keyboard-only recovery does n
   // button that opened the modal, and the same Enter would click it.
   assert.ok(onKey.indexOf("e.preventDefault();") !== -1 && onKey.indexOf("e.preventDefault();") < onKey.indexOf("submit();"));
 });
+
+test("FRONTEND: one login at a time (a second Enter or tap while a login is on does not start another on top)", () => {
+  const guard = extractFunction(indexSrc, "function oneLoginAtATime(fn)");
+  assert.ok(guard.includes("if(loginInProgress) return;"));
+  assert.ok(guard.includes("try { return await fn(...args); } finally { loginInProgress = false; }"), "released however the login ends");
+  assert.ok(indexSrc.includes('btn.addEventListener("click", oneLoginAtATime(async () => {\n        const p = meta.participants.find(x => x.id === btn.dataset.id);'));
+  // An empty confirmation (Enter twice on the new PIN) asks again instead of "no coinciden".
+  const flow = extractFunction(indexSrc, "async function recoverAdminPin(p)");
+  assert.ok(flow.includes("while(!again.trim()){"));
+});
