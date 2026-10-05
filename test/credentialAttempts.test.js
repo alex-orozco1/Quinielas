@@ -443,7 +443,7 @@ test("SERVER: trusted-device cookies are signed, scoped, and handed out only aft
   assert.ok(kv.includes("if (mayChangeOwnerPw && typeof typedOwnerPw === \"string\" && typedOwnerPw && !isHashed(typedOwnerPw)"), "only the writer who typed the new admin password, and may change it, is trusted for it");
   assert.ok(kv.includes("trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET, finalValue.dashboardPassword);"), "a new platform password: the panel that set it is trusted for it");
   const grants = (serverSrc.match(/trustDevice\(req, res, [^)]*\)/g) || []).filter((g) => !g.includes("slug, target, stored"));
-  assert.equal(grants.length, 9, "the nine grants above, each naming a stored credential: " + grants.join(" | "));
+  assert.equal(grants.length, 11, "the nine grants above and the two of ¿Olvidaste tu PIN?, each naming a stored credential: " + grants.join(" | "));
   assert.ok(grants.every((g) => g.split(",").length === 5), "five arguments: the last is the stored credential");
   // A trust token is never a session or a setup claim.
   assert.ok(serverSrc.includes("if (session.purpose) return null;"));
@@ -502,7 +502,7 @@ test("FRONTEND: the admin toggle asks for the admin password instead of claiming
 
 test("FRONTEND: PIN and password screens say 'too many attempts' when that is the reason", () => {
   assert.ok(/function pinFailureMessage\(result, fallback\)\{\s*return result && result\.error === "too_many_attempts"/.test(indexSrc));
-  assert.equal((indexSrc.match(/toast\(pinFailureMessage\(/g) || []).length, 5, "PIN login, change PIN, admin re-auth, Ajustes, Panel de plataforma");
+  assert.equal((indexSrc.match(/toast\(pinFailureMessage\(/g) || []).length, 6, "PIN login, change PIN, admin re-auth, Ajustes, Panel de plataforma, ¿Olvidaste tu PIN?");
 });
 
 // ---- "éxito falso" after a participants refresh (Product QA F4) ----------
@@ -708,16 +708,18 @@ test("FRONTEND: every response that can carry too_many_attempts hands retryAfter
   assert.ok(indexSrc.includes("return result && result.error === \"too_many_attempts\" ? humanizeError(result.error, result) : fallback;"));
 });
 
-test("FRONTEND: after 5 wrong PINs the login points at the way out that exists (another admin resets it)", () => {
+test("FRONTEND: after 5 wrong PINs the login points at the way out that exists", () => {
   const start = indexSrc.indexOf('"pin:" + p.id, (pin) => verifyParticipantPin(p.id, pin));');
   assert.ok(start > 0);
-  const block = indexSrc.slice(start, start + 1300);
+  const block = indexSrc.slice(start, start + 3200);
   assert.ok(block.includes('if(verification.error !== "too_many_attempts") loginPinMisses.set(p.id, (loginPinMisses.get(p.id) || 0) + 1);'));
   assert.ok(block.includes("(loginPinMisses.get(p.id) || 0) >= 5"));
+  // An admin can recover with the admin password now; anyone else asks an admin.
+  assert.ok(block.includes("¿Lo olvidaste? Toca «¿Olvidaste tu PIN?» y elige uno nuevo con la contraseña de administrador."));
   assert.ok(block.includes("¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee."));
-  assert.ok(!block.includes("contraseña de administrador"), "does not offer a recovery that does not exist yet");
   assert.ok(block.includes("loginPinMisses.delete(p.id);"));
 });
+
 
 
 // ---- Technical QA findings on d1a05a9 ----------------------------------------
