@@ -265,6 +265,17 @@
   }
   #quiniela-root .login-title{ font-size:46px; text-align:center; line-height:1; margin-bottom:6px; }
   #quiniela-root .login-sub{ text-align:center; color:var(--ink-soft); font-size:17px; font-weight:600; margin-bottom:26px; }
+  /* /crear: what QRACKS does and what the organizer does, before the form. */
+  #quiniela-root .qz-crear-value{ font-size:15px; line-height:1.4; margin:4px 0 6px; }
+  #quiniela-root .qz-crear-next{ text-align:center; line-height:1.4; margin:0 0 18px; }
+  #quiniela-root .qz-pass-row{ display:flex; gap:8px; align-items:stretch; }
+  #quiniela-root .qz-pass-row input{ flex:1; min-width:0; }
+  #quiniela-root .qz-field-error{ color:var(--red); font-size:13px; font-weight:600; margin-top:4px; }
+  /* "PIN guardado": stays on the screen that follows saving the PIN. */
+  #quiniela-root .qz-pin-saved{
+    margin:12px auto 0; max-width:460px; width:calc(100% - 24px); padding:10px 14px; border-radius:10px;
+    background:#E7F4EC; color:#10231C; border:1px solid #BFDFCB; font-size:14px; line-height:1.45;
+  }
   #quiniela-root .name-grid{
     display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px; max-height:380px; overflow-y:auto; padding-right:2px;
   }
@@ -1396,11 +1407,11 @@
   // Creating a brand-new quiniela — meta + platform_index entry — happens as a
   // single atomic operation on the server (see /api/create-quiniela). No
   // separate registration step, no window where one exists without the other.
-  async function apiCreateQuiniela({ slug, groupName, creatorName, contact, password, sportsdbLeagueId }){
+  async function apiCreateQuiniela({ slug, groupName, creatorName, password, sportsdbLeagueId }){
     try{
       const res = await fetch("/api/create-quiniela", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, groupName, creatorName, contact, password, sportsdbLeagueId })
+        body: JSON.stringify({ slug, groupName, creatorName, password, sportsdbLeagueId })
       });
       const data = await res.json().catch(() => ({}));
       if(res.ok && data.ok && data.slug) trackEvent("quiniela_created", { competitionSlug: data.slug, source: "create_flow" });
@@ -2106,10 +2117,17 @@
   async function setFirstAdminPin(participantId, newPin){
     const first = await apiSetPinResult(participantId, null, newPin);
     if(first.ok || first.error !== "admin_claim_required") return first;
-    const attempt = await promptCredential("Por seguridad, escribe la contraseña de administrador que se eligió al crear la quiniela. Si no la tienes, pide a otro admin que escriba aquí su PIN.", { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true },
-      "owner", (password) => apiSetPinResult(participantId, null, newPin, password));
-    if(attempt === null) return { ok: false, error: "admin_claim_required", canceled: true };
-    return attempt.result;
+    // A wrong password asks again in the same window: the PIN already chosen
+    // is kept. Every try still goes through the attempt limit (a wait shows
+    // its countdown in this window).
+    let message = "Escribe la contraseña de administrador de esta quiniela (no es un PIN). Si no la tienes, otro admin puede escribir aquí su PIN.";
+    while(true){
+      const attempt = await promptCredential(message, { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true },
+        "owner", (password) => apiSetPinResult(participantId, null, newPin, password));
+      if(attempt === null) return { ok: false, error: "admin_claim_required", canceled: true };
+      if(attempt.result.ok || attempt.result.error !== "admin_claim_required") return attempt.result;
+      message = "Esa no es la contraseña de administrador. Inténtalo otra vez (no es un PIN). Si no la tienes, otro admin puede escribir aquí su PIN.";
+    }
   }
   // Anonymous, non-sensitive — just enough to tell "same device came back"
   // apart in the funnel numbers. Not the session cookie, no security role.
@@ -2258,7 +2276,9 @@
     n.classList.remove("show");
   }
 
-  function toast(msg){
+  // `ms`: how long it stays (default 2.2 s; longer for a message that
+  // confirms something the person has to remember).
+  function toast(msg, ms){
     let t = document.getElementById("qz-toast");
     if(!t){
       t = document.createElement("div");
@@ -2272,7 +2292,7 @@
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(t._h);
-    t._h = setTimeout(()=> t.classList.remove("show"), 2200);
+    t._h = setTimeout(()=> t.classList.remove("show"), ms || 2200);
   }
 
   // UX-018: reusable confirmation modal — a drop-in replacement for the
@@ -3447,18 +3467,33 @@
     return `<div class="eyebrow" style="text-align:center;">${esc(text)}</div>`;
   }
 
+  // Confirms the PIN on the screen that FOLLOWS saving it: a toast would be
+  // wiped by that screen's render. It stays until the next screen replaces
+  // it, and a reload does not bring it back.
+  function showPinSavedNotice(name){
+    const prev = document.getElementById("qz-pin-saved");
+    if(prev) prev.remove();
+    const el = document.createElement("div");
+    el.className = "qz-pin-saved";
+    el.id = "qz-pin-saved";
+    el.setAttribute("role", "status");
+    el.innerHTML = `✅ <strong>PIN guardado.</strong> Entras como ${esc(name)} con esos 4 números. Si lo olvidas, lo recuperas con tu contraseña de administrador.`;
+    root.prepend(el);
+  }
+
   async function renderAdminSetupPin(){
+    const creator = meta.participants.find(p => p.isAdmin) || meta.participants[0];
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card" style="text-align:center;">
           <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:10px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
-          ${setupEyebrowHtml("Configura tu quiniela en 3 minutos")}
-          <div class="login-title display" style="margin-top:6px;">Crea tu PIN</div>
-          <p class="login-sub">Usarás estos 4 números para volver a entrar a tu quiniela.</p>
+          ${setupEyebrowHtml("Tu quiniela ya está creada ✅")}
+          <div class="login-title display" style="margin-top:6px;">Crea tu PIN personal</div>
+          <p class="login-sub">4 números para entrar como <strong>${esc(creator.name)}</strong> desde cualquier teléfono. No es tu contraseña de administrador.</p>
           ${pinBoxesHtml("qz-setup-pin-input", "qz-setup-pin-boxes")}
           <p class="muted" id="qz-setup-pin-error" style="color:var(--red);display:none;margin-top:10px;"></p>
           ${credentialWaitNoticeHtml("qz-setup-pin-wait")}
-          <button class="btn btn-primary" id="qz-setup-pin-continue" style="width:100%;padding:12px;margin-top:20px;" disabled>Continuar</button>
+          <button class="btn btn-primary" id="qz-setup-pin-continue" style="width:100%;padding:12px;margin-top:20px;" disabled>Guardar PIN</button>
         </div>
       </div>
     `;
@@ -3476,13 +3511,12 @@
       // Enter goes through here too: nothing while the button is off (a wait
       // on screen, or a save already in flight).
       if(currentValue.length !== 4 || continueBtn.disabled) return;
-      const creator = meta.participants.find(p => p.isAdmin) || meta.participants[0];
       continueBtn.disabled = true;
       continueBtn.textContent = "Guardando...";
       const result = await setFirstAdminPin(creator.id, currentValue);
       if(!result.ok){
         // Never clear the PIN the admin already typed -- just let them retry.
-        continueBtn.textContent = "Continuar";
+        continueBtn.textContent = "Guardar PIN";
         if(result.error === "too_many_attempts") startCredentialWait("owner", result);
         // A wait (now, or still on after canceling the password modal) stays
         // next to the button with its countdown, instead of an error line.
@@ -3508,6 +3542,7 @@
       try{ window.history.replaceState(null, "", "/q/" + encodeURIComponent(SLUG)); }catch(e){}
       trackEvent("admin_setup_step_viewed", { participantId: creator.id, source: "setup_pin_saved" });
       await renderAdminSetupResolve();
+      showPinSavedNotice(creator.name);
     };
     continueBtn.addEventListener("click", submit);
     input.addEventListener("keydown", (e) => { if(e.key === "Enter") submit(); });
@@ -3571,7 +3606,7 @@
     } else {
       setupContinuityResolved = true;
       activeTab = "jornada";
-      render();
+      await render();
     }
   }
 
@@ -4005,7 +4040,7 @@
           }
           p.hasPin = true;
           currentUserPinCache = cleanPin;
-          toast("PIN configurado ✅ — no lo olvides");
+          afterEntry = "✅ PIN guardado. Entras como " + p.name + " con esos 4 números.";
         } else {
           // A wait keeps the PIN modal up with its countdown; closing it leaves
           // the same countdown next to the names. "¿Olvidaste tu PIN?" is there
@@ -4048,7 +4083,7 @@
         myPicks = await getPicks(p.id);
         activeTab = (ADMIN_ENTRY && p.isAdmin) ? "admin" : "jornada";
         await render();
-        if(afterEntry) toast(afterEntry);
+        if(afterEntry) toast(afterEntry, 5000);
         // Si entró a pedir identificación al volver del pago, ahora se puede
         // confirmar la compra.
         resolveCheckoutReturn().catch((e) => console.error("checkout return failed", e));
@@ -7818,8 +7853,8 @@
       body.innerHTML = planCard + `
         <div class="card">
           <div class="eyebrow">Ajustes del dueño</div>
-          <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de dueño.</p>
-          <div class="field"><input type="password" id="qz-owner-pw" placeholder="Contraseña de dueño"></div>
+          <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de administrador.</p>
+          <div class="field"><input type="password" id="qz-owner-pw" placeholder="Contraseña de administrador"></div>
           ${credentialWaitNoticeHtml("qz-owner-wait")}
           <button class="btn btn-primary" id="qz-owner-unlock" style="margin-top:12px;">Entrar</button>
           ${currentUser.isAdmin ? `
@@ -7874,7 +7909,7 @@
             renderAdminOwner(body);
             toast("✅ Acceso recuperado con tu PIN.");
           } else {
-            toast("Esta quiniela ya tiene una contraseña de dueño configurada — pídesela a quien la tenga.");
+            toast("Esta quiniela ya tiene una contraseña de administrador configurada — pídesela a quien la tenga.");
           }
         });
       }
@@ -7907,7 +7942,7 @@
       </div>
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:18px;">Acceso</span></div>
-        <div class="eyebrow">Contraseña de dueño</div>
+        <div class="eyebrow">Contraseña de administrador</div>
         <div class="field"><input type="text" id="qz-owner-pw-set" placeholder="Dejar en blanco para no cambiarla" value=""></div>
         <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos tu contraseña actual aquí — solo escribe algo en este campo si quieres cambiarla.</p>
         ${ROUTE === "root" ? `
@@ -8191,7 +8226,7 @@
           const result = await apiMigrateQuiniela(slug);
           if(!result.ok){
             const msg = result.error === "slug_taken" ? "Ese link ya está en uso, elige otro."
-              : result.error === "unauthorized" ? "No se pudo verificar tu contraseña de dueño, vuelve a desbloquear Ajustes."
+              : result.error === "unauthorized" ? "No se pudo verificar tu contraseña de administrador, vuelve a desbloquear Ajustes."
               : "No se pudo mover la quiniela, intenta de nuevo.";
             statusEl.textContent = msg;
             statusEl.style.color = "var(--red)";
@@ -8362,20 +8397,53 @@
   }
 
   // ---------- /crear : create a brand new, independent quiniela ----------
+  // The /crear draft survives a reload of the same tab (sessionStorage).
+  // The admin password is never stored: it lives only in memory.
+  const CREAR_DRAFT_KEY = "qracks_crear_draft";
+  function loadCrearDraft(){
+    const empty = { groupName: "", creatorName: "", slug: "", password: "", leagueId: "", slugTouched: false };
+    try{
+      const saved = JSON.parse(window.sessionStorage.getItem(CREAR_DRAFT_KEY) || "null");
+      if(!saved || typeof saved !== "object") return empty;
+      return {
+        groupName: String(saved.groupName || ""), creatorName: String(saved.creatorName || ""),
+        slug: String(saved.slug || ""), leagueId: String(saved.leagueId || ""),
+        slugTouched: !!saved.slugTouched, password: ""
+      };
+    }catch(e){ return empty; }
+  }
+  function saveCrearDraft(draft){
+    try{
+      window.sessionStorage.setItem(CREAR_DRAFT_KEY, JSON.stringify({
+        groupName: draft.groupName, creatorName: draft.creatorName, slug: draft.slug,
+        leagueId: draft.leagueId, slugTouched: draft.slugTouched
+      }));
+    }catch(e){}
+  }
+  function clearCrearDraft(){ try{ window.sessionStorage.removeItem(CREAR_DRAFT_KEY); }catch(e){} }
+  // "A", "A y B", "A, B y C".
+  function joinEs(items){
+    return items.length <= 1 ? (items[0] || "") : items.slice(0, -1).join(", ") + " y " + items[items.length - 1];
+  }
   async function renderCrear(){
     trackEvent("create_started", { source: "create_flow" });
-    const draft = renderCrear._draft || { groupName: "", creatorName: "", contact: "", slug: "", password: "", leagueId: "", slugTouched: false };
+    const draft = renderCrear._draft || loadCrearDraft();
     renderCrear._draft = draft;
     root.innerHTML = `
       <div class="login-wrap">
-        <div class="login-card" style="max-width:440px;">
+        <div class="login-card" style="max-width:440px;" id="qz-crear-card">
           <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;"><img src="${QRACKS_ICON_SRC}" alt="" style="width:16px;height:16px;border-radius:4px;"><span style="font-weight:800;font-size:12px;letter-spacing:0.1em;color:var(--gold-dim);">QRACKS</span></div>
           <div class="login-title display">Crea tu quiniela</div>
-          <div class="field"><label>Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
-          <div class="field"><label>Tu nombre</label><input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}"></div>
-          <div class="field"><label>WhatsApp o correo de contacto</label><input type="text" id="qz-c-contact" placeholder="Por si necesitamos avisarte algo sobre tu quiniela" value="${esc(draft.contact)}"></div>
+          <p class="login-sub qz-crear-value">Comparte un link y tus amigos eligen sus resultados antes del cierre de cada jornada. QRACKS cuenta los puntos y arma la tabla.</p>
+          <p class="muted qz-crear-next">Tú armas las jornadas y publicas los resultados. Después de crearla: tu PIN y tu primera jornada.</p>
+          <div class="field"><label for="qz-c-name">Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field">
-            <label>Liga o competencia (opcional)</label>
+            <label for="qz-c-creator">Tu nombre</label>
+            <input type="text" id="qz-c-creator" placeholder="Ej. Ana" value="${esc(draft.creatorName)}">
+            <p class="muted" style="margin-top:4px;">Así te verán en la tabla.</p>
+          </div>
+          <div class="field">
+            <label for="qz-c-league">Liga o competencia (opcional)</label>
             <select id="qz-c-league">
               <option value="">Sin definir por ahora</option>
               ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${draft.leagueId === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
@@ -8383,16 +8451,20 @@
             <p class="muted" style="margin-top:4px;">Sirve para sugerir nombres de equipos al crear jornadas — lo puedes cambiar después en Ajustes.</p>
           </div>
           <div class="field">
-            <label>Link de tu quiniela</label>
-            <input type="text" id="qz-c-slug" placeholder="mi-quiniela" value="${esc(draft.slug)}">
-            <p class="muted" style="margin-top:4px;">${esc(window.location.origin)}/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
+            <label for="qz-c-slug">Link de tu quiniela</label>
+            <input type="text" id="qz-c-slug" placeholder="mi-quiniela" value="${esc(draft.slug)}" aria-describedby="qz-c-slug-help qz-c-slug-error">
+            <p class="muted" id="qz-c-slug-help" style="margin-top:4px;">Es el link que compartirás con tu grupo: ${esc(window.location.origin)}/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
+            <p class="qz-field-error" id="qz-c-slug-error" role="alert" hidden></p>
           </div>
           <div class="field">
-            <label>Contraseña de administrador</label>
-            <input type="password" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}">
-            <p class="muted" style="margin-top:4px;">Guárdala. La necesitarás para administrar tu quiniela.</p>
+            <label for="qz-c-pass">Contraseña de administrador</label>
+            <div class="qz-pass-row">
+              <input type="password" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}" autocomplete="new-password" aria-describedby="qz-c-pass-help">
+              <button type="button" class="btn btn-ghost btn-sm" id="qz-c-pass-toggle" aria-pressed="false" aria-controls="qz-c-pass">Mostrar</button>
+            </div>
+            <p class="muted" id="qz-c-pass-help" style="margin-top:4px;">Es distinta de tu PIN. La usarás poco: para los ajustes protegidos de tu quiniela y para recuperar tu PIN si lo olvidas. Anótala en un lugar seguro.</p>
           </div>
-          <p class="muted" id="qz-c-status" style="min-height:16px;"></p>
+          <p class="muted" id="qz-c-status" role="status" style="min-height:16px;"></p>
           <button class="btn btn-primary" id="qz-c-submit" style="width:100%;padding:12px;">Crear mi quiniela</button>
         </div>
       </div>
@@ -8400,55 +8472,99 @@
     const nameInput = document.getElementById("qz-c-name");
     const slugInput = document.getElementById("qz-c-slug");
     const slugPreview = document.getElementById("qz-c-slug-preview");
+    const slugError = document.getElementById("qz-c-slug-error");
+    const passInput = document.getElementById("qz-c-pass");
+    const clearSlugError = () => { slugError.hidden = true; slugError.textContent = ""; slugInput.removeAttribute("aria-invalid"); };
     nameInput.addEventListener("input", () => {
       draft.groupName = nameInput.value;
       if(!draft.slugTouched){
         draft.slug = slugify(nameInput.value);
         slugInput.value = draft.slug;
         slugPreview.textContent = draft.slug || "mi-quiniela";
+        clearSlugError();
       }
+      saveCrearDraft(draft);
     });
     slugInput.addEventListener("input", () => {
       draft.slugTouched = true;
       draft.slug = slugify(slugInput.value);
       slugPreview.textContent = draft.slug || "mi-quiniela";
+      clearSlugError();
+      saveCrearDraft(draft);
     });
-    document.getElementById("qz-c-creator").addEventListener("input", (e) => { draft.creatorName = e.target.value; });
-    document.getElementById("qz-c-contact").addEventListener("input", (e) => { draft.contact = e.target.value; });
-    document.getElementById("qz-c-league").addEventListener("change", (e) => { draft.leagueId = e.target.value; });
-    document.getElementById("qz-c-pass").addEventListener("input", (e) => { draft.password = e.target.value; });
+    document.getElementById("qz-c-creator").addEventListener("input", (e) => { draft.creatorName = e.target.value; saveCrearDraft(draft); });
+    document.getElementById("qz-c-league").addEventListener("change", (e) => { draft.leagueId = e.target.value; saveCrearDraft(draft); });
+    passInput.addEventListener("input", (e) => { draft.password = e.target.value; });
+    const passToggle = document.getElementById("qz-c-pass-toggle");
+    passToggle.addEventListener("click", () => {
+      const show = passInput.type === "password";
+      passInput.type = show ? "text" : "password";
+      passToggle.textContent = show ? "Ocultar" : "Mostrar";
+      passToggle.setAttribute("aria-pressed", show ? "true" : "false");
+    });
+    // Enter in any text field creates, same as the button.
+    document.getElementById("qz-crear-card").addEventListener("keydown", (e) => {
+      if(e.key !== "Enter" || e.target.tagName !== "INPUT") return;
+      e.preventDefault();
+      document.getElementById("qz-c-submit").click();
+    });
+    const requiredFields = [
+      { id: "qz-c-name", label: "Nombre de tu quiniela", value: () => draft.groupName.trim() },
+      { id: "qz-c-creator", label: "Tu nombre", value: () => draft.creatorName.trim() },
+      // (The link is never empty: it follows the name, and slugify() falls back to "quiniela".)
+      { id: "qz-c-pass", label: "Contraseña de administrador", value: () => draft.password.trim() },
+    ];
+    let creating = false;
 
     document.getElementById("qz-c-submit").addEventListener("click", async () => {
+      if(creating) return;
       const statusEl = document.getElementById("qz-c-status");
-      const groupName = draft.groupName.trim();
-      const creatorName = draft.creatorName.trim();
-      const contact = draft.contact.trim();
-      const slug = slugify(draft.slug);
-      const password = draft.password.trim();
-      if(!groupName || !creatorName || !contact || !slug || !password){
-        statusEl.textContent = "Llena todos los campos.";
+      const submitBtn = document.getElementById("qz-c-submit");
+      requiredFields.forEach(f => document.getElementById(f.id).removeAttribute("aria-invalid"));
+      const missing = requiredFields.filter(f => !f.value());
+      if(missing.length){
+        missing.forEach(f => document.getElementById(f.id).setAttribute("aria-invalid", "true"));
+        statusEl.textContent = "Falta: " + joinEs(missing.map(f => f.label)) + ".";
         statusEl.style.color = "var(--red)";
+        document.getElementById(missing[0].id).focus();
         return;
       }
+      const groupName = draft.groupName.trim();
+      const creatorName = draft.creatorName.trim();
+      const slug = slugify(draft.slug);
+      const password = draft.password.trim();
+      creating = true;
+      submitBtn.disabled = true;
       statusEl.textContent = "Creando…";
       statusEl.style.color = "var(--ink-soft)";
       try{
-        const result = await apiCreateQuiniela({ slug, groupName, creatorName, contact, password, sportsdbLeagueId: draft.leagueId || undefined });
+        const result = await apiCreateQuiniela({ slug, groupName, creatorName, password, sportsdbLeagueId: draft.leagueId || undefined });
         if(!result.ok){
-          statusEl.textContent = result.error === "slug_taken" ? "Ese link ya está en uso, prueba otro." : "No se pudo crear, intenta de nuevo.";
+          creating = false;
+          submitBtn.disabled = false;
+          if(result.error === "slug_taken"){
+            statusEl.textContent = "";
+            slugError.textContent = "Ese link ya está en uso. Cambia el link.";
+            slugError.hidden = false;
+            slugInput.setAttribute("aria-invalid", "true");
+            slugInput.focus();
+            return;
+          }
+          statusEl.textContent = "No se pudo crear, intenta de nuevo.";
           statusEl.style.color = "var(--red)";
           return;
         }
-        // Post-creation continuity: no "Creando... Importando calendario..."
-        // intermediate screen anymore -- go straight into the same flow as
-        // creating the PIN. Competition Sync (if a league was configured)
-        // now happens FROM that next screen instead (see
-        // renderAdminSetupResolve), authenticated by the session cookie
-        // /api/set-pin issues rather than by re-sending this plaintext
-        // password across a page navigation.
+        clearCrearDraft();
+        // Post-creation continuity: straight into creating the PIN.
+        // Competition Sync (if a league was configured) happens FROM that
+        // next screen (see renderAdminSetupResolve), authenticated by the
+        // session cookie /api/set-pin issues rather than by re-sending this
+        // plaintext password across a page navigation.
         window.location.href = "/q/" + encodeURIComponent(result.slug || slug) + "?setup=1";
       }catch(e){
         console.error(e);
+        creating = false;
+        submitBtn.disabled = false;
         statusEl.textContent = "No se pudo crear, intenta de nuevo.";
         statusEl.style.color = "var(--red)";
       }

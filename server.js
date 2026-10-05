@@ -3113,7 +3113,11 @@ app.post("/api/create-quiniela", async (req, res) => {
   // convenience autocomplete list, never anything security- or data-critical.
   const cleanLeagueId = /^[0-9]{3,8}$/.test(String(sportsdbLeagueId || "").trim())
     ? String(sportsdbLeagueId).trim() : null;
-  if (!cleanGroupName || !cleanCreatorName || !cleanContact || !cleanPassword) {
+  // The organizer's contact is optional: no feature uses it (it is only
+  // listed in the platform panel). /crear no longer asks for it; an older
+  // cached client that still sends it keeps it stored, and existing values
+  // are never touched.
+  if (!cleanGroupName || !cleanCreatorName || !cleanPassword) {
     return res.status(400).json({ error: "invalid_params" });
   }
 
