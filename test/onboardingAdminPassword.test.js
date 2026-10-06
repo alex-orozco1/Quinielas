@@ -119,7 +119,7 @@ test("CB-13: the form checks before sending, keeps what was typed, and reads eve
     '"No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo."',
   ]) assert.ok(w.includes(s), s);
   assert.ok(w.indexOf("if(pw !== pw2)") < w.indexOf("await apiSetAdminPassword(pin, pw)"));
-  assert.ok(/if\(result\.error === "wrong_pin"\)\{[\s\S]{0,260}pinInput\.value = "";[\s\S]{0,40}return fail\(pinInput,/.test(w), "only a wrong PIN is cleared");
+  assert.ok(/if\(result\.error === "wrong_pin"\)\{[\s\S]{0,600}pinInput\.value = "";[\s\S]{0,40}return fail\(pinInput,/.test(w), "only a wrong PIN is cleared");
   assert.ok(w.includes('result.error === "too_many_attempts" && startCredentialWait(waitKey, result)'));
   assert.ok(w.includes('const waitKey = "pin:" + meta.creatorId;'), "the same wait as the creator's PIN anywhere else");
   assert.ok(w.includes("if(saving || saveBtn.disabled) return;"), "one request per tap or Enter");
@@ -157,6 +157,8 @@ test("CB-7/CB-8: Ajustes — the creator sets the password there, a co-admin is 
   const refreshAt = owner.indexOf("await refreshOwnerPasswordSet();");
   assert.ok(refreshAt !== -1 && refreshAt < owner.indexOf('adminPasswordSetupHtml("qz-setpw-settings"') && refreshAt < owner.indexOf("configurará la contraseña de administrador."));
   assert.ok(owner.includes("if(!body.isConnected) return;"), "nothing painted on a screen the user already left");
+  const loadingAt = owner.indexOf('body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;');
+  assert.ok(loadingAt !== -1 && loadingAt < refreshAt, "a slow answer shows «Cargando…», not an empty screen");
   assert.ok(owner.includes('wireAdminPasswordSetup(document.getElementById("qz-setpw-settings-card"), "qz-setpw-settings",'), "wired on its own card, not on the long-lived body");
   assert.ok(owner.includes("configurará la contraseña de administrador."));
   assert.ok(owner.includes("${currentUser.isAdmin && meta.ownerPasswordSet === false && !meta.creatorId ? `"), "the PIN shortcut only where the server still accepts it");
@@ -204,8 +206,10 @@ test("PIN in memory: the setup does not ask for it again in the same visit; the 
   assert.ok(w.includes("const pin = usingKnownPin ? knownPin : pinInput.value.trim();"));
   assert.ok(w.indexOf("const pin = usingKnownPin") < w.indexOf("await apiSetAdminPassword(pin, pw)"), "the same request carries the PIN: the server validates it as before");
   // A PIN in memory the server no longer accepts (changed elsewhere): ask once.
-  assert.ok(/if\(result\.error === "wrong_pin"\)\{\s*[\s\S]{0,140}knownPin = null;\s*pinField\.hidden = false;/.test(w));
+  assert.ok(/if\(result\.error === "wrong_pin"\)\{\s*[\s\S]{0,600}knownPin = null;\s*pinField\.hidden = false;/.test(w));
   assert.ok(w.includes('"Escribe tu PIN para continuar."'));
+  // Rejected once, forgotten: reopening the form does not send it again.
+  assert.ok(/if\(result\.error === "wrong_pin"\)\{[\s\S]{0,600}if\(usingKnownPin && currentUserPinCache === knownPin\) currentUserPinCache = null;/.test(w));
   // A reload forgets it (memory only): nothing new is stored.
   assert.ok(!/localStorage|sessionStorage/.test(known + w + modal));
 });

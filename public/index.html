@@ -2353,7 +2353,9 @@
       }
       if(result.error === "wrong_pin"){
         // A PIN from memory that no longer matches (changed on another
-        // device): ask for it now, once.
+        // device): forgotten, so no later attempt (reopening this form,
+        // Ajustes) spends the limiter on it again; the field asks for it now.
+        if(usingKnownPin && currentUserPinCache === knownPin) currentUserPinCache = null;
         knownPin = null;
         pinField.hidden = false;
         pinInput.value = "";
@@ -8283,6 +8285,8 @@
     // another tab or on another device). Asked before offering to create one;
     // if the user moved to another screen meanwhile, nothing is painted.
     if(!ownerUnlocked && needsAdminPasswordToPublish()){
+      // Said while it is asked, instead of an empty screen on a slow network.
+      body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;
       await refreshOwnerPasswordSet();
       if(!body.isConnected) return;
     }
