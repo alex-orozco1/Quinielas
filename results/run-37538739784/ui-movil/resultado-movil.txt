@@ -1,0 +1,29 @@
+PASS [movil] Crear: sin campo ni mención de contraseña
+PASS [movil] PIN: aviso exacto y ninguna mención de la contraseña
+PASS [movil] La quiniela nace sin contraseña y con Ana como creadora
+PASS [movil] Publicar abre «Configura tu contraseña de administrador», un solo modal aunque sea doble toque: Configura tu contraseña de administrador Aquí puedes: Cambia
+PASS [movil] Pagos: los participantes pagan directo al admin y él los registra a mano
+PASS [movil] El PIN recién elegido no se vuelve a pedir
+PASS [movil] «Ahora no»: no publica y conserva partidos y cierre
+PASS [movil] Esc: no publica y conserva partidos y cierre
+PASS [movil] Equivocarse: vacía, corta y no coinciden lo dicen sin cerrar el modal: Usa al menos 8 caracteres. | Usa al menos 8 caracteres. | Las contraseñas no coinciden.
+PASS [movil] Equivocarse: nada publicado y partidos y cierre intactos
+PASS [movil] Sin conexión al guardar: lo dice, el modal sigue y no se pierde nada: No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.
+PASS [movil] Guardar: una sola petición, con el PIN ligado a la creadora: peticiones=1
+PASS [movil] Guardar la contraseña no publica
+PASS [movil] Tras guardar: «✅ Contraseña guardada…» y se retira el aviso «Guarda tu PIN»: ✅ Contraseña guardada. Revisa la jornada y toca «Publicar jornada» para publicarla.
+PASS [movil] Tras guardar: partidos y cierre intactos
+PASS [movil] Publicar explícitamente: publica con los mismos partidos y el mismo cierre: rondas=1
+PASS [movil] Sesión restaurada: el modal pide el PIN
+PASS [movil] PIN incorrecto: lo dice y borra sólo el PIN; nada publicado y la jornada intacta: Ese PIN no es correcto.
+PASS [movil] «Ahora no» tras el error: nada publicado y la jornada intacta
+PASS [movil] Recargar con el modal abierto: no publica y la jornada sigue intacta
+PASS [movil] PIN correcto: guarda la contraseña sin publicar
+PASS [movil] Publicar explícitamente: la jornada importada se publica con sus partidos y su cierre
+INFO [movil] Recargar el setup manual antes de publicar (no es cancelar ni equivocarse): lo escrito se pierde (equipo 1 = «», cierre distinto); comportamiento previo a #30/#31
+PASS [movil] Co-admin: no puede publicar antes que la creadora; aviso con un solo botón «Entendido»: ["Entendido"]
+PASS [movil] Co-admin: el aviso no ofrece configurar la contraseña
+PASS [movil] Co-admin: nada publicado, sigue sin contraseña y conserva partidos y cierre
+PASS [movil] Co-admin en Ajustes: le dice que Ana configurará la contraseña, sin campos para crearla: Tu plan Plan Gratis · 3 de 10 personas · 0 de 7 jornadas Con Plus: hasta 50 personas y el torneo completo. Ver plan Plus AJUSTES PROTEGIDOS 
+PASS [movil] Co-admin: cuando la creadora ya configuró la contraseña, publica sin aviso y con lo que había escrito
+RESULT: ALL PASS (27) / 1 INFO

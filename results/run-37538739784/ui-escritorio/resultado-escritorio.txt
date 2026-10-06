@@ -1,0 +1,30 @@
+PASS [escritorio] Crear: sin campo ni mención de contraseña
+PASS [escritorio] PIN: aviso exacto y ninguna mención de la contraseña
+PASS [escritorio] La quiniela nace sin contraseña y con Ana como creadora
+PASS [escritorio] Publicar abre «Configura tu contraseña de administrador», un solo modal aunque sea doble toque: Configura tu contraseña de administrador Aquí puedes: Cambia
+PASS [escritorio] Pagos: los participantes pagan directo al admin y él los registra a mano
+PASS [escritorio] El PIN recién elegido no se vuelve a pedir
+PASS [escritorio] «Ahora no»: no publica y conserva partidos y cierre
+PASS [escritorio] Esc: no publica y conserva partidos y cierre
+PASS [escritorio] Equivocarse: vacía, corta y no coinciden lo dicen sin cerrar el modal: Usa al menos 8 caracteres. | Usa al menos 8 caracteres. | Las contraseñas no coinciden.
+PASS [escritorio] Equivocarse: nada publicado y partidos y cierre intactos
+PASS [escritorio] Sin conexión al guardar: lo dice, el modal sigue y no se pierde nada: No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.
+PASS [escritorio] Guardar: una sola petición, con el PIN ligado a la creadora: peticiones=1
+PASS [escritorio] Guardar la contraseña no publica
+PASS [escritorio] Tras guardar: «✅ Contraseña guardada…» y se retira el aviso «Guarda tu PIN»: ✅ Contraseña guardada. Revisa la jornada y toca «Publicar jornada» para publicarla.
+PASS [escritorio] Tras guardar: partidos y cierre intactos
+PASS [escritorio] Publicar explícitamente: publica con los mismos partidos y el mismo cierre: rondas=1
+PASS [escritorio] Sesión restaurada: el modal pide el PIN
+PASS [escritorio] PIN incorrecto: lo dice y borra sólo el PIN; nada publicado y la jornada intacta: Ese PIN no es correcto.
+PASS [escritorio] «Ahora no» tras el error: nada publicado y la jornada intacta
+PASS [escritorio] Recargar con el modal abierto: no publica y la jornada sigue intacta
+PASS [escritorio] PIN correcto: guarda la contraseña sin publicar
+PASS [escritorio] Publicar explícitamente: la jornada importada se publica con sus partidos y su cierre
+INFO [escritorio] Recargar el setup manual antes de publicar (no es cancelar ni equivocarse): lo escrito se pierde (equipo 1 = «», cierre distinto); comportamiento previo a #30/#31
+PASS [escritorio] Co-admin: no puede publicar antes que la creadora; aviso con un solo botón «Entendido»: ["Entendido"]
+PASS [escritorio] Co-admin: el aviso no ofrece configurar la contraseña
+PASS [escritorio] Co-admin: nada publicado, sigue sin contraseña y conserva partidos y cierre
+PAGEERROR [escritorio] Cannot read properties of null (reading 'addEventListener')
+PASS [escritorio] Co-admin en Ajustes: le dice que Ana configurará la contraseña, sin campos para crearla: Tu plan Plan Gratis · 3 de 10 personas · 0 de 7 jornadas Con Plus: hasta 50 personas y el torneo completo. Ver plan Plus AJUSTES PROTEGIDOS 
+PASS [escritorio] Co-admin: cuando la creadora ya configuró la contraseña, publica sin aviso y con lo que había escrito
+RESULT: ALL PASS (27) / 1 INFO

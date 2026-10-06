@@ -1,0 +1,29 @@
+PASS [api] Crear sin contraseña: 200
+PASS [api] La creadora elige su PIN con la cookie de creación: 200
+PASS [api] La creadora nombra co-admin a Carla: 200
+PASS [api] Antes: la co-admin no puede configurar la contraseña con su PIN: 403 not_creator
+PASS [api] Antes: tampoco presentándose como la creadora con su propio PIN: 403 wrong_pin
+PASS [api] Antes: tampoco con su PIN sin ligar a un participante: 403 not_creator
+PASS [api] Antes: la quiniela sigue sin contraseña
+PASS [api] Antes: la co-admin no puede publicar una jornada: 409 admin_password_required
+PASS [api] Antes: no quedó ninguna jornada
+PASS [api] Antes: la co-admin sí puede preparar una jornada sin publicar: 200
+PASS [api] Antes: la co-admin no puede publicar la jornada preparada: 409 admin_password_required
+PASS [api] Antes: la co-admin no cambia nombre, cuota ni puntos (se conservan): 200
+PASS [api] Antes: tampoco la creadora con su PIN (las reglas piden la contraseña): 200
+PASS [api] Antes: la co-admin no puede nombrar admins: 403 creator_only
+PASS [api] Antes: la co-admin no puede quitarle el rol a la creadora: 403 creator_protected
+PASS [api] Antes: la co-admin no puede eliminar a la creadora: 403 creator_protected
+PASS [api] Antes: la co-admin no puede resetear el PIN de la creadora: 403 creator_protected
+PASS [api] Antes: la co-admin no puede cambiar el PIN de la creadora: 403 wrong_current_pin
+PASS [api] Antes: el PIN de la co-admin no abre los Ajustes protegidos: 200 ok:false
+PASS [api] Antes: la creadora sigue siendo admin, con su PIN y en la quiniela
+PASS [api] La creadora configura la contraseña con su PIN: 200
+PASS [api] Sólo una vez: el segundo intento responde already_set: 409 already_set
+PASS [api] Después: la co-admin no puede reemplazar la contraseña: 403 not_creator
+PASS [api] Después: la co-admin sigue sin poder cambiar nombre, cuota ni puntos: 200
+PASS [api] Después: la co-admin no puede quitarle el rol a la creadora: 403 creator_protected
+PASS [api] Después: nombrar admins pide la contraseña: 403 owner_password_required
+PASS [api] Después: con la contraseña ya configurada, la co-admin sí publica: 200
+PASS [api] Con la contraseña de administrador sí cambian nombre, cuota y puntos: 200
+RESULT: ALL PASS (28)
