@@ -940,6 +940,9 @@ function classifyKey(key) {
 // ---------- secret stripping for reads ----------
 function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
   const clone = JSON.parse(JSON.stringify(value));
+  // Whether an admin password exists, never the password: the screens need it
+  // to know whether publishing asks for one first (onboarding B).
+  clone.ownerPasswordSet = !!(clone.settings && clone.settings.ownerPassword);
   if (clone.settings && "ownerPassword" in clone.settings) {
     delete clone.settings.ownerPassword;
   }
@@ -1049,6 +1052,56 @@ function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, 
   return null;
 }
 
+// ---------- the creator of a quiniela (onboarding B) ----------
+//
+// A quiniela created from now on remembers who created it: `creatorId`,
+// written once by create-quiniela and never by a request (see
+// mergeProtectedMetaFields). It no longer asks for the admin password at
+// creation; the creator sets it when publishing the first round, through
+// /api/set-admin-password. Until then nobody else can take the owner's place:
+// only the creator names or removes admins, nobody can remove, demote or reset
+// the creator, and nothing is published.
+//
+// The rules of the game — name, entry fee, points per correct pick — change
+// only with the admin password (or the platform), before it exists and after;
+// a PIN or a session, the creator's included, keeps the stored values.
+//
+// A quiniela without creatorId (every one created before this) keeps exactly
+// its old rules. Nobody is inferred to be its creator.
+const ADMIN_PASSWORD_MIN_LENGTH = 8;
+const ADMIN_PASSWORD_MAX_LENGTH = 200;
+const RULE_SETTINGS_FIELDS = Object.freeze(["entryFee", "pointsPerCorrectPick"]);
+function creatorIdOf(value) {
+  const id = value && value.creatorId;
+  return typeof id === "string" && id ? id : null;
+}
+function hasOwnerPassword(value) {
+  return !!(value && value.settings && value.settings.ownerPassword);
+}
+function creatorParticipant(value) {
+  const id = creatorIdOf(value);
+  if (!id || !Array.isArray(value.participants)) return null;
+  return value.participants.find((p) => p && p.id === id) || null;
+}
+// The request is the creator, by their own PIN (bound header) or session.
+function requestIsCreator(req, slug, value) {
+  const creator = creatorParticipant(value);
+  return !!(creator && creator.isAdmin && creator.pin && req && isAuthenticatedAsParticipantReq(req, slug, creator));
+}
+// Rounds this write would make visible that the stored row does not show.
+function newlyPublishedRoundIds(oldValue, newValue) {
+  const published = new Set((Array.isArray(oldValue && oldValue.rounds) ? oldValue.rounds : [])
+    .filter((r) => r && r.published !== false).map((r) => r.id));
+  return (Array.isArray(newValue && newValue.rounds) ? newValue.rounds : [])
+    .filter((r) => r && r.published !== false && !published.has(r.id)).map((r) => r.id);
+}
+function cleanAdminPassword(value) {
+  if (typeof value !== "string") return null;
+  const clean = value.trim();
+  if (clean.length < ADMIN_PASSWORD_MIN_LENGTH || clean.length > ADMIN_PASSWORD_MAX_LENGTH) return null;
+  return clean;
+}
+
 // { participantId: rev } — small enough to hand back on every write (a
 // quiniela tops out at 50 people) and it saves the browser a refetch.
 function participantRevMap(doc) {
@@ -1093,9 +1146,19 @@ function stampMetaWrite(doc, oldValue) {
 // stored. Taking newValue.rounds directly — what this function used to do — is
 // the lost update: a writer arbitrarily far behind replaced the whole array and
 // the server said 200.
-function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
+// `requesterIsCreator`: the request is authenticated as the quiniela's creator
+// (requestIsCreator), which only matters while a quiniela with a creator has
+// no admin password yet.
+function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opts) {
+  const requesterIsCreator = !!(opts && opts.requesterIsCreator);
   const merged = JSON.parse(JSON.stringify(newValue));
   META_RESERVED_COMMERCIAL_FIELDS.forEach((f) => { delete merged[f]; });
+  // Onboarding B. Server-only: the stored creator always wins, so a request
+  // can neither change it nor give one to a quiniela that never had one.
+  // ownerPasswordSet is computed on every read and never stored.
+  delete merged.creatorId;
+  if (creatorIdOf(oldValue)) merged.creatorId = creatorIdOf(oldValue);
+  delete merged.ownerPasswordSet;
   // The revision is server-owned, exactly like participantsRevision: whatever
   // the request carried was a CLAIM about what its writer had seen, already
   // spent by resolveRoundsWrite(). It must never survive into the stored row —
@@ -1137,9 +1200,26 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
   const oldSettings = (oldValue && oldValue.settings) || null;
   if (!merged.settings) merged.settings = {};
 
-  const canChangeOwnerFields = authTier === "owner" || authTier === "platform" ||
-    (authTier === "admin-pin" && !(oldSettings && oldSettings.ownerPassword));
+  const guarded = !!creatorIdOf(oldValue);
+  const storedOwnerPw = !!(oldSettings && oldSettings.ownerPassword);
+  const ownerOrPlatform = authTier === "owner" || authTier === "platform";
+  // With a creator, the admin password is never set by a generic write while
+  // it does not exist: /api/set-admin-password is the only way, and it asks
+  // for the creator's PIN.
+  const canChangeOwnerFields = guarded
+    ? ownerOrPlatform
+    : (ownerOrPlatform || (authTier === "admin-pin" && !storedOwnerPw));
+  // Naming or removing admins: the same as above, except that before the
+  // password exists the creator may do it with their PIN or session.
+  const canChangeAdminRoles = guarded
+    ? (ownerOrPlatform || (!storedOwnerPw && authTier === "admin-pin" && requesterIsCreator))
+    : canChangeOwnerFields;
   const incomingPw = merged.settings.ownerPassword;
+  let ownerPasswordTooShort = false;
+  if (canChangeOwnerFields && guarded && typeof incomingPw === "string" && incomingPw && !isHashed(incomingPw)
+    && !cleanAdminPassword(incomingPw)) {
+    ownerPasswordTooShort = true;
+  }
   if (!canChangeOwnerFields) {
     if (oldSettings && oldSettings.ownerPassword) {
       merged.settings.ownerPassword = isHashed(oldSettings.ownerPassword)
@@ -1170,6 +1250,44 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
   const participantMerge = mergeParticipants(oldValue, merged);
   merged.participants = participantMerge.participants;
 
+  // Onboarding B. The creator is nobody else's to remove, demote or reset:
+  // only the admin password (or the platform) does that, before the password
+  // exists and after. Judged on the merge result against the stored row, so a
+  // tab that was merely behind changes nothing here; the caller refuses the
+  // whole write.
+  let creatorChangesRefused = 0;
+  if (guarded && !ownerOrPlatform) {
+    const storedCreator = creatorParticipant(oldValue);
+    if (storedCreator) {
+      const incomingCreator = (Array.isArray(merged.participants) ? merged.participants : [])
+        .find((p) => p && p.id === storedCreator.id);
+      if (!incomingCreator) {
+        creatorChangesRefused += 1;
+      } else {
+        if (!!incomingCreator.isAdmin !== !!storedCreator.isAdmin) creatorChangesRefused += 1;
+        if ("pin" in incomingCreator && incomingCreator.pin !== storedCreator.pin) creatorChangesRefused += 1;
+      }
+    }
+  }
+  // Onboarding B. The rules of the game: with a creator, a PIN or a session
+  // (the creator's too) never changes them; the stored values stay and the
+  // caller says so. Kept rather than refused, because every Admin save sends
+  // the whole document and a tab that loaded before the owner's change must
+  // still be able to save a round.
+  let ruleFieldsKept = false;
+  if (guarded && !ownerOrPlatform) {
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    if (!same(merged.groupName, oldValue.groupName)) ruleFieldsKept = true;
+    if ("groupName" in oldValue) merged.groupName = oldValue.groupName;
+    else delete merged.groupName;
+    RULE_SETTINGS_FIELDS.forEach((f) => {
+      const stored = oldSettings && f in oldSettings ? oldSettings[f] : undefined;
+      if (!same(merged.settings[f], stored)) ruleFieldsKept = true;
+      if (oldSettings && f in oldSettings) merged.settings[f] = oldSettings[f];
+      else delete merged.settings[f];
+    });
+  }
+
   const oldParticipants = (oldValue && Array.isArray(oldValue.participants)) ? oldValue.participants : [];
   let adminRoleChangesRefused = 0;
   const oldById = {};
@@ -1186,14 +1304,14 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
       } else if (p.pin && !isHashed(p.pin)) {
         p.pin = hashPassword(p.pin);
       }
-      if (!canChangeOwnerFields && !old && p.isAdmin) {
+      if (!canChangeAdminRoles && !old && p.isAdmin) {
         // Adding someone who is already an admin is the same owner action as
         // promoting them (it used to slip through: there was no `old` to
         // compare with).
         adminRoleChangesRefused += 1;
         p.isAdmin = false;
       }
-      if (!canChangeOwnerFields && old && p.isAdmin !== old.isAdmin) {
+      if (!canChangeAdminRoles && old && p.isAdmin !== old.isAdmin) {
         // Counted, not just reverted: the caller refuses the whole write so
         // the Admin is told the change needs the owner password instead of
         // seeing "ahora es admin" while nothing changed. Only a real change
@@ -1233,6 +1351,13 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
     participantsRefreshed: participantMerge.refreshed,
     roundsRestored: roundsAreStale,
     adminRoleChangesRefused,
+    // Before the password exists, naming admins belongs to the creator alone;
+    // after, to the password, as always.
+    adminRoleRefusal: guarded && !storedOwnerPw ? "creator_only" : "owner_password_required",
+    creatorChangesRefused,
+    ruleFieldsKept,
+    ownerPasswordTooShort,
+    canChangeOwnerPassword: canChangeOwnerFields,
   };
 }
 
@@ -1764,6 +1889,15 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: "invalid_value" });
         }
+        // Onboarding B, for every quiniela: `settings`, when sent, is an object
+        // too. A string or a number used to be stored as-is and every later
+        // read of the quiniela failed (500); an array dropped the entry fee and
+        // the points — with a creator, without the admin password. Refused like
+        // a malformed document. null still means "none sent", as before.
+        if (value.settings != null && (typeof value.settings !== "object" || Array.isArray(value.settings))) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "invalid_value" });
+        }
 
         // HOTFIX-001. Decided BEFORE anything is merged, checked or charged,
         // against the row read under lock — and after authorisation, so an
@@ -1804,7 +1938,16 @@ app.post("/api/kv/:key", async (req, res) => {
           });
         }
 
-        const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier, roundsWrite);
+        const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier, roundsWrite, {
+          requesterIsCreator: authTier === "admin-pin" && requestIsCreator(req, info.slug, oldValue),
+        });
+        if (metaMerge.creatorChangesRefused > 0) {
+          // Onboarding B: removing, demoting or resetting the creator takes
+          // the admin password. Nothing half-applied.
+          await client.query("ROLLBACK");
+          if (sendIfCredentialThrottled(req, res)) return;
+          return res.status(403).json({ error: "creator_protected" });
+        }
         if (metaMerge.adminRoleChangesRefused > 0) {
           // Making or unmaking an admin is an owner action. Refusing the whole
           // write (nothing half-applied) is what lets the browser say so.
@@ -1812,9 +1955,24 @@ app.post("/api/kv/:key", async (req, res) => {
           // If the admin password WAS sent but the attempt limit kept it from
           // being checked, say that — not "wrong password".
           if (sendIfCredentialThrottled(req, res)) return;
-          return res.status(403).json({ error: "owner_password_required" });
+          if (metaMerge.adminRoleRefusal !== "creator_only") return res.status(403).json({ error: "owner_password_required" });
+          // Onboarding B: before the password exists, only the creator does it.
+          return res.status(403).json({ error: "creator_only" });
+        }
+        if (metaMerge.ownerPasswordTooShort) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "admin_password_too_short", minLength: ADMIN_PASSWORD_MIN_LENGTH });
         }
         const mergedValue = metaMerge.value;
+        // Onboarding B. With a creator, nothing is published until the admin
+        // password exists — whoever writes, through any client. Preparing,
+        // editing and importing (published:false) stay open. Refused before
+        // the plan is consulted, so it consumes nothing.
+        if (creatorIdOf(oldValue) && !hasOwnerPassword(oldValue)
+          && newlyPublishedRoundIds(oldValue, mergedValue).length > 0) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "admin_password_required" });
+        }
         const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
         if (!roundsCheck.ok) {
           await client.query("ROLLBACK");
@@ -1991,7 +2149,7 @@ app.post("/api/kv/:key", async (req, res) => {
         const oldOwnerPw = oldValue.settings ? oldValue.settings.ownerPassword : null;
         const newOwnerPw = mergedValue.settings ? mergedValue.settings.ownerPassword : null;
         const typedOwnerPw = value.settings ? value.settings.ownerPassword : null;
-        const mayChangeOwnerPw = authTier === "owner" || authTier === "platform" || (authTier === "admin-pin" && !oldOwnerPw);
+        const mayChangeOwnerPw = metaMerge.canChangeOwnerPassword;
         if (mayChangeOwnerPw && typeof typedOwnerPw === "string" && typedOwnerPw && !isHashed(typedOwnerPw)
           && newOwnerPw && newOwnerPw !== oldOwnerPw) {
           trustDevice(req, res, info.slug, OWNER_TARGET, newOwnerPw);
@@ -2013,6 +2171,9 @@ app.post("/api/kv/:key", async (req, res) => {
           // que se conservó el guardado. Decirlo evita que el Admin crea que
           // sus jornadas "se borraron solas".
           roundsRestored: metaMerge.roundsRestored,
+          // Onboarding B: this write tried to change the name, the entry fee
+          // or the points without the admin password; the stored ones stayed.
+          ruleFieldsKept: metaMerge.ruleFieldsKept,
           // HOTFIX-001. The board's server-owned revision, so this tab's NEXT
           // save is judged against the state it just created instead of the
           // one it had loaded. Without it a tab would conflict with itself
@@ -2145,7 +2306,10 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
     // permission — it's the same rule the rest of the backend already uses,
     // applied here too, so an admin isn't locked out of Ajustes after a
     // PIN-based credential rotation.
-    if (!stored) {
+    // Onboarding B: never for a quiniela with a creator. There the creator
+    // sets the password first (/api/set-admin-password), and no PIN opens the
+    // protected settings in the meantime.
+    if (!stored && !creatorIdOf(value)) {
       const providedAuth = req.get("x-qracks-auth") || "";
       const bound = boundParticipantId(req);
       const admin = (value.participants || []).find(
@@ -2258,10 +2422,15 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
         if (sendIfCredentialThrottled(req, res)) return;
         return res.status(403).json({ error: "wrong_current_pin" });
       }
+      // Onboarding B: the creator's first PIN is never authorized by another
+      // admin's PIN or session — only by the setup claim or the admin password.
+      const isCreatorSeat = creatorIdOf(value) === participant.id;
       const firstPin = adminPinClaim.decideFirstPin({
         participant,
         hasValidSetupClaim: !participant.pin && hasValidAdminSetupClaim(req, claimSlug, participant.id),
-        isAdminOrOwner: !participant.pin && participant.isAdmin && isAdminClaimAuthorized(req, claimSlug, value)
+        isAdminOrOwner: !participant.pin && participant.isAdmin && (isCreatorSeat
+          ? headerIsOwnerPassword(req, claimSlug, value)
+          : isAdminClaimAuthorized(req, claimSlug, value))
       });
       if (!firstPin.ok) {
         await client.query("ROLLBACK");
@@ -2363,6 +2532,80 @@ app.post("/api/recover-admin-pin", rateLimit("recover-admin-pin"), async (req, r
       trustDevice(req, res, slug, participant.id, participant.pin);
       trustDevice(req, res, slug, OWNER_TARGET, ownerPassword);
       res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Onboarding B: the FIRST admin password of a quiniela with a creator.
+// - Only the creator, and only with their PIN typed in this same request
+//   (X-Qracks-Participant = the creator, X-Qracks-Auth = their PIN): a
+//   session is not enough, since it lasts a year and the phone may be lent.
+//   The PIN goes through checkCredential, so the failed-attempt limiter applies
+//   (429 with the time left), exactly as on verify-pin.
+// - Anyone else — a co-admin, a participant, nobody — gets 403 before any
+//   credential is compared.
+// - Under the row lock and only while there is none: of several concurrent
+//   requests one wins and the rest get 409. Changing it afterwards takes the
+//   current password (Ajustes), as always.
+// - Quinielas without a creator are not served here: their rules are unchanged.
+// It sets the password and nothing else: publishing stays a separate,
+// explicit action of the Admin.
+app.post("/api/set-admin-password", rateLimit("set-admin-password"), async (req, res) => {
+  try {
+    const { metaKey, password } = req.body || {};
+    const slug = slugFromMetaKey(metaKey);
+    if (!slug || typeof password !== "string") return res.status(400).json({ error: "invalid_params" });
+    const cleanPassword = cleanAdminPassword(password);
+    if (!cleanPassword) {
+      return res.status(400).json({ error: "admin_password_too_short", minLength: ADMIN_PASSWORD_MIN_LENGTH });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const value = await getRowLocked(metaKey, client);
+      if (!value) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "not_found" });
+      }
+      if (!creatorIdOf(value)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "not_applicable" });
+      }
+      const participant = creatorParticipant(value);
+      if (!participant || !participant.isAdmin || !participant.pin || boundParticipantId(req) !== participant.id) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "not_creator" });
+      }
+      // Against the row read under lock: a PIN changed a moment ago is the one
+      // that counts.
+      if (!checkCredential(req, slug, participant.id, req.get("x-qracks-auth") || "", participant.pin)) {
+        await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
+        return res.status(403).json({ error: "wrong_pin" });
+      }
+      if (hasOwnerPassword(value)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "already_set" });
+      }
+      const beforePassword = JSON.parse(JSON.stringify(value));
+      if (!value.settings || typeof value.settings !== "object") value.settings = {};
+      value.settings.ownerPassword = hashPassword(cleanPassword);
+      const storedAfterPassword = stampMetaWrite(value, beforePassword);
+      await putRow(metaKey, storedAfterPassword, client);
+      await client.query("COMMIT");
+      console.log("admin_password_set", { slug });
+      // The device that set it is trusted for it, and for the PIN it proved.
+      trustDevice(req, res, slug, OWNER_TARGET, storedAfterPassword.settings.ownerPassword);
+      trustDevice(req, res, slug, participant.id, participant.pin);
+      res.json({ ok: true });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;
@@ -3117,7 +3360,10 @@ app.post("/api/create-quiniela", async (req, res) => {
   // listed in the platform panel). /crear no longer asks for it; an older
   // cached client that still sends it keeps it stored, and existing values
   // are never touched.
-  if (!cleanGroupName || !cleanCreatorName || !cleanPassword) {
+  // Onboarding B: so is the admin password. The creator sets it when
+  // publishing the first round (/api/set-admin-password); an older cached
+  // client that still sends one here keeps it, exactly as before.
+  if (!cleanGroupName || !cleanCreatorName) {
     return res.status(400).json({ error: "invalid_params" });
   }
 
@@ -3137,6 +3383,9 @@ app.post("/api/create-quiniela", async (req, res) => {
     const creatorId = "p_" + crypto.randomBytes(9).toString("hex");
     const meta = {
       groupName: cleanGroupName,
+      // Onboarding B: who created it, written here once and never by a
+      // request (mergeProtectedMetaFields).
+      creatorId,
       participants: [{ id: creatorId, name: cleanCreatorName, isAdmin: true, paid: false, pin: null }],
       rounds: [],
       // HOTFIX-001: the board's revision exists from the first byte, so the
@@ -3144,7 +3393,7 @@ app.post("/api/create-quiniela", async (req, res) => {
       // rather than being waved through as a legacy document.
       roundsRevision: 0,
       settings: {
-        ownerPassword: hashPassword(cleanPassword),
+        ...(cleanPassword ? { ownerPassword: hashPassword(cleanPassword) } : {}),
         entryFee: 0,
         sportsdbSeason: currentDefaultSeason(),
         pointsPerCorrectPick: 1,
@@ -3216,8 +3465,8 @@ app.post("/api/create-quiniela", async (req, res) => {
     // adminPinClaim.js); without it the admin seat would be open to whoever
     // opened the link first if the creator left before the PIN step.
     issueAdminSetupClaim(res, cleanSlug, creatorId);
-    // The creator just chose the admin password on this device.
-    trustDevice(req, res, cleanSlug, OWNER_TARGET, meta.settings.ownerPassword);
+    // An older client's creator just chose the admin password on this device.
+    if (meta.settings.ownerPassword) trustDevice(req, res, cleanSlug, OWNER_TARGET, meta.settings.ownerPassword);
     res.json({ ok: true, slug: cleanSlug });
   } catch (err) {
     await client.query("ROLLBACK");

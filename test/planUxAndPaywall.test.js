@@ -856,8 +856,10 @@ test("CTA Plus · vive en la franja del plan Y en Ajustes (con y sin contraseña
   assert.ok(strip.includes("wirePlanOfferCta(liveStrip)"));
   const owner = stripComments(blockFrom(indexSrc, "function renderAdminOwner(body)"));
   assert.ok(owner.includes('ROUTE === "quiniela" && SLUG && currentUser && currentUser.isAdmin ? settingsPlanCardHtml()'), "sólo para el Admin de una quiniela con plan");
-  assert.equal((owner.match(/body\.innerHTML = planCard \+/g) || []).length, 2, "bloqueado y desbloqueado");
-  assert.equal((owner.match(/renderSettingsPlan\(\);/g) || []).length, 2);
+  // Bloqueado y desbloqueado, más las dos variantes de onboarding B sin
+  // contraseña (tarjeta del creador y aviso para un co-admin).
+  assert.equal((owner.match(/body\.innerHTML = planCard \+/g) || []).length, 4, "bloqueado, desbloqueado y las dos de onboarding B");
+  assert.equal((owner.match(/renderSettingsPlan\(\);/g) || []).length, 3);
   const settings = stripComments(blockFrom(indexSrc, "async function renderSettingsPlan()"));
   assert.ok(settings.includes("currentUser && currentUser.isAdmin"));
   assert.ok(settings.includes("await loadPlan()"), "el plan sale del servidor");

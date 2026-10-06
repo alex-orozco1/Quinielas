@@ -268,12 +268,21 @@
   /* /crear: what QRACKS does and what the organizer does, before the form. */
   #quiniela-root .qz-crear-value{ font-size:15px; line-height:1.4; margin:4px 0 6px; }
   #quiniela-root .qz-crear-next{ text-align:center; line-height:1.4; margin:0 0 18px; }
-  #quiniela-root .qz-pass-row{ display:flex; gap:8px; align-items:stretch; }
-  #quiniela-root .qz-pass-row input{ flex:1; min-width:0; }
   #quiniela-root .qz-field-error{ color:var(--red); font-size:13px; font-weight:600; margin-top:4px; }
   /* "PIN guardado": stays on the screen that follows saving the PIN. */
   #quiniela-root .qz-pin-saved{
     margin:12px auto 0; max-width:460px; width:calc(100% - 24px); padding:10px 14px; border-radius:10px;
+    background:#E7F4EC; color:#10231C; border:1px solid #BFDFCB; font-size:14px; line-height:1.45;
+  }
+  #quiniela-root .qz-pin-saved p{ margin:6px 0 0; }
+  /* Onboarding B: "Guarda tu PIN" while there is no admin password yet. */
+  #quiniela-root .qz-pin-warning{
+    text-align:left; margin:16px 0 0; padding:10px 12px; border-radius:10px;
+    background:#FFF4E5; border:1px solid #F0C36D; color:#5C3B00; font-size:13.5px; line-height:1.45;
+  }
+  /* "Contraseña guardada": next to the «Publicar jornada» that still has to be tapped. */
+  #quiniela-root .qz-pw-saved{
+    margin:0 auto 10px; max-width:560px; padding:9px 12px; border-radius:10px; text-align:left;
     background:#E7F4EC; color:#10231C; border:1px solid #BFDFCB; font-size:14px; line-height:1.45;
   }
   #quiniela-root .name-grid{
@@ -470,6 +479,32 @@
     box-sizing:border-box; margin-top:4px;
   }
   .qz-modal-input:focus{ outline:2px solid #D6A73C; outline-offset:1px; }
+  /* «Mostrar / Ocultar» next to a password, in a modal or in a screen. It only
+     reveals what is being typed; a stored password never comes back. */
+  .qz-pass-toggle-row{ display:flex; gap:8px; align-items:stretch; margin-top:4px; }
+  .qz-pass-toggle-row .qz-modal-input{ flex:1; min-width:0; margin-top:0; }
+  .qz-pass-toggle{
+    min-width:84px; min-height:44px; padding:0 12px; border-radius:8px; border:1.5px solid #E7E3D6;
+    background:#F0EEE4; color:#10231C; font-family:'Manrope', sans-serif; font-weight:700; font-size:13.5px; cursor:pointer;
+  }
+  .qz-pass-toggle:focus{ outline:2px solid #D6A73C; outline-offset:1px; }
+  /* Onboarding B: «Configura tu contraseña de administrador» — taller than the other
+     modals, so the overlay scrolls instead of cutting the title off on a short
+     phone, and the buttons stay in reach. */
+  .qz-modal-overlay.qz-modal-scroll{ overflow-y:auto; align-items:flex-start; }
+  .qz-modal-scroll .qz-modal-card{ margin:auto; }
+  .qz-modal-card:focus{ outline:none; }
+  .qz-modal-scroll .qz-modal-actions{ position:sticky; bottom:-22px; background:#FFFFFF; margin-bottom:-22px; padding:12px 0 22px; }
+  .qz-setpw{ font-family:'Manrope', sans-serif; color:#10231C; text-align:left; }
+  .qz-setpw-head{ font-weight:800; font-size:14px; margin:14px 0 4px; }
+  .qz-setpw ul{ margin:0; padding-left:20px; font-size:14px; line-height:1.5; }
+  .qz-setpw-text{ font-size:14px; line-height:1.5; margin:0; }
+  .qz-setpw-note{ font-size:13px; line-height:1.45; color:#5B6B63; margin:6px 0 0; }
+  .qz-setpw-field{ margin-top:12px; }
+  .qz-setpw-field label{ display:block; font-weight:700; font-size:13.5px; }
+  .qz-setpw-help{ font-size:12.5px; color:#5B6B63; margin:4px 0 0; }
+  .qz-setpw-error{ color:#C1443A; font-size:13px; font-weight:600; margin:6px 0 0; }
+  .qz-setpw-error[hidden]{ display:none; }
 
   #quiniela-root .history-item{
     display:flex; justify-content:space-between; align-items:center;
@@ -1407,11 +1442,13 @@
   // Creating a brand-new quiniela — meta + platform_index entry — happens as a
   // single atomic operation on the server (see /api/create-quiniela). No
   // separate registration step, no window where one exists without the other.
-  async function apiCreateQuiniela({ slug, groupName, creatorName, password, sportsdbLeagueId }){
+  // Onboarding B: no admin password here; the creator sets it before
+  // publishing the first round (apiSetAdminPassword).
+  async function apiCreateQuiniela({ slug, groupName, creatorName, sportsdbLeagueId }){
     try{
       const res = await fetch("/api/create-quiniela", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, groupName, creatorName, password, sportsdbLeagueId })
+        body: JSON.stringify({ slug, groupName, creatorName, sportsdbLeagueId })
       });
       const data = await res.json().catch(() => ({}));
       if(res.ok && data.ok && data.slug) trackEvent("quiniela_created", { competitionSlug: data.slug, source: "create_flow" });
@@ -1458,6 +1495,14 @@
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     too_many_attempts: "Demasiados intentos. Espera un rato e intenta de nuevo, o entra desde un dispositivo donde ya hayas entrado.",
     owner_password_required: "Para cambiar quién es admin se necesita la contraseña de administrador.",
+    // Onboarding B (quinielas that remember their creator).
+    creator_only: "Mientras no haya contraseña de administrador, sólo quien creó la quiniela puede nombrar o quitar admins.",
+    creator_protected: "A quien creó la quiniela sólo se le puede quitar, quitar de admin o resetear el PIN con la contraseña de administrador.",
+    admin_password_required: "Antes de publicar la primera jornada, quien creó la quiniela tiene que configurar la contraseña de administrador.",
+    admin_password_too_short: "La contraseña debe tener al menos 8 caracteres.",
+    not_creator: "Sólo quien creó la quiniela puede configurar la contraseña.",
+    wrong_pin: "Ese PIN no es correcto.",
+    already_set: "Esta quiniela ya tiene contraseña de administrador.",
     wrong_owner_password: "❌ Contraseña de administrador incorrecta",
     wrong_current_pin: "Ese PIN no es correcto.",
     stale_version: "La información cambió mientras estabas editando. Actualizamos los datos; intenta de nuevo.",
@@ -1713,12 +1758,15 @@
   // admin password. Without that binding, one value was checked against every
   // participant at once, so a guess that matched the guesser's own PIN cost
   // nothing and still revealed whether it was also an admin's.
-  function setAuthHeaders(headers, cred){
+  function setAuthHeaders(headers, cred, bindTo){
     if(!cred) return headers;
     headers["X-Qracks-Auth"] = cred;
     if(cred === currentUserPinCache && cred !== ownerPasswordCache && currentUser && currentUser.id != null){
       headers["X-Qracks-Participant"] = String(currentUser.id);
     }
+    // A PIN typed for one named participant (the creator's, when setting the
+    // first admin password) goes out bound to that participant, always.
+    if(bindTo != null) headers["X-Qracks-Participant"] = String(bindTo);
     return headers;
   }
   // MON-002B: every meta save routes through the same place so the server's
@@ -2073,8 +2121,11 @@
   // PIN when it is saved, or null (canceled / not possible: the reason is
   // already on screen).
   async function recoverAdminPin(p){
+    // Without an admin password there is nothing to prove it with (asked to
+    // the server: another tab or device may have just set it).
+    if(meta && meta.ownerPasswordSet === false && !(await refreshOwnerPasswordSet())){ await explainNoAdminPasswordRecovery(p); return null; }
     const pw = await promptCredential(
-      "Para elegir un PIN nuevo, escribe la contraseña de administrador de esta quiniela (la que se eligió al crearla).",
+      "Para elegir un PIN nuevo, escribe la contraseña de administrador de esta quiniela (la que se configuró para ella).",
       { title: "¿Olvidaste tu PIN?", confirmLabel: "Continuar", secret: true },
       "owner", (password) => verifyOwnerPasswordResult(password));
     if(pw === null){ showLoginWait("owner", "Contraseña de administrador"); return null; }
@@ -2104,31 +2155,345 @@
         showLoginWait("owner", "Contraseña de administrador");
         return null;
       }
+      if(result.error === "no_admin_password"){
+        if(meta) meta.ownerPasswordSet = false;
+        await explainNoAdminPasswordRecovery(p);
+        return null;
+      }
       toast(result.error === "wrong_admin_password"
         ? "La contraseña de administrador cambió mientras tanto. Inténtalo de nuevo."
-        : result.error === "no_admin_password"
-          ? "Esta quiniela no tiene contraseña de administrador. Pide ayuda al equipo de QRACKS para recuperar el acceso."
-          : "No se pudo guardar el PIN nuevo. Intenta de nuevo.");
+        : "No se pudo guardar el PIN nuevo. Intenta de nuevo.");
       return null;
     }
   }
   // First PIN of an admin: tries the setup claim cookie first, then asks for
-  // the admin password chosen at creation. Resolves to { ok, error, canceled }.
+  // the admin password (or, while there is none, another admin's PIN).
+  // Resolves to { ok, error, canceled }.
   async function setFirstAdminPin(participantId, newPin){
     const first = await apiSetPinResult(participantId, null, newPin);
     if(first.ok || first.error !== "admin_claim_required") return first;
-    // A wrong password asks again in the same window: the PIN already chosen
+    const noPassword = !!(meta && meta.ownerPasswordSet === false) && !(await refreshOwnerPasswordSet());
+    // Onboarding B: the creator's first PIN is never authorized by another
+    // admin, and without a password only the browser that created the
+    // quiniela can choose it. Asking for anything here would be a dead end.
+    if(noPassword && meta.creatorId === participantId){
+      return { ok: false, error: "creator_claim_missing" };
+    }
+    // A wrong value asks again in the same window: the PIN already chosen
     // is kept. Every try still goes through the attempt limit (a wait shows
     // its countdown in this window).
-    let message = "Escribe la contraseña de administrador de esta quiniela (no es un PIN). Si no la tienes, otro admin puede escribir aquí su PIN.";
+    let message = noPassword
+      ? "Esta quiniela todavía no tiene contraseña de administrador. Pide a otro admin que escriba aquí su PIN."
+      : "Escribe la contraseña de administrador de esta quiniela (no es un PIN). Si no la tienes, otro admin puede escribir aquí su PIN.";
     while(true){
-      const attempt = await promptCredential(message, { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true },
+      const attempt = await promptCredential(message,
+        noPassword
+          ? { title: "Confirma que eres admin", confirmLabel: "Continuar", pin: true }
+          : { title: "Confirma que eres admin", confirmLabel: "Continuar", secret: true },
         "owner", (password) => apiSetPinResult(participantId, null, newPin, password));
       if(attempt === null) return { ok: false, error: "admin_claim_required", canceled: true };
       if(attempt.result.ok || attempt.result.error !== "admin_claim_required") return attempt.result;
-      message = "Esa no es la contraseña de administrador. Inténtalo otra vez (no es un PIN). Si no la tienes, otro admin puede escribir aquí su PIN.";
+      message = noPassword
+        ? "Ese no es el PIN de un admin. Inténtalo otra vez: pide a otro admin que escriba aquí su PIN."
+        : "Esa no es la contraseña de administrador. Inténtalo otra vez (no es un PIN). Si no la tienes, otro admin puede escribir aquí su PIN.";
     }
   }
+  // What the creator sees when this browser cannot choose their first PIN.
+  const CREATOR_CLAIM_MISSING_MESSAGE = "Este navegador no puede elegir el primer PIN de quien creó la quiniela. Hazlo desde el navegador donde se creó.";
+  // ---------- onboarding B: the admin password, set before publishing ----------
+  // A quiniela created from now on remembers who created it (meta.creatorId)
+  // and starts without the admin password. Its creator prepares everything
+  // without it and sets it when publishing the first round: the server
+  // refuses that publish until it exists (admin_password_required), lets
+  // only the creator set it, with their PIN (/api/set-admin-password), and
+  // from then on the name, the entry fee and the points change only with it.
+  // A quiniela without creatorId keeps every old rule.
+  function creatorOfMeta(){
+    if(!meta || !meta.creatorId || !Array.isArray(meta.participants)) return null;
+    return meta.participants.find(p => p.id === meta.creatorId) || null;
+  }
+  function isCreator(user){
+    const creator = creatorOfMeta();
+    return !!(creator && user && user.id === creator.id);
+  }
+  function needsAdminPasswordToPublish(){
+    return !!(meta && meta.creatorId && !meta.ownerPasswordSet);
+  }
+  // { ok, error, retryAfterSeconds }. The creator's PIN goes in the header,
+  // bound to the creator; the new password goes in the body, once.
+  async function apiSetAdminPassword(pin, password){
+    try{
+      const res = await fetch("/api/set-admin-password", {
+        method: "POST", credentials: "same-origin",
+        headers: setAuthHeaders({ "Content-Type": "application/json" }, pin, meta.creatorId),
+        body: JSON.stringify({ metaKey: currentMetaKey(), password })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok && !!data.ok, error: res.ok ? null : (data.error || "server_error"), retryAfterSeconds: res.ok ? null : data.retryAfterSeconds };
+    }catch(e){ console.error("apiSetAdminPassword failed", e); return { ok: false, error: "network_error" }; }
+  }
+  // «Mostrar / Ocultar»: only what is being typed. It always starts hidden.
+  function passwordFieldHtml(id, extraAttrs){
+    return `
+      <div class="qz-pass-toggle-row">
+        <input class="qz-modal-input" id="${id}" type="password" maxlength="200" ${extraAttrs || ""}>
+        <button type="button" class="qz-pass-toggle" data-pass-toggle="${id}" aria-controls="${id}" aria-pressed="false">Mostrar</button>
+      </div>`;
+  }
+  function wirePasswordToggles(container){
+    container.querySelectorAll("[data-pass-toggle]").forEach(btn => {
+      const input = container.querySelector("#" + btn.dataset.passToggle);
+      if(!input) return;
+      btn.addEventListener("click", () => {
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.textContent = show ? "Ocultar" : "Mostrar";
+        btn.setAttribute("aria-pressed", show ? "true" : "false");
+      });
+    });
+  }
+  // «Configura tu contraseña de administrador»: the same content in the
+  // publish modal and in Ajustes. Only what exists and the server enforces:
+  // the three rules change only with this password, and it recovers the PIN
+  // (#29). `askPin` false: the creator's PIN is already in memory (typed in
+  // this same visit), so it is not asked again; the server still checks it.
+  function adminPasswordSetupHtml(prefix, opts){
+    const inModal = !!(opts && opts.inModal);
+    const askPin = !(opts && opts.askPin === false);
+    return `
+      <div class="qz-setpw" id="${prefix}">
+        <div class="qz-modal-title" id="${prefix}-title">Configura tu contraseña de administrador</div>
+        <div class="qz-setpw-head">Aquí puedes:</div>
+        <ul>
+          <li>Cambiar el nombre de tu quiniela.</li>
+          <li>Definir cuántos puntos vale cada acierto.</li>
+          <li>Establecer la cuota que acuerden pagar los participantes.</li>
+        </ul>
+        <p class="qz-setpw-note">Los participantes te pagan directamente a ti, y tú registras manualmente los pagos en QRACKS.</p>
+        <div class="qz-setpw-head">Tú controlas estos cambios</div>
+        <p class="qz-setpw-text">Crea una contraseña de administrador para autorizar modificaciones a estas reglas. También te servirá para recuperar tu acceso si olvidas el PIN. Para entrar normalmente seguirás usando tu PIN.</p>
+        <div class="qz-setpw-field" id="${prefix}-pin-field"${askPin ? "" : " hidden"}>
+          <label for="${prefix}-pin">Tu PIN</label>
+          <input class="qz-modal-input" id="${prefix}-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" autocomplete="off">
+        </div>
+        <div class="qz-setpw-field">
+          <label for="${prefix}-pw">Contraseña</label>
+          ${passwordFieldHtml(prefix + "-pw", `autocomplete="new-password" aria-describedby="${prefix}-pw-help"`)}
+          <p class="qz-setpw-help" id="${prefix}-pw-help">Mínimo 8 caracteres.</p>
+        </div>
+        <div class="qz-setpw-field">
+          <label for="${prefix}-pw2">Confirmar contraseña</label>
+          ${passwordFieldHtml(prefix + "-pw2", `autocomplete="new-password"`)}
+        </div>
+        <p class="qz-setpw-error" id="${prefix}-error" role="alert" hidden></p>
+        ${credentialWaitNoticeHtml(prefix + "-wait")}
+        <div class="qz-modal-actions">
+          ${inModal ? `<button type="button" class="qz-modal-cancel" id="${prefix}-cancel">Ahora no</button>` : ``}
+          <button type="button" class="qz-modal-confirm qz-modal-not-destructive" id="${prefix}-save">Guardar contraseña</button>
+        </div>
+      </div>`;
+  }
+  // handlers: onSaved(), onCancel(), onAlreadySet(). opts.knownPin: the
+  // creator's PIN already in memory (the PIN field is then hidden).
+  // Returns { isSaving }.
+  function wireAdminPasswordSetup(container, prefix, handlers, opts){
+    const $ = (suffix) => container.querySelector("#" + prefix + suffix);
+    const pinField = $("-pin-field");
+    const pinInput = $("-pin"), pwInput = $("-pw"), pw2Input = $("-pw2");
+    let knownPin = opts && /^\d{4}$/.test(opts.knownPin || "") ? opts.knownPin : null;
+    const errorEl = $("-error"), waitEl = $("-wait"), saveBtn = $("-save"), cancelBtn = $("-cancel");
+    const waitKey = "pin:" + meta.creatorId;
+    let saving = false;
+    wirePasswordToggles(container);
+    pinInput.addEventListener("input", () => { pinInput.value = pinInput.value.replace(/\D/g, "").slice(0, 4); });
+    const clearError = () => {
+      errorEl.hidden = true;
+      errorEl.textContent = "";
+      [pinInput, pwInput, pw2Input].forEach(i => i.removeAttribute("aria-invalid"));
+    };
+    const fail = (input, message) => {
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+      if(input){ input.setAttribute("aria-invalid", "true"); input.focus(); }
+    };
+    // Nothing typed is ever cleared, except a PIN the server said is wrong.
+    const submit = async () => {
+      if(saving || saveBtn.disabled) return;
+      clearError();
+      const usingKnownPin = !!(pinField.hidden && knownPin);
+      const pin = usingKnownPin ? knownPin : pinInput.value.trim();
+      const pw = pwInput.value.trim();
+      const pw2 = pw2Input.value.trim();
+      if(!/^\d{4}$/.test(pin)){ pinField.hidden = false; return fail(pinInput, "Escribe tu PIN de 4 números."); }
+      if(pw.length < 8) return fail(pwInput, "Usa al menos 8 caracteres.");
+      if(pw !== pw2) return fail(pw2Input, "Las contraseñas no coinciden.");
+      saving = true;
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Guardando…";
+      if(cancelBtn) cancelBtn.disabled = true;
+      const result = await apiSetAdminPassword(pin, pw);
+      saving = false;
+      saveBtn.textContent = "Guardar contraseña";
+      saveBtn.disabled = false;
+      if(cancelBtn) cancelBtn.disabled = false;
+      if(result.ok){
+        meta.ownerPasswordSet = true;
+        // Proven on this device a moment ago: the next writes go out with
+        // the password (owner level), and the PIN with it is this user's.
+        ownerPasswordCache = pw;
+        ownerUnlocked = true;
+        currentUserPinCache = pin;
+        retireSavePinWarnings();
+        handlers.onSaved();
+        return;
+      }
+      if(result.error === "too_many_attempts" && startCredentialWait(waitKey, result)){
+        mountCredentialWait(waitEl, waitKey, { button: saveBtn, reveal: true });
+        return;
+      }
+      if(result.error === "wrong_pin"){
+        // A PIN from memory that no longer matches (changed on another
+        // device): forgotten, so no later attempt (reopening this form,
+        // Ajustes) spends the limiter on it again; the field asks for it now.
+        if(usingKnownPin && currentUserPinCache === knownPin) currentUserPinCache = null;
+        knownPin = null;
+        pinField.hidden = false;
+        pinInput.value = "";
+        return fail(pinInput, usingKnownPin ? "Escribe tu PIN para continuar." : "Ese PIN no es correcto.");
+      }
+      if(result.error === "admin_password_too_short") return fail(pwInput, "Usa al menos 8 caracteres.");
+      if(result.error === "already_set"){
+        meta.ownerPasswordSet = true;
+        retireSavePinWarnings();
+        handlers.onAlreadySet();
+        return;
+      }
+      if(result.error === "not_creator") return fail(null, "Sólo quien creó la quiniela puede configurar la contraseña.");
+      fail(null, "No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.");
+    };
+    saveBtn.addEventListener("click", submit);
+    if(cancelBtn) cancelBtn.addEventListener("click", () => { if(!saving) handlers.onCancel(); });
+    // Enter in a field saves; Enter on a button is that button. Handled here,
+    // so the browser does not act on it too.
+    container.addEventListener("keydown", (e) => {
+      if(e.key !== "Enter" || e.target.tagName !== "INPUT" || !container.contains(e.target)) return;
+      e.preventDefault();
+      submit();
+    });
+    mountCredentialWait(waitEl, waitKey, { button: saveBtn });
+    return { isSaving: () => saving };
+  }
+  // The PIN of the creator, if it was typed during this visit (memory only,
+  // never stored): the setup does not ask for it again.
+  function creatorPinInMemory(){
+    return isCreator(currentUser) && /^\d{4}$/.test(currentUserPinCache || "") ? currentUserPinCache : null;
+  }
+  // The publish modal. Resolves true once the password is saved. It never
+  // publishes: closing it ("Ahora no", Esc) keeps everything on the screen.
+  // Only one at a time: a second call while it is open resolves false.
+  function openAdminPasswordSetup(){
+    if(document.getElementById("qz-setpw-modal")) return Promise.resolve(false);
+    const knownPin = creatorPinInMemory();
+    return new Promise((resolve) => {
+      const prefix = "qz-setpw-modal";
+      const overlay = document.createElement("div");
+      overlay.className = "qz-modal-overlay qz-modal-scroll";
+      overlay.innerHTML = `<div class="qz-modal-card" role="dialog" aria-modal="true" aria-labelledby="${prefix}-title" tabindex="-1">${adminPasswordSetupHtml(prefix, { inModal: true, askPin: !knownPin })}</div>`;
+      document.body.appendChild(overlay);
+      const focusTrap = attachModalFocusTrap(overlay);
+      let closed = false;
+      const close = (saved) => {
+        if(closed) return;
+        closed = true;
+        document.removeEventListener("keydown", onKey);
+        focusTrap.release();
+        overlay.remove();
+        resolve(saved);
+      };
+      const control = wireAdminPasswordSetup(overlay, prefix, {
+        onSaved: () => close(true),
+        onCancel: () => close(false),
+        onAlreadySet: () => { close(false); toast("Esta quiniela ya tiene contraseña de administrador. Toca «Publicar jornada» para publicar.", 5000); },
+      }, { knownPin });
+      // Esc is «Ahora no». A click on the backdrop does not close it, so
+      // nothing typed is lost by a stray tap.
+      const onKey = (e) => { if(e.key === "Escape" && !control.isSaving()){ e.preventDefault(); close(false); } };
+      document.addEventListener("keydown", onKey);
+      // The card, not the PIN: on a phone the keypad would cover the text.
+      overlay.querySelector(".qz-modal-card").focus();
+    });
+  }
+  function clearPublishPasswordSaved(){
+    document.querySelectorAll(".qz-pw-saved").forEach(el => el.remove());
+  }
+  function showPublishPasswordSaved(anchor, where){
+    clearPublishPasswordSaved();
+    if(!anchor) return;
+    const el = document.createElement("p");
+    el.className = "qz-pw-saved";
+    el.setAttribute("role", "status");
+    el.textContent = "✅ Contraseña guardada. Revisa la jornada y toca «Publicar jornada» para publicarla.";
+    if(where === "after") anchor.after(el); else anchor.before(el);
+    // No toast on top: on a phone it would cover the very button to tap.
+    if(typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }
+  // The "Guarda tu PIN" warning only holds while there is no admin password.
+  function retireSavePinWarnings(){
+    document.querySelectorAll(".qz-pin-warning, .qz-pin-saved-warning").forEach(el => el.remove());
+  }
+  // This tab may be behind: the password may have been set a moment ago in
+  // another tab or on another device. Asks the server (the public view says
+  // whether it exists, never more) and keeps only that flag. True if it exists.
+  async function refreshOwnerPasswordSet(){
+    try{
+      const fresh = await getMeta({});
+      if(fresh && typeof fresh.ownerPasswordSet === "boolean") meta.ownerPasswordSet = fresh.ownerPasswordSet;
+    }catch(e){ console.error("refreshOwnerPasswordSet failed", e); }
+    if(meta && meta.ownerPasswordSet) retireSavePinWarnings();
+    return !!(meta && meta.ownerPasswordSet);
+  }
+  // At every «Publicar jornada», after the form's own checks and before
+  // anything changes. Resolves true when the publish may go ahead now:
+  // there is no password to wait for, or the server says it already exists
+  // (then nothing is asked and nothing is blocked). Otherwise the creator
+  // gets the modal over this same screen, and saving the password does not
+  // publish (one more tap does); a co-admin is told who has to do it.
+  // One at a time: a second tap while the first is being answered does
+  // nothing, so no second modal can open on top.
+  let firstPublishGateBusy = false;
+  async function gateFirstPublish(anchor, where){
+    clearPublishPasswordSaved();
+    if(!needsAdminPasswordToPublish()) return true;
+    if(firstPublishGateBusy || document.querySelector(".qz-modal-overlay")) return false;
+    firstPublishGateBusy = true;
+    try{
+      if(await refreshOwnerPasswordSet()) return true;
+      const creator = creatorOfMeta();
+      if(!isCreator(currentUser)){
+        await qzAlert(creator
+          ? `Antes de publicar la primera jornada, ${creator.name} (quien creó la quiniela) tiene que configurar la contraseña de administrador.`
+          : "Antes de publicar la primera jornada, quien creó la quiniela tiene que configurar la contraseña de administrador.",
+          { title: "Falta la contraseña de administrador" });
+        return false;
+      }
+      if(await openAdminPasswordSetup()) showPublishPasswordSaved(anchor, where);
+      return false;
+    } finally {
+      firstPublishGateBusy = false;
+    }
+  }
+  // «¿Olvidaste tu PIN?» while there is no admin password: there is nothing to
+  // recover with, so it says that, and what still works. No support promise.
+  async function explainNoAdminPasswordRecovery(p){
+    const lines = ["Esta quiniela todavía no tiene contraseña de administrador, así que no es posible recuperar tu PIN desde aquí."];
+    if(isCreator(p)){
+      lines.push("Si tienes una sesión abierta en otro dispositivo, entra desde ahí. Desde ahí podrás configurar tu contraseña de administrador.");
+    } else {
+      lines.push("Si tienes una sesión abierta en otro dispositivo, entra desde ahí. Si no, pide a otro admin que resetee tu PIN desde Participantes.");
+    }
+    await qzAlert(lines.join("\n\n"), { title: "¿Olvidaste tu PIN?" });
+  }
+
   // Anonymous, non-sensitive — just enough to tell "same device came back"
   // apart in the funnel numbers. Not the session cookie, no security role.
   function getDeviceId(){
@@ -2327,11 +2692,20 @@
     const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const onTab = (e) => {
       if(e.key !== "Tab") return;
+      // Only the modal on top answers: one under it must not pull the focus back.
+      const overlays = document.querySelectorAll(".qz-modal-overlay");
+      if(overlays.length && overlays[overlays.length - 1] !== overlay) return;
       const focusable = Array.from(overlay.querySelectorAll(focusableSelector)).filter(el => el.offsetParent !== null);
-      if(!focusable.length) return;
+      if(!focusable.length){ e.preventDefault(); return; }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if(e.shiftKey && document.activeElement === first){
+      // The focus is on the dialog itself (a card with tabindex=-1, which is
+      // not in the list) or anywhere else: Tab enters the dialog instead of
+      // leaving it for the page behind.
+      if(!focusable.includes(document.activeElement)){
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if(e.shiftKey && document.activeElement === first){
         e.preventDefault();
         last.focus();
       } else if(!e.shiftKey && document.activeElement === last){
@@ -2353,6 +2727,8 @@
     const destructive = opts.destructive !== false; // most of what this guards is destructive by default
     const confirmLabel = opts.confirmLabel || (destructive ? "Eliminar" : "Confirmar");
     const cancelLabel = opts.cancelLabel || "Cancelar";
+    // A notice with nothing to decide has one button (qzAlert).
+    const single = !!opts.single;
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "qz-modal-overlay";
@@ -2364,7 +2740,7 @@
           ${opts.title ? `<div class="qz-modal-title">${esc(opts.title)}</div>` : ``}
           <div class="qz-modal-message">${messageHtml}</div>
           <div class="qz-modal-actions">
-            <button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>
+            ${single ? `` : `<button class="qz-modal-cancel" id="qz-modal-cancel-btn">${esc(cancelLabel)}</button>`}
             <button class="qz-modal-confirm ${destructive ? '' : 'qz-modal-not-destructive'}" id="qz-modal-confirm-btn">${esc(confirmLabel)}</button>
           </div>
         </div>
@@ -2380,11 +2756,17 @@
       const onKey = (e) => { if(e.key === "Escape") cleanup(false); };
       document.addEventListener("keydown", onKey);
       overlay.addEventListener("click", (e) => { if(e.target === overlay) cleanup(false); });
-      overlay.querySelector("#qz-modal-cancel-btn").addEventListener("click", () => cleanup(false));
+      const cancelBtn = overlay.querySelector("#qz-modal-cancel-btn");
+      if(cancelBtn) cancelBtn.addEventListener("click", () => cleanup(false));
       overlay.querySelector("#qz-modal-confirm-btn").addEventListener("click", () => cleanup(true));
       // Destructive actions default focus to Cancel — the safer accidental-Enter outcome.
-      (destructive ? overlay.querySelector("#qz-modal-cancel-btn") : overlay.querySelector("#qz-modal-confirm-btn")).focus();
+      ((destructive && cancelBtn) ? cancelBtn : overlay.querySelector("#qz-modal-confirm-btn")).focus();
     });
+  }
+  // A notice: one button, «Entendido» unless said otherwise.
+  function qzAlert(message, opts){
+    opts = opts || {};
+    return qzConfirm(message, { ...opts, destructive: false, single: true, confirmLabel: opts.confirmLabel || "Entendido" });
   }
 
   // UX-018: reusable text/PIN capture modal — a drop-in replacement for
@@ -2409,6 +2791,7 @@
         <div class="qz-modal-card" role="dialog" aria-modal="true" aria-label="${esc(opts.title || message)}">
           ${opts.title ? `<div class="qz-modal-title">${esc(opts.title)}</div>` : ``}
           <div class="qz-modal-message"><p>${esc(message)}</p></div>
+          ${isSecret && !isPin ? `<div class="qz-pass-toggle-row">` : ``}
           <input
             class="qz-modal-input" id="qz-prompt-input"
             type="${isSecret ? "password" : "text"}"
@@ -2416,6 +2799,7 @@
             autocomplete="off"
             ${isPin ? 'maxlength="4" pattern="[0-9]*"' : ""}
           >
+          ${isSecret && !isPin ? `<button type="button" class="qz-pass-toggle" data-pass-toggle="qz-prompt-input" aria-controls="qz-prompt-input" aria-pressed="false">Mostrar</button></div>` : ``}
           ${opts.waitKey ? credentialWaitNoticeHtml("qz-prompt-wait") : ""}
           ${opts.altLabel ? `<button type="button" class="qz-modal-alt" id="qz-modal-alt-btn">${esc(opts.altLabel)}</button>` : ""}
           <div class="qz-modal-actions">
@@ -2459,6 +2843,9 @@
       // works during a wait too -- that is when "¿Olvidaste tu PIN?" matters.
       const altBtn = overlay.querySelector("#qz-modal-alt-btn");
       if(altBtn) altBtn.addEventListener("click", () => cleanup(QZ_PROMPT_ALT));
+      // «Mostrar / Ocultar» for a password (never for a PIN): only what is
+      // being typed, and every time the modal opens it starts hidden.
+      wirePasswordToggles(overlay);
       if(isPin){
         input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 4); });
       }
@@ -3467,6 +3854,9 @@
     return `<div class="eyebrow" style="text-align:center;">${esc(text)}</div>`;
   }
 
+  // Onboarding B: the Founder's exact warning, only while there is no admin
+  // password (retireSavePinWarnings removes it the moment one exists).
+  const SAVE_YOUR_PIN_WARNING_HTML = "<strong>Guarda tu PIN en un lugar seguro.</strong> Si lo olvidas y cierras tu sesión, no podrás volver a entrar por tu cuenta.";
   // Confirms the PIN on the screen that FOLLOWS saving it: a toast would be
   // wiped by that screen's render. It stays until the next screen replaces
   // it, and a reload does not bring it back.
@@ -3477,12 +3867,16 @@
     el.className = "qz-pin-saved";
     el.id = "qz-pin-saved";
     el.setAttribute("role", "status");
-    el.innerHTML = `✅ <strong>PIN guardado.</strong> Entras como ${esc(name)} con esos 4 números. Si lo olvidas, lo recuperas con tu contraseña de administrador.`;
+    // Without an admin password there is no recovery yet: the strip says so
+    // instead of promising one.
+    el.innerHTML = meta && meta.ownerPasswordSet === false
+      ? `✅ <strong>PIN guardado.</strong> Entras como ${esc(name)} con esos 4 números.<p class="qz-pin-saved-warning">${SAVE_YOUR_PIN_WARNING_HTML}</p>`
+      : `✅ <strong>PIN guardado.</strong> Entras como ${esc(name)} con esos 4 números. Si lo olvidas, lo recuperas con tu contraseña de administrador.`;
     root.prepend(el);
   }
 
   async function renderAdminSetupPin(){
-    const creator = meta.participants.find(p => p.isAdmin) || meta.participants[0];
+    const creator = creatorOfMeta() || meta.participants.find(p => p.isAdmin) || meta.participants[0];
     root.innerHTML = `
       <div class="login-wrap">
         <div class="login-card" style="text-align:center;">
@@ -3491,6 +3885,7 @@
           <div class="login-title display" style="margin-top:6px;">Crea tu PIN personal</div>
           <p class="login-sub">4 números para entrar como ${esc(creator.name)} desde cualquier teléfono</p>
           ${pinBoxesHtml("qz-setup-pin-input", "qz-setup-pin-boxes")}
+          ${meta.ownerPasswordSet === false ? `<p class="qz-pin-warning" id="qz-setup-pin-warning">${SAVE_YOUR_PIN_WARNING_HTML}</p>` : ``}
           <p class="muted" id="qz-setup-pin-error" style="color:var(--red);display:none;margin-top:10px;"></p>
           ${credentialWaitNoticeHtml("qz-setup-pin-wait")}
           <button class="btn btn-primary" id="qz-setup-pin-continue" style="width:100%;padding:12px;margin-top:20px;" disabled>Guardar PIN</button>
@@ -3524,7 +3919,9 @@
           errorEl.style.display = "none";
           return;
         }
-        errorEl.textContent = result.canceled
+        errorEl.textContent = result.error === "creator_claim_missing"
+          ? CREATOR_CLAIM_MISSING_MESSAGE
+          : result.canceled
           ? "Necesitamos tu contraseña de administrador para proteger la quiniela."
           : result.error === "admin_claim_required"
             ? "Esa no es la contraseña de administrador. Intenta de nuevo."
@@ -3728,6 +4125,10 @@
         errorEl.style.display = "block";
         return;
       }
+      errorEl.style.display = "none";
+      // Onboarding B: before anything changes. The matches and the deadline
+      // stay on this screen; publishing takes one more tap.
+      if(!(await gateFirstPublish(cta, "before"))) return;
       cta.disabled = true;
       cta.textContent = "Publicando...";
       // QA fix: always re-locate the round CURRENTLY living in meta.rounds
@@ -3766,16 +4167,21 @@
         // Wired for defence in depth: publishing the FIRST round of a brand
         // new quiniela cannot hit the round budget today, but the budget is
         // a config value that an operator can lower at any time.
+        cta.disabled = false;
+        cta.textContent = "Publicar jornada";
         if(result.error === "plan_lifecycle_limit_reached"){
           errorEl.textContent = "";
           errorEl.style.display = "none";
           showPlanBlock(result);
+        } else if(result.error === "admin_password_required"){
+          // The server knows better than this tab: ask now, same as above.
+          errorEl.style.display = "none";
+          meta.ownerPasswordSet = false;
+          await gateFirstPublish(cta, "before");
         } else {
           errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
           errorEl.style.display = "block";
         }
-        cta.disabled = false;
-        cta.textContent = "Publicar jornada";
       }
     });
   }
@@ -3812,6 +4218,8 @@
         errorEl.style.display = "block";
         return;
       }
+      errorEl.style.display = "none";
+      if(!(await gateFirstPublish(cta, "before"))) return;
       cta.disabled = true;
       cta.textContent = "Publicando...";
       const isFirstRoundEver = meta.rounds.length === 0;
@@ -3831,16 +4239,20 @@
         renderAdminSetupInvite();
       } else {
         meta.rounds = meta.rounds.filter(r => r.id !== round.id);
+        cta.disabled = false;
+        cta.textContent = "Publicar jornada";
         if(result.error === "plan_lifecycle_limit_reached"){
           errorEl.textContent = "";
           errorEl.style.display = "none";
           showPlanBlock(result);
+        } else if(result.error === "admin_password_required"){
+          errorEl.style.display = "none";
+          meta.ownerPasswordSet = false;
+          await gateFirstPublish(cta, "before");
         } else {
           errorEl.textContent = "No pudimos publicar la jornada. Tus cambios siguen aquí.";
           errorEl.style.display = "block";
         }
-        cta.disabled = false;
-        cta.textContent = "Publicar jornada";
       }
     });
   }
@@ -4027,7 +4439,9 @@
               if(result.error === "too_many_attempts") startCredentialWait("owner", result);
               if(showLoginWait("owner", "Contraseña de administrador")) return;
               if(result.canceled) return;
-              toast(result.error === "admin_claim_required"
+              toast(result.error === "creator_claim_missing"
+                ? CREATOR_CLAIM_MISSING_MESSAGE
+                : result.error === "admin_claim_required"
                 ? "Contraseña de administrador incorrecta"
                 : result.error === "too_many_attempts"
                   ? humanizeError(result.error, result)
@@ -4050,7 +4464,7 @@
           if(attempt === null){ showLoginWait("pin:" + p.id, "PIN de " + p.name); return; }
           if(attempt.alt){
             if(!p.isAdmin){
-              await qzConfirm("Pide a quien organiza la quiniela (o a otro admin) que resetee tu PIN desde Participantes. Después podrás elegir uno nuevo al tocar tu nombre.", { title: "¿Olvidaste tu PIN?", confirmLabel: "Entendido", cancelLabel: "Cerrar", destructive: false });
+              await qzAlert("Pide a quien organiza la quiniela (o a otro admin) que resetee tu PIN desde Participantes. Después podrás elegir uno nuevo al tocar tu nombre.", { title: "¿Olvidaste tu PIN?" });
               return;
             }
             const newPin = await recoverAdminPin(p);
@@ -4068,7 +4482,9 @@
               if(verification.error !== "too_many_attempts") loginPinMisses.set(p.id, (loginPinMisses.get(p.id) || 0) + 1);
               const forgotHint = (loginPinMisses.get(p.id) || 0) >= 5
                 ? (p.isAdmin
-                  ? "❌ PIN incorrecto. ¿Lo olvidaste? Toca «¿Olvidaste tu PIN?» y elige uno nuevo con la contraseña de administrador."
+                  ? (meta.ownerPasswordSet === false
+                    ? "❌ PIN incorrecto. Si lo olvidaste, toca «¿Olvidaste tu PIN?»."
+                    : "❌ PIN incorrecto. ¿Lo olvidaste? Toca «¿Olvidaste tu PIN?» y elige uno nuevo con la contraseña de administrador.")
                   : "❌ PIN incorrecto. ¿Olvidaste tu PIN? Pide a quien organiza (o a otro admin) que lo resetee.")
                 : "❌ PIN incorrecto";
               toast(pinFailureMessage(verification, forgotHint));
@@ -6827,6 +7243,8 @@
       btn.addEventListener("click", async () => {
         const round = meta.rounds.find(r => r.id === btn.dataset.publishRound);
         if(!round) return;
+        const rowEl = btn.closest(".history-item") || btn.parentElement;
+        if(!(await gateFirstPublish(rowEl, "after"))) return;
         btn.disabled = true;
         round.published = true;
         // MON-002B: was setMeta()'s boolean, which turned a commercial
@@ -6838,9 +7256,13 @@
           renderAdmin(document.getElementById("qz-main"));
         }else{
           round.published = false; // roll back the in-memory flip on failure
-          if(result.error === "plan_lifecycle_limit_reached") showPlanBlock(result);
-          else toast(humanizeError(result.error, result));
           btn.disabled = false;
+          if(result.error === "plan_lifecycle_limit_reached") showPlanBlock(result);
+          else if(result.error === "admin_password_required"){
+            meta.ownerPasswordSet = false;
+            await gateFirstPublish(rowEl, "after");
+          }
+          else toast(humanizeError(result.error, result));
         }
       });
     });
@@ -6945,6 +7367,9 @@
         return;
       }
 
+      // Onboarding B: only a NEW round publishes; editing never does.
+      const publishRow = document.getElementById("qz-publish-round").parentElement;
+      if(!(await gateFirstPublish(publishRow, "before"))) return;
       const isFirstRoundEver = meta.rounds.length === 0;
       const round = {
         id: uid("r"),
@@ -6983,6 +7408,11 @@
         // deadline stay in the (still-open) form via renderAdminRondas._draft,
         // exactly like every other failure path in this same function.
         meta.rounds = meta.rounds.filter(r => r.id !== round.id);
+        if(result.error === "admin_password_required"){
+          meta.ownerPasswordSet = false;
+          await gateFirstPublish(publishRow, "before");
+          return;
+        }
         // MON-002B: a real paywall, built from the server's own refusal,
         // instead of a toast that named a number and offered no way forward.
         showPlanBlock(result);
@@ -7655,7 +8085,9 @@
         </table>
         </div>
       </div>
-      <p class="muted">Solo el dueño puede quitarle el permiso de admin a alguien más — desde <strong>Admin → Ajustes</strong> si esta casilla no responde.</p>
+      <p class="muted">${needsAdminPasswordToPublish()
+        ? `Mientras no haya contraseña de administrador, sólo ${esc(creatorOfMeta() ? creatorOfMeta().name : "quien creó la quiniela")} (quien creó la quiniela) puede nombrar o quitar admins.`
+        : `Para nombrar o quitar admins se necesita la contraseña de administrador${meta.ownerPasswordSet === false ? " (mientras no exista, basta con ser admin)" : ""}.`}</p>
       <p class="muted">Si alguien olvida su PIN, dale "Resetear" — la próxima vez que toque su nombre podrá poner uno nuevo.</p>
     `;
     const addBtn = document.getElementById("qz-add-participant");
@@ -7846,18 +8278,51 @@
     });
   }
 
-  function renderAdminOwner(body){
+  async function renderAdminOwner(body){
     // Los planes son de las quinielas con link propio; la raíz heredada no tiene.
     const planCard = ROUTE === "quiniela" && SLUG && currentUser && currentUser.isAdmin ? settingsPlanCardHtml() : "";
+    // Onboarding B: this tab may be behind (the password may have been set in
+    // another tab or on another device). Asked before offering to create one;
+    // if the user moved to another screen meanwhile, nothing is painted.
+    if(!ownerUnlocked && needsAdminPasswordToPublish()){
+      // Said while it is asked, instead of an empty screen on a slow network.
+      body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;
+      await refreshOwnerPasswordSet();
+      if(!body.isConnected) return;
+    }
+    // Onboarding B: a quiniela with a creator and no admin password yet. No
+    // PIN opens these settings (the server agrees): the creator sets the
+    // password right here; anyone else is told who will.
+    if(!ownerUnlocked && needsAdminPasswordToPublish()){
+      const creator = creatorOfMeta();
+      if(isCreator(currentUser)){
+        const knownPin = creatorPinInMemory();
+        body.innerHTML = planCard + `<div class="card" id="qz-setpw-settings-card">${adminPasswordSetupHtml("qz-setpw-settings", { inModal: false, askPin: !knownPin })}</div>`;
+        // Wired on its own card: `body` outlives this screen.
+        wireAdminPasswordSetup(document.getElementById("qz-setpw-settings-card"), "qz-setpw-settings", {
+          onSaved: () => { renderAdminOwner(body); toast("✅ Contraseña guardada."); },
+          onCancel: () => {},
+          onAlreadySet: () => { renderAdminOwner(body); toast("Esta quiniela ya tiene contraseña de administrador."); },
+        }, { knownPin });
+      } else {
+        body.innerHTML = planCard + `
+          <div class="card">
+            <div class="eyebrow">Ajustes protegidos</div>
+            <p class="muted">${esc(creator ? creator.name : "Quien creó la quiniela")}${creator ? " (quien creó la quiniela)" : ""} configurará la contraseña de administrador. Con ella se autorizan los cambios al nombre, la cuota y los puntos.</p>
+          </div>`;
+      }
+      renderSettingsPlan();
+      return;
+    }
     if(!ownerUnlocked){
       body.innerHTML = planCard + `
         <div class="card">
-          <div class="eyebrow">Ajustes del dueño</div>
+          <div class="eyebrow">Ajustes protegidos</div>
           <p class="muted">Estos ajustes (cuota, nombre del grupo, contraseña) están protegidos. Ingresa la contraseña de administrador.</p>
-          <div class="field"><input type="password" id="qz-owner-pw" placeholder="Contraseña de administrador"></div>
+          <div class="field">${passwordFieldHtml("qz-owner-pw", `placeholder="Contraseña de administrador" autocomplete="current-password"`)}</div>
           ${credentialWaitNoticeHtml("qz-owner-wait")}
           <button class="btn btn-primary" id="qz-owner-unlock" style="margin-top:12px;">Entrar</button>
-          ${currentUser.isAdmin ? `
+          ${currentUser.isAdmin && meta.ownerPasswordSet === false && !meta.creatorId ? `
             <button class="btn btn-ghost btn-sm" id="qz-owner-pin-recover" style="margin-top:10px;width:100%;">¿Eres admin y no tienes la contraseña? Reautentícate con tu PIN</button>
             ${credentialWaitNoticeHtml("qz-owner-pin-wait")}
           ` : ``}
@@ -7881,6 +8346,7 @@
         }
       });
       enterSubmits("qz-owner-pw", "qz-owner-unlock");
+      wirePasswordToggles(ownerUnlockBtn.parentElement);
       renderSettingsPlan();
       // Recuperación puntual: solo para quien ya es admin de esta quiniela.
       // Vuelve a pedir el PIN (nunca lo guarda en cookies/localStorage) y lo
@@ -7943,8 +8409,10 @@
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:18px;">Acceso</span></div>
         <div class="eyebrow">Contraseña de administrador</div>
-        <div class="field"><input type="text" id="qz-owner-pw-set" placeholder="Dejar en blanco para no cambiarla" value=""></div>
-        <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos tu contraseña actual aquí — solo escribe algo en este campo si quieres cambiarla.</p>
+        <p class="muted" style="margin-top:0;">Por seguridad, nunca mostramos tu contraseña actual. Para cambiarla, escribe la nueva dos veces; si dejas los dos campos en blanco, no cambia.</p>
+        <div class="field"><label for="qz-owner-pw-set">Nueva contraseña</label>${passwordFieldHtml("qz-owner-pw-set", `placeholder="Dejar en blanco para no cambiarla" autocomplete="new-password"`)}</div>
+        <div class="field"><label for="qz-owner-pw-set2">Confirmar nueva contraseña</label>${passwordFieldHtml("qz-owner-pw-set2", `autocomplete="new-password"`)}</div>
+        <p class="qz-setpw-error" id="qz-owner-pw-set-error" role="alert" hidden></p>
         ${ROUTE === "root" ? `
         <div class="divider"></div>
         <div class="eyebrow">Mover esta quiniela a su propio link</div>
@@ -8029,27 +8497,60 @@
       btn.disabled = false;
       btn.textContent = originalText;
     });
+    wirePasswordToggles(document.getElementById("qz-owner-pw-set").closest(".card"));
     document.getElementById("qz-save-settings").addEventListener("click", async () => {
       const saveBtn = document.getElementById("qz-save-settings");
       const originalLabel = saveBtn.textContent;
+      // The new password is checked before anything in `meta` changes.
+      const pwErrorEl = document.getElementById("qz-owner-pw-set-error");
+      const newPwInput = document.getElementById("qz-owner-pw-set");
+      const newPw2Input = document.getElementById("qz-owner-pw-set2");
+      pwErrorEl.hidden = true;
+      [newPwInput, newPw2Input].forEach(i => i.removeAttribute("aria-invalid"));
+      const typedPw = newPwInput.value.trim();
+      const typedPw2 = newPw2Input.value.trim();
+      const pwProblem = (typedPw || typedPw2)
+        ? (typedPw !== typedPw2 ? { input: newPw2Input, message: "Las contraseñas no coinciden." }
+          : (meta.creatorId && typedPw.length < 8 ? { input: newPwInput, message: "Usa al menos 8 caracteres." } : null))
+        : null;
+      if(pwProblem){
+        pwErrorEl.textContent = pwProblem.message;
+        pwErrorEl.hidden = false;
+        pwProblem.input.setAttribute("aria-invalid", "true");
+        pwProblem.input.focus();
+        return;
+      }
       saveBtn.disabled = true;
       saveBtn.textContent = "Guardando…";
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       meta.settings.entryFee = Number(document.getElementById("qz-fee").value) || meta.settings.entryFee;
       const pppRaw = document.getElementById("qz-points-per-pick").value.trim();
       meta.settings.pointsPerCorrectPick = pppRaw === "" ? 1 : Number(pppRaw);
-      const newOwnerPw = document.getElementById("qz-owner-pw-set").value.trim();
+      const newOwnerPw = typedPw;
       if(newOwnerPw) meta.settings.ownerPassword = newOwnerPw; // left blank = don't touch it, server keeps the old one
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbTeamsCache = null; // league may have changed — next visit to Jornadas re-fetches its real roster
       try{
-        const ok = await setMeta(meta);
+        const saved = await setMetaWithError(meta);
+        const ok = saved.ok;
         delete meta.settings.ownerPassword; // never keep it around locally longer than the request needs
         if(!ok){
           saveBtn.disabled = false;
           saveBtn.textContent = originalLabel;
-          toast("No se pudo guardar, intenta de nuevo");
+          toast(saved.error === "admin_password_too_short" ? humanizeError(saved.error, saved) : "No se pudo guardar, intenta de nuevo");
+          return;
+        }
+        // Onboarding B: the server kept the stored name, fee and points
+        // (this write did not carry the admin password). Said, not absorbed.
+        if(saved.ruleFieldsKept){
+          const fresh = await getMeta({ owner: adminOrOwnerCred() });
+          if(fresh) adoptFreshMeta(meta, fresh);
+          ownerUnlocked = false;
+          saveBtn.disabled = false;
+          saveBtn.textContent = originalLabel;
+          toast("No se guardaron el nombre, la cuota ni los puntos: hace falta la contraseña de administrador.", 5000);
+          renderAdminOwner(body);
           return;
         }
         if(newOwnerPw) ownerPasswordCache = newOwnerPw; // keep future writes authenticated with the new one
@@ -8398,17 +8899,17 @@
 
   // ---------- /crear : create a brand new, independent quiniela ----------
   // The /crear draft survives a reload of the same tab (sessionStorage).
-  // The admin password is never stored: it lives only in memory.
+  // There is no password in it: /crear no longer asks for one.
   const CREAR_DRAFT_KEY = "qracks_crear_draft";
   function loadCrearDraft(){
-    const empty = { groupName: "", creatorName: "", slug: "", password: "", leagueId: "", slugTouched: false };
+    const empty = { groupName: "", creatorName: "", slug: "", leagueId: "", slugTouched: false };
     try{
       const saved = JSON.parse(window.sessionStorage.getItem(CREAR_DRAFT_KEY) || "null");
       if(!saved || typeof saved !== "object") return empty;
       return {
         groupName: String(saved.groupName || ""), creatorName: String(saved.creatorName || ""),
         slug: String(saved.slug || ""), leagueId: String(saved.leagueId || ""),
-        slugTouched: !!saved.slugTouched, password: ""
+        slugTouched: !!saved.slugTouched
       };
     }catch(e){ return empty; }
   }
@@ -8456,14 +8957,6 @@
             <p class="muted" id="qz-c-slug-help" style="margin-top:4px;">Es el link que compartirás con tu grupo: ${esc(window.location.origin)}/q/<strong id="qz-c-slug-preview">${esc(draft.slug || "mi-quiniela")}</strong></p>
             <p class="qz-field-error" id="qz-c-slug-error" role="alert" hidden></p>
           </div>
-          <div class="field">
-            <label for="qz-c-pass">Contraseña de administrador</label>
-            <div class="qz-pass-row">
-              <input type="password" id="qz-c-pass" placeholder="Elige una contraseña" value="${esc(draft.password)}" autocomplete="new-password" aria-describedby="qz-c-pass-help">
-              <button type="button" class="btn btn-ghost btn-sm" id="qz-c-pass-toggle" aria-pressed="false" aria-controls="qz-c-pass">Mostrar</button>
-            </div>
-            <p class="muted" id="qz-c-pass-help" style="margin-top:4px;">Es distinta de tu PIN. La usarás poco: para los ajustes protegidos de tu quiniela y para recuperar tu PIN si lo olvidas. Anótala en un lugar seguro.</p>
-          </div>
           <p class="muted" id="qz-c-status" role="status" style="min-height:16px;"></p>
           <button class="btn btn-primary" id="qz-c-submit" style="width:100%;padding:12px;">Crear mi quiniela</button>
         </div>
@@ -8473,7 +8966,6 @@
     const slugInput = document.getElementById("qz-c-slug");
     const slugPreview = document.getElementById("qz-c-slug-preview");
     const slugError = document.getElementById("qz-c-slug-error");
-    const passInput = document.getElementById("qz-c-pass");
     const clearSlugError = () => { slugError.hidden = true; slugError.textContent = ""; slugInput.removeAttribute("aria-invalid"); };
     nameInput.addEventListener("input", () => {
       draft.groupName = nameInput.value;
@@ -8494,14 +8986,6 @@
     });
     document.getElementById("qz-c-creator").addEventListener("input", (e) => { draft.creatorName = e.target.value; saveCrearDraft(draft); });
     document.getElementById("qz-c-league").addEventListener("change", (e) => { draft.leagueId = e.target.value; saveCrearDraft(draft); });
-    passInput.addEventListener("input", (e) => { draft.password = e.target.value; });
-    const passToggle = document.getElementById("qz-c-pass-toggle");
-    passToggle.addEventListener("click", () => {
-      const show = passInput.type === "password";
-      passInput.type = show ? "text" : "password";
-      passToggle.textContent = show ? "Ocultar" : "Mostrar";
-      passToggle.setAttribute("aria-pressed", show ? "true" : "false");
-    });
     // Enter in any text field creates, same as the button.
     document.getElementById("qz-crear-card").addEventListener("keydown", (e) => {
       if(e.key !== "Enter" || e.target.tagName !== "INPUT") return;
@@ -8512,7 +8996,7 @@
       { id: "qz-c-name", label: "Nombre de tu quiniela", value: () => draft.groupName.trim() },
       { id: "qz-c-creator", label: "Tu nombre", value: () => draft.creatorName.trim() },
       // (The link is never empty: it follows the name, and slugify() falls back to "quiniela".)
-      { id: "qz-c-pass", label: "Contraseña de administrador", value: () => draft.password.trim() },
+      // Onboarding B: no admin password here; it is set before publishing.
     ];
     let creating = false;
 
@@ -8532,13 +9016,12 @@
       const groupName = draft.groupName.trim();
       const creatorName = draft.creatorName.trim();
       const slug = slugify(draft.slug);
-      const password = draft.password.trim();
       creating = true;
       submitBtn.disabled = true;
       statusEl.textContent = "Creando…";
       statusEl.style.color = "var(--ink-soft)";
       try{
-        const result = await apiCreateQuiniela({ slug, groupName, creatorName, password, sportsdbLeagueId: draft.leagueId || undefined });
+        const result = await apiCreateQuiniela({ slug, groupName, creatorName, sportsdbLeagueId: draft.leagueId || undefined });
         if(!result.ok){
           creating = false;
           submitBtn.disabled = false;
@@ -8558,8 +9041,7 @@
         // Post-creation continuity: straight into creating the PIN.
         // Competition Sync (if a league was configured) happens FROM that
         // next screen (see renderAdminSetupResolve), authenticated by the
-        // session cookie /api/set-pin issues rather than by re-sending this
-        // plaintext password across a page navigation.
+        // session cookie /api/set-pin issues.
         window.location.href = "/q/" + encodeURIComponent(result.slug || slug) + "?setup=1";
       }catch(e){
         console.error(e);

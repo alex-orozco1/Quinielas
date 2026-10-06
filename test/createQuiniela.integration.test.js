@@ -4,6 +4,7 @@
 // MS1: /crear no longer asks for the organizer's contact. The server must
 // accept a creation without it, keep storing it when an older client still
 // sends it, leave existing values alone, and still require what matters.
+// Onboarding B: the creations below without a password are valid too.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -42,11 +43,12 @@ test.describe("create-quiniela without the organizer contact (real server)", () 
     assert.equal((await indexEntry(older)).contact, "beto@example.test", "still there");
   });
 
-  itest("group name, creator name and admin password are still required (400), and nothing is created", async () => {
+  // Onboarding B: the admin password is no longer asked at creation (it is set
+  // before publishing the first round; see adminPasswordOnPublish).
+  itest("group name and creator name are still required (400), and nothing is created", async () => {
     for (const [missing, body] of [
       ["groupName", { creatorName: "Ana", password: "x1" }],
       ["creatorName", { groupName: "G", password: "x1" }],
-      ["password", { groupName: "G", creatorName: "Ana" }],
     ]) {
       const slug = slugOf("miss-" + missing.toLowerCase());
       const r = await create({ slug, ...body });
