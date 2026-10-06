@@ -58,7 +58,8 @@ test("CA-4: one name for the admin password, told apart from the personal PIN", 
   assert.ok(!/contraseña de dueño/i.test(visible), "Ajustes no longer calls it «contraseña de dueño»");
   assert.ok(crear.includes("Es distinta de tu PIN. La usarás poco: para los ajustes protegidos de tu quiniela y para recuperar tu PIN si lo olvidas. Anótala en un lugar seguro."));
   assert.ok(setupPin.includes("Crea tu PIN personal"));
-  assert.ok(setupPin.includes("desde cualquier teléfono. No es tu contraseña de administrador."));
+  // The PIN help, exactly as the Founder set it.
+  assert.ok(setupPin.includes('<p class="login-sub">4 números para entrar como ${esc(creator.name)} desde cualquier teléfono</p>'));
   const modal = extractFunction(indexSrc, "async function setFirstAdminPin(participantId, newPin)");
   assert.ok(modal.includes("Escribe la contraseña de administrador de esta quiniela (no es un PIN)."));
 });
