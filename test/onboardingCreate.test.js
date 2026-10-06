@@ -81,7 +81,7 @@ test("CA-5: path A (after /crear) — the PIN step confirms the quiniela, and th
   // With an admin password (an older client sent one) the strip says how to
   // recover; without one (onboarding B) it shows the warning instead.
   assert.ok(fn.includes("Entras como ${esc(name)} con esos 4 números. Si lo olvidas, lo recuperas con tu contraseña de administrador."));
-  assert.ok(fn.includes("Entras como ${esc(name)} con esos 4 números.<p>${SAVE_YOUR_PIN_WARNING_HTML}</p>"));
+  assert.ok(fn.includes("Entras como ${esc(name)} con esos 4 números.<p class=\"qz-pin-saved-warning\">${SAVE_YOUR_PIN_WARNING_HTML}</p>"));
   // The app branch of the resolver is awaited, so the notice never lands before it.
   const resolver = extractFunction(indexSrc, "async function renderAdminSetupResolve()");
   assert.ok(resolver.includes('activeTab = "jornada";\n      await render();'));

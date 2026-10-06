@@ -361,9 +361,19 @@ creador la configura al intentar publicar la primera jornada.
     (`403 creator_protected`).
 - Pruebas: `test/adminPasswordOnPublish.integration.test.js` (servidor real con PostgreSQL local) y
   `test/onboardingAdminPassword.test.js` (pantallas).
+- **En la pantalla:** si la creadora escribió su PIN en esta misma visita, configurar la contraseña no
+  se lo vuelve a pedir; lo envía desde la memoria (nunca se guarda en el navegador) y el servidor lo
+  valida igual. Tras recargar, o si el servidor lo rechaza, se le pide.
+- **Pestaña atrasada:** antes de mostrar el formulario para crear la contraseña o de decirle a un
+  co-admin que falta, el cliente pregunta al servidor (`ownerPasswordSet` de la meta). Si otra pestaña
+  u otro dispositivo ya la configuró, no pide nada ni bloquea la publicación.
 - **Pendiente, corrección aparte:** en las quinielas heredadas (sin creador), nombre, cuota y puntos
   siguen protegidos sólo por la pantalla de Ajustes; un admin con PIN puede cambiarlos por la API. La
-  suite lo registra como `todo`.
+  suite lo registra como `todo` (alex-orozco1/Quinielas#33).
+- **Límite conocido (H-1, alex-orozco1/Quinielas#34):** una creadora que nunca eligió su PIN y vuelve
+  desde otro navegador, o pasados los 7 días de la cookie de creación, no tiene una vía propia: el
+  PIN de otro admin no autoriza su asiento y todavía no hay contraseña. Cualquier mecanismo nuevo de
+  recuperación requiere una propuesta aparte.
 
 ## 6. Fuera de alcance de esta entrega
 
