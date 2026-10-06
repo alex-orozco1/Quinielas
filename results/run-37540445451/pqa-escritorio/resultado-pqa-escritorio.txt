@@ -1,0 +1,76 @@
+PASS [escritorio] Crear: no hay campo de contraseña ni se menciona la contraseña
+PASS [escritorio] Crear: sin desbordamiento horizontal
+PASS [escritorio] Crear: si falta el nombre propio lo dice y conserva lo escrito: Falta: Tu nombre.
+PASS [escritorio] Crear: recargar a mitad conserva el borrador (nombre, tu nombre, link)
+PASS [escritorio] PIN: el aviso del Founder aparece tal cual
+PASS [escritorio] PIN: el aviso no menciona la contraseña: Guarda tu PIN en un lugar seguro. Si lo olvidas y cierras tu sesión, no podrás v
+PASS [escritorio] PIN: sin desbordamiento horizontal
+PASS [escritorio] PIN: recargar mantiene la pantalla y el aviso
+PASS [escritorio] PIN: con 2 dígitos «Guardar PIN» sigue desactivado
+PASS [escritorio] Tras el PIN: la franja «PIN guardado» repite el aviso exacto, sin mencionar la contraseña: ✅ PIN guardado. Entras como Ana con esos 4 números.Guarda tu PIN en un lugar seguro. Si lo olvidas y cierras tu sesión, 
+PASS [escritorio] La quiniela nace sin contraseña y con Ana como creadora/admin
+PASS [escritorio] La vista pública no expone PIN ni hash de contraseña
+PASS [escritorio] Jornada: sin desbordamiento y «Publicar jornada» a la vista
+PASS [escritorio] Publicar abre el modal «Configura tu contraseña de administrador»; doble toque = un solo modal: Configura tu contraseña de administrador Aquí puedes: Cambia
+PASS [escritorio] Modal: el texto de pagos del Founder aparece tal cual
+PASS [escritorio] Modal: el PIN recién elegido no se vuelve a pedir
+PASS [escritorio] Modal: sin desbordamiento horizontal
+PASS [escritorio] Modal: los campos son de contraseña nueva (autocomplete=new-password, ocultos): {"a":"new-password","b":"new-password","t":"password"}
+PASS [escritorio] Modal: «Mostrar/Ocultar» alterna sólo ese campo
+PASS [escritorio] Modal: un toque en el fondo no lo cierra
+PASS [escritorio] «Ahora no»: no publica y conserva partidos y cierre
+PASS [escritorio] «Ahora no»: «Publicar jornada» sigue disponible y a la vista
+PASS [escritorio] Esc: no publica y conserva partidos y cierre
+PASS [escritorio] Equivocarse: vacía, corta y no coincide se dicen sin cerrar el modal: Usa al menos 8 caracteres. | Usa al menos 8 caracteres. | Las contraseñas no coinciden.
+PASS [escritorio] Equivocarse: lo escrito en el modal sigue ahí y nada se publicó
+PASS [escritorio] Sin conexión: lo dice, el modal sigue, nada se pierde y se puede reintentar: No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.
+PASS [escritorio] Error 500 al guardar: mensaje claro, sin detalles técnicos, el modal sigue y nada se pierde: No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.
+PASS [escritorio] 429 al guardar: aparece una espera con cuenta regresiva, el modal sigue y nada se pierde
+PASS [escritorio] Durante la espera «Ahora no» cierra y conserva todo
+PASS [escritorio] Guardar (doble toque): una sola petición, con el PIN ligado a la creadora: peticiones=1
+PASS [escritorio] Guardar la contraseña no publica la jornada
+PASS [escritorio] Tras guardar: «✅ Contraseña guardada…» visible: ✅ Contraseña guardada. Revisa la jornada y toca «Publicar jornada» para publicarla.
+PASS [escritorio] Tras guardar: se retira el aviso «Guarda tu PIN» (en pantalla)
+PASS [escritorio] Tras guardar: partidos y cierre intactos, y «Publicar jornada» sigue a la vista
+PASS [escritorio] Tras guardar: sin desbordamiento horizontal
+PASS [escritorio] Publicar explícitamente (doble toque): una sola jornada publicada, con los mismos partidos y cierre: rondas=1
+PASS [escritorio] Tras publicar: pantalla «Invita a tus amigos» y sin desbordamiento
+PASS [escritorio] Un visitante ve la jornada publicada y la quiniela ya marca contraseña configurada
+PASS [escritorio] Jornada importada: la pantalla de revisión trae los partidos y el cierre importados
+PASS [escritorio] Sesión restaurada: el modal pide el PIN (no está en memoria)
+PASS [escritorio] Modal con PIN: sin desbordamiento horizontal
+PASS [escritorio] Viewport bajo (teclado): «Guardar contraseña» se alcanza desplazando el modal
+PASS [escritorio] Sin PIN: pide el PIN de 4 números y no pierde la contraseña escrita
+PASS [escritorio] PIN incorrecto: «Ese PIN no es correcto.», borra sólo el PIN; nada publicado; jornada intacta: Ese PIN no es correcto.
+PASS [escritorio] «Ahora no» tras el error: nada publicado, jornada intacta
+PASS [escritorio] «Ahora no» tras el error: la revisión sigue con sus partidos y su cierre
+PASS [escritorio] Esc: cierra sin publicar y la jornada sigue intacta
+PASS [escritorio] Recargar con el modal abierto: no publica y la jornada importada sigue intacta
+PASS [escritorio] Tras recargar: la revisión vuelve con los mismos partidos y el mismo cierre
+INFO [escritorio] Botón atrás con el modal abierto: URL blank; modal abierto: false; jornada importada intacta en el servidor: true
+PASS [escritorio] Botón atrás: no publica y la jornada importada sigue intacta
+PASS [escritorio] PIN correcto (Enter en el campo): guarda la contraseña sin publicar
+PASS [escritorio] Tras guardar: aviso «✅ Contraseña guardada…» y «Publicar jornada» a la vista
+PASS [escritorio] Sin red al publicar: dice «Tus cambios siguen aquí», no publica y el botón vuelve: No pudimos publicar la jornada. Tus cambios siguen aquí.
+PASS [escritorio] Reintentar publica la jornada importada con sus partidos y su cierre (una sola jornada)
+PASS [escritorio] Salir y volver a la pestaña (blur/visibilidad) sin recargar: el modal y lo escrito siguen
+INFO [escritorio] Setup manual: la pestaña se recarga con el modal abierto (equivale a volver de otra app donde el navegador la descartó): SE PIERDEN los partidos y el cierre escritos (sin aviso). Ya ocurría en main 4e5cbec; el paso nuevo da más motivo para salir de la página
+INFO [escritorio] Setup manual tras recargar: estado del servidor: rondas=0, contraseña=false
+INFO [escritorio] Setup manual: aviso al salir (beforeunload): no hay
+PASS [escritorio] Co-admin: al publicar antes que la creadora ve un aviso que nombra a Ana, con un solo botón «Entendido»: avisos=1 botones=["Entendido"]
+PASS [escritorio] Co-admin: el aviso no ofrece crear la contraseña (sin campos ni «Guardar contraseña»)
+PASS [escritorio] Co-admin: aviso sin desbordamiento horizontal
+PASS [escritorio] Co-admin: tras «Entendido» nada se publicó, sigue sin contraseña y conserva partidos y cierre
+PASS [escritorio] Co-admin: Esc también cierra el aviso sin perder nada
+PASS [escritorio] Servidor: el co-admin no publica sin contraseña (admin_password_required) ni la configura (not_creator); un participante tampoco: publicar=409 configurar=403 participante=403
+PASS [escritorio] Servidor: tras esos intentos sigue sin rondas ni contraseña
+PASS [escritorio] Otra quiniela: el PIN de Ana de esta quiniela no configura la contraseña de la ajena: estado=403
+PASS [escritorio] Anónimo: no puede configurar la contraseña
+PASS [escritorio] Co-admin en Ajustes: dice que Ana configurará la contraseña y no ve cómo crearla: Tu plan Plan Gratis · 3 de 10 personas · 0 de 7 jornadas Con Plus: hasta 50 personas y el torneo completo. Ver plan Plus
+PASS [escritorio] Co-admin: cuando Ana ya configuró la contraseña, publica sin trabas y con lo que había escrito: rondas=1
+PASS [escritorio] Co-admin: tras publicar ve «Invita a tus amigos»
+PASS [escritorio] Con contraseña ya existente no se muestra el aviso «Guarda tu PIN»
+PASS [escritorio] Co-admin con contraseña ya configurada: publica a la primera, sin avisos
+PASS [escritorio] Ajustes de la creadora: mismo título y texto de pagos, sin «Ahora no»
+PASS [escritorio] Ajustes: guardar la contraseña no publica la jornada preparada
+RESULT: ALL PASS (71) / 4 INFO

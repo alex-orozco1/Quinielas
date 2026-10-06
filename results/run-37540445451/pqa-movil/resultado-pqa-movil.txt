@@ -1,0 +1,76 @@
+PASS [movil] Crear: no hay campo de contraseña ni se menciona la contraseña
+PASS [movil] Crear: sin desbordamiento horizontal
+PASS [movil] Crear: si falta el nombre propio lo dice y conserva lo escrito: Falta: Tu nombre.
+PASS [movil] Crear: recargar a mitad conserva el borrador (nombre, tu nombre, link)
+PASS [movil] PIN: el aviso del Founder aparece tal cual
+PASS [movil] PIN: el aviso no menciona la contraseña: Guarda tu PIN en un lugar seguro. Si lo olvidas y cierras tu sesión, no podrás v
+PASS [movil] PIN: sin desbordamiento horizontal
+PASS [movil] PIN: recargar mantiene la pantalla y el aviso
+PASS [movil] PIN: con 2 dígitos «Guardar PIN» sigue desactivado
+PASS [movil] Tras el PIN: la franja «PIN guardado» repite el aviso exacto, sin mencionar la contraseña: ✅ PIN guardado. Entras como Ana con esos 4 números.Guarda tu PIN en un lugar seguro. Si lo olvidas y cierras tu sesión, 
+PASS [movil] La quiniela nace sin contraseña y con Ana como creadora/admin
+PASS [movil] La vista pública no expone PIN ni hash de contraseña
+PASS [movil] Jornada: sin desbordamiento y «Publicar jornada» a la vista
+PASS [movil] Publicar abre el modal «Configura tu contraseña de administrador»; doble toque = un solo modal: Configura tu contraseña de administrador Aquí puedes: Cambia
+PASS [movil] Modal: el texto de pagos del Founder aparece tal cual
+PASS [movil] Modal: el PIN recién elegido no se vuelve a pedir
+PASS [movil] Modal: sin desbordamiento horizontal
+PASS [movil] Modal: los campos son de contraseña nueva (autocomplete=new-password, ocultos): {"a":"new-password","b":"new-password","t":"password"}
+PASS [movil] Modal: «Mostrar/Ocultar» alterna sólo ese campo
+PASS [movil] Modal: un toque en el fondo no lo cierra
+PASS [movil] «Ahora no»: no publica y conserva partidos y cierre
+PASS [movil] «Ahora no»: «Publicar jornada» sigue disponible y a la vista
+PASS [movil] Esc: no publica y conserva partidos y cierre
+PASS [movil] Equivocarse: vacía, corta y no coincide se dicen sin cerrar el modal: Usa al menos 8 caracteres. | Usa al menos 8 caracteres. | Las contraseñas no coinciden.
+PASS [movil] Equivocarse: lo escrito en el modal sigue ahí y nada se publicó
+PASS [movil] Sin conexión: lo dice, el modal sigue, nada se pierde y se puede reintentar: No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.
+PASS [movil] Error 500 al guardar: mensaje claro, sin detalles técnicos, el modal sigue y nada se pierde: No pudimos guardar la contraseña. Revisa tu conexión e intenta de nuevo.
+PASS [movil] 429 al guardar: aparece una espera con cuenta regresiva, el modal sigue y nada se pierde
+PASS [movil] Durante la espera «Ahora no» cierra y conserva todo
+PASS [movil] Guardar (doble toque): una sola petición, con el PIN ligado a la creadora: peticiones=1
+PASS [movil] Guardar la contraseña no publica la jornada
+PASS [movil] Tras guardar: «✅ Contraseña guardada…» visible: ✅ Contraseña guardada. Revisa la jornada y toca «Publicar jornada» para publicarla.
+PASS [movil] Tras guardar: se retira el aviso «Guarda tu PIN» (en pantalla)
+PASS [movil] Tras guardar: partidos y cierre intactos, y «Publicar jornada» sigue a la vista
+PASS [movil] Tras guardar: sin desbordamiento horizontal
+PASS [movil] Publicar explícitamente (doble toque): una sola jornada publicada, con los mismos partidos y cierre: rondas=1
+PASS [movil] Tras publicar: pantalla «Invita a tus amigos» y sin desbordamiento
+PASS [movil] Un visitante ve la jornada publicada y la quiniela ya marca contraseña configurada
+PASS [movil] Jornada importada: la pantalla de revisión trae los partidos y el cierre importados
+PASS [movil] Sesión restaurada: el modal pide el PIN (no está en memoria)
+PASS [movil] Modal con PIN: sin desbordamiento horizontal
+PASS [movil] Viewport bajo (teclado): «Guardar contraseña» se alcanza desplazando el modal
+PASS [movil] Sin PIN: pide el PIN de 4 números y no pierde la contraseña escrita
+PASS [movil] PIN incorrecto: «Ese PIN no es correcto.», borra sólo el PIN; nada publicado; jornada intacta: Ese PIN no es correcto.
+PASS [movil] «Ahora no» tras el error: nada publicado, jornada intacta
+PASS [movil] «Ahora no» tras el error: la revisión sigue con sus partidos y su cierre
+PASS [movil] Esc: cierra sin publicar y la jornada sigue intacta
+PASS [movil] Recargar con el modal abierto: no publica y la jornada importada sigue intacta
+PASS [movil] Tras recargar: la revisión vuelve con los mismos partidos y el mismo cierre
+INFO [movil] Botón atrás con el modal abierto: URL blank; modal abierto: false; jornada importada intacta en el servidor: true
+PASS [movil] Botón atrás: no publica y la jornada importada sigue intacta
+PASS [movil] PIN correcto (Enter en el campo): guarda la contraseña sin publicar
+PASS [movil] Tras guardar: aviso «✅ Contraseña guardada…» y «Publicar jornada» a la vista
+PASS [movil] Sin red al publicar: dice «Tus cambios siguen aquí», no publica y el botón vuelve: No pudimos publicar la jornada. Tus cambios siguen aquí.
+PASS [movil] Reintentar publica la jornada importada con sus partidos y su cierre (una sola jornada)
+PASS [movil] Salir y volver a la pestaña (blur/visibilidad) sin recargar: el modal y lo escrito siguen
+INFO [movil] Setup manual: la pestaña se recarga con el modal abierto (equivale a volver de otra app donde el navegador la descartó): SE PIERDEN los partidos y el cierre escritos (sin aviso). Ya ocurría en main 4e5cbec; el paso nuevo da más motivo para salir de la página
+INFO [movil] Setup manual tras recargar: estado del servidor: rondas=0, contraseña=false
+INFO [movil] Setup manual: aviso al salir (beforeunload): no hay
+PASS [movil] Co-admin: al publicar antes que la creadora ve un aviso que nombra a Ana, con un solo botón «Entendido»: avisos=1 botones=["Entendido"]
+PASS [movil] Co-admin: el aviso no ofrece crear la contraseña (sin campos ni «Guardar contraseña»)
+PASS [movil] Co-admin: aviso sin desbordamiento horizontal
+PASS [movil] Co-admin: tras «Entendido» nada se publicó, sigue sin contraseña y conserva partidos y cierre
+PASS [movil] Co-admin: Esc también cierra el aviso sin perder nada
+PASS [movil] Servidor: el co-admin no publica sin contraseña (admin_password_required) ni la configura (not_creator); un participante tampoco: publicar=409 configurar=403 participante=403
+PASS [movil] Servidor: tras esos intentos sigue sin rondas ni contraseña
+PASS [movil] Otra quiniela: el PIN de Ana de esta quiniela no configura la contraseña de la ajena: estado=403
+PASS [movil] Anónimo: no puede configurar la contraseña
+PASS [movil] Co-admin en Ajustes: dice que Ana configurará la contraseña y no ve cómo crearla: Tu plan Plan Gratis · 3 de 10 personas · 0 de 7 jornadas Con Plus: hasta 50 personas y el torneo completo. Ver plan Plus
+PASS [movil] Co-admin: cuando Ana ya configuró la contraseña, publica sin trabas y con lo que había escrito: rondas=1
+PASS [movil] Co-admin: tras publicar ve «Invita a tus amigos»
+PASS [movil] Con contraseña ya existente no se muestra el aviso «Guarda tu PIN»
+PASS [movil] Co-admin con contraseña ya configurada: publica a la primera, sin avisos
+PASS [movil] Ajustes de la creadora: mismo título y texto de pagos, sin «Ahora no»
+PASS [movil] Ajustes: guardar la contraseña no publica la jornada preparada
+RESULT: ALL PASS (71) / 4 INFO

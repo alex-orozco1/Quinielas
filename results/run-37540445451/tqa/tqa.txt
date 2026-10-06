@@ -1,0 +1,66 @@
+INFO sandbox https://qracks-mon003-sandbox.onrender.com
+PASS Q1 nace con creatorId, sin contraseña y sin hashes en la lectura pública
+PASS Q1 crear sin contraseña no confía el dispositivo para el dueño (sin cookie de confianza) :: qracks_setup_tqa31-main-mux8yqkuf46
+PASS PRE set-admin-password co-admin con su PIN ligado -> 403 not_creator :: 403 not_creator
+PASS PRE set-admin-password co-admin sólo con su sesión -> 403 :: 403 not_creator
+PASS PRE set-admin-password sesión de co-admin + cabecera que suplanta a la creadora sin PIN -> 403 :: 403 wrong_pin
+PASS PRE set-admin-password sesión de la CREADORA sin PIN en la petición -> 403 (la sesión no basta) :: 403 not_creator
+PASS PRE set-admin-password con contraseña no-string -> 400 :: 400 invalid_params
+PASS PRE set-admin-password con contraseña corta -> 400 y no se configura :: 400 admin_password_too_short
+PASS PRE tras todo eso sigue sin contraseña
+PASS PRE co-admin escribe settings.ownerPassword/creatorId/ownerPasswordSet por /api/kv: nada de eso queda :: 200 ok:true creatorId=Ana pwSet=false
+PASS PRE la contraseña colada por la co-admin no abre Ajustes :: 200 ok:false
+PASS PRE ni la creadora configura la contraseña por /api/kv (sólo por set-admin-password) :: 200 ok:true
+PASS PRE co-admin por sesión, jornada nueva published:true: no publica :: 409 admin_password_required
+PASS PRE co-admin, jornada nueva SIN campo published: no publica :: 409 admin_password_required
+PASS PRE co-admin, published:"false" (string): no publica :: 409 admin_password_required
+PASS PRE co-admin, published:null: no publica :: 409 admin_password_required
+PASS PRE co-admin prepara una jornada sin publicar -> 200 :: 200 ok:true
+PASS PRE co-admin cambia el id de la preparada a uno nuevo con published:true: no publica :: 409 admin_password_required
+PASS PRE co-admin borra published de la preparada: no publica :: 409 admin_password_required
+PASS PRE co-admin publica con roundsRevision vieja: no publica :: 409 rounds_conflict
+PASS PRE co-admin publica sin roundsRevision: no publica :: 409 rounds_conflict
+PASS PRE co-admin con su PIN pero suplantando a la creadora en X-Qracks-Participant: no publica :: 403 unauthorized
+PASS PRE co-admin con su PIN sin ligar: no publica :: 403 unauthorized
+PASS PRE la propia creadora (PIN) antes de configurar la contraseña: no publica :: 409 admin_password_required
+PASS PRE co-admin (sesión) nombra admin a Beto -> 403 creator_only :: 403 creator_only
+PASS PRE co-admin agrega a alguien ya admin -> 403 creator_only :: 403 creator_only
+PASS PRE co-admin (sesión) le quita el rol a la creadora -> 403 creator_protected :: 403 creator_protected
+PASS PRE co-admin cambia el PIN de la creadora por /api/kv -> 403 creator_protected :: 403 creator_protected
+PASS PRE co-admin sustituye a la creadora por otro id -> 403 :: 403 creator_protected
+PASS PRE co-admin set-pin de la creadora sin PIN actual -> 403 :: 403 wrong_current_pin
+PASS PRE co-admin recover-admin-pin de la creadora (no hay contraseña) -> no cambia nada :: 409 no_admin_password
+PASS PRE el PIN/sesión de la co-admin no abre Ajustes protegidos :: 200 ok:false
+PASS PRE co-admin (sesión) no cambia nombre/cuota/puntos :: 200 ok:true
+PASS PRE co-admin manda settings como array -> 400 y reglas intactas :: 400 invalid_value
+PASS PRE co-admin borra nombre/cuota/puntos del documento -> se conservan :: 200 ok:true
+INFO PRE co-admin renombra a la creadora :: 200 ok:true renombrada=true
+PASS PRE participante no recibe la jornada preparada ni secretos
+PASS PRE re-crear con el mismo slug no la reemplaza :: 409 slug_taken
+PASS La creadora configura la contraseña con su PIN ligado -> 200 :: 200 ok:true
+PASS Configurar la contraseña no publica nada
+PASS Segunda vez -> 409 already_set :: 409 already_set
+PASS POST co-admin set-admin-password -> 403 :: 403 not_creator
+PASS POST co-admin no reemplaza la contraseña por /api/kv :: 200 ok:true nueva=200 ok:false original=200 ok:true
+PASS POST co-admin (sesión) le quita el rol a la creadora -> 403 creator_protected :: 403 creator_protected
+PASS POST co-admin elimina a la creadora -> 403 creator_protected :: 403 creator_protected
+PASS POST co-admin nombra admin a Beto -> 403 owner_password_required :: 403 owner_password_required
+PASS POST la creadora con su PIN (sin contraseña) ya no nombra admins -> 403 :: 403 owner_password_required
+PASS POST co-admin recover-admin-pin de la creadora con su PIN -> 403 :: 403 wrong_admin_password
+PASS POST co-admin (sesión) sigue sin cambiar reglas :: 200 ok:true
+PASS POST la creadora por sesión (sin contraseña) tampoco cambia reglas :: 200 ok:true
+PASS POST con la contraseña ya configurada, la co-admin publica (diseño) :: 200 ok:true
+PASS POST participante ve la jornada publicada y ningún secreto
+PASS RACE exactamente una configuración de la creadora gana; la otra 409 already_set :: 200 ok:true | 409 already_set
+PASS RACE la co-admin no la configura :: 403 not_creator
+INFO RACE publicación de la co-admin en paralelo :: 200 ok:true
+INFO RACE escritura benigna de la co-admin en paralelo :: 409 rounds_conflict
+PASS RACE queda la contraseña ganadora (no la perdedora ni la de la co-admin) y nada la borró :: 200 ok:true 200 ok:false 200 ok:false
+PASS RACE coherencia: si la publicación entró fue con contraseña; la creadora intacta
+PASS NOPIN un extraño no elige el PIN de la creadora :: 403 admin_claim_required
+PASS NOPIN un participante con su PIN tampoco :: 403 admin_claim_required
+PASS NOPIN la cookie de creación de otra quiniela no sirve aquí :: 403 admin_claim_required
+PASS NOPIN set-admin-password sin PIN de creadora -> 403 not_creator :: 403 not_creator
+PASS NOPIN la creadora sigue sin PIN y sin contraseña
+INFO peticiones=136 slugs=tqa31-main-mux8yqkuf46,tqa31-race-mux8zato740,tqa31-nopin-mux8zflx51e
+RESULT: ALL PASS 60 / INFO 3
