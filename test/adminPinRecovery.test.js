@@ -87,7 +87,7 @@ test("FRONTEND: the PIN modal offers «¿Olvidaste tu PIN?»: admins recover wit
   assert.ok(login.includes("const newPin = await recoverAdminPin(p);"));
   // The confirmation is shown once the app is on screen (rendering it replaces the login screen and its toast).
   assert.ok(login.includes('afterEntry = "✅ Listo. Tu PIN nuevo quedó guardado.";'));
-  assert.ok(indexSrc.includes("await render();\n        if(afterEntry) toast(afterEntry);"));
+  assert.ok(indexSrc.includes("await render();\n        if(afterEntry) toast(afterEntry, 5000);"));
   const pc = extractFunction(indexSrc, "async function promptCredential(message, opts, waitKey, check)");
   assert.ok(pc.includes("if(raw === QZ_PROMPT_ALT) return { alt: true };"), "the link is never mistaken for a typed PIN");
   const prompt = extractFunction(indexSrc, "function qzPrompt(message, opts)");

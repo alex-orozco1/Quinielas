@@ -122,7 +122,7 @@ test("FRONTEND: both first-PIN paths for an admin go through setFirstAdminPin", 
 });
 
 test("FRONTEND: the admin password is asked for in a masked field and sent only as a header", () => {
-  const fn = indexSrc.slice(indexSrc.indexOf("async function setFirstAdminPin("), indexSrc.indexOf("async function setFirstAdminPin(") + 1200);
+  const fn = indexSrc.slice(indexSrc.indexOf("async function setFirstAdminPin("), indexSrc.indexOf("async function setFirstAdminPin(") + 2600);
   assert.ok(fn.includes('first.error !== "admin_claim_required"'), "asks only when the server says so");
   assert.ok(/promptCredential\([^)]*secret: true/.test(fn), "masked input (qzPrompt via promptCredential)");
   const api = indexSrc.slice(indexSrc.indexOf("async function apiSetPinResult("), indexSrc.indexOf("async function apiSetPin("));
@@ -138,8 +138,8 @@ test("FRONTEND: resetting or promoting an admin says what they'll need, instead 
   assert.ok(/const resetMessage = p\.isAdmin\s*\?\s*`Como es admin/.test(resetBody));
   assert.ok(resetBody.includes("qzConfirm(resetMessage,"));
   assert.ok(indexSrc.includes('(p.hasPin ? "" : ". Para poner su PIN necesitará la contraseña de administrador'));
-  const fn = indexSrc.slice(indexSrc.indexOf("async function setFirstAdminPin("), indexSrc.indexOf("async function setFirstAdminPin(") + 1200);
-  assert.ok(fn.includes("pide a otro admin que escriba aquí su PIN"), "the prompt names every credential the server accepts");
+  const fn = indexSrc.slice(indexSrc.indexOf("async function setFirstAdminPin("), indexSrc.indexOf("async function setFirstAdminPin(") + 2600);
+  assert.ok(fn.includes("otro admin puede escribir aquí su PIN"), "the prompt names every credential the server accepts");
   assert.ok(/too_many_attempts: "Demasiados intentos/.test(indexSrc));
 });
 
