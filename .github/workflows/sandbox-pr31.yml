@@ -65,7 +65,9 @@ jobs:
         run: VP=${{ matrix.vp }} OUT=out node ci/sbx-b-ui.js
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: ui-${{ matrix.vp }}, path: out }
+        with:
+          name: ui-${{ matrix.vp }}
+          path: out
 
   api:
     name: API del co-admin
