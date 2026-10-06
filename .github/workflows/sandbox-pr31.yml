@@ -1,10 +1,11 @@
 name: sandbox-pr31 (temporal)
 
 # Prueba temporal contra el SANDBOX (qracks-mon003-sandbox), nunca producción.
-# #30 + #31 (854e5e5) desplegado en el sandbox como de8128b. Recorrido completo en
-# Chromium (375 y 1280 px) y pruebas de API del co-admin. Sin secretos: PINs y
-# contraseñas aleatorios y desechables, que no se imprimen. Los resultados se suben a
-# esta misma rama temporal (ci/sandbox-pr31), que se borra al terminar.
+# #30 + #31 (854e5e5) desplegado en el sandbox como de8128b. Qué corre lo decide el
+# mensaje del commit: [eng] recorrido y API de Engineering, [pqa] Product QA, [tqa]
+# Technical QA. El job `index` corre siempre. Sin secretos: PINs y contraseñas
+# aleatorios y desechables, que no se imprimen. Los resultados se suben a esta misma
+# rama temporal (ci/sandbox-pr31), que se borra al terminar.
 on:
   push:
     branches: [ci/sandbox-pr31]
@@ -20,6 +21,10 @@ concurrency:
 env:
   SANDBOX: https://qracks-mon003-sandbox.onrender.com
   EXPECTED_INDEX_SHA256: 05a114064fbfa74fde2df82be6dc6049248894a51d132492352547ec53cba381
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   index:
@@ -44,8 +49,9 @@ jobs:
         with: { name: index, path: out }
 
   ui:
-    name: Recorrido en Chromium (${{ matrix.vp }})
+    name: Engineering, recorrido (${{ matrix.vp }})
     needs: index
+    if: contains(github.event.head_commit.message, '[eng]')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -70,8 +76,9 @@ jobs:
           path: out
 
   api:
-    name: API del co-admin
+    name: Engineering, API del co-admin
     needs: index
+    if: contains(github.event.head_commit.message, '[eng]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -84,9 +91,52 @@ jobs:
         if: always()
         with: { name: api, path: out }
 
+  pqa:
+    name: Product QA, navegador (${{ matrix.vp }})
+    needs: index
+    if: contains(github.event.head_commit.message, '[pqa]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        vp: [movil, escritorio]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Instalar Chromium
+        run: |
+          npm install --no-save --silent playwright@1.56.1
+          npx playwright install --with-deps chromium > /dev/null
+      - name: Script de Product QA
+        env: { TZ: America/Mexico_City }
+        run: VP=${{ matrix.vp }} OUT=out node ci/pqa-sbx31-ui.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pqa-${{ matrix.vp }}
+          path: out
+
+  tqa:
+    name: Technical QA, sonda de API
+    needs: index
+    if: contains(github.event.head_commit.message, '[tqa]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Sonda de Technical QA
+        run: mkdir -p out && node ci/tqa-sbx31-api.js | tee out/tqa.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: tqa, path: out }
+
   collect:
     name: Subir resultados a esta rama
-    needs: [index, ui, api]
+    needs: [index, ui, api, pqa, tqa]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -102,6 +152,8 @@ jobs:
             echo "index: ${{ needs.index.result }}"
             echo "ui: ${{ needs.ui.result }}"
             echo "api: ${{ needs.api.result }}"
+            echo "pqa: ${{ needs.pqa.result }}"
+            echo "tqa: ${{ needs.tqa.result }}"
           } > "$dest/jobs.txt"
           git add -A results
           git -c user.name="qracks-ci" -c user.email="qracks-ci@users.noreply.github.com" commit -qm "Resultados temporales del sandbox (run ${GITHUB_RUN_ID})"
