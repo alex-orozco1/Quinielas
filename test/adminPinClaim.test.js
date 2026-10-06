@@ -139,7 +139,7 @@ test("FRONTEND: resetting or promoting an admin says what they'll need, instead 
   assert.ok(resetBody.includes("qzConfirm(resetMessage,"));
   assert.ok(indexSrc.includes('(p.hasPin ? "" : ". Para poner su PIN necesitará la contraseña de administrador'));
   const fn = indexSrc.slice(indexSrc.indexOf("async function setFirstAdminPin("), indexSrc.indexOf("async function setFirstAdminPin(") + 1200);
-  assert.ok(fn.includes("pide a otro admin que escriba aquí su PIN"), "the prompt names every credential the server accepts");
+  assert.ok(fn.includes("otro admin puede escribir aquí su PIN"), "the prompt names every credential the server accepts");
   assert.ok(/too_many_attempts: "Demasiados intentos/.test(indexSrc));
 });
 

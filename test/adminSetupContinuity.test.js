@@ -209,18 +209,19 @@ test("no persisted onboardingStep or progress-bar pattern is introduced anywhere
   });
 });
 
-test("the 3-minute headline appears on the PIN screen and is not repeated on review/manual/invite", () => {
+test("the PIN screen's headline confirms the quiniela exists (no unbacked time promise) and is not repeated on review/manual/invite", () => {
   const pinBody = extractFunctionBody(indexSrc, "async function renderAdminSetupPin()");
-  assert.ok(pinBody.includes("Configura tu quiniela en 3 minutos"));
+  assert.ok(pinBody.includes('setupEyebrowHtml("Tu quiniela ya está creada ✅")'));
+  assert.ok(!indexSrc.includes("Configura tu quiniela en 3 minutos"), "MS1: the '3 minutos' promise had nothing behind it");
   ["function renderAdminSetupReview(round)", "function renderAdminSetupManual(opts)", "function renderAdminSetupInvite()"].forEach(sig => {
     const body = extractFunctionBody(indexSrc, sig);
-    assert.ok(!body.includes("Configura tu quiniela en 3 minutos"), `${sig} must not repeat the headline`);
+    assert.ok(!body.includes("Tu quiniela ya está creada"), `${sig} must not repeat the headline`);
   });
 });
 
 test("/crear's submit handler redirects immediately with ?setup=1 and no longer calls sync-competition itself", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-c-submit").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 1750);
+  const body = indexSrc.slice(idx, indexSrc.indexOf("// ---------- /panel-plataforma", idx));
   assert.ok(body.includes('"/q/" + encodeURIComponent(result.slug || slug) + "?setup=1"'));
   assert.ok(!body.includes("sync-competition"), "the old inline sync-competition call during creation must be gone -- it now happens from the setup page itself");
 });
