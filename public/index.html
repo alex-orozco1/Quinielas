@@ -3814,10 +3814,14 @@
   // borra al publicar o guardar, al cancelar una edición y cuando deja de
   // aplicar.
   //
+  // Cada borrador es de una quiniela Y de una persona: quien entra después en
+  // la misma pestaña no ve lo que escribió otra.
+  //
   // Hay dos clases de borrador:
   //   "new"             la jornada que se está creando. El setup manual y
   //                     «Crear jornada N» comparten éste: es la misma
-  //                     siguiente jornada.
+  //                     siguiente jornada. Es del torneo en curso: al cerrar
+  //                     el torneo (aquí o en otra pestaña) deja de aplicar.
   //   "edit:<roundId>"  cambios a una jornada que ya existe: revisar la
   //                     importada en el setup, o «Editar» en Admin → Jornadas.
   //                     Guarda la huella de la jornada al empezar. Si la
@@ -3826,10 +3830,19 @@
   //                     lo nuevo.
   //
   // Sólo guarda nombres de equipo y una fecha: nada de PINs ni contraseñas.
+  // Un borrador que no cabe en ROUND_DRAFT_MAX_CHARS no se guarda (como antes
+  // de #35); nunca se recorta: lo que vuelve es exactamente lo escrito.
   const ROUND_DRAFT_PREFIX = "qracks_round_draft:";
-  const ROUND_DRAFT_MAX_MATCHES = 100;
-  const ROUND_DRAFT_MAX_TEAM = 120;
-  function roundDraftKey(kind){ return ROUND_DRAFT_PREFIX + (SLUG || "root") + ":" + kind; }
+  const ROUND_DRAFT_MAX_CHARS = 100000;
+  function roundDraftOwnerPrefix(){
+    return ROUND_DRAFT_PREFIX + (SLUG || "root") + ":" + ((currentUser && currentUser.id) || "owner") + ":";
+  }
+  function roundDraftKey(kind){ return roundDraftOwnerPrefix() + kind; }
+  // The base of a "new" draft: the tournament it was typed for.
+  function newRoundDraftBase(m){
+    const epoch = m && Number.isSafeInteger(m.tournamentEpoch) ? m.tournamentEpoch : 0;
+    return "epoch:" + epoch;
+  }
   // Pure: the part of a round an edit draft is a draft OF. If any of it
   // changes underneath, the draft no longer applies.
   function roundDraftBase(round){
@@ -3845,23 +3858,34 @@
   // The ids and the deadline go into HTML attributes, so only their exact
   // shapes come back.
   function parseRoundDraft(raw, base){
+    if(typeof raw !== "string" || raw.length > ROUND_DRAFT_MAX_CHARS) return null;
     let d;
     try{ d = JSON.parse(raw); }catch(e){ return null; }
     if(!d || typeof d !== "object" || !Array.isArray(d.matches)) return null;
     if((d.base == null ? null : d.base) !== (base == null ? null : base)) return null;
-    if(d.matches.length > ROUND_DRAFT_MAX_MATCHES) return null;
     const matches = [];
+    const seen = new Set();
     for(const m of d.matches){
       if(!m || typeof m !== "object" || typeof m.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(m.id)) return null;
-      if(matches.some(x => x.id === m.id)) return null;
+      if(seen.has(m.id)) return null;
+      seen.add(m.id);
       matches.push({
         id: m.id,
-        teamA: (typeof m.teamA === "string" ? m.teamA : "").slice(0, ROUND_DRAFT_MAX_TEAM),
-        teamB: (typeof m.teamB === "string" ? m.teamB : "").slice(0, ROUND_DRAFT_MAX_TEAM),
+        teamA: typeof m.teamA === "string" ? m.teamA : "",
+        teamB: typeof m.teamB === "string" ? m.teamB : "",
       });
     }
     const deadline = typeof d.deadline === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(d.deadline) ? d.deadline : "";
     return { matches, deadline };
+  }
+  // Pure: a "new" draft whose rows already belong to a round was published:
+  // from this tab when the answer to the first try got lost on the way back,
+  // or from another tab. Match ids are made here and kept when publishing, so
+  // sharing one is proof enough. Offering it again would publish it twice.
+  function isRoundDraftPublished(draft, rounds){
+    const ids = new Set();
+    (rounds || []).forEach(r => ((r && r.matches) || []).forEach(m => { if(m && m.id) ids.add(m.id); }));
+    return !!draft && (draft.matches || []).some(m => m && ids.has(m.id));
   }
   // Pure: blank rows and no deadline are not worth keeping.
   function isRoundDraftEmpty(draft){
@@ -3887,25 +3911,61 @@
   }
   function saveRoundDraft(kind, draft, base){
     try{
-      if(kind === "new" && isRoundDraftEmpty(draft)){
-        window.sessionStorage.removeItem(roundDraftKey(kind));
-        return;
-      }
-      window.sessionStorage.setItem(roundDraftKey(kind), JSON.stringify({
+      const raw = kind === "new" && isRoundDraftEmpty(draft) ? null : JSON.stringify({
         base: base == null ? null : base,
         deadline: draft.deadline || "",
         matches: draft.matches.map(m => ({ id: m.id, teamA: m.teamA || "", teamB: m.teamB || "" })),
-      }));
-    }catch(e){}
+      });
+      if(raw == null || raw.length > ROUND_DRAFT_MAX_CHARS){
+        window.sessionStorage.removeItem(roundDraftKey(kind));
+        return;
+      }
+      window.sessionStorage.setItem(roundDraftKey(kind), raw);
+    }catch(e){
+      // A copy that could not be updated (storage full) must not come back
+      // later looking current.
+      clearRoundDraft(kind);
+    }
   }
   function clearRoundDraft(kind){ try{ window.sessionStorage.removeItem(roundDraftKey(kind)); }catch(e){} }
+  // Every draft this person has in this quiniela (closing the tournament).
+  function clearAllRoundDrafts(){
+    try{
+      const prefix = roundDraftOwnerPrefix();
+      const keys = [];
+      for(let i = 0; i < window.sessionStorage.length; i++){
+        const k = window.sessionStorage.key(i);
+        if(k && k.startsWith(prefix)) keys.push(k);
+      }
+      keys.forEach(k => window.sessionStorage.removeItem(k));
+    }catch(e){}
+  }
+  // #35: a "new" round whose rows are already in a round was published (see
+  // isRoundDraftPublished). Its draft goes, and the admin is told; the caller
+  // repaints. Never a second copy of it.
+  function dropIfAlreadyPublished(rows){
+    if(!isRoundDraftPublished({ matches: rows }, meta.rounds)) return false;
+    clearRoundDraft("new");
+    toast("Esa jornada ya estaba publicada.");
+    return true;
+  }
+  // The "new" draft of this tournament, unless it was already published
+  // (then it is gone).
+  function loadNewRoundDraft(m){
+    const saved = loadRoundDraft("new", newRoundDraftBase(m));
+    if(saved && isRoundDraftPublished(saved, m && m.rounds)){
+      clearRoundDraft("new");
+      return null;
+    }
+    return saved;
+  }
   // The form state Admin → Jornadas starts from: the round being edited (or
   // a new one), with its saved draft laid over it when there is one. An
   // edit keeps the `base` it started from, so what it saves later is still
   // tied to the round as it was then.
-  function roundsFormDraft(editingRound){
+  function roundsFormDraft(editingRound, m){
     if(!editingRound){
-      const saved = loadRoundDraft("new");
+      const saved = loadNewRoundDraft(m);
       return saved
         ? { matches: saved.matches, deadline: saved.deadline }
         : { matches: [blankMatch(), blankMatch()], deadline: "" };
@@ -4137,10 +4197,10 @@
 
   function setupMatchRowHtml(m){
     return `
-      <div class="match-edit-row" data-mid="${m.id}">
+      <div class="match-edit-row" data-mid="${esc(m.id)}">
         <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off"></div>
         <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off"></div>
-        <button class="icon-x" data-remove="${m.id}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+        <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
       </div>
     `;
   }
@@ -4326,8 +4386,9 @@
   // per the approved product copy for the latter case.
   function renderAdminSetupManual(opts){
     const noneUsablePrepared = !!(opts && opts.noneUsablePrepared);
-    // #35: what was typed here before a reload comes back.
-    const saved = loadRoundDraft("new");
+    // #35: what was typed here before a reload comes back, unless it was
+    // already published.
+    const saved = loadNewRoundDraft(meta);
     const matches = saved ? saved.matches : [blankMatch(), blankMatch()];
     root.innerHTML = setupRoundShellHtml({
       headline: "Prepara tu primera jornada",
@@ -4339,7 +4400,7 @@
       ctaLabel: "Publicar jornada",
     });
     wireSetupMatchRows(matches, () => saveRoundDraft("new",
-      { matches, deadline: document.getElementById("qz-setup-deadline").value }));
+      { matches, deadline: document.getElementById("qz-setup-deadline").value }, newRoundDraftBase(meta)));
     const cta = document.getElementById("qz-setup-cta");
     const errorEl = document.getElementById("qz-setup-error");
     cta.addEventListener("click", async () => {
@@ -4357,6 +4418,7 @@
       }
       errorEl.style.display = "none";
       if(!(await gateFirstPublish(cta, "before"))) return;
+      if(dropIfAlreadyPublished(clean)){ await renderAdminSetupResolve(); return; } // #35
       cta.disabled = true;
       cta.textContent = "Publicando...";
       const isFirstRoundEver = meta.rounds.length === 0;
@@ -7171,6 +7233,10 @@
   }
 
   async function openRoundEditor(body, roundId){
+    // #35: moving to another round abandons the edit in progress, as it
+    // always did, and its saved copy goes with it.
+    const previousId = renderAdminRondas._editingId;
+    if(previousId && previousId !== roundId) clearRoundDraft("edit:" + previousId);
     renderAdminRondas._editingId = roundId;
     renderAdminRondas._draft = null;
     await renderAdminRondas(body);
@@ -7198,12 +7264,18 @@
     const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r=>r.number))+1 : 1;
 
     let draft = renderAdminRondas._draft;
+    // #35: a new round that is already published is not offered again, not
+    // even from this tab's memory (see isRoundDraftPublished).
+    if(draft && !editingRound && isRoundDraftPublished(draft, meta.rounds)){
+      clearRoundDraft("new");
+      draft = null;
+    }
     if(!draft){
-      draft = roundsFormDraft(editingRound);
+      draft = roundsFormDraft(editingRound, meta);
       renderAdminRondas._draft = draft;
     }
     const draftKind = editingRound ? "edit:" + editingRound.id : "new";
-    const persistDraft = () => saveRoundDraft(draftKind, draft, editingRound ? draft.base : null);
+    const persistDraft = () => saveRoundDraft(draftKind, draft, editingRound ? draft.base : newRoundDraftBase(meta));
     const leagueId = meta.settings.sportsdbLeagueId || "4350";
     const leagueTeams = await fetchSportsdbTeams(leagueId);
     // Only fall back to the static Liga MX list for Liga MX itself (today's
@@ -7216,10 +7288,10 @@
 
     function matchRowHtml(m, idx){
       return `
-        <div class="match-edit-row" data-mid="${m.id}">
+        <div class="match-edit-row" data-mid="${esc(m.id)}">
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
-          <button class="icon-x" data-remove="${m.id}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+          <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
         </div>
       `;
     }
@@ -7519,6 +7591,7 @@
       // Onboarding B: only a NEW round publishes; editing never does.
       const publishRow = document.getElementById("qz-publish-round").parentElement;
       if(!(await gateFirstPublish(publishRow, "before"))) return;
+      if(dropIfAlreadyPublished(clean)){ renderAdminRondas._draft = null; renderAdmin(document.getElementById("qz-main")); return; } // #35
       const isFirstRoundEver = meta.rounds.length === 0;
       const round = {
         id: uid("r"),
@@ -8733,6 +8806,10 @@
         const fresh = await getMeta({ owner: adminOrOwnerCred() });
         if(fresh) adoptFreshMeta(meta, fresh);
       }catch(e){ console.error("refresh tras cierre falló", e); }
+      // #35: what was being typed belonged to the tournament that just ended.
+      clearAllRoundDrafts();
+      renderAdminRondas._editingId = null;
+      renderAdminRondas._draft = null;
       renderAdmin(document.getElementById("qz-main"));
       const who = r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
       toast(r.replayed
