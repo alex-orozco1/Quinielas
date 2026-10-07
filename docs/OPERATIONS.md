@@ -105,7 +105,8 @@ Cambiar cualquier variable en Render requiere autorización explícita del Found
      `select has_table_privilege('anon', 'public.kv', 'select'), has_table_privilege('authenticated', 'public.kv', 'select');`
      Haz lo mismo con `analytics_events`. Sin permisos, un RLS apagado no abre nada; con permisos y RLS apagado, el acceso queda abierto.
   3. Dueño de las tablas frente al rol que usa el servidor:
-     `select tablename, tableowner from pg_tables where tablename in ('kv', 'analytics_events');` frente a `select current_user;`, ejecutado con el usuario de `DATABASE_URL`.
+     `select tablename, tableowner from pg_tables where schemaname = 'public' and tablename in ('kv', 'analytics_events');`
+     frente a `select current_user, rolbypassrls from pg_roles where rolname = current_user;`, ejecutado con el usuario de `DATABASE_URL`.
 - **Antes de activar RLS** (`alter table … enable row level security`), el paso 3 tiene que confirmar que el rol del servidor es el dueño de las tablas o tiene `BYPASSRLS`. **Si no lo es, activar RLS con sólo políticas de denegación deja al servidor sin acceso a sus propios datos y tumba producción.**
 - Activarlo es un cambio en la base de producción y requiere autorización explícita del Founder.
 - La tabla `credential_attempt_buckets` sí activa RLS: lo hace el servidor al arrancar.
