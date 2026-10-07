@@ -3804,6 +3804,120 @@
     return ms >= nowMs;
   }
 
+  // #35 · El borrador de una jornada sobrevive a que se recargue la pestaña.
+  //
+  // Los partidos y el cierre que se escriben en el setup o en Admin → Jornadas
+  // vivían sólo en la memoria de la pestaña hasta publicar. Una recarga, o el
+  // teléfono descartando la pestaña mientras la creadora guarda su contraseña
+  // en otra app, los borraba sin aviso. Ahora cada cambio se copia en
+  // sessionStorage, por quiniela, y el formulario lo restaura al volver. Se
+  // borra al publicar o guardar, al cancelar una edición y cuando deja de
+  // aplicar.
+  //
+  // Hay dos clases de borrador:
+  //   "new"             la jornada que se está creando. El setup manual y
+  //                     «Crear jornada N» comparten éste: es la misma
+  //                     siguiente jornada.
+  //   "edit:<roundId>"  cambios a una jornada que ya existe: revisar la
+  //                     importada en el setup, o «Editar» en Admin → Jornadas.
+  //                     Guarda la huella de la jornada al empezar. Si la
+  //                     jornada cambió después (otro admin, una importación),
+  //                     el borrador ya no aplica y se descarta en vez de pisar
+  //                     lo nuevo.
+  //
+  // Sólo guarda nombres de equipo y una fecha: nada de PINs ni contraseñas.
+  const ROUND_DRAFT_PREFIX = "qracks_round_draft:";
+  const ROUND_DRAFT_MAX_MATCHES = 100;
+  const ROUND_DRAFT_MAX_TEAM = 120;
+  function roundDraftKey(kind){ return ROUND_DRAFT_PREFIX + (SLUG || "root") + ":" + kind; }
+  // Pure: the part of a round an edit draft is a draft OF. If any of it
+  // changes underneath, the draft no longer applies.
+  function roundDraftBase(round){
+    return JSON.stringify({
+      deadline: (round && round.deadline) || null,
+      matches: ((round && round.matches) || []).map(m => [m.id, m.teamA || "", m.teamB || ""]),
+      published: !!round && round.published !== false,
+      resultsPublished: !!(round && round.resultsPublished),
+    });
+  }
+  // Pure: a stored draft, read defensively. Anything malformed, or an edit
+  // draft whose round changed since it was started (`base`), is no draft.
+  // The ids and the deadline go into HTML attributes, so only their exact
+  // shapes come back.
+  function parseRoundDraft(raw, base){
+    let d;
+    try{ d = JSON.parse(raw); }catch(e){ return null; }
+    if(!d || typeof d !== "object" || !Array.isArray(d.matches)) return null;
+    if((d.base == null ? null : d.base) !== (base == null ? null : base)) return null;
+    if(d.matches.length > ROUND_DRAFT_MAX_MATCHES) return null;
+    const matches = [];
+    for(const m of d.matches){
+      if(!m || typeof m !== "object" || typeof m.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(m.id)) return null;
+      if(matches.some(x => x.id === m.id)) return null;
+      matches.push({
+        id: m.id,
+        teamA: (typeof m.teamA === "string" ? m.teamA : "").slice(0, ROUND_DRAFT_MAX_TEAM),
+        teamB: (typeof m.teamB === "string" ? m.teamB : "").slice(0, ROUND_DRAFT_MAX_TEAM),
+      });
+    }
+    const deadline = typeof d.deadline === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(d.deadline) ? d.deadline : "";
+    return { matches, deadline };
+  }
+  // Pure: blank rows and no deadline are not worth keeping.
+  function isRoundDraftEmpty(draft){
+    return !draft.deadline && draft.matches.every(m => !String(m.teamA || "").trim() && !String(m.teamB || "").trim());
+  }
+  // Pure: an edit draft's rows laid over the round's own matches, by id. A row
+  // that already existed keeps everything else the round knows about it
+  // (provider ids, kickoff); a row the admin added comes back as typed.
+  function mergeRoundDraftMatches(roundMatches, draftMatches){
+    const byId = new Map((roundMatches || []).map(m => [m.id, m]));
+    return draftMatches.map(d => byId.has(d.id)
+      ? { ...byId.get(d.id), teamA: d.teamA, teamB: d.teamB }
+      : { id: d.id, teamA: d.teamA, teamB: d.teamB });
+  }
+  function loadRoundDraft(kind, base){
+    try{
+      const raw = window.sessionStorage.getItem(roundDraftKey(kind));
+      if(raw == null) return null;
+      const draft = parseRoundDraft(raw, base);
+      if(!draft) window.sessionStorage.removeItem(roundDraftKey(kind));
+      return draft;
+    }catch(e){ return null; }
+  }
+  function saveRoundDraft(kind, draft, base){
+    try{
+      if(kind === "new" && isRoundDraftEmpty(draft)){
+        window.sessionStorage.removeItem(roundDraftKey(kind));
+        return;
+      }
+      window.sessionStorage.setItem(roundDraftKey(kind), JSON.stringify({
+        base: base == null ? null : base,
+        deadline: draft.deadline || "",
+        matches: draft.matches.map(m => ({ id: m.id, teamA: m.teamA || "", teamB: m.teamB || "" })),
+      }));
+    }catch(e){}
+  }
+  function clearRoundDraft(kind){ try{ window.sessionStorage.removeItem(roundDraftKey(kind)); }catch(e){} }
+  // The form state Admin → Jornadas starts from: the round being edited (or
+  // a new one), with its saved draft laid over it when there is one. An
+  // edit keeps the `base` it started from, so what it saves later is still
+  // tied to the round as it was then.
+  function roundsFormDraft(editingRound){
+    if(!editingRound){
+      const saved = loadRoundDraft("new");
+      return saved
+        ? { matches: saved.matches, deadline: saved.deadline }
+        : { matches: [blankMatch(), blankMatch()], deadline: "" };
+    }
+    const base = roundDraftBase(editingRound);
+    const saved = loadRoundDraft("edit:" + editingRound.id, base);
+    const matches = editingRound.matches.map(m => ({...m}));
+    return saved
+      ? { matches: mergeRoundDraftMatches(matches, saved.matches), deadline: saved.deadline, base }
+      : { matches, deadline: toLocalInputValue(editingRound.deadline), base };
+  }
+
   // Persists the exit signal above. Never blocks the UI action it's
   // attached to on failure -- worst case the admin sees "Invita a tus
   // amigos" again on a later visit, which is a minor repeat, not a broken
@@ -4063,21 +4177,30 @@
     `;
   }
 
-  function wireSetupMatchRows(matches){
+  // #35: `onChange` runs after every edit (a team typed, a row added or
+  // removed, the deadline picked), so the screen's draft is saved as it goes.
+  function wireSetupMatchRows(matches, onChange){
+    const changed = typeof onChange === "function" ? onChange : () => {};
     document.getElementById("qz-setup-add-match").addEventListener("click", () => {
       matches.push(blankMatch());
       document.getElementById("qz-setup-match-rows").insertAdjacentHTML("beforeend", setupMatchRowHtml(matches[matches.length-1]));
-      wireOneSetupRow(matches, matches[matches.length-1].id);
+      wireOneSetupRow(matches, matches[matches.length-1].id, changed);
+      changed();
     });
-    matches.forEach(m => wireOneSetupRow(matches, m.id));
+    matches.forEach(m => wireOneSetupRow(matches, m.id, changed));
+    const deadlineEl = document.getElementById("qz-setup-deadline");
+    // Both events: some mobile pickers only report the value on `change`.
+    deadlineEl.addEventListener("input", changed);
+    deadlineEl.addEventListener("change", changed);
   }
-  function wireOneSetupRow(matches, mid){
+  function wireOneSetupRow(matches, mid, changed){
     const row = document.querySelector(`.match-edit-row[data-mid="${mid}"]`);
     if(!row) return;
     row.querySelectorAll("input[data-role]").forEach(inp => {
       inp.addEventListener("input", () => {
         const m = matches.find(x => x.id === mid);
         if(m) m[inp.dataset.role] = inp.value;
+        changed();
       });
     });
     const removeBtn = row.querySelector("[data-remove]");
@@ -4085,6 +4208,7 @@
       const idx = matches.findIndex(x => x.id === mid);
       if(idx !== -1) matches.splice(idx, 1);
       row.remove();
+      changed();
     });
   }
 
@@ -4097,6 +4221,13 @@
   function renderAdminSetupReview(round){
     const roundId = round.id;
     const matches = round.matches.map(m => ({...m}));
+    // #35: unsaved changes to this round come back after a reload, unless the
+    // round itself changed in the meantime (then they no longer apply). They
+    // are laid over the full copy above, so every other field survives.
+    const draftKind = "edit:" + roundId;
+    const draftBase = roundDraftBase(round);
+    const saved = loadRoundDraft(draftKind, draftBase);
+    if(saved) matches.splice(0, matches.length, ...mergeRoundDraftMatches(matches, saved.matches));
     root.innerHTML = setupRoundShellHtml({
       headline: "Revisa tu primera jornada",
       supporting: "Revisa los partidos y hasta cuándo pueden mandar sus picks.",
@@ -4104,7 +4235,9 @@
       deadlineValue: toLocalInputValue(round.deadline),
       ctaLabel: "Publicar jornada",
     });
-    wireSetupMatchRows(matches);
+    if(saved) document.getElementById("qz-setup-deadline").value = saved.deadline;
+    wireSetupMatchRows(matches, () => saveRoundDraft(draftKind,
+      { matches, deadline: document.getElementById("qz-setup-deadline").value }, draftBase));
     const cta = document.getElementById("qz-setup-cta");
     const errorEl = document.getElementById("qz-setup-error");
     cta.addEventListener("click", async () => {
@@ -4156,6 +4289,7 @@
       liveRound.published = true;
       const result = await setMetaWithError(meta);
       if(result.ok){
+        clearRoundDraft(draftKind);
         trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
         renderAdminSetupInvite();
       } else {
@@ -4192,17 +4326,20 @@
   // per the approved product copy for the latter case.
   function renderAdminSetupManual(opts){
     const noneUsablePrepared = !!(opts && opts.noneUsablePrepared);
-    const matches = [blankMatch(), blankMatch()];
+    // #35: what was typed here before a reload comes back.
+    const saved = loadRoundDraft("new");
+    const matches = saved ? saved.matches : [blankMatch(), blankMatch()];
     root.innerHTML = setupRoundShellHtml({
       headline: "Prepara tu primera jornada",
       supporting: noneUsablePrepared
         ? "No encontramos una jornada próxima para publicar. Agrega los partidos que quieras jugar."
         : "Agrega los partidos que van a jugar.",
       matchesHtml: matches.map(setupMatchRowHtml).join(""),
-      deadlineValue: "",
+      deadlineValue: saved ? saved.deadline : "",
       ctaLabel: "Publicar jornada",
     });
-    wireSetupMatchRows(matches);
+    wireSetupMatchRows(matches, () => saveRoundDraft("new",
+      { matches, deadline: document.getElementById("qz-setup-deadline").value }));
     const cta = document.getElementById("qz-setup-cta");
     const errorEl = document.getElementById("qz-setup-error");
     cta.addEventListener("click", async () => {
@@ -4233,6 +4370,7 @@
       meta.rounds.push(round);
       const result = await setMetaWithError(meta);
       if(result.ok){
+        clearRoundDraft("new");
         if(isFirstRoundEver){
           trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
         }
@@ -7022,6 +7160,7 @@
     meta.rounds = meta.rounds.filter(r => r.id !== roundId);
     const result = await setMetaWithError(meta);
     if(result.ok){
+      clearRoundDraft("edit:" + roundId); // #35: an unsaved edit of a round that is gone
       renderAdmin(document.getElementById("qz-main"));
     }else{
       meta.rounds = snapshot;
@@ -7060,11 +7199,11 @@
 
     let draft = renderAdminRondas._draft;
     if(!draft){
-      draft = editingRound
-        ? { matches: editingRound.matches.map(m => ({...m})), deadline: toLocalInputValue(editingRound.deadline) }
-        : { matches: [blankMatch(), blankMatch()], deadline: "" };
+      draft = roundsFormDraft(editingRound);
       renderAdminRondas._draft = draft;
     }
+    const draftKind = editingRound ? "edit:" + editingRound.id : "new";
+    const persistDraft = () => saveRoundDraft(draftKind, draft, editingRound ? draft.base : null);
     const leagueId = meta.settings.sportsdbLeagueId || "4350";
     const leagueTeams = await fetchSportsdbTeams(leagueId);
     // Only fall back to the static Liga MX list for Liga MX itself (today's
@@ -7274,11 +7413,13 @@
           inp.addEventListener("input", () => {
             const m = draft.matches.find(x=>x.id===mid);
             m[inp.dataset.role] = inp.value;
+            persistDraft();
           });
           wireTeamCombobox(inp, comboTeams);
         });
         row.querySelector("[data-remove]").addEventListener("click", () => {
           draft.matches = draft.matches.filter(x=>x.id!==mid);
+          persistDraft();
           renderAdminRondas(body);
         });
       });
@@ -7287,9 +7428,14 @@
 
     document.getElementById("qz-add-match").addEventListener("click", () => {
       draft.matches.push(blankMatch());
+      persistDraft();
       renderAdminRondas(body);
     });
-    document.getElementById("qz-deadline").addEventListener("input", (e) => { draft.deadline = e.target.value; });
+    // Both events: some mobile pickers only report the value on `change`.
+    const deadlineInput = document.getElementById("qz-deadline");
+    const onDeadline = (e) => { draft.deadline = e.target.value; persistDraft(); };
+    deadlineInput.addEventListener("input", onDeadline);
+    deadlineInput.addEventListener("change", onDeadline);
 
     body.querySelectorAll("[data-edit-round]").forEach(btn => {
       btn.addEventListener("click", () => openRoundEditor(body, btn.dataset.editRound));
@@ -7297,6 +7443,7 @@
     const cancelBtn = document.getElementById("qz-cancel-edit");
     if(cancelBtn){
       cancelBtn.addEventListener("click", () => {
+        clearRoundDraft(draftKind);
         renderAdminRondas._editingId = null;
         renderAdminRondas._draft = null;
         renderAdminRondas(body);
@@ -7347,6 +7494,7 @@
         editingRound.deadline = new Date(draft.deadline).toISOString();
         const result = await setMetaWithError(meta);
         if(result.ok){
+          clearRoundDraft(draftKind);
           toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");
           renderAdminRondas._editingId = null;
           renderAdminRondas._draft = null;
@@ -7361,6 +7509,7 @@
           // Force the form to rebuild from the restored round on the next
           // render, instead of showing the failed edit as if it had stuck.
           renderAdminRondas._draft = null;
+          clearRoundDraft(draftKind); // #35: or the rebuild would bring it back
           showPlanBlock(result);
           renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
         }
@@ -7401,6 +7550,7 @@
             { source: "admin_rondas" }
           );
         }
+        clearRoundDraft("new");
         renderAdminRondas._draft = null;
         renderAdmin(document.getElementById("qz-main"));
       } else {
