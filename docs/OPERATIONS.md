@@ -143,3 +143,10 @@ una decisión comercial que todavía no está tomada.
 
 Las compras y su auditoría viven en la fila `platform_payment_intents`, que sólo
 se puede leer con la contraseña de plataforma.
+
+El libro de cobros (`platform_payment_log`, lo que el panel suma en «Cobrado
+históricamente») sigue la misma regla: la plataforma lo lee, pero sólo lo
+escribe el servidor, al activar Plus desde el panel o al confirmar un pago.
+`POST` y `DELETE /api/kv/platform_payment_log` responden `403 server_owned_key`,
+incluso con la contraseña de plataforma. Un reembolso no lo descuenta: el total
+es lo cobrado, no lo neto.

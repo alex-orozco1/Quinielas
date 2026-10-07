@@ -337,6 +337,28 @@ test("PLATFORM_PAYMENT_LOG (S2): only the server writes the payment log, never t
   const readBranch = get.slice(get.indexOf('req.params.key === "platform_payment_log"'));
   assert.ok(readBranch.slice(0, readBranch.indexOf("} else if (info.kind")).includes("checkPlatformCredential("));
 
+  // Every line of code that names the log is one of these seven. A new one
+  // (a raw INSERT, a constant holding the key, another read) fails here
+  // until someone looks at whether it writes.
+  const allowed = new Set([
+    'const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_payment_log", "commercial_config", "platform_payment_intents"]);',
+    'const SERVER_OWNED_KEYS = new Set(["platform_payment_intents", "platform_payment_log"]);',
+    '} else if (req.params.key === "platform_payment_log"',
+    '? ((await getRowLocked("platform_payment_log", client)) || { payments: [] })',
+    'if (result.paymentLog) await putRow("platform_payment_log", result.paymentLog, client);',
+    'const paymentLog = (await getRowLocked("platform_payment_log", client)) || { payments: [] };',
+    'if (nextPaymentLog) await putRow("platform_payment_log", nextPaymentLog, client);',
+  ]);
+  const code = serverSrc.replace(/\/\*[\s\S]*?\*\//g, " ").split("\n").map((line) => {
+    for (let i = 0; i < line.length - 1; i++) {
+      if (line[i] === "/" && line[i + 1] === "/" && line[i - 1] !== ":") return line.slice(0, i);
+    }
+    return line;
+  });
+  const naming = code.map((l) => l.trim()).filter((l) => l.includes("platform_payment_log"));
+  assert.deepEqual(naming.filter((l) => !allowed.has(l)), [], "a new reference to the payment log");
+  assert.equal(naming.length, allowed.size);
+
   // The only writers left are the two transactions that grant Plus.
   const writers = putRowCalls(serverSrc).filter((c) => c.includes('"platform_payment_log"'));
   assert.equal(writers.length, 2, writers.join("\n"));
