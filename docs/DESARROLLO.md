@@ -15,15 +15,24 @@ Cómo arrancar QRACKS en local, cómo probarlo y cómo dejar evidencia que otro 
 ```bash
 pg_ctlcluster 16 main start
 export PGUSER=postgres PGPASSWORD='<contraseña local>'
-psql -h localhost -c 'CREATE DATABASE qracks_local'
-DATABASE_URL=postgres://localhost:5432/qracks_local PLATFORM_PASSWORD='<una contraseña local>' PORT=4000 node server.js
+psql -h localhost -c 'CREATE DATABASE qracks_local_<tu-nombre>'
+DATABASE_URL=postgres://localhost:5432/qracks_local_<tu-nombre> PLATFORM_PASSWORD='<una contraseña local>' PORT=4000 node server.js
 ```
+
+- **`PLATFORM_PASSWORD`** es la contraseña con la que entrarás a `/panel-plataforma` en local.
+- **`PORT`** es opcional: por defecto 3000. Usa uno libre si hay otros servidores corriendo.
+- **`npm start`** hace lo mismo que `node server.js`.
+- **Comprobar que arrancó:**
+  - el log muestra `Quiniela server listening on port 4000` y `payments_readiness … "state":"disabled"`;
+  - `curl localhost:4000/api/health` responde `{"ok":true,…}`;
+  - en el navegador: `http://localhost:4000/` (landing), `/crear` (crear una quiniela) y `/panel-plataforma`.
+- **Al terminar:** detén tu proceso y borra tu base con `psql -h localhost -c 'DROP DATABASE qracks_local_<tu-nombre>'`. El sufijo evita chocar con la base de otra persona.
 
 - **Variables obligatorias:** sin `DATABASE_URL` o `PLATFORM_PASSWORD` el proceso termina y dice cuál falta.
 - **Modo local:** si `DATABASE_URL` contiene `localhost`, el servidor desactiva SSL y las cookies `Secure`, para que funcionen sobre `http`.
 - **Sin variables de Stripe** los pagos quedan `DISABLED`, y es lo esperado en local.
 - **Sin `THESPORTSDB_API_KEY`** la importación de jornadas falla; las jornadas manuales funcionan.
-- **Para terminar:** detén **sólo tu proceso** (por su PID o su puerto) y borra tu base.
+- **Para terminar:** detén **sólo tu proceso** (por su PID o su puerto), no todos los `node server.js`.
 
 ## 3. Pruebas
 
@@ -50,7 +59,8 @@ QRACKS_TEST_DATABASE_URL=postgres://localhost:5432/postgres node --test test/*.t
 | `TZ=UTC`, con PostgreSQL | 1450 | 1450 | 0 | 0 | 0 | 0 | 0 |
 | `TZ=America/Mexico_City`, con PostgreSQL | 1450 | 1450 | 0 | 0 | 0 | 0 | 0 |
 
-Las 18 omitidas sin PostgreSQL son las dos suites de integración: `adminPinRecovery.integration` y `trustedDeviceVersion.integration`.
+- **Omitidas:** las 18 de la corrida sin PostgreSQL son las dos suites de integración, `adminPinRecovery.integration` y `trustedDeviceVersion.integration`.
+- **Duración** (`# duration_ms`): unos 3 s sin PostgreSQL y unos 22 s con PostgreSQL.
 
 **Tipos de prueba:**
 - **Integración** (`*.integration.test.js`): levantan el servidor real contra PostgreSQL.
@@ -71,6 +81,16 @@ Las 18 omitidas sin PostgreSQL son las dos suites de integración: `adminPinReco
 
 - **Resultados de pruebas:** se citan con la **salida literal** (`# tests N`, `# pass N`, `# fail N`, `# skipped N`) y el **SHA** probado, nunca de memoria.
 - **Hallazgos:** cada uno es **CONFIRMED** (reproducido) o **PLAUSIBLE** (leído en el código con `archivo:línea`). Lo que no se pudo comprobar se marca **UNKNOWN / NOT PROVEN**.
+- **Severidad**, fijada por el **peor caso alcanzable**, no por el más probable:
+
+| Nivel | Cuándo |
+|---|---|
+| **P0** | Pérdida o corrupción de datos, cobro incorrecto, fuga de secretos o de pronósticos ocultos, o caída del servicio |
+| **P1** | Alguien obtiene un rol o acceso que no le corresponde, un flujo principal no se puede completar, o se pierde trabajo del usuario sin aviso |
+| **P2** | El flujo se completa, pero con un error confuso, un estado incoherente, validación sólo en el cliente o una fricción que probablemente cause abandono |
+| **P3** | Pulido o copy |
+
+  **PASS** significa 0 P0, 0 P1 y 0 P2 conocidos. El resumen sale de `CLAUDE.md` del equipo, que hoy no está en `main` (§8).
 - **Navegador:** las validaciones de los PR usaron scripts de Playwright con Chromium a 375 y 1280 px. Esos scripts **no están en el repositorio**; se adjuntan a la evidencia de cada entrega ([EVIDENCIA.md](EVIDENCIA.md)).
 - **Contra el sandbox** se probó con un **workflow temporal de GitHub Actions**, porque el entorno de desarrollo no llega a `*.onrender.com`. El patrón:
   1. **Rama temporal** `ci/<nombre>` con el workflow y los scripts.

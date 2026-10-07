@@ -4,7 +4,7 @@
 
 **Leído de:** `main` en `4e5cbec`, el commit que producción tiene desplegado ese día; se comprobó en Render. Antes de fiarte de este documento, compara su SHA con el `main` actual: `git rev-parse origin/main`.
 
-Es la entrega 1 del mini sprint de documentación (alex-orozco1/Quinielas#32). Su objetivo es saber dónde vive cada cosa, qué está documentado y qué no. No describe el código línea a línea: para eso están los documentos enlazados.
+Es la entrega 1 del mini sprint de documentación (alex-orozco1/Quinielas#32). La columna «Documentación antes del sprint» es una foto de cómo estaba. Lo vigente es la columna «Dónde quedó documentado» y el índice, [README.md](README.md). Su objetivo es saber dónde vive cada cosa, qué está documentado y qué no. No describe el código línea a línea: para eso están los documentos enlazados.
 
 **Columna «Estado»:**
 - **main**: fusionado y en producción.
@@ -13,7 +13,7 @@ Es la entrega 1 del mini sprint de documentación (alex-orozco1/Quinielas#32). S
 
 ## 1. Mapa por área
 
-| Área | Código (fuente de verdad) | Endpoints principales | Documentación | Huecos que cubre este sprint | Estado |
+| Área | Código (fuente de verdad) | Endpoints principales | Documentación antes del sprint | Dónde quedó documentado | Estado |
 |---|---|---|---|---|---|
 | Creación, roles, PIN, sesiones, contraseña, recuperación | `server.js` (`resolveMetaAuthTier`, `issueSessionCookie`, `trustDevice`, `checkCredential`), `adminPinClaim.js`, `metaParticipants.js` | `POST /api/create-quiniela`, `/api/self-register`, `/api/verify-pin`, `/api/set-pin`, `/api/verify-owner`, `/api/recover-admin-pin`, `/api/verify-session`, `/api/clear-session` | README «Privacy & integrity»; `SECURITY_CREDENTIAL_LIMITS.md` | Niveles de autorización, cookies y duraciones, quién hace admin a quién → [flujos/acceso.md](flujos/acceso.md) | main |
 | Límites de intentos | `credentialAttempts.js`, `clientIp.js`, `rateLimit()` en `server.js` | Todas las rutas que comprueban un secreto | [SECURITY_CREDENTIAL_LIMITS.md](SECURITY_CREDENTIAL_LIMITS.md) (es su fuente de verdad) | Corregir afirmaciones viejas (ver §3) | main |

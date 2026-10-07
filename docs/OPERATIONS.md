@@ -143,35 +143,71 @@ Tres variables, **las tres juntas**:
 
 ### Qué mirar cuando algo va mal
 
-Los logs de pagos son `payments <evento> {…}`, sin secretos. La lista completa sale con `grep -o 'logPayment("[a-z_]*' server.js`. Estos son los que importan para operar:
+Los logs de pagos son una línea `payments <evento> {…json…}`, sin secretos. La lista completa sale con `grep -o 'logPayment("[a-z_]*' server.js`. Los valores de abajo son **los que aparecen escritos en el log**: búscalos tal cual.
 
-| Mensaje | Significa | Qué hacer |
+**Rutina y configuración:**
+
+| Línea en el log | Significa | Qué hacer |
 |---|---|---|
 | `payments checkout_created` / `checkout_reused` | Se abrió un checkout, o un reintento reutilizó el anterior en vez de duplicarlo | Nada |
-| `payments checkout_creation_failed` | No se pudo crear; `code` dice por qué | Revisar el código; si persiste, revisar Stripe |
+| `payments checkout_creation_failed` | No se pudo crear; `code` dice por qué | Si persiste, revisar Stripe |
 | `payments_readiness` / `PAYMENTS MISCONFIGURED` | Estado de los pagos al arrancar; `problems` dice qué falta | Corregir las variables (con autorización) |
 | `payments checkout_refused_misconfigured` | Se pidió Plus con los pagos mal configurados; no se creó nada | Corregir la configuración |
-| `payments checkout_replacement_busy` | Dos pestañas pidieron un checkout nuevo a la vez; la segunda recibió `409 replacement_in_progress` | Nada; se resuelve al reintentar |
-| `payments checkout_identity_still_chargeable` / `checkout_blocked_unresolved` | Una sesión anterior podría seguir cobrando, así que no se crea otra (503 `checkout_unavailable`) | Revisar en Stripe las sesiones abiertas de esa quiniela |
+| `payments checkout_replacement_busy` | Dos pestañas pidieron un checkout nuevo a la vez; la segunda recibió `409 replacement_in_progress` | Nada |
+| `payments checkout_identity_still_chargeable` / `checkout_blocked_unresolved` | Una sesión anterior podría seguir cobrando, así que no se crea otra (`503 checkout_unavailable`) | Revisar en Stripe las sesiones abiertas de esa quiniela |
 | `payments checkout_attempts_exhausted` | 24 intentos sobre la misma compra; se detiene y pide a una persona | Revisar la compra y sus sesiones en Stripe |
 | `payments webhook_rejected` | Llegó un evento con los pagos sin configurar o mal configurados; respondió 503 y Stripe reintenta | Corregir la configuración |
 | `payments webhook_invalid_signature` | Llegó algo que no venía de Stripe, o el signing secret no es el de ese destino (test y live cruzados) | Revisar el secret del destino |
 | `payments webhook_api_version_differs` | El destino del webhook usa otra versión de API | Crear el destino con la versión fijada |
-| `payments webhook_processed` | Evento evaluado; `decision` dice qué se hizo | Ver abajo `stale_scope` |
 | `payments reconciled` | Un pago se recuperó sin webhook, al volver el admin | Nada |
-| `payments entitlement_grant_failed` | El pago es válido pero no se pudo escribir Plus; el webhook responde 500 y Stripe reintenta | Si se repite, revisar logs y base |
-| `payments session_multiplicity` / `checkout_session_multiplicity_blocked` / `session_double_charge_revealed` | Hay varias sesiones para una compra, o se reveló un cargo doble | **Revisar a mano en Stripe** y decidir la devolución |
-| `payments payment_requires_attention` | Hay un cobro que una persona tiene que mirar; trae el código `ATTENTION` | Ver la tabla siguiente |
 
-**Códigos `ATTENTION`.** Ninguno concede ni revoca nada por su cuenta. **La decisión es manual del operador**; no hay un procedimiento automatizado ni una política de devoluciones escrita.
+**Cobros que necesitan a una persona.** **La decisión es manual del operador**: no hay un procedimiento automatizado ni una política de devoluciones escrita.
 
-| Código | Significa |
+1. `payments webhook_processed {"decision": …}` con una de estas decisiones significa **dinero cobrado y Plus no otorgado**:
+
+| `decision` | Qué pasó |
 |---|---|
-| `STALE_SCOPE` | Pagaron un torneo que ya terminó. **El cobro es real y el plan no se otorgó**; hay que devolver o trasladar a mano. |
-| `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH` | El importe o la moneda cobrados no son los esperados. |
-| `IDENTITY_MISMATCH`, `SCOPE_UNPROVEN`, `SNAPSHOT_UNUSABLE` | No se pudo probar que el pago corresponda a esa compra y torneo. |
-| `QUINIELA_MISSING` | La quiniela ya no existe. |
-| `REFUNDED`, `DISPUTED` | Reembolso o disputa en Stripe. **No revocan Plus automáticamente**: la política de revocación no está decidida. |
-| `MANY_SESSIONS`, `USED_BESIDE_PAID`, `TWO_SESSIONS_USED_UNPAID`, `RETIRED_FOR_ACTIVE_SIBLING` | Varias sesiones para la misma compra; hay que revisar cuál cobró. |
+| `stale_scope` | Pagaron un torneo que ya terminó: hay que devolver o trasladar |
+| `amount_mismatch`, `currency_mismatch` | El importe o la moneda no son los esperados |
+| `identity_mismatch`, `scope_unproven`, `snapshot_unusable` | No se pudo probar que el pago corresponda a esa compra y torneo |
+| `quiniela_missing` | La quiniela ya no existe |
+| `superseded_purchase` | Pagaron una compra que el sistema ya había sustituido por otra |
 
-Las compras y su auditoría viven en la fila `platform_payment_intents`, que sólo lee la plataforma y sólo escribe el servidor.
+   `unknown_purchase` es un evento de Stripe que no corresponde a ninguna compra de QRACKS. Se decide antes de mirar si hubo cobro, así que puede traerlo o no: revísalo en Stripe.
+
+   No requieren acción: `confirm` (otorgado), `replay_event` / `ignored_stale_event` (evento repetido o viejo), `already_paid` (ya estaba confirmado) y `not_paid` (sin cobro).
+
+2. `payments payment_requires_attention` tiene tres formas:
+
+| Forma | Significa |
+|---|---|
+| `{"purchaseId", "code": "refunded" \| "disputed"}` | Reembolso o disputa en Stripe. **No revoca Plus automáticamente**: la política de revocación no está decidida. |
+| `{"purchaseId", "code": <error>}`, y el webhook responde `500 unapplied_payment` | Un pago válido no se pudo aplicar. Stripe reintenta; si se repite, revisar logs y base. |
+| `{"slug", "incidents": […], "auditEntries", "flagged"}` | Varias sesiones de checkout para una misma compra (posible cargo doble). Revisar en Stripe cuál cobró. |
+
+3. También piden revisión `payments session_multiplicity`, `checkout_session_multiplicity_blocked` y `session_double_charge_revealed` (cargo doble revelado), y `payments entitlement_grant_failed` (Plus no se pudo escribir; Stripe reintenta).
+
+**Dónde mirar:**
+
+- **El log de Render:** el evento y el `purchaseId`.
+- **La fila `platform_payment_intents`:** las compras (`purchases`), los eventos ya vistos (`seenEvents`) y la auditoría (`audit`).
+  - Sólo la lee la plataforma, con `GET /api/kv/platform_payment_intents` y la contraseña de plataforma en `X-Qracks-Platform-Auth`. El panel no tiene una vista de esta fila.
+  - No pegues la contraseña en un chat ni la dejes en el historial de la terminal.
+  - La fila sólo la escribe el servidor.
+- **En la auditoría**, cada alerta lleva uno de estos códigos, escritos tal cual:
+
+| Código en la auditoría | Significa |
+|---|---|
+| `paid_for_a_finished_tournament` | Se pagó un torneo que ya terminó |
+| `amount_mismatch`, `currency_mismatch` | Importe o moneda distintos de los esperados |
+| `provider_identity_mismatch` | La sesión no es la que la compra registró |
+| `paid_for_a_deleted_quiniela` | La quiniela ya no existe |
+| `purchase_snapshot_unusable`, `current_tournament_unreadable` | No se puede probar el torneo o la oferta |
+| `refunded`, `disputed` | Reembolso o disputa |
+| `several_provider_checkouts_for_one_purchase`, `another_checkout_was_used_beside_a_paid_one`, `two_checkouts_were_used_without_reported_payment`, `two_checkouts_were_paid_for_one_tournament` | Varias sesiones o un cargo doble |
+| `open_checkout_could_not_be_resolved` | No se pudo descartar que una sesión abierta cobre |
+| `retired_because_another_checkout_is_the_active_one`, `retired_because_another_checkout_was_paid`, `superseded_by_a_newer_checkout` | Sesiones retiradas a propósito; normalmente informativo |
+
+- **En Stripe:** cada compra guarda los ids de sus sesiones de checkout (`providerSessionId` / `providerSessionIds`, que empiezan con `cs_`). Con ese id se busca la sesión y su cobro en el Dashboard de Stripe.
+
+Las compras y su auditoría viven en `platform_payment_intents`, que sólo lee la plataforma y sólo escribe el servidor.

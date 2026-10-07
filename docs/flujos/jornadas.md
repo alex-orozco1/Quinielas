@@ -36,6 +36,8 @@ En el navegador la fecha de cierre se escribe en hora local (`datetime-local`) y
 
 Se publica cambiando `published` a `true` en la meta (`POST /api/kv`). Exige nivel admin (PIN o sesión), dueño o plataforma.
 
+**En el PR abierto #31** (opción B, no fusionado), las quinielas nuevas no publican nada hasta que la creadora configura la contraseña de administrador: responde `409 admin_password_required`. Ver [acceso.md](acceso.md) §7.
+
 - **Presupuesto de jornadas.** En Free, cada jornada publicada por primera vez **en el ciclo actual del torneo** consume una de las 7.
   - El consumo se apunta en `platform_index` (`consumedRoundIdsByScope`).
   - Al pasarse responde `402` con `limitType: "rounds"` y la oferta de Plus.
