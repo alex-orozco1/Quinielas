@@ -1747,18 +1747,27 @@
       // bueno, repintar y decirlo en una línea. El usuario no tiene por qué
       // saber qué es una revisión.
       if(!result.ok && result.error === "rounds_conflict"){
+        let adopted = false;
         try{
           const fresh = await getMeta({ owner: adminOrOwnerCred() });
           // Mutado en sitio: cada pantalla que tenga este mismo objeto ve la
           // corrección sin necesidad de cambiar la referencia.
           if(fresh) adoptFreshMeta(meta, fresh);
+          adopted = !!fresh;
         }catch(e){ console.error("refresh tras rounds_conflict falló", e); }
         invalidatePlan();
         // Repintar ANTES del aviso, y el aviso colgado de document.body: al
         // revés se borraría solo.
         try{ await render(); }catch(e){ console.error("render tras rounds_conflict falló", e); }
         notice("Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
-        return { ...result, reconciled: true };
+        // `reconciled`: esta pestaña YA tiene el estado del servidor. Quien
+        // llamó no debe reponer lo que tenía antes de guardar: esa copia es más
+        // vieja que la del servidor, y como la pestaña ya tiene la revisión
+        // nueva, el siguiente guardado la escribiría encima de los cambios que
+        // este conflicto acaba de proteger. Sólo es verdad si de verdad se
+        // adoptó: si no se pudo traer, la pestaña sigue con lo suyo y reponer
+        // es lo correcto.
+        return { ...result, reconciled: adopted };
       }
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
@@ -3723,7 +3732,7 @@
         trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
         renderAdminSetupInvite();
       } else {
-        meta.rounds = meta.rounds.map(r => r.id === roundId ? snapshot : r);
+        if(!result.reconciled) meta.rounds = meta.rounds.map(r => r.id === roundId ? snapshot : r);
         // No longer touching `round`/`liveRound` here at all -- the next
         // click re-fetches whatever object now lives in meta.rounds by id
         // (the freshly restored snapshot), so there's nothing stale left
@@ -3876,7 +3885,7 @@
         trackEvent("first_participant_added", { source: "admin_setup" });
         feedback.textContent = `✓ ${added.length} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
       }else{
-        meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
+        if(!result.reconciled) meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
         feedback.textContent = "";
         showPlanBlock(result);
       }
@@ -6309,10 +6318,12 @@
       if(result.ok){
         toast("✅ Listo, la penalización quedó guardada.");
       }else{
-        penalty.enabled = previousEnabled;
-        penalty.startsAtRound = previousStartsAtRound;
-        penalty.pointsPerRound = previousPointsPerRound;
-        meta.participants = participantsSnapshot;
+        if(!result.reconciled){
+          penalty.enabled = previousEnabled;
+          penalty.startsAtRound = previousStartsAtRound;
+          penalty.pointsPerRound = previousPointsPerRound;
+          meta.participants = participantsSnapshot;
+        }
         toast(humanizeError(result.error, result));
       }
     });
@@ -6573,9 +6584,13 @@
     if(result.ok){
       renderAdmin(document.getElementById("qz-main"));
     }else{
-      meta.rounds = snapshot;
-      meta.participants = participantsSnapshot;
       btn.disabled = false;
+      // Tras un 409 la pestaña ya tiene el estado del servidor (ver
+      // setMetaWithError): reponer el arreglo viejo revertiría cualquier jornada.
+      if(!result.reconciled){
+        meta.rounds = snapshot;
+        meta.participants = participantsSnapshot;
+      }
       toast(humanizeError(result.error, result));
     }
   }
@@ -6802,7 +6817,7 @@
           toast(`✅ Listo, la Jornada ${round.number} ya es visible para los participantes.`);
           renderAdmin(document.getElementById("qz-main"));
         }else{
-          round.published = false; // roll back the in-memory flip on failure
+          if(!result.reconciled) round.published = false; // roll back the in-memory flip on failure
           if(result.error === "plan_lifecycle_limit_reached") showPlanBlock(result);
           else toast(humanizeError(result.error, result));
           btn.disabled = false;
@@ -6899,13 +6914,13 @@
           // snapshot (every field, not just matches/deadline), and the
           // participants array goes back too (undoing whatever
           // reconciliation just did) -- never a partial revert.
-          meta.rounds = meta.rounds.map(r => r.id === editingRound.id ? roundSnapshot : r);
-          meta.participants = participantsSnapshot;
+          if(!result.reconciled){ meta.rounds = meta.rounds.map(r => r.id === editingRound.id ? roundSnapshot : r); meta.participants = participantsSnapshot; }
           // Force the form to rebuild from the restored round on the next
           // render, instead of showing the failed edit as if it had stuck.
           renderAdminRondas._draft = null;
           showPlanBlock(result);
-          renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
+          if(!result.reconciled) renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
+          else renderAdmin(document.getElementById("qz-main"));
         }
         return;
       }
@@ -7472,9 +7487,11 @@
           }
         }else{
           // Don't leave the in-memory state claiming this published when it didn't.
-          round.resultsPublished = wasAlreadyPublished;
-          round.results = previousResults;
-          if(wasAlreadyPublished) round.draftResults = editable;
+          if(!result.reconciled){
+            round.resultsPublished = wasAlreadyPublished;
+            round.results = previousResults;
+            if(wasAlreadyPublished) round.draftResults = editable;
+          }
           toast(humanizeError(result.error, result));
         }
         publishBtn.disabled = false;
@@ -7528,9 +7545,11 @@
         if(result.ok){
           toast("🔓 Jornada reabierta — ya pueden volver a votar");
         }else{
-          round.resultsPublished = previousResultsPublished;
-          round.deadline = previousDeadline;
-          meta.participants = participantsSnapshot;
+          if(!result.reconciled){
+            round.resultsPublished = previousResultsPublished;
+            round.deadline = previousDeadline;
+            meta.participants = participantsSnapshot;
+          }
           toast(humanizeError(result.error, result));
         }
         reopenBtn.disabled = false;
@@ -7640,7 +7659,7 @@
         renderAdminParticipantes(body);
         toast("✅ Listo, el participante quedó agregado.");
       }else{
-        meta.participants = snapshot;
+        if(!result.reconciled) meta.participants = snapshot;
         addBtn.disabled = false;
         showPlanBlock(result);
       }
@@ -7676,7 +7695,7 @@
         // participants sitting in meta.participants even after showing this
         // same error — a later render/action elsewhere in the app would
         // have seen phantom participants the server never actually has.
-        meta.participants = snapshot;
+        if(!result.reconciled) meta.participants = snapshot;
         statusEl.textContent = "";
         showPlanBlock(result);
         return;
@@ -7700,7 +7719,7 @@
           toast("✅ Listo, el nombre quedó actualizado.");
           renderAdminParticipantes(body);
         }else{
-          p.name = previousName;
+          if(!result.reconciled) p.name = previousName;
           e.target.value = previousName;
           toast(humanizeError(result.error, result));
         }
@@ -7728,7 +7747,7 @@
             ? ("✅ " + esc(p.name) + " ahora es admin" + (p.hasPin ? "" : ". Para poner su PIN necesitará la contraseña de administrador o que otro admin escriba su PIN en su teléfono."))
             : ("✅ " + esc(p.name) + " ya no es admin"));
         }else{
-          p.isAdmin = previousValue;
+          if(!result.reconciled) p.isAdmin = previousValue;
           e.target.checked = previousValue;
           toast(humanizeError(result.error, result));
         }
@@ -7754,8 +7773,10 @@
               : "🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
             renderAdminParticipantes(body);
           }else{
-            p.pin = previousPin;
-            p.hasPin = previousHasPin;
+            if(!result.reconciled){
+              p.pin = previousPin;
+              p.hasPin = previousHasPin;
+            }
             resetBtn.disabled = false;
             toast(humanizeError(result.error, result));
           }
@@ -7785,7 +7806,7 @@
         const result = await setMetaWithError(meta);
         paidCheckbox.disabled = false;
         if(!result.ok){
-          meta.participants = participantsSnapshot;
+          if(!result.reconciled) meta.participants = participantsSnapshot;
           e.target.checked = previousValue;
           toast(humanizeError(result.error, result));
         }
@@ -7803,7 +7824,7 @@
         if(result.ok){
           renderAdminParticipantes(body);
         }else{
-          meta.participants = snapshot;
+          if(!result.reconciled) meta.participants = snapshot;
           removeBtn.disabled = false;
           toast(humanizeError(result.error, result));
         }
