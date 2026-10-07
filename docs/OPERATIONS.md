@@ -61,7 +61,7 @@ Render conserva los deploys anteriores:
 4. Verifica con `/api/health` y una revisión rápida: login y Jornada.
 
 **El rollback es del código, no de la base:**
-- Las migraciones al arrancar (`ensureTable`) sólo agregan: crean tablas, índices y semillas si faltan. Un rollback no las deshace, y el código anterior las tolera.
+- Las migraciones al arrancar (`ensureTable`) crean tablas, índices y semillas si faltan. También completan datos en filas existentes: `roundsRevision`, y el plan y el ciclo de las quinielas que no los tenían. Un rollback no las deshace, y **no está probado** que un código anterior las tolere siempre.
 - Un problema causado por un cambio de datos requiere una acción aparte en Supabase. Eso es un cambio de datos de producción y requiere autorización explícita.
 
 ## 4. Si un deploy falla
@@ -98,6 +98,8 @@ Cambiar cualquier variable en Render requiere autorización explícita del Found
 - `docs/security/sec-002-hardening.sql` crea políticas que niegan a los roles de la API de Supabase (`anon` y `authenticated`) el acceso a `kv` y `analytics_events`. Se aplica a mano.
 - **Ese script no activa RLS.** No ejecuta `ENABLE ROW LEVEL SECURITY`. Sin RLS activo, las políticas no tienen efecto.
 - **Que RLS esté activo en producción es UNKNOWN / NOT PROVEN:** no se puede comprobar desde el repositorio.
+- **Cómo comprobarlo** (sólo lectura, en el editor SQL de Supabase): `select relname, relrowsecurity from pg_class where relname in ('kv', 'analytics_events');`. Debe dar `true` en las dos.
+- **Si da `false`:** activarlo (`alter table … enable row level security`) es un cambio en la base de producción y requiere autorización explícita del Founder.
 - La tabla `credential_attempt_buckets` sí activa RLS: lo hace el servidor al arrancar.
 
 ## 7. Pagos (MON-003): poner Stripe en marcha

@@ -67,9 +67,9 @@ No se corrigen en este sprint: se verifican y se registran aparte.
 
 | Señal | Estado | Nota |
 |---|---|---|
-| `sec-002-hardening.sql` crea políticas pero no ejecuta `ENABLE ROW LEVEL SECURITY` en `kv` ni en `analytics_events`. | **No verificado** | Sin RLS activo, las políticas no tienen efecto. Que RLS esté activo en la base de producción no se puede comprobar desde el repositorio. |
-| `platform_payment_log` se puede reescribir con la contraseña de plataforma vía `POST /api/kv`, mientras `platform_payment_intents` sólo la escribe el servidor. | PLAUSIBLE (leído en código) | Sólo con la credencial de plataforma. |
-| Si un operador concede Plus manual y lo revoca en el mismo ciclo, un pago con tarjeta posterior podría reactivar el grant anterior sin registrar el cobro en el libro de pagos. | PLAUSIBLE (leído en código) | Está en el camino de confirmación de pagos. Lo verifica Technical QA. |
+| `sec-002-hardening.sql` crea políticas pero no ejecuta `ENABLE ROW LEVEL SECURITY` en `kv` ni en `analytics_events`. | CONFIRMED en el script. En producción, **no verificado**. | Sin RLS activo, las políticas no tienen efecto. Comprobarlo en la base de producción es un paso operativo ([OPERATIONS.md](OPERATIONS.md) §6). Reportado al Founder. |
+| `platform_payment_log` se puede reescribir o borrar con la contraseña de plataforma vía `/api/kv`, mientras `platform_payment_intents` sólo la escribe el servidor. | CONFIRMED (local), P2 | Sólo con la credencial de plataforma. |
+| Si la plataforma activa Plus desde el panel y lo revierte a Gratis en el mismo torneo, un pago con tarjeta posterior reactiva aquel Plus sin apuntar el cobro en el libro de pagos. | CONFIRMED (funciones puras, sin Stripe), P0 por el peor caso | Exige esa secuencia del operador. Ver [flujos/pagos.md](flujos/pagos.md) §7. Reportado al Founder. |
 | Recargar el setup manual antes de publicar pierde lo escrito. | **CONFIRMED**, P1, ya en producción | alex-orozco1/Quinielas#35 |
 
 ## 5. Prioridades del sprint

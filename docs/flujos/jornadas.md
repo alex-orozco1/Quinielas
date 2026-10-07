@@ -26,10 +26,19 @@ En el navegador la fecha de cierre se escribe en hora local (`datetime-local`) y
 | **Importada** | `POST /api/quinielas/:slug/sync-competition` trae del proveedor las jornadas de la liga y temporada de la quiniela, como `published:false`. Ver los detalles abajo. |
 
 **Detalles de la importación:**
-- **Idempotente:** una jornada ya importada (identidad `proveedor + id`) no se vuelve a crear ni se modifica.
+- **Sin duplicados:** la identidad de cada partido es `proveedor + id`, así que repetir la importación no duplica nada.
+- **Actualiza lo que es del proveedor:** en los partidos ya importados, mientras la jornada no esté cerrada ni puntuada:
+  - corrige equipos (por ejemplo, un cruce que estaba «por definir»), ids externos y hora de inicio;
+  - añade los partidos nuevos.
+
+  Nunca toca el `id` de la jornada, los resultados, `published` ni el cierre.
 - **Fallo seguro:** si el proveedor falla, no escribe nada.
 - **`stagedFixtures`:** guarda aparte los partidos que el proveedor todavía no asigna a una jornada.
-- **Plan ligado a una competencia:** la importación respeta esa liga y responde 402 si se intenta otra. Cambiar la liga de una quiniela con jornadas se bloquea (`league_change_blocked`).
+- **Plan ligado a una competencia:** la importación respeta esa liga y responde 402 si se intenta otra.
+- **Cambiar la liga o la temporada** responde `403 league_change_blocked` cuando se cumplen las tres condiciones:
+  - la quiniela ya tenía liga;
+  - el plan ya está ligado a una competencia o ya se consumieron jornadas;
+  - quien lo pide no es la plataforma.
 - **Proveedor:** TheSportsDB por defecto. Sportmonks sólo si `meta.settings.provider = "sportmonks"`.
 
 ## 3. Publicar
@@ -69,7 +78,8 @@ Se publica cambiando `published` a `true` en la meta (`POST /api/kv`). Exige niv
 
 ## 6. Torneo: cerrar y empezar otro
 
-- **`POST /api/quinielas/:slug/tournament/close`.** Cierra el torneo de forma atómica: archiva el campeón y la tabla final en `pastTournaments`.
+- **`POST /api/quinielas/:slug/tournament/close`.** Cierra el torneo de forma atómica: archiva el campeón, la tabla final y las jornadas publicadas en `pastTournaments`.
+  - **Es destructivo para lo no publicado:** deja `meta.rounds` vacío, **descarta las jornadas preparadas sin publicar** (`published:false`) y vacía `stagedFixtures`.
   - Es idempotente por `closeIntentId`: el navegador lo guarda en `localStorage` para reintentar sin duplicar. Repetir la misma intención responde `200 replayed`.
   - La tabla final llega del navegador: es un dato de presentación, acotado y saneado, que no decide nada comercial.
 - **`POST /api/quinielas/:slug/tournament/new-cycle`.** Empieza un ciclo nuevo **en Free**, con su propio presupuesto.

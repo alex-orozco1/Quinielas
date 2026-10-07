@@ -51,7 +51,7 @@ QRACKS_TEST_DATABASE_URL=postgres://localhost:5432/postgres node --test test/*.t
 - **Sin PostgreSQL**, las suites de integración salen como `# skipped`. **Una omitida no es una aprobada.**
 - **Si no cambió nada,** no hace falta repetir toda la suite: basta con los tests afectados.
 
-**Resultados reales en `main` (`4e5cbec`), 2026-10-06, salida literal:**
+**Resultados reales en `main` (`4e5cbec`), 2026-10-06, con Node v22.22.0. Salida literal; el `exit` está registrado al final de cada salida:**
 
 | Corrida | `# tests` | `# pass` | `# fail` | `# cancelled` | `# skipped` | `# todo` | exit |
 |---|---|---|---|---|---|---|---|

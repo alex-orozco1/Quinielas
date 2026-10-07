@@ -31,7 +31,7 @@ Valores por defecto (`DEFAULT_COMMERCIAL_CONFIG`). **Los vigentes son los de `co
 | Alguien se une con el link (`/api/self-register`) | Personas | `402 {error: <motivo>}` |
 | Un admin agrega participantes o publica una jornada (`POST /api/kv` de la meta) | Personas y jornadas del ciclo | `402` con `limitType` (`participants` o `rounds`), plan y límite, y la oferta de Plus con el modo de checkout (`card`, `manual`, `blocked` o `unavailable`) |
 | Importar jornadas (`sync-competition`) | Que la competencia sea la del plan, si el plan está ligado a una | `402` (`competition_mismatch` o `competition_identity_unavailable`) |
-| Cambiar la liga con jornadas existentes | — | `league_change_blocked` |
+| Cambiar la liga o la temporada cuando ya había liga y el plan está ligado a una competencia o ya se consumieron jornadas (la plataforma queda exenta) | — | `403 league_change_blocked` |
 
 - **Fallo cerrado:** si el estado del plan no se puede leer, la escritura se rechaza (`402 entitlement_unavailable`) en vez de dejarla pasar.
 - **Consumo de jornadas:** se apunta por ciclo en `platform_index` (`consumedRoundIdsByScope`). Una jornada ya contada no vuelve a contar.
@@ -55,7 +55,7 @@ Valores por defecto (`DEFAULT_COMMERCIAL_CONFIG`). **Los vigentes son los de `co
 ## 5. Cambiar precios y límites
 
 - **Desde el panel de plataforma.** El cambio se escribe en `commercial_config` con versión: si dos ediciones chocan, la segunda recibe `409 stale_version`.
-- **Validación:** antes de guardar, el servidor valida los números (`isCommercialConfigValid`); si no, `400 invalid_commercial_config`. No acepta ceros, negativos ni un Plus por debajo de Free.
+- **Validación:** antes de guardar, el servidor valida los números (`isCommercialConfigValid`); si no, `400 invalid_commercial_config`. No acepta límites en cero o negativos, ni un Plus con menos personas que Free. El precio sí puede ser 0.
 - **Compras ya hechas:** no cambian. Cada una conserva su foto de la oferta.
 
 ## 6. Cómo se prueba

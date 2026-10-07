@@ -137,7 +137,7 @@ No hay ORM ni carpeta de migraciones. `ensureTable()` crea y migra todo al arran
 | `analytics_events` | Eventos de §2.2. |
 | `credential_attempt_buckets` | Contadores del límite de intentos, para sobrevivir a reinicios. Ver [SECURITY_CREDENTIAL_LIMITS.md](SECURITY_CREDENTIAL_LIMITS.md). |
 
-**Claves de `kv`** (`classifyKey` rechaza cualquier otra):
+**Claves de `kv`.** `/api/kv` sólo acepta las que reconoce `classifyKey`. Las dos últimas filas son internas y la API no las expone:
 
 | Clave | Contenido |
 |---|---|
@@ -146,11 +146,11 @@ No hay ORM ni carpeta de migraciones. `ensureTable()` crea y migra todo al arran
 | `quiniela_meta_v1`, `quiniela_picks_<id>_v1` | La quiniela única anterior a `/q/:slug` (legado). Tras migrar queda `{migratedTo}`. |
 | `platform_index` | Una entrada por quiniela: nombre, creador, contacto, plan (`entitlement`), historial y ciclo del torneo. |
 | `platform_settings` | Contraseña del panel, con hash. |
-| `platform_payment_log` | Libro de pagos y concesiones. |
+| `platform_payment_log` | Libro de cobros de Plus: los de Stripe y los que la plataforma apunta al activar Plus desde el panel. |
 | `platform_payment_intents` | Compras, eventos de Stripe ya vistos y auditoría. **Sólo la escribe el servidor.** |
 | `commercial_config` | Precios y límites vigentes; los edita la plataforma. |
-| `sports_data_health` | Estado del proveedor de datos deportivos. |
-| `__session_secret__` | Secreto HMAC de las cookies. No se puede leer por la API. |
+| `sports_data_health` | Estado del proveedor de datos deportivos (interna; el panel la ve por `/api/platform-sports-health`). |
+| `__session_secret__` | Secreto HMAC de las cookies (interna; nunca sale del servidor). |
 
 **Lectura filtrada por rol.**
 - `GET /api/kv` de una meta quita los secretos (`stripQuinielaSecrets`).

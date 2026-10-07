@@ -14,7 +14,10 @@ Contrastado con `main` en `4e5cbec`. MON-003: el organizador compra Plus para el
 ## 1. Reglas que no se negocian
 
 - La **Secret Key** y el **webhook signing secret** viven sólo en el entorno del servidor. Nunca llegan al navegador, a un log ni al repositorio.
-- **Sólo el servidor** concede Plus, y sólo tras verificar el pago contra Stripe. No lo conceden la URL de vuelta (`success_url`), un parámetro del navegador ni la metadata del evento por sí sola.
+- **Plus se concede por dos caminos, ambos en el servidor:**
+  - **compra con tarjeta**, que se concede sólo tras verificar el pago contra Stripe (§3 y §4);
+  - **la plataforma, desde su panel** («Activar Plus»). Esto apunta en el libro de pagos un cobro del precio vigente, recibido fuera de Stripe (§6).
+- La URL de vuelta (`success_url`), un parámetro del navegador o la metadata del evento **nunca** conceden Plus por sí solos.
 - **El cliente no decide** importe, moneda ni estado. El importe sale de `commercial_config` (`plus.priceMXN`) en el servidor y se congela en la compra.
 - **No se guardan tarjetas:** las maneja Stripe.
 - Los errores se devuelven sanitizados. El libro de pagos y la auditoría sólo los ve la plataforma.
@@ -47,7 +50,7 @@ Lo pide un admin o el dueño de la quiniela (si no, 403), con límite de ritmo p
 2. **Hay una sola sesión cobrable por torneo:**
    - Si existe una sesión reciente y vigente, se reutiliza: 10 min por el camino rápido y hasta 20 h de ventana de reutilización.
    - Reemplazar una sesión toma un reclamo con 90 s de vida, para que dos pestañas no creen dos sesiones.
-   - Cada compra admite como máximo 24 intentos de creación. Al pasarse responde `EXHAUSTED`.
+   - Cada compra admite como máximo 24 intentos de creación. Al pasarse, se detiene, registra `checkout_attempts_exhausted` y el navegador recibe `502 checkout_unavailable`.
 3. **Crea la sesión de Checkout** en Stripe con la cabecera `Idempotency-Key: checkout:<purchaseId>:<n>`. Si se repite el mismo intento, Stripe devuelve la misma sesión.
 4. **Las URLs de vuelta:**
    - éxito: `/a/<slug>?qz_pago=<purchaseId>&qz_sess={CHECKOUT_SESSION_ID}`;
@@ -109,11 +112,17 @@ Lo pide un admin o el dueño de la quiniela (si no, 403), con límite de ritmo p
 | Situación | Qué pasa |
 |---|---|
 | Pagos no `READY` cuando llega un webhook | `503`, y Stripe reintenta. |
-| Pago cobrado pero no aplicado (error al escribir) | `500 unapplied_payment`, y Stripe reintenta. La compra queda marcada para atención. |
+| Pago cobrado pero no aplicado (error al escribir Plus) | La transacción se deshace, se registra `payments payment_requires_attention` con el error y el webhook responde `500 unapplied_payment`, así que Stripe reintenta. Si falla la base, responde `500 server_error`. |
 | El webhook nunca llega | La reconciliación al volver al sitio confirma la compra. |
-| Discrepancia: importe, moneda, identidad, torneo viejo, quiniela inexistente, snapshot inválido, varias sesiones, reembolso o disputa | **No se concede nada automáticamente.** Se registra un código de atención (`ATTENTION`) en la auditoría y en el log, para que el operador decida. Códigos: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `IDENTITY_MISMATCH`, `STALE_SCOPE`, `REFUNDED`, `DISPUTED`, `QUINIELA_MISSING`, `SNAPSHOT_UNUSABLE`, `SCOPE_UNPROVEN`, `MANY_SESSIONS`, `USED_BESIDE_PAID`, `TWO_SESSIONS_USED_UNPAID`, `RETIRED_FOR_ACTIVE_SIBLING`. Qué hacer con cada uno: [OPERATIONS.md](../OPERATIONS.md). |
+| Discrepancia: importe, moneda, identidad, torneo viejo, quiniela inexistente, foto de la oferta (snapshot) inválida, varias sesiones, reembolso o disputa | **No se concede nada automáticamente.** Queda en la decisión del webhook y en la auditoría de la compra, para que el operador decida. Los valores exactos que aparecen en el log y en la auditoría (por ejemplo `stale_scope` o `paid_for_a_finished_tournament`) y qué hacer con cada uno están en [OPERATIONS.md](../OPERATIONS.md) §7. |
 
-## 6. Concesión manual (`MANUAL_GRANT`)
+## 6. Plus desde el panel y concesión manual
+
+**«Activar Plus» desde el panel de plataforma** (`POST /api/platform/quinielas/:slug/entitlement` con `plan: PLUS`):
+- concede Plus para el torneo actual (`source: platform_grant`);
+- apunta en `platform_payment_log` un cobro del precio vigente. Es para pagos recibidos fuera de Stripe.
+
+**Concesión manual (`MANUAL_GRANT`)**
 
 El operador la da desde el panel de plataforma (`POST /api/platform/quinielas/:slug/entitlement`) para casos especiales.
 - Lleva límites propios, entre 1 y 100 000 personas y jornadas, y un **motivo obligatorio**.
@@ -124,10 +133,18 @@ El operador la da desde el panel de plataforma (`POST /api/platform/quinielas/:s
 
 ## 7. Señales abiertas
 
-Están leídas en el código y no se corrigen en este sprint. Sólo se verifican y se registran aparte.
+Las verificó Technical QA el 2026-10-07. No se corrigen en este sprint, que es sólo de documentación; se reportaron al Founder para decidir su corrección.
 
-- **Grant manual revocado y pago posterior:** si un operador concede Plus manual y lo revoca en el mismo ciclo, un pago con tarjeta posterior podría reactivar el grant anterior sin apuntar el cobro en el libro de pagos. PLAUSIBLE.
-- **Libro de pagos escribible:** `platform_payment_log` se puede reescribir con la contraseña de plataforma por `POST /api/kv`. `platform_payment_intents`, en cambio, sólo la escribe el servidor. PLAUSIBLE; exige la credencial de plataforma.
+- **Plus del panel revocado y pago posterior.** CONFIRMED con las funciones puras, sin Stripe. Es P0 por el peor caso, que es un cobro incorrecto.
+  - La secuencia: la plataforma activa Plus desde el panel, y en el mismo torneo regresa la quiniela a Gratis.
+  - Después, el checkout deja pagar con tarjeta. Al confirmar, se reactiva el Plus del panel y el cargo de Stripe **no queda en el libro de pagos**.
+  - Así, un torneo que el sistema ya daba por pagado puede cobrarse dos veces.
+  - Con `MANUAL_GRANT` no pasa.
+  - Mientras no se corrija, **evita esa secuencia**: si hay que deshacer un Plus del panel, no esperes un pago con tarjeta en ese torneo.
+- **Libro de pagos escribible.** CONFIRMED en local, P2.
+  - Con la contraseña de plataforma, `POST` y `DELETE /api/kv/platform_payment_log` reescriben o borran el libro.
+  - `platform_payment_intents`, en cambio, sólo la escribe el servidor.
+  - Ninguna pantalla escribe el libro.
 
 ## 8. Cómo se prueba
 
