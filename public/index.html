@@ -3966,9 +3966,10 @@
   function roundsFormDraft(editingRound, m){
     if(!editingRound){
       const saved = loadNewRoundDraft(m);
+      const base = newRoundDraftBase(m);
       return saved
-        ? { matches: saved.matches, deadline: saved.deadline }
-        : { matches: [blankMatch(), blankMatch()], deadline: "" };
+        ? { matches: saved.matches, deadline: saved.deadline, base }
+        : { matches: [blankMatch(), blankMatch()], deadline: "", base };
     }
     const base = roundDraftBase(editingRound);
     const saved = loadRoundDraft("edit:" + editingRound.id, base);
@@ -4802,6 +4803,10 @@
       currentUserPinCache = null;
       sessionCheckDone = false;
       adminMetaRefreshed = false;
+      // #35: lo que la persona anterior tenía a medio escribir es suyo (sigue
+      // en su borrador guardado); quien entra ahora empieza en blanco.
+      renderAdminRondas._draft = null;
+      renderAdminRondas._editingId = null;
       render();
     });
     document.getElementById("qz-change-pin").addEventListener("click", async () => {
@@ -7264,9 +7269,10 @@
     const nextNumber = meta.rounds.length ? Math.max(...meta.rounds.map(r=>r.number))+1 : 1;
 
     let draft = renderAdminRondas._draft;
-    // #35: a new round that is already published is not offered again, not
-    // even from this tab's memory (see isRoundDraftPublished).
-    if(draft && !editingRound && isRoundDraftPublished(draft, meta.rounds)){
+    // #35: a new round that is already published, or that belonged to a
+    // tournament that has since been closed, is not offered again, not even
+    // from this tab's memory.
+    if(draft && !editingRound && (draft.base !== newRoundDraftBase(meta) || isRoundDraftPublished(draft, meta.rounds))){
       clearRoundDraft("new");
       draft = null;
     }
@@ -7275,7 +7281,7 @@
       renderAdminRondas._draft = draft;
     }
     const draftKind = editingRound ? "edit:" + editingRound.id : "new";
-    const persistDraft = () => saveRoundDraft(draftKind, draft, editingRound ? draft.base : newRoundDraftBase(meta));
+    const persistDraft = () => saveRoundDraft(draftKind, draft, draft.base);
     const leagueId = meta.settings.sportsdbLeagueId || "4350";
     const leagueTeams = await fetchSportsdbTeams(leagueId);
     // Only fall back to the static Liga MX list for Liga MX itself (today's

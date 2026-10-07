@@ -228,11 +228,12 @@ test("#35 · el formulario de Admin → Jornadas arranca del borrador cuando lo 
   const storage = memStorage();
   const d = draftsFor("ofi", storage);
   const vacio = d.roundsFormDraft(null, d.meta);
+  assert.equal(vacio.base, "epoch:0");
   assert.equal(vacio.matches.length, 2);
   assert.ok(vacio.matches.every((m) => m.teamA === "" && m.teamB === ""));
   assert.equal(vacio.deadline, "");
   d.saveRoundDraft("new", nuevo(), d.newRoundDraftBase(d.meta));
-  assert.deepEqual(d.roundsFormDraft(null, d.meta), nuevo());
+  assert.deepEqual(d.roundsFormDraft(null, d.meta), { ...nuevo(), base: "epoch:0" }, "con el torneo para el que se escribió");
   const round = imported();
   const limpio = d.roundsFormDraft(round, { rounds: [round] });
   assert.deepEqual(limpio.matches, round.matches);
@@ -346,11 +347,11 @@ test("#35 · las filas del setup avisan de cada cambio: escribir, añadir, quita
 test("#35 · Admin → Jornadas: arranca del borrador, lo guarda en cada cambio y lo borra al terminar", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminRondas(body)");
   assert.ok(body.includes("draft = roundsFormDraft(editingRound, meta);"));
-  assert.ok(/if\(draft && !editingRound && isRoundDraftPublished\(draft, meta\.rounds\)\)\{\s*clearRoundDraft\("new"\);\s*draft = null;/.test(body),
-    "lo que ya se publicó no se ofrece otra vez, ni desde la memoria");
+  assert.ok(/if\(draft && !editingRound && \(draft\.base !== newRoundDraftBase\(meta\) \|\| isRoundDraftPublished\(draft, meta\.rounds\)\)\)\{\s*clearRoundDraft\("new"\);\s*draft = null;/.test(body),
+    "lo ya publicado, o de un torneo ya cerrado, no se ofrece otra vez, ni desde la memoria");
   assert.ok(body.indexOf("isRoundDraftPublished(draft, meta.rounds)") < body.indexOf("draft = roundsFormDraft(editingRound, meta);"));
   assert.ok(body.includes('const draftKind = editingRound ? "edit:" + editingRound.id : "new";'));
-  assert.ok(body.includes("const persistDraft = () => saveRoundDraft(draftKind, draft, editingRound ? draft.base : newRoundDraftBase(meta));"));
+  assert.ok(body.includes("const persistDraft = () => saveRoundDraft(draftKind, draft, draft.base);"), "cada borrador con su base: la jornada, o el torneo");
   assert.ok(/m\[inp\.dataset\.role\] = inp\.value;\s*persistDraft\(\);/.test(body), "escribir (y elegir del combo, que dispara input)");
   assert.ok(/draft\.matches = draft\.matches\.filter\(x=>x\.id!==mid\);\s*persistDraft\(\);/.test(body), "quitar");
   assert.ok(/draft\.matches\.push\(blankMatch\(\)\);\s*persistDraft\(\);/.test(body), "añadir");
@@ -386,6 +387,13 @@ test("#35 · al cerrar el torneo, lo que se estaba escribiendo era del torneo qu
   const clear = body.indexOf("clearAllRoundDrafts();");
   assert.ok(clear !== -1 && clear > body.indexOf("adoptFreshMeta(meta, fresh)") && clear < body.indexOf('renderAdmin(document.getElementById("qz-main"));'));
   assert.ok(body.includes("renderAdminRondas._editingId = null;") && body.includes("renderAdminRondas._draft = null;"));
+});
+
+test("#35 · cambiar de usuario: quien entra después en la misma pestaña empieza en blanco", () => {
+  const at = indexSrc.indexOf('document.getElementById("qz-switch-user").addEventListener("click"');
+  const handler = indexSrc.slice(at, indexSrc.indexOf("});", at));
+  assert.ok(handler.includes("renderAdminRondas._draft = null;") && handler.includes("renderAdminRondas._editingId = null;"));
+  assert.ok(handler.indexOf("renderAdminRondas._draft = null;") < handler.indexOf("render();"));
 });
 
 test("#35 · borrar una jornada borra también una edición suya sin guardar", () => {
