@@ -37,6 +37,7 @@ const {
   storedRoundsRevision, resolveRoundsWrite, stampRoundsRevision,
 } = require("./roundsConcurrency");
 const tournamentScope = require("./tournamentScope");
+const { validateMetaIds } = require("./metaIds");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
@@ -1819,6 +1820,14 @@ app.post("/api/kv/:key", async (req, res) => {
         if (!roundsCheck.ok) {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
+        }
+        // Los ids nuevos de jornadas, partidos, participantes y apuestas vuelven
+        // a pintarse en atributos HTML para todos: sólo con la forma de siempre
+        // (metaIds.js).
+        const idsCheck = validateMetaIds(mergedValue, oldValue);
+        if (!idsCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: idsCheck.reason, kind: idsCheck.kind });
         }
 
         // MON-001B: real, atomic, server-side enforcement of the actual
