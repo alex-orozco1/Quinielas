@@ -31,7 +31,7 @@ QRACKS es para quinielas entre amigos. No es una plataforma de apuestas ni de al
 | [flujos/pagos.md](flujos/pagos.md) | Stripe: checkout, webhook, confirmación, idempotencia y recuperación de fallos. |
 | [SECURITY_CREDENTIAL_LIMITS.md](SECURITY_CREDENTIAL_LIMITS.md) | Límites de intentos fallidos, IP real detrás de Render, espera progresiva y «¿Olvidaste tu PIN?». |
 | [DESARROLLO.md](DESARROLLO.md) | Arranque local, pruebas con y sin PostgreSQL, zonas horarias, evidencia, secretos y trampas. |
-| [OPERATIONS.md](OPERATIONS.md) | Entornos y ramas que despliegan, salud, logs, rollback, variables, base de datos y pagos. |
+| [OPERATIONS.md](OPERATIONS.md) | Entornos y ramas que despliegan, salud, logs, rollback, variables, base de datos, pagos y qué hacer con cada alerta de pago. |
 | [EVIDENCIA.md](EVIDENCIA.md) | Dónde quedó la evidencia durable de cada entrega importante. |
 | [ESTADO.md](ESTADO.md) | Qué está fusionado, qué está en PR, issues abiertos y pendientes. |
 | [PRODUCT.md](PRODUCT.md) | Visión de producto v1.0 (julio 2026), histórica, con correcciones marcadas. |
