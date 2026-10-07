@@ -1733,6 +1733,11 @@
       Object.keys(cur).forEach(k => { if(!(k in fp)) delete cur[k]; });
       return Object.assign(cur, fp);
     });
+    // Lo que el servidor no tiene, la pestaña tampoco. Una clave que sólo
+    // existía aquí (una penalización recién activada que no se llegó a
+    // guardar, una entrada de bitácora de un intento que falló) se iría con el
+    // siguiente guardado como si se hubiera aplicado.
+    Object.keys(target).forEach(k => { if(!(k in fresh)) delete target[k]; });
     Object.assign(target, fresh, { participants });
   }
   async function setMetaWithError(meta, opts){

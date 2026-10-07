@@ -97,12 +97,30 @@ function rollbackLines() {
   });
   return { lines, found };
 }
+const GUARD = "if(!result.reconciled)";
+const isRollback = (text) => ROLLBACKS.some((re) => re.test(text));
+// Protegida quiere decir que la reposición ES lo que la guarda condiciona:
+//   - en la misma línea, como la sentencia de `if(!result.reconciled) …;` o
+//     dentro de su `{ … }`;
+//   - o dentro de un bloque abierto por una línea que es exactamente
+//     `if(!result.reconciled){`, todavía abierto y sin un `else` en medio.
+// Un comentario que mencione la guarda no cuenta.
 function guarded(lines, i) {
-  if (lines[i].includes("if(!result.reconciled)")) return true;
+  const line = lines[i];
+  const at = line.indexOf(GUARD);
+  if (at !== -1 && !/^\s*\/\//.test(line)) {
+    const rest = line.slice(at + GUARD.length).trimStart();
+    const scope = rest.startsWith("{") ? rest.slice(0, rest.indexOf("}") === -1 ? rest.length : rest.indexOf("}")) : rest.slice(0, rest.indexOf(";") + 1);
+    return isRollback(scope);
+  }
   for (let g = i - 1; g >= Math.max(0, i - 8); g--) {
-    if (lines[g].includes("if(!result.reconciled){")) {
+    if (/^\s*\/\//.test(lines[g])) continue;
+    if (lines[g].trim() === GUARD + "{") {
       let depth = 0;
-      for (let k = g; k < i; k++) for (const ch of lines[k]) { if (ch === "{") depth++; else if (ch === "}") depth--; }
+      for (let k = g; k < i; k++) {
+        if (k > g && /\belse\b/.test(lines[k])) return false;
+        for (const ch of lines[k]) { if (ch === "{") depth++; else if (ch === "}") depth--; }
+      }
       return depth > 0;
     }
   }
@@ -124,6 +142,31 @@ test("409 · el escáner sí detecta una reposición sin condición", () => {
   assert.equal(guarded(ok, 2), true);
   const cerrado = ["      if(!result.reconciled){ meta.participants = snapshot; }", "      meta.rounds = snapshot;"];
   assert.equal(guarded(cerrado, 1), false, "un bloque ya cerrado no protege la línea siguiente");
+  // Los tres engaños que encontró Technical QA:
+  const enElse = ["      if(!result.reconciled){", "        toast('x');", "      } else {", "        meta.rounds = snapshot;", "      }"];
+  assert.equal(guarded(enElse, 3), false, "la rama else se ejecuta justo cuando no debe");
+  assert.equal(guarded(["      if(!result.reconciled) toast('x'); meta.rounds = snapshot;"], 0), false, "otra sentencia en la misma línea");
+  assert.equal(guarded(["      // if(!result.reconciled){", "      meta.rounds = snapshot;"], 1), false, "un comentario no protege");
+  assert.equal(guarded(["      if(!result.reconciled) meta.rounds = snapshot;"], 0), true);
+  assert.equal(guarded(["      if(!result.reconciled){ meta.rounds = snapshot; meta.participants = snapshot; }"], 0), true);
+});
+
+test("409 · adoptar el estado del servidor deja en la pestaña exactamente lo que el servidor tiene", () => {
+  const adopt = new Function(`${extractFunctionBody(indexSrc, "function adoptFreshMeta(target, fresh)")}; return adoptFreshMeta;`)();
+  const ana = { id: "p_ana", name: "Ana", tmp: 1 };
+  const meta = {
+    rounds: [{ id: "r_1" }], participants: [ana],
+    paymentPenalty: { enabled: true, startsAtRound: 1, pointsPerRound: 3 },   // activada aquí, el guardado dio 409
+    auditLog: ["Publicó resultados Jornada 1"],                                // de un intento que falló
+  };
+  const fresh = { rounds: [{ id: "r_1" }, { id: "r_2" }], participants: [{ id: "p_ana", name: "Ana María" }], roundsRevision: 4 };
+  adopt(meta, fresh);
+  assert.equal("paymentPenalty" in meta, false, "una penalización que no se guardó no se queda para el siguiente guardado");
+  assert.equal("auditLog" in meta, false, "ni una entrada de bitácora de un intento fallido");
+  assert.deepEqual(meta.rounds.map((r) => r.id), ["r_1", "r_2"]);
+  assert.equal(meta.roundsRevision, 4);
+  assert.equal(meta.participants[0], ana, "los participantes siguen siendo los mismos objetos");
+  assert.deepEqual(ana, { id: "p_ana", name: "Ana María" });
 });
 
 test("409 · Editar: tras el conflicto se repinta el editor donde está ahora, con la jornada del servidor", () => {
