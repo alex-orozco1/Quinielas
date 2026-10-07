@@ -111,6 +111,8 @@ function guarded(lines, i) {
   if (at !== -1 && !/^\s*\/\//.test(line)) {
     const rest = line.slice(at + GUARD.length).trimStart();
     const scope = rest.startsWith("{") ? rest.slice(0, rest.indexOf("}") === -1 ? rest.length : rest.indexOf("}")) : rest.slice(0, rest.indexOf(";") + 1);
+    // Un `else` después, en la misma línea, se ejecuta justo cuando no debe.
+    if (/\belse\b/.test(rest.slice(scope.length))) return false;
     return isRollback(scope);
   }
   for (let g = i - 1; g >= Math.max(0, i - 8); g--) {
@@ -147,6 +149,7 @@ test("409 · el escáner sí detecta una reposición sin condición", () => {
   assert.equal(guarded(enElse, 3), false, "la rama else se ejecuta justo cuando no debe");
   assert.equal(guarded(["      if(!result.reconciled) toast('x'); meta.rounds = snapshot;"], 0), false, "otra sentencia en la misma línea");
   assert.equal(guarded(["      // if(!result.reconciled){", "      meta.rounds = snapshot;"], 1), false, "un comentario no protege");
+  assert.equal(guarded(["      if(!result.reconciled) meta.rounds = snapshot; else meta.rounds = snapshot;"], 0), false, "un else en la misma línea");
   assert.equal(guarded(["      if(!result.reconciled) meta.rounds = snapshot;"], 0), true);
   assert.equal(guarded(["      if(!result.reconciled){ meta.rounds = snapshot; meta.participants = snapshot; }"], 0), true);
 });
