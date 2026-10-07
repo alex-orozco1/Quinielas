@@ -27,11 +27,15 @@ En el navegador la fecha de cierre se escribe en hora local (`datetime-local`) y
 
 **Detalles de la importación:**
 - **Sin duplicados:** la identidad de cada partido es `proveedor + id`, así que repetir la importación no duplica nada.
-- **Actualiza lo que es del proveedor:** en los partidos ya importados, mientras la jornada no esté cerrada ni puntuada:
-  - corrige equipos (por ejemplo, un cruce que estaba «por definir»), ids externos y hora de inicio;
-  - añade los partidos nuevos.
+- **Actualiza lo que es del proveedor** en los partidos ya importados:
+  - **Hora de inicio:** se actualiza siempre.
+  - **Equipos y sus ids externos** (por ejemplo, un cruce que estaba «por definir»):
+    - con la jornada abierta, se corrigen libremente;
+    - cerrada sin puntuar, sólo se rellenan si no cambian el sentido de los pronósticos;
+    - con la jornada puntuada, nunca.
+  - **Partidos nuevos:** sólo se añaden a jornadas que no estén cerradas ni puntuadas.
 
-  Nunca toca el `id` de la jornada, los resultados, `published` ni el cierre.
+  Nunca toca el `id` de la jornada, los resultados, `published` ni el cierre (`competitionSync.js`).
 - **Fallo seguro:** si el proveedor falla, no escribe nada.
 - **`stagedFixtures`:** guarda aparte los partidos que el proveedor todavía no asigna a una jornada.
 - **Plan ligado a una competencia:** la importación respeta esa liga y responde 402 si se intenta otra.

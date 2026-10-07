@@ -112,7 +112,7 @@ Lo pide un admin o el dueño de la quiniela (si no, 403), con límite de ritmo p
 | Situación | Qué pasa |
 |---|---|
 | Pagos no `READY` cuando llega un webhook | `503`, y Stripe reintenta. |
-| Pago cobrado pero no aplicado (error al escribir Plus) | La transacción se deshace, se registra `payments payment_requires_attention` con el error y el webhook responde `500 unapplied_payment`, así que Stripe reintenta. Si falla la base, responde `500 server_error`. |
+| Pago cobrado pero no aplicado (error al escribir Plus) | La transacción se deshace. Se registra `payments entitlement_grant_failed` (con el `purchaseId`) y luego `payments payment_requires_attention` (con el error). El webhook responde `500 unapplied_payment`, así que Stripe reintenta. Si falla la base, responde `500 server_error`. |
 | El webhook nunca llega | La reconciliación al volver al sitio confirma la compra. |
 | Discrepancia: importe, moneda, identidad, torneo viejo, quiniela inexistente, foto de la oferta (snapshot) inválida, varias sesiones, reembolso o disputa | **No se concede nada automáticamente.** Queda en la decisión del webhook y en la auditoría de la compra, para que el operador decida. Los valores exactos que aparecen en el log y en la auditoría (por ejemplo `stale_scope` o `paid_for_a_finished_tournament`) y qué hacer con cada uno están en [OPERATIONS.md](../OPERATIONS.md) §7. |
 
@@ -140,7 +140,7 @@ Las verificó Technical QA el 2026-10-07. No se corrigen en este sprint, que es 
   - Después, el checkout deja pagar con tarjeta. Al confirmar, se reactiva el Plus del panel y el cargo de Stripe **no queda en el libro de pagos**.
   - Así, un torneo que el sistema ya daba por pagado puede cobrarse dos veces.
   - Con `MANUAL_GRANT` no pasa.
-  - Mientras no se corrija, **evita esa secuencia**: si hay que deshacer un Plus del panel, no esperes un pago con tarjeta en ese torneo.
+  - Mientras no se corrija, **evita esa secuencia**. Si hay que regresar a Gratis una quiniela con Plus del panel, revisa después `platform_payment_intents` por si el organizador pagó con tarjeta en ese torneo; el operador no puede impedir ese pago.
 - **Libro de pagos escribible.** CONFIRMED en local, P2.
   - Con la contraseña de plataforma, `POST` y `DELETE /api/kv/platform_payment_log` reescriben o borran el libro.
   - `platform_payment_intents`, en cambio, sólo la escribe el servidor.

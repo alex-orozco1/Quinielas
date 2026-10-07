@@ -98,8 +98,16 @@ Cambiar cualquier variable en Render requiere autorización explícita del Found
 - `docs/security/sec-002-hardening.sql` crea políticas que niegan a los roles de la API de Supabase (`anon` y `authenticated`) el acceso a `kv` y `analytics_events`. Se aplica a mano.
 - **Ese script no activa RLS.** No ejecuta `ENABLE ROW LEVEL SECURITY`. Sin RLS activo, las políticas no tienen efecto.
 - **Que RLS esté activo en producción es UNKNOWN / NOT PROVEN:** no se puede comprobar desde el repositorio.
-- **Cómo comprobarlo** (sólo lectura, en el editor SQL de Supabase): `select relname, relrowsecurity from pg_class where relname in ('kv', 'analytics_events');`. Debe dar `true` en las dos.
-- **Si da `false`:** activarlo (`alter table … enable row level security`) es un cambio en la base de producción y requiere autorización explícita del Founder.
+- **Cómo comprobarlo** (todo de sólo lectura, en el editor SQL de Supabase):
+  1. RLS en las dos tablas, que debe dar `true`:
+     `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relname in ('kv', 'analytics_events');`
+  2. Permisos de los roles de la API de Supabase:
+     `select has_table_privilege('anon', 'public.kv', 'select'), has_table_privilege('authenticated', 'public.kv', 'select');`
+     Haz lo mismo con `analytics_events`. Sin permisos, un RLS apagado no abre nada; con permisos y RLS apagado, el acceso queda abierto.
+  3. Dueño de las tablas frente al rol que usa el servidor:
+     `select tablename, tableowner from pg_tables where tablename in ('kv', 'analytics_events');` frente a `select current_user;`, ejecutado con el usuario de `DATABASE_URL`.
+- **Antes de activar RLS** (`alter table … enable row level security`), el paso 3 tiene que confirmar que el rol del servidor es el dueño de las tablas o tiene `BYPASSRLS`. **Si no lo es, activar RLS con sólo políticas de denegación deja al servidor sin acceso a sus propios datos y tumba producción.**
+- Activarlo es un cambio en la base de producción y requiere autorización explícita del Founder.
 - La tabla `credential_attempt_buckets` sí activa RLS: lo hace el servidor al arrancar.
 
 ## 7. Pagos (MON-003): poner Stripe en marcha
@@ -171,20 +179,24 @@ Los logs de pagos son una línea `payments <evento> {…json…}`, sin secretos.
 |---|---|
 | `stale_scope` | Pagaron un torneo que ya terminó: hay que devolver o trasladar |
 | `amount_mismatch`, `currency_mismatch` | El importe o la moneda no son los esperados |
-| `identity_mismatch`, `scope_unproven`, `snapshot_unusable` | No se pudo probar que el pago corresponda a esa compra y torneo |
+| `scope_unproven`, `snapshot_unusable` | No se pudo probar a qué torneo u oferta corresponde el pago |
 | `quiniela_missing` | La quiniela ya no existe |
-| `superseded_purchase` | Pagaron una compra que el sistema ya había sustituido por otra |
 
-   `unknown_purchase` es un evento de Stripe que no corresponde a ninguna compra de QRACKS. Se decide antes de mirar si hubo cobro, así que puede traerlo o no: revísalo en Stripe.
+   **Comprueba en Stripe si hubo cobro:** estas tres decisiones se toman antes de mirar el pago, así que pueden venir de un evento sin cobro (por ejemplo, una sesión expirada).
+   - `unknown_purchase`: un evento que no corresponde a ninguna compra de QRACKS.
+   - `identity_mismatch`: la sesión no es la que la compra registró.
+   - `superseded_purchase`: una compra que el sistema ya había sustituido por otra.
 
-   No requieren acción: `confirm` (otorgado), `replay_event` / `ignored_stale_event` (evento repetido o viejo), `already_paid` (ya estaba confirmado) y `not_paid` (sin cobro).
+   **`already_paid`** normalmente no requiere acción: el pago ya estaba confirmado. **Excepto** si la auditoría de esa compra lleva `two_checkouts_were_paid_for_one_tournament`: eso son **dos cobros** y hay que devolver uno. En el log de `webhook_processed` un cargo doble sólo aparece como `already_paid`, así que revisa la auditoría siempre que veas esa decisión.
+
+   No requieren acción: `confirm` (otorgado), `replay_event` / `ignored_stale_event` (evento repetido o viejo) y `not_paid` (sin cobro).
 
 2. `payments payment_requires_attention` tiene tres formas:
 
 | Forma | Significa |
 |---|---|
 | `{"purchaseId", "code": "refunded" \| "disputed"}` | Reembolso o disputa en Stripe. **No revoca Plus automáticamente**: la política de revocación no está decidida. |
-| `{"purchaseId", "code": <error>}`, y el webhook responde `500 unapplied_payment` | Un pago válido no se pudo aplicar. Stripe reintenta; si se repite, revisar logs y base. |
+| `{"purchaseId": null, "code": <error>}`, y el webhook responde `500 unapplied_payment` | Un pago válido no se pudo aplicar (por ejemplo, `code: "grant_id_conflict"`). El `purchaseId` está en la línea `payments entitlement_grant_failed` justo anterior. Stripe reintenta; si se repite, revisar logs y base. |
 | `{"slug", "incidents": […], "auditEntries", "flagged"}` | Varias sesiones de checkout para una misma compra (posible cargo doble). Revisar en Stripe cuál cobró. |
 
 3. También piden revisión `payments session_multiplicity`, `checkout_session_multiplicity_blocked` y `session_double_charge_revealed` (cargo doble revelado), y `payments entitlement_grant_failed` (Plus no se pudo escribir; Stripe reintenta).
