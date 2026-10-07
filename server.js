@@ -923,7 +923,15 @@ const PLATFORM_KEYS = new Set(["platform_settings", "platform_index", "platform_
 // es olvidar la única ventana donde encontrar su sesión, y fabricar una prueba es
 // autorizar una identidad nueva encima de una que cobra. Ninguna pantalla la
 // escribe; sólo el servidor, bajo su candado.
-const SERVER_OWNED_KEYS = new Set(["platform_payment_intents"]);
+//
+// `platform_payment_log` sigue la misma regla. Es el libro de lo cobrado, con
+// tarjeta y fuera de ella, y sólo lo escriben las dos transacciones que conceden
+// Plus: "Activar Plus" desde el panel y la confirmación del pago. Las dos lo
+// escriben bajo candado y en la misma operación que el plan. Por el endpoint
+// genérico, la contraseña de plataforma bastaba para reescribirlo o vaciarlo sin
+// dejar rastro, y ninguna pantalla lo usaba para escribir. La plataforma lo sigue
+// LEYENDO: el GET exige su credencial.
+const SERVER_OWNED_KEYS = new Set(["platform_payment_intents", "platform_payment_log"]);
 
 function classifyKey(key) {
   if (PLATFORM_KEYS.has(key)) return { kind: "platform" };

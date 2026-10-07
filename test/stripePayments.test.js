@@ -3327,7 +3327,8 @@ test("MON003 · C8.9 — SERVER: 'muerta' exige prueba de TODAS sus identidades 
 
 test("MON003 · C8.10 — SERVER: la fila de compras sólo la escribe el servidor", () => {
   const src = stripComments(serverSrc);
-  assert.ok(src.includes('const SERVER_OWNED_KEYS = new Set(["platform_payment_intents"]);'));
+  // El libro de pagos sigue la misma regla (S2): ver platformConcurrency.test.js.
+  assert.ok(src.includes('const SERVER_OWNED_KEYS = new Set(["platform_payment_intents", "platform_payment_log"]);'));
   const post = src.slice(src.indexOf('app.post("/api/kv/:key"'));
   const postHead = post.slice(0, post.indexOf("const providedOwnerAuth"));
   assert.ok(postHead.includes('if (SERVER_OWNED_KEYS.has(req.params.key)) return res.status(403).json({ error: "server_owned_key" });'),

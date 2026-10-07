@@ -311,24 +311,47 @@ test("PLATFORM_SETTINGS: a concurrent password rotation cannot be reverted by a 
   assert.equal(store.raw("platform_settings").dashboardPassword, "hash-new");
 });
 
-test("PLATFORM_PAYMENT_LOG: two concurrent appends from the same version cannot drop a payment", async () => {
-  const store = createStore({ platform_payment_log: { version: 3, payments: [{ slug: "alpha", amount: 10 }] } });
-  const a = store.raw("platform_payment_log");
-  const b = store.raw("platform_payment_log");
-  a.payments.push({ slug: "beta", amount: 20 });
-  b.payments.push({ slug: "gamma", amount: 30 });
+// S2. This used to test two panel tabs appending to the payment log through
+// the generic platform write. That path no longer exists for the log: the panel
+// only reads it, and the two server transactions that append to it lock it
+// FOR UPDATE ("SERVER: the grant endpoint locks platform_index BEFORE
+// platform_payment_log" and the PURCHASE HISTORY tests below).
+test("PLATFORM_PAYMENT_LOG (S2): only the server writes the payment log, never the generic endpoint", () => {
+  // Still a platform key, so the platform can READ it...
+  assert.ok(/const PLATFORM_KEYS = new Set\(\[[^\]]*"platform_payment_log"[^\]]*\]\);/.test(serverSrc));
+  // ...and server-owned, so nobody can write or delete it through /api/kv.
+  assert.ok(/const SERVER_OWNED_KEYS = new Set\(\[[^\]]*"platform_payment_log"[^\]]*\]\);/.test(serverSrc));
 
-  assert.equal((await platformWrite(store, "platform_payment_log", a)).status, 200);
-  assert.equal((await platformWrite(store, "platform_payment_log", b)).status, 409,
-    "the second append is refused rather than silently discarding the first");
-  const payments = store.raw("platform_payment_log").payments.map((p) => p.slug);
-  assert.deepEqual(payments, ["alpha", "beta"], "no payment record was lost");
+  // Both refusals come before any credential is looked at: the platform
+  // password is not enough.
+  const post = blockFrom(serverSrc, 'app.post("/api/kv/:key"');
+  const postHead = post.slice(0, post.indexOf("const providedOwnerAuth"));
+  assert.ok(postHead.includes('if (SERVER_OWNED_KEYS.has(req.params.key)) return res.status(403).json({ error: "server_owned_key" });'));
+  const del = blockFrom(serverSrc, 'app.delete("/api/kv/:key"');
+  assert.ok(del.indexOf("SERVER_OWNED_KEYS.has(req.params.key)") !== -1);
+  assert.ok(del.indexOf("SERVER_OWNED_KEYS.has(req.params.key)") < del.indexOf("checkPlatformCredential"));
+  assert.ok(del.indexOf("SERVER_OWNED_KEYS.has(req.params.key)") < del.indexOf("DELETE FROM kv"));
 
-  // Recovery: reload, re-append, both survive.
-  const reloaded = store.raw("platform_payment_log");
-  reloaded.payments.push({ slug: "gamma", amount: 30 });
-  assert.equal((await platformWrite(store, "platform_payment_log", reloaded)).status, 200);
-  assert.deepEqual(store.raw("platform_payment_log").payments.map((p) => p.slug), ["alpha", "beta", "gamma"]);
+  // Reading it still demands the platform credential.
+  const get = blockFrom(serverSrc, 'app.get("/api/kv/:key"');
+  const readBranch = get.slice(get.indexOf('req.params.key === "platform_payment_log"'));
+  assert.ok(readBranch.slice(0, readBranch.indexOf("} else if (info.kind")).includes("checkPlatformCredential("));
+
+  // The only writers left are the two transactions that grant Plus.
+  const writers = putRowCalls(serverSrc).filter((c) => c.includes('"platform_payment_log"'));
+  assert.equal(writers.length, 2, writers.join("\n"));
+  assert.ok(blockFrom(serverSrc, 'app.post("/api/platform/quinielas/:slug/entitlement"')
+    .includes('await putRow("platform_payment_log", result.paymentLog, client)'));
+  // (anchored past the parameter list, whose destructuring brace would
+  // otherwise be taken for the body)
+  assert.ok(blockFrom(serverSrc, ") {", { from: serverSrc.indexOf("async function confirmPaymentAndGrant(") })
+    .includes('await putRow("platform_payment_log", nextPaymentLog, client)'));
+
+  // And no screen writes it.
+  const indexHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  assert.ok(!indexHtml.includes("setPlatformPaymentLog"));
+  assert.ok(!/savePlatformRow\(\s*PLATFORM_PAYMENTLOG_KEY/.test(indexHtml));
+  assert.ok(!/savePlatformRow\(\s*["']platform_payment_log["']/.test(indexHtml));
 });
 
 // ==== consecutive edits from one open panel ===============================
@@ -1356,9 +1379,10 @@ test("PURCHASE HISTORY 11: the history is append-only and server-owned, so a pur
 });
 
 test("PURCHASE HISTORY: wiping the PAYMENT LOG does not re-enable a charge", async () => {
-  // The payment log is writable through the generic platform key, so it must
-  // not be the thing the economic decision depends on. It is the money
-  // record; the entitlement history is the authority.
+  // The payment log is the money record; the entitlement history is the
+  // authority. Since S2 the generic platform key can no longer write or wipe
+  // the log, but the decision still must not depend on it: a row edited or
+  // emptied directly in the database must not re-enable a charge either.
   const store = grantStore();
   await grant(store, "alpha", { plan: "PLUS", grantId: "grant-wipe-00001" });
   await grant(store, "alpha", { plan: "FREE", grantId: "grant-wipe-00002", reason: "revoke" });

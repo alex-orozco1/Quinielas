@@ -1302,9 +1302,8 @@
       return r.found ? r.value : { payments: [] };
     }catch(e){ console.error("getPlatformPaymentLog failed", e); return { payments: [] }; }
   }
-  async function setPlatformPaymentLog(log){
-    return savePlatformRow(PLATFORM_PAYMENTLOG_KEY, log);
-  }
+  // El libro de pagos sólo se lee desde aquí: lo escribe el servidor al
+  // conceder Plus, y el endpoint genérico lo rechaza (server_owned_key).
 
   // MON-001F.2 — operaciones Admin que tocan más de una fila.
   // Se mandan como INTENCIÓN (los campos que cambian), no como el documento
