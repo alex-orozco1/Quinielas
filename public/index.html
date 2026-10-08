@@ -1453,6 +1453,12 @@
     payment_id_conflict: "Ese registro de pago ya existe. Actualizamos los datos; vuelve a intentarlo.",
     invalid_params: "Falta información, o algo no tiene el formato correcto.",
     invalid_metaKey: "Falta información, o algo no tiene el formato correcto.",
+    // El servidor rechaza un dato de la quiniela con otra forma (metaIds.js,
+    // metaNumbers.js, metaShape.js). Ningún flujo de la app lo provoca; si
+    // pasa, nada se guardó y recargar trae el estado bueno.
+    invalid_id: "Algún dato no tiene el formato correcto y no se guardó nada. Recarga la página e intenta de nuevo.",
+    invalid_number: "Algún dato no tiene el formato correcto y no se guardó nada. Recarga la página e intenta de nuevo.",
+    invalid_value: "Algún dato no tiene el formato correcto y no se guardó nada. Recarga la página e intenta de nuevo.",
     slug_taken: "Ese link ya lo está usando otra quiniela.",
     not_found: "No encontramos esa quiniela.",
     participant_not_found: "No encontramos a esa persona en la quiniela.",
@@ -3878,7 +3884,7 @@
       const result = await setMetaWithError(meta);
       if(result.ok){
         trackEvent("first_participant_added", { source: "admin_setup" });
-        feedback.textContent = `✓ ${added.length} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
+        feedback.textContent = `✓ ${esc(added.length)} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
       }else{
         meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
         feedback.textContent = "";
@@ -4992,7 +4998,7 @@
               <div>
                 ${t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${esc(t.champion.pts)} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`}
               </div>
-              <div class="muted" style="margin-bottom:6px;">Cerrado el ${date} · ${t.rounds.length} jornadas jugadas</div>
+              <div class="muted" style="margin-bottom:6px;">Cerrado el ${date} · ${esc(t.rounds.length)} jornadas jugadas</div>
               ${t.standings && t.standings.length ? `
                 <details>
                   <summary class="muted" style="cursor:pointer;">Ver tabla final completa</summary>
@@ -5030,7 +5036,7 @@
     const list = document.getElementById("qz-hist-list");
     list.innerHTML = published.map(r => `
       <div class="history-item">
-        <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${r.matches.length} partidos</span></div>
+        <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos</span></div>
         <button class="btn btn-ghost btn-sm" data-round="${esc(r.id)}">Ver detalle</button>
       </div>
     `).join("");
@@ -5069,7 +5075,7 @@
       ${mvps.length ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
           <div class="eyebrow" style="color:var(--gold-dim);">🏅 MVP de la Jornada ${esc(round.number)}</div>
-          <p style="margin:4px 0 0;">${mvps.map(esc).join(", ")} — ${maxCorrect} de ${round.matches.length} aciertos</p>
+          <p style="margin:4px 0 0;">${mvps.map(esc).join(", ")} — ${maxCorrect} de ${esc(round.matches.length)} aciertos</p>
         </div>
       ` : ``}
       <div class="card" style="overflow-x:auto;">
@@ -6691,7 +6697,7 @@
           const faseTxt = r.phaseLabel ? ` · ${esc(r.phaseLabel)}` : "";
           return `
           <div class="history-item">
-            <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
+            <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
             <div style="display:flex;gap:6px;">
               ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${esc(r.id)}">Publicar jornada</button>` : ``}
               <button class="btn btn-ghost btn-sm" data-edit-round="${esc(r.id)}">Editar</button>
@@ -7156,7 +7162,7 @@
     if(statusEl){
       const blockedTxt = blocked ? ` ${blocked} partido${blocked===1?"":"s"} hay que capturarlo${blocked===1?"":"s"} a mano.` : "";
       statusEl.textContent = (found
-        ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.`
+        ? `${found} de ${esc(round.matches.length)} partidos encontrados. Revisa y confirma antes de guardar.`
         : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.") + blockedTxt;
     }
     form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
@@ -7223,7 +7229,7 @@
           renderAdminResultados._bulkUnscorable = data.unscorable || {};
           const roundIdsWithHits = Object.keys(renderAdminResultados._bulkCache).filter(id => (renderAdminResultados._bulkCache[id] || []).length);
           bulkStatusEl.textContent = roundIdsWithHits.length
-            ? `Se encontraron resultados para ${roundIdsWithHits.length} jornada${roundIdsWithHits.length===1?"":"s"} pendiente${roundIdsWithHits.length===1?"":"s"}. Selecciónala${roundIdsWithHits.length===1?"":"s"} arriba para revisar y confirmar.`
+            ? `Se encontraron resultados para ${esc(roundIdsWithHits.length)} jornada${roundIdsWithHits.length===1?"":"s"} pendiente${roundIdsWithHits.length===1?"":"s"}. Selecciónala${roundIdsWithHits.length===1?"":"s"} arriba para revisar y confirmar.`
             : "No se encontraron resultados nuevos para las jornadas pendientes por ahora.";
           // If the round currently open already got resolved by this bulk
           // pass, show it immediately — no need to click the per-round
@@ -7559,7 +7565,7 @@
       logDiv.className = "card";
       logDiv.innerHTML = `
         <div class="eyebrow">Bitácora de resultados</div>
-        <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${logEntries.length}.</p>
+        <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${esc(logEntries.length)}.</p>
         <table>
           <tbody>
             ${logEntries.map(e => `
@@ -7685,7 +7691,7 @@
         showPlanBlock(result);
         return;
       }
-      toast(`✅ Listo, se agregaron ${added.length} participante${added.length===1?'':'s'}.`);
+      toast(`✅ Listo, se agregaron ${esc(added.length)} participante${added.length===1?'':'s'}.`);
       renderAdminParticipantes(body);
     });
     body.querySelectorAll("tr[data-pid]").forEach(row => {
@@ -8743,7 +8749,7 @@
         <div class="card">
           <div class="eyebrow">Crecimiento</div>
           <div class="row2" style="margin-bottom:10px;">
-            <div><div class="eyebrow">Quinielas totales</div><div class="display" style="font-size:28px;">${idx.quinielas.length}</div></div>
+            <div><div class="eyebrow">Quinielas totales</div><div class="display" style="font-size:28px;">${esc(idx.quinielas.length)}</div></div>
             <div><div class="eyebrow">Participantes totales</div><div class="display" style="font-size:28px;">${totalParticipants}</div></div>
           </div>
           <div class="row2">
@@ -9095,7 +9101,7 @@
                 <span>👁 ${esc(tenantMeta.groupName)} — solo lectura</span>
                 <button class="btn btn-ghost btn-sm" id="qz-inspect-close">Cerrar</button>
               </div>
-              <p class="muted">${tenantMeta.participants.length} participantes · ${tenantMeta.rounds.length} jornadas creadas</p>
+              <p class="muted">${esc(tenantMeta.participants.length)} participantes · ${esc(tenantMeta.rounds.length)} jornadas creadas</p>
               <div class="row2">
                 <div>
                   <div class="eyebrow">Tabla</div>
@@ -9328,7 +9334,7 @@
         ${published.length ? `
           <div class="section-title" style="margin-top:20px;"><span class="display" style="font-size:22px;">Jornadas jugadas</span></div>
           <div class="card">
-            ${published.map(r => `<div class="history-item"><div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${r.matches.length} partidos</span></div></div>`).join("")}
+            ${published.map(r => `<div class="history-item"><div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos</span></div></div>`).join("")}
           </div>
         ` : ``}
         <p class="muted" style="text-align:center;margin-top:20px;">👁 Estás viendo esta quiniela en modo solo lectura — no puedes votar ni modificar nada.</p>

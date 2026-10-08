@@ -39,6 +39,7 @@ const {
 const tournamentScope = require("./tournamentScope");
 const { validateMetaIds } = require("./metaIds");
 const { validateMetaNumbers } = require("./metaNumbers");
+const { validateMetaShape } = require("./metaShape");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
@@ -1822,6 +1823,14 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
         }
+        // Las listas son listas y los objetos, objetos (metaShape.js): las
+        // pantallas y la protección de los campos del dueño dan por hecha esa
+        // forma.
+        const shapeCheck = validateMetaShape(mergedValue, oldValue);
+        if (!shapeCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: shapeCheck.reason, field: shapeCheck.field });
+        }
         // Los ids nuevos de jornadas, partidos, participantes y apuestas vuelven
         // a pintarse en atributos HTML para todos: sólo con la forma de siempre
         // (metaIds.js).
@@ -2474,7 +2483,9 @@ app.post("/api/self-register", async (req, res) => {
     const derivedSlug = metaKeyMatch ? metaKeyMatch[1] : null;
     const platformIdx = derivedSlug ? await getRowLocked("platform_index", client) : null;
     const value = await getRowLocked(metaKey, client);
-    if (!value) {
+    // La quiniela heredada que ya se mudó a /q/<slug> sólo guarda a dónde se
+    // fue: nadie se registra ahí.
+    if (!value || value.migratedTo) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "not_found" });
     }
@@ -6344,15 +6355,18 @@ function escapeHtml(s) {
 
 function injectMeta(html, { title, description, url }) {
   let out = html;
+  // Con una función, el valor entra tal cual: en una cadena de reemplazo,
+  // un `$&` o `$'` dentro del nombre del grupo se interpretaría como patrón.
+  const put = (re, value) => { out = out.replace(re, (_, open, close) => open + value + close); };
   if (title != null) {
-    out = out.replace(/(<title id="page-title">)[^<]*(<\/title>)/, `$1${title}$2`);
-    out = out.replace(/(<meta property="og:title" content=")[^"]*("\s+id="og-title">)/, `$1${title}$2`);
+    put(/(<title id="page-title">)[^<]*(<\/title>)/, title);
+    put(/(<meta property="og:title" content=")[^"]*("\s+id="og-title">)/, title);
   }
   if (description != null) {
-    out = out.replace(/(<meta property="og:description" content=")[^"]*("\s+id="og-description">)/, `$1${description}$2`);
+    put(/(<meta property="og:description" content=")[^"]*("\s+id="og-description">)/, description);
   }
   if (url != null) {
-    out = out.replace(/(<meta property="og:url" content=")[^"]*("\s+id="og-url">)/, `$1${url}$2`);
+    put(/(<meta property="og:url" content=")[^"]*("\s+id="og-url">)/, url);
   }
   return out;
 }

@@ -121,7 +121,7 @@ function safeOutput(e) {
 }
 
 // ---- campos de datos ----
-const DATA = /(?:^|[^\w$])(?:[\w$]+(?:\[[^\]]*\])?\.)*(id|mid|pid|rid|matchId|roundId|betId|number|pts|points|closesAtRound|entryFee|pointsPerCorrectPick|startsAtRound|pointsPerRound|bonusPoints|penalty|rn|name|label|teamA|teamB|groupName|phaseLabel|guess|answer|contact|detail|admin|action|provider|externalRoundId|syncGroupKey|leagueId|sportsdbLeagueId|sportsdbSeason|deadline|kickoffAt|slug)\b/;
+const DATA = /(?:^|[^\w$])(?:[\w$]+(?:\[[^\]]*\])?\.)*(id|mid|pid|rid|matchId|roundId|betId|number|length|matches|pts|points|closesAtRound|entryFee|pointsPerCorrectPick|startsAtRound|pointsPerRound|bonusPoints|penalty|rn|name|label|teamA|teamB|groupName|phaseLabel|guess|answer|contact|detail|admin|action|provider|externalRoundId|syncGroupKey|leagueId|sportsdbLeagueId|sportsdbSeason|deadline|kickoffAt|slug)\b/;
 
 function unsafe(src) {
   const lines = src.split("\n");
@@ -175,8 +175,13 @@ const PERMITIDAS = [
   { expr: "slug", en: "title: `Ajuste manual · /q/${slug}`", por: "título de qzPrompt" },
   { expr: "offer.contact", en: "`Escríbenos a ${offer.contact} y activamos Plus", por: "texto que se pinta con esc(howTo)" },
   { expr: "r.number", en: "return `Jornada ${r.number} (${r.matches.length} partidos) — ${status}`;", por: "resumen del panel, que se pinta con esc(s)" },
+  { expr: "r.matches.length", en: "return `Jornada ${r.number} (${r.matches.length} partidos) — ${status}`;", por: "resumen del panel, que se pinta con esc(s)" },
   { expr: "meta.groupName", en: "return `Únete a mi quiniela \"${meta.groupName}\" en QRACKS", por: "mensaje para copiar" },
   { expr: "round.number", en: "⏰ Faltan por contestar la Jornada ${round.number}:", por: "mensaje para copiar o WhatsApp" },
+  // HTML que arma otra función, cuyas plantillas se revisan aparte.
+  { expr: '(meta.customBets && meta.customBets.length) ? meta.customBets.map(betRowHtml).join("") : ``', en: "meta.customBets.map(betRowHtml)", por: "filas de betRowHtml" },
+  { expr: 'draft.matches.map(matchRowHtml).join("")', en: "draft.matches.map(matchRowHtml)", por: "filas de matchRowHtml" },
+  { expr: 'rows.length ? rows.map(rowHtml).join("") : ``', en: "rows.map(rowHtml)", por: "filas de rowHtml (panel de plataforma)" },
   // Selectores y URLs.
   { expr: "mid", en: "[data-mid=\"${mid}\"]", por: "selector (CSS.escape pendiente en el backlog)" },
   { expr: "matchId", en: "[data-result-match=\"${matchId}\"]", por: "selector (CSS.escape pendiente en el backlog)" },
@@ -208,6 +213,7 @@ test("escape · el escáner detecta las formas de no escapar (las que engañaban
     'x.innerHTML = `<div id="qz-${"rescard"}-${m.id}"></div>`;',     // otra interpolación antes
     "x.innerHTML = `<b>Jornada ${round.number}</b>`;",               // un número de la meta
     "x.innerHTML = `<td>${s.pts}</td>`;",                            // puntos calculados con datos
+    "x.innerHTML = `<i>${r.matches.length} partidos</i>`;",          // el length de algo que no es lista
     "x.innerHTML = `<i>${ok ? m.teamA : ''}</i>`;",                  // una salida sin escapar
     "x.innerHTML = `<i>${ok && bet.label}</i>`;",
     "x.innerHTML = `<i>${p.name || ok && esc(x)}</i>`;",              // a || (b && c): `a` también se pinta
@@ -222,6 +228,7 @@ test("escape · el escáner detecta las formas de no escapar (las que engañaban
     "x.innerHTML = `<i>${ok && esc(bet.label)}</i>`;",
     "x.innerHTML = `${list.map(r => `<td>${esc(r.name)}</td>`).join('')}`;",
     "x.innerHTML = `<b>${esc(round.number)}</b>`;",
+    "x.innerHTML = `<i>${esc(r.matches.length)} partidos</i>`;",
   ];
   for (const src of bien) assert.deepEqual(unsafe(src), [], src);
 });
