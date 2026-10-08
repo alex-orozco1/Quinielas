@@ -126,3 +126,21 @@ test("ids · el servidor lo comprueba en la escritura de la meta, después de va
   assert.ok(block.includes('await client.query("ROLLBACK");'));
   assert.ok(block.includes("return res.status(400).json({ error: idsCheck.reason, kind: idsCheck.kind });"));
 });
+
+test("ids · el servidor indexa por id sin prototipo y compara las jornadas abiertas como texto", () => {
+  // Defensa de fondo, además de metaIds: un id guardado `__proto__` no puede
+  // volverse el «anterior» de nadie, y una jornada con id numérico sigue
+  // contando como abierta frente a las claves (texto) de los picks.
+  for (const [fn, line] of [
+    ["function mergeProtectedMetaFields(", "const oldById = Object.create(null);"],
+    ["function validateRoundsIntegrity(", "const oldRoundsById = Object.create(null);"],
+    ["async function validatePicksDeadline(", "const roundsById = Object.create(null);"],
+    ["async function filterPicksForRequest(", ".map((r) => String(r && r.id))"],
+  ]) {
+    const start = serverSrc.indexOf(fn);
+    assert.ok(start !== -1, fn);
+    const next = serverSrc.indexOf("\nfunction ", start + 1), nextAsync = serverSrc.indexOf("\nasync function ", start + 1);
+    const end = Math.min(...[next, nextAsync].filter((i) => i !== -1));
+    assert.ok(serverSrc.slice(start, end).includes(line), `${fn} … ${line}`);
+  }
+});
