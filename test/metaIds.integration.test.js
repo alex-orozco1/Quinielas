@@ -41,6 +41,25 @@ test.describe("ids de la meta (servidor real)", () => {
     assert.deepEqual(await stored(q), antes, "la fila sigue intacta");
   });
 
+  itest("un id que no es texto (una lista con marcado) tampoco entra: 400 invalid_id y nada cambia", async () => {
+    const q = await quiniela("ids-lista");
+    const antes = await stored(q);
+    const deadline = new Date(Date.now() + 2 * 864e5).toISOString();
+    const LISTA = [MARCADO];
+    const casos = {
+      match: (v) => v.rounds.push({ id: "r_ok12345", number: 1, deadline, results: {}, resultsPublished: false, published: true, matches: [{ id: LISTA, teamA: "A", teamB: "B" }] }),
+      round: (v) => v.rounds.push({ id: LISTA, number: 1, deadline, results: {}, resultsPublished: false, published: true, matches: [{ id: "m_ok12345", teamA: "A", teamB: "B" }] }),
+      participant: (v) => v.participants.push({ id: LISTA, name: "Zoe", isAdmin: false, paid: false, pin: null }),
+      bet: (v) => { v.customBets = (v.customBets || []).concat([{ id: LISTA, label: "X", scope: "temporada", points: 1 }]); },
+    };
+    for (const [kind, add] of Object.entries(casos)) {
+      const v = await read(q); add(v);
+      const r = await write(q, v);
+      assert.deepEqual([r.status, r.body], [400, { error: "invalid_id", kind }], kind);
+    }
+    assert.deepEqual(await stored(q), antes, "la fila sigue intacta");
+  });
+
   itest("lo de siempre se guarda: una jornada con ids del navegador", async () => {
     const q = await quiniela("ok");
     const v = await read(q);

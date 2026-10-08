@@ -57,7 +57,7 @@ test("the editor card element (#qz-round-form) is exactly where \"Editando jorna
   const idIdx = indexSrc.indexOf('<div class="card" id="qz-round-form">');
   assert.ok(idIdx !== -1, "the editor card must carry the id the scroll targets");
   const nearby = indexSrc.slice(idIdx, idIdx + 250);
-  assert.ok(nearby.includes("Editando jornada ${editingRound.number}"), "the heading shown right after scrolling must reflect the round actually being edited");
+  assert.ok(nearby.includes("Editando jornada ${esc(editingRound.number)}"), "the heading shown right after scrolling must reflect the round actually being edited");
 });
 
 test("clicking \"Editar\" wires through openRoundEditor, and no client-side paywall can gate it", () => {

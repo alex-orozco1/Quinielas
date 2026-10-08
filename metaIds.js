@@ -8,10 +8,10 @@
 // participantes. Ningún flujo legítimo crea ids así: el navegador usa
 // `prefijo_base36` y el servidor `prefijo_hex`.
 //
-// Un id NUEVO (que no estaba ya en la meta guardada) tiene que tener la forma
-// de siempre. Uno que ya existía se respeta tal cual, para no dejar sin poder
-// guardar a una quiniela con datos antiguos; el navegador, además, escapa todos
-// al pintarlos.
+// Un id de texto NUEVO (que no estaba ya en la meta guardada) tiene que tener
+// la forma de siempre. Uno que ya existía se respeta tal cual, para no dejar
+// sin poder guardar a una quiniela con datos antiguos; el navegador, además,
+// escapa todos al pintarlos.
 
 const ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -24,16 +24,20 @@ const KINDS = {
 };
 
 // Pure. `{ ok: true }`, o `{ ok: false, reason: "invalid_id", kind }` con el
-// primer id nuevo que no tiene la forma. Sólo los ids de texto pueden llevar
-// marcado: uno ausente o numérico no se juzga aquí.
+// primer id que no tiene la forma. Uno ausente (o vacío) no se juzga aquí: de
+// eso se ocupan las otras validaciones, y no puede llevar marcado. Un número
+// finito tampoco puede. Cualquier otra cosa —una lista, un objeto, un
+// booleano— nunca la crea un flujo legítimo y no se respeta aunque ya
+// estuviera guardada.
 function validateMetaIds(newValue, oldValue) {
   const next = newValue && typeof newValue === "object" ? newValue : {};
   const prev = oldValue && typeof oldValue === "object" ? oldValue : {};
   for (const [kind, ids] of Object.entries(KINDS)) {
-    const known = new Set(ids(prev));
+    const known = new Set(ids(prev).filter((id) => typeof id === "string"));
     for (const id of ids(next)) {
-      if (typeof id !== "string" || id === "") continue;
-      if (ID_SHAPE.test(id) || known.has(id)) continue;
+      if (id === undefined || id === null || id === "") continue;
+      if (typeof id === "number" && Number.isFinite(id)) continue;
+      if (typeof id === "string" && (ID_SHAPE.test(id) || known.has(id))) continue;
       return { ok: false, reason: "invalid_id", kind };
     }
   }

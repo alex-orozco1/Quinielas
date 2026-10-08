@@ -38,6 +38,7 @@ const {
 } = require("./roundsConcurrency");
 const tournamentScope = require("./tournamentScope");
 const { validateMetaIds } = require("./metaIds");
+const { validateMetaNumbers } = require("./metaNumbers");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
@@ -1829,6 +1830,13 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: idsCheck.reason, kind: idsCheck.kind });
         }
+        // Lo mismo para los números que se pintan: jornada, puntos, cuota,
+        // penalización (metaNumbers.js).
+        const numbersCheck = validateMetaNumbers(mergedValue, oldValue);
+        if (!numbersCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: numbersCheck.reason, field: numbersCheck.field });
+        }
 
         // MON-001B: real, atomic, server-side enforcement of the actual
         // approved commercial model (see planLimits.js) — fixes both
@@ -2124,6 +2132,13 @@ app.delete("/api/kv/:key", async (req, res) => {
 
 // ---------- narrow self-service endpoints ----------
 
+// Las rutas públicas que reciben `metaKey` en el cuerpo (registrarse, PIN,
+// contraseña de dueño, sesión) sólo pueden apuntar a la meta de una quiniela,
+// igual que picks-batch y submit-bet-answer: nunca a otra fila de kv.
+function isQuinielaMetaKey(key) {
+  return key === "quiniela_meta_v1" || (typeof key === "string" && /^quiniela:[a-z0-9-]{1,60}:meta$/.test(key));
+}
+
 // The quiniela a metaKey names: its slug, or null for the legacy root key.
 // Used to scope credential checks to the row actually being read or written,
 // never to a client-supplied `slug`.
@@ -2136,6 +2151,7 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
   try {
     const { metaKey, password } = req.body || {};
     if (!metaKey) return res.status(400).json({ error: "missing_metaKey" });
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const value = await getRow(metaKey);
     if (!value) return res.json({ ok: false });
     const credSlug = slugFromMetaKey(metaKey);
@@ -2191,6 +2207,7 @@ app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
     const { metaKey, participantId, pin } = req.body || {};
     if (!metaKey || !participantId) return res.status(400).json({ error: "missing_params" });
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const value = await getRow(metaKey);
     const participant = value ? (value.participants || []).find((p) => p.id === participantId) : null;
     // A participant with no PIN yet isn't "verified" — the frontend should
@@ -2241,6 +2258,7 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     // MON-001F: same lock-bypass fix as submit-bet-answer — an unlocked
     // read-modify-write of the whole meta document could revert concurrent
     // changes to rounds, results, participants or settings. The current-PIN
@@ -2331,6 +2349,7 @@ app.post("/api/recover-admin-pin", rateLimit("recover-admin-pin"), async (req, r
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const slug = slugFromMetaKey(metaKey);
     if (!slug) return res.status(400).json({ error: "invalid_params" });
     const client = await pool.connect();
@@ -2391,6 +2410,7 @@ app.post("/api/verify-session", async (req, res) => {
   try {
     const { slug, metaKey } = req.body || {};
     if (!metaKey) return res.status(400).json({ error: "missing_params" });
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const session = readSessionFromCookie(req, slug);
     if (!session) {
       res.clearCookie(sessionCookieName(slug), SESSION_COOKIE_CLEAR_OPTIONS);
@@ -2441,6 +2461,7 @@ app.post("/api/self-register", async (req, res) => {
       // path out of this function.
       return res.status(400).json({ error: "invalid_params" });
     }
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     // MON-001B: converted from an unlocked read-then-write (the same real
     // race MON-001A left open: two people registering at the exact same
     // moment could both read "9 participants" and both get accepted,

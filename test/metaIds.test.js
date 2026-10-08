@@ -1,7 +1,7 @@
 // Los ids de jornadas, partidos, participantes y apuestas que escribe el
 // navegador vuelven a pintarse en atributos HTML para todos los que entran a
 // la quiniela. El servidor exige la forma de siempre a los ids NUEVOS
-// (metaIds.js) y el navegador los escapa al pintarlos.
+// (metaIds.js) y el navegador los escapa al pintarlos (htmlEscaping.test.js).
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -10,7 +10,6 @@ const path = require("node:path");
 const { ID_SHAPE, validateMetaIds } = require("../metaIds");
 
 const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
 
 const MARCADO = 'm_1"><img src=x onerror=alert(1)>';
 const base = () => ({
@@ -66,8 +65,30 @@ test("ids · un id ausente o numérico no puede llevar marcado: no se juzga aqu�
   const next = base();
   next.rounds[0].matches.push({ teamA: "A", teamB: "B" });
   next.participants.push({ id: 7, name: "Num" });
+  next.customBets.push({ id: "", label: "Vacío" });
   assert.deepEqual(validateMetaIds(next, base()), { ok: true });
   assert.deepEqual(validateMetaIds({ rounds: "x", participants: null }, {}), { ok: true });
+});
+
+test("ids · un id que no es texto ni número (lista, objeto, booleano) se rechaza, aunque ya estuviera guardado", () => {
+  // Antes se saltaba la validación: `[marcado]` entraba y dejaba al esc() del
+  // navegador como única defensa (y una jornada así rompía las vistas).
+  const raros = [[MARCADO], { x: MARCADO }, true];
+  const en = {
+    round: (v, id) => v.rounds.push({ id, matches: [] }),
+    match: (v, id) => v.rounds[0].matches.push({ id, teamA: "A", teamB: "B" }),
+    participant: (v, id) => v.participants.push({ id, name: "Beto" }),
+    bet: (v, id) => v.customBets.push({ id, label: "X" }),
+  };
+  for (const [kind, add] of Object.entries(en)) {
+    for (const id of raros) {
+      const next = base(); add(next, id);
+      assert.deepEqual(validateMetaIds(next, base()), { ok: false, reason: "invalid_id", kind }, `${kind} ${JSON.stringify(id)}`);
+      // Ni siquiera si la fila guardada ya lo tenía: ningún flujo los crea.
+      const vieja = base(); add(vieja, id);
+      assert.deepEqual(validateMetaIds(JSON.parse(JSON.stringify(vieja)), vieja), { ok: false, reason: "invalid_id", kind }, `${kind} guardado`);
+    }
+  }
 });
 
 test("ids · el servidor lo comprueba en la escritura de la meta, después de validateRoundsIntegrity, y responde 400", () => {
@@ -78,22 +99,4 @@ test("ids · el servidor lo comprueba en la escritura de la meta, después de va
   const block = serverSrc.slice(at, at + 300);
   assert.ok(block.includes('await client.query("ROLLBACK");'));
   assert.ok(block.includes("return res.status(400).json({ error: idsCheck.reason, kind: idsCheck.kind });"));
-});
-
-test("ids · el navegador escapa todo id de datos que pinta dentro de un atributo", () => {
-  // Constantes del propio código (pestañas, filtros, ligas): no son datos.
-  const CONSTANTES = new Set(["t.id", "f.id", "l.id", "tabId", "inputId", "boxesId", "id"]);
-  const sinEscapar = [];
-  indexSrc.split("\n").forEach((line, i) => {
-    if (/querySelector|getElementById|closest\(/.test(line)) return;
-    for (const m of line.matchAll(/[a-zA-Z][\w-]*="[^"$]*\$\{([a-zA-Z_][\w.]*)\}/g)) {
-      const expr = m[1];
-      if (!/(^|\.)(id|mid|pid|rid|matchId|roundId|betId)$/.test(expr)) continue;
-      if (CONSTANTES.has(expr)) continue;
-      sinEscapar.push(`${i + 1}: ${expr}`);
-    }
-  });
-  assert.deepEqual(sinEscapar, []);
-  // Y hay de verdad ids escapados (el escáner no está mirando a la nada).
-  assert.ok((indexSrc.match(/="[^"$]*\$\{esc\((r|round|m|p|bet)\.id\)\}/g) || []).length >= 30);
 });
