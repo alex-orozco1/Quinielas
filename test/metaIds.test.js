@@ -61,13 +61,39 @@ test("ids · un id que YA estaba en la meta guardada se respeta (datos antiguos 
   assert.equal(validateMetaIds(otro, vieja).ok, false);
 });
 
-test("ids · un id ausente o numérico no puede llevar marcado: no se juzga aquí", () => {
+test("ids · un id ausente o vacío no se juzga aquí (de eso se ocupan las otras validaciones)", () => {
   const next = base();
   next.rounds[0].matches.push({ teamA: "A", teamB: "B" });
-  next.participants.push({ id: 7, name: "Num" });
   next.customBets.push({ id: "", label: "Vacío" });
   assert.deepEqual(validateMetaIds(next, base()), { ok: true });
   assert.deepEqual(validateMetaIds({ rounds: "x", participants: null }, {}), { ok: true });
+});
+
+test("ids · un id numérico NUEVO se rechaza; uno que ya estaba guardado se respeta", () => {
+  // Las claves de los picks son texto: una jornada con id 77 no se encontraba
+  // como abierta y sus picks ocultos se entregaban como si ya hubiera cerrado.
+  const en = {
+    round: (v, id) => v.rounds.push({ id, matches: [] }),
+    match: (v, id) => v.rounds[0].matches.push({ id, teamA: "A", teamB: "B" }),
+    participant: (v, id) => v.participants.push({ id, name: "Num" }),
+    bet: (v, id) => v.customBets.push({ id, label: "Num" }),
+  };
+  for (const [kind, add] of Object.entries(en)) {
+    const next = base(); add(next, 77);
+    assert.deepEqual(validateMetaIds(next, base()), { ok: false, reason: "invalid_id", kind }, kind);
+    const vieja = base(); add(vieja, 77);
+    assert.deepEqual(validateMetaIds(JSON.parse(JSON.stringify(vieja)), vieja), { ok: true }, `${kind} guardado`);
+  }
+});
+
+test("ids · un nombre de Object.prototype se rechaza siempre, aunque tenga la forma o ya estuviera guardado", () => {
+  for (const id of ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"]) {
+    assert.ok(ID_SHAPE.test(id), `${id} tiene la forma: por eso hace falta la otra regla`);
+    const next = base(); next.participants.push({ id, name: "X" });
+    assert.deepEqual(validateMetaIds(next, base()), { ok: false, reason: "invalid_id", kind: "participant" }, id);
+    const vieja = base(); vieja.rounds.push({ id, matches: [] });
+    assert.deepEqual(validateMetaIds(JSON.parse(JSON.stringify(vieja)), vieja), { ok: false, reason: "invalid_id", kind: "round" }, `${id} guardado`);
+  }
 });
 
 test("ids · un id que no es texto ni número (lista, objeto, booleano) se rechaza, aunque ya estuviera guardado", () => {

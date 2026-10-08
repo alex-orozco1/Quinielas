@@ -1175,7 +1175,9 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
 
   const oldParticipants = (oldValue && Array.isArray(oldValue.participants)) ? oldValue.participants : [];
   let adminRoleChangesRefused = 0;
-  const oldById = {};
+  // Sin prototipo: un participante guardado con id `__proto__` no puede
+  // convertirse en el "anterior" de todos los demás.
+  const oldById = Object.create(null);
   oldParticipants.forEach((p) => { oldById[p.id] = p; });
   if (Array.isArray(merged.participants)) {
     merged.participants.forEach((p) => {
@@ -1300,10 +1302,12 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta, reque
   if (selfParticipantIds.has(info.participantId)) return picksValue; // only the participant sees their own open-round answers
 
   const now = Date.now();
+  // Como texto: las claves de los picks siempre lo son, y una jornada con id
+  // numérico (heredada) no puede dejar de contar como abierta por el tipo.
   const openRoundIds = new Set(
     (meta.rounds || [])
       .filter((r) => new Date(r.deadline).getTime() > now)
-      .map((r) => r.id)
+      .map((r) => String(r && r.id))
   );
   const filtered = {};
   for (const roundId in picksValue) {
@@ -1338,7 +1342,7 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta, reque
 async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta, nowMs) {
   const meta = preloadedMeta !== undefined ? preloadedMeta : await getRow(info.metaKey);
   if (!meta) return { ok: true };
-  const roundsById = {};
+  const roundsById = Object.create(null);   // un id nunca resuelve a Object.prototype
   (meta.rounds || []).forEach((r) => { roundsById[r.id] = r; });
   const old = oldValue || {};
   const fresh = newValue || {};
@@ -1380,7 +1384,7 @@ const VALID_RESULT_VALUES = new Set(["A", "D", "B"]);
 function validateRoundsIntegrity(newValue, oldValue, nowMs) {
   if (!Array.isArray(newValue.rounds)) return { ok: true };
   const now = nowMs != null ? nowMs : Date.now();
-  const oldRoundsById = {};
+  const oldRoundsById = Object.create(null);   // un id nunca resuelve a Object.prototype
   if (oldValue && Array.isArray(oldValue.rounds)) {
     for (const r of oldValue.rounds) oldRoundsById[r.id] = r;
   }

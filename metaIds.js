@@ -23,21 +23,28 @@ const KINDS = {
   bet: (meta) => (Array.isArray(meta.customBets) ? meta.customBets : []).map((b) => b && b.id),
 };
 
+// Un nombre de Object.prototype (`__proto__`, `constructor`, `toString`...)
+// tampoco: como clave de un objeto no se comporta como las demás.
+const isReserved = (id) => typeof id === "string" && id in Object.prototype;
+
 // Pure. `{ ok: true }`, o `{ ok: false, reason: "invalid_id", kind }` con el
 // primer id que no tiene la forma. Uno ausente (o vacío) no se juzga aquí: de
-// eso se ocupan las otras validaciones, y no puede llevar marcado. Un número
-// finito tampoco puede. Cualquier otra cosa —una lista, un objeto, un
-// booleano— nunca la crea un flujo legítimo y no se respeta aunque ya
-// estuviera guardada.
+// eso se ocupan las otras validaciones, y no puede llevar marcado.
+// - Un id nuevo es texto con la forma de siempre. Uno numérico no: las claves
+//   de los picks y de los resultados son texto, y un número no las encuentra.
+// - Uno que ya estaba guardado (texto o número finito) se respeta.
+// - Una lista, un objeto, un booleano o un nombre reservado nunca los crea un
+//   flujo legítimo y no se respetan aunque ya estuvieran guardados.
 function validateMetaIds(newValue, oldValue) {
   const next = newValue && typeof newValue === "object" ? newValue : {};
   const prev = oldValue && typeof oldValue === "object" ? oldValue : {};
   for (const [kind, ids] of Object.entries(KINDS)) {
-    const known = new Set(ids(prev).filter((id) => typeof id === "string"));
+    const known = new Set(ids(prev).filter((id) => (typeof id === "string" && !isReserved(id)) || (typeof id === "number" && Number.isFinite(id))));
     for (const id of ids(next)) {
       if (id === undefined || id === null || id === "") continue;
-      if (typeof id === "number" && Number.isFinite(id)) continue;
-      if (typeof id === "string" && (ID_SHAPE.test(id) || known.has(id))) continue;
+      if (isReserved(id)) return { ok: false, reason: "invalid_id", kind };
+      if (known.has(id)) continue;
+      if (typeof id === "string" && ID_SHAPE.test(id)) continue;
       return { ok: false, reason: "invalid_id", kind };
     }
   }
