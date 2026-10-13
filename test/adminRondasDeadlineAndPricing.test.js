@@ -105,7 +105,7 @@ test("qz-deadline-error is a real DOM element rendered in the form, not just ref
 });
 
 test("the datetime-local input has a min attribute computed from serverNow(), same helper pattern as Admin Setup Continuity", () => {
-  assert.ok(indexSrc.includes('<input type="datetime-local" id="qz-deadline" value="${draft.deadline}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">'));
+  assert.ok(indexSrc.includes('<input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">'));
 });
 
 // ---- Payment Penalty invariant preserved exactly ----
