@@ -57,7 +57,7 @@ test("the editor card element (#qz-round-form) is exactly where \"Editando jorna
   const idIdx = indexSrc.indexOf('<div class="card" id="qz-round-form">');
   assert.ok(idIdx !== -1, "the editor card must carry the id the scroll targets");
   const nearby = indexSrc.slice(idIdx, idIdx + 250);
-  assert.ok(nearby.includes("Editando jornada ${editingRound.number}"), "the heading shown right after scrolling must reflect the round actually being edited");
+  assert.ok(nearby.includes("Editando jornada ${esc(editingRound.number)}"), "the heading shown right after scrolling must reflect the round actually being edited");
 });
 
 test("clicking \"Editar\" wires through openRoundEditor, and no client-side paywall can gate it", () => {
@@ -79,10 +79,11 @@ test("\"Editar\" remains unconditionally visible for every round -- imported/unp
   // Ventana ampliada en DATA-004: el ítem de jornada ganó la etiqueta de fase
   // y el aviso de "pendiente de rival". Lo que se comprueba es idéntico.
   const roundItemSrc = indexSrc.slice(idx, idx + 2400);
-  assert.ok(roundItemSrc.includes('<button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>'), "Editar button markup must exist");
+  // The round id is escaped like every id painted into an attribute (metaIds.test.js).
+  assert.ok(roundItemSrc.includes('<button class="btn btn-ghost btn-sm" data-edit-round="${esc(r.id)}">Editar</button>'), "Editar button markup must exist");
   // Confirm it's NOT wrapped in the same conditional that gates "Publicar jornada"
   // (isImportedUnpublished ? ... : ``) -- i.e. it must be unconditional.
   const publishBtnIdx = roundItemSrc.indexOf("isImportedUnpublished ? `<button");
-  const editBtnIdx = roundItemSrc.indexOf('data-edit-round="${r.id}"');
+  const editBtnIdx = roundItemSrc.indexOf('data-edit-round="${esc(r.id)}"');
   assert.ok(publishBtnIdx !== -1 && editBtnIdx > publishBtnIdx, "Editar must be a separate, unconditional line after the conditional Publicar button, not nested inside that same condition");
 });
