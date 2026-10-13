@@ -1,0 +1,99 @@
+name: sandbox-35 (temporal)
+
+# Comprobación breve contra el SANDBOX (qracks-mon003-sandbox), nunca producción.
+# #30 + #31 + arreglo de #35 (aba93b5) desplegado en el sandbox como 87151a9.
+# Sin secretos: PIN y contraseña aleatorios y desechables, que no se imprimen.
+# Sin pagos. Los resultados se suben a esta misma rama temporal (ci/sandbox-35).
+on:
+  push:
+    branches: [ci/sandbox-35]
+    paths-ignore: ["results/**"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sandbox-35
+  cancel-in-progress: false
+
+env:
+  SANDBOX: https://qracks-mon003-sandbox.onrender.com
+  EXPECTED_INDEX_SHA256: 68c38f1f4c975402716363c1fce7e4f0082a2d0157b7b1481fcb4c175e0c7a55
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  index:
+    name: El sandbox sirve el index.html de aba93b5
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Despertar el sandbox y comparar el index servido
+        run: |
+          mkdir -p out
+          for i in 1 2 3 4 5 6; do curl -sS -m 60 "$SANDBOX/api/health" > out/health.json && break; sleep 10; done
+          echo "health $(cat out/health.json)" | tee -a out/index.txt
+          for path in /a/x /crear; do
+            curl -sS --retry 3 --retry-delay 10 "$SANDBOX$path" -o served.html
+            got=$(sha256sum served.html | cut -d' ' -f1)
+            if [ "$got" = "$EXPECTED_INDEX_SHA256" ]; then verdict=MATCH; else verdict=MISMATCH; fi
+            echo "$path served=$got expected=$EXPECTED_INDEX_SHA256 $verdict" | tee -a out/index.txt
+          done
+          ! grep -q MISMATCH out/index.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: index, path: out }
+
+  ui:
+    name: Recorrido (${{ matrix.vp }})
+    needs: index
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        vp: [movil, escritorio]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Instalar Chromium
+        run: |
+          npm install --no-save --silent playwright@1.56.1
+          npx playwright install --with-deps chromium > /dev/null
+      - name: Recorrido
+        env: { TZ: America/Mexico_City }
+        run: VP=${{ matrix.vp }} OUT=out node ci/sbx-35-ui.js | tee out-${{ matrix.vp }}.txt; exit ${PIPESTATUS[0]}
+      - name: Juntar salida
+        if: always()
+        run: mkdir -p out && cp out-${{ matrix.vp }}.txt out/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-${{ matrix.vp }}
+          path: out
+
+  collect:
+    name: Subir resultados a esta rama
+    needs: [index, ui]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dl }
+      - name: Commit de resultados
+        run: |
+          dest="results/run-${GITHUB_RUN_ID}"
+          mkdir -p "$dest" && cp -r dl/. "$dest/"
+          {
+            echo "run ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT} commit ${GITHUB_SHA}"
+            echo "index: ${{ needs.index.result }}"
+            echo "ui: ${{ needs.ui.result }}"
+          } > "$dest/jobs.txt"
+          git add -A results
+          git -c user.name="qracks-ci" -c user.email="qracks-ci@users.noreply.github.com" commit -qm "Resultados temporales del sandbox (run ${GITHUB_RUN_ID})"
+          git push -q origin "HEAD:${GITHUB_REF_NAME}"
+          echo "pushed $(git rev-parse HEAD)"
