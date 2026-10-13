@@ -4,6 +4,11 @@ Version: 1.0
 
 Last updated: July 2026
 
+> **Status, October 2026.** This is the v1.0 product vision and is kept as history.
+> Where it disagrees with the code, the code on `main` wins. For the current behavior,
+> see the documentation index ([docs/README.md](README.md)).
+> Known corrections are marked inline below.
+
 ---
 
 # 1. Product Overview
@@ -214,7 +219,9 @@ Administrators can:
 - Publish results
 - Close tournaments
 
-Administrators cannot see participant predictions before publication.
+Before a matchday's deadline, administrators only see whether each participant has answered, not what they picked.
+
+> **Correction (October 2026):** predictions are not hidden until results are published. Once a matchday's deadline passes, everyone's predictions are visible to everyone. See [flujos/pronosticos.md](flujos/pronosticos.md).
 
 ---
 
@@ -227,6 +234,8 @@ The platform dashboard provides:
 - Exemption status
 - Activity monitoring
 - Platform configuration
+
+> **Correction (October 2026):** "Payment status" and "Exemption status" were replaced by plans and entitlements (Free, Plus, special grants). The dashboard covers growth, activation, payments (Stripe), sports data, plans and pricing, and dashboard access. See [ARQUITECTURA.md](ARQUITECTURA.md) §2.1.
 
 This dashboard is private.
 
@@ -295,7 +304,9 @@ QRACKS currently does not include:
 
 - Prize money management
 - Sports betting
-- Payment processing
+- Processing the pool's own entry fees: participants pay the organizer directly, and the organizer records payments manually
+
+> **Correction (October 2026):** this list used to say "Payment processing". Since MON-003, QRACKS does charge organizers for the software (Plus, per tournament, through Stripe). See [flujos/pagos.md](flujos/pagos.md).
 - Public tournaments
 - Native mobile applications
 
@@ -308,8 +319,8 @@ Future versions may include:
 - Additional sports
 - Enhanced tournament formats
 - Improved onboarding
-- Monetization options
-- Analytics
+- Monetization options (Plus per tournament exists since MON-003)
+- Analytics (a basic activation funnel exists in the platform dashboard)
 - Notifications
 
 Future features will only be added if they preserve the product principles described in this document.
