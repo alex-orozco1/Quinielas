@@ -1,0 +1,10 @@
+PASS [escritorio] 1. /crear sin campos de contraseña ni de contacto
+PASS [escritorio] 2. Quiniela creada con su creadora, PIN elegido y sin contraseña
+PASS [escritorio] 3. Jornada preparada: 3 partidos y cierre
+PASS [escritorio] 4a. El paso explica lo que protege (nombre, puntos y cuota) y la recuperación del PIN
+PASS [escritorio] 4b. Cancelar: nada publicado; partidos y cierre siguen
+PASS [escritorio] 5. Recargar: vuelven partidos y cierre: {"r":[["León","Santos"],["Toluca","Pachuca"],["Atlas","Tigres"]],"d":"2026-10-16T20:30"}
+PASS [escritorio] 6. Contraseña guardada, nada publicado, partidos y cierre siguen
+PASS [escritorio] 7. Publicada con los 3 partidos y el cierre elegido, sin borrador: {"partidos":[["León","Santos"],["Toluca","Pachuca"],["Atlas","Tigres"]],"cierre":"2026-10-17T02:30:00.000Z"}
+PAGEERRORS [escritorio] 0
+RESUMEN [escritorio] pass=8 fail=0

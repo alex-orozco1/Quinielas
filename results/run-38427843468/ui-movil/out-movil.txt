@@ -1,0 +1,10 @@
+PASS [movil] 1. /crear sin campos de contraseña ni de contacto
+PASS [movil] 2. Quiniela creada con su creadora, PIN elegido y sin contraseña
+PASS [movil] 3. Jornada preparada: 3 partidos y cierre
+PASS [movil] 4a. El paso explica lo que protege (nombre, puntos y cuota) y la recuperación del PIN
+PASS [movil] 4b. Cancelar: nada publicado; partidos y cierre siguen
+PASS [movil] 5. Recargar: vuelven partidos y cierre: {"r":[["León","Santos"],["Toluca","Pachuca"],["Atlas","Tigres"]],"d":"2026-10-16T20:30"}
+PASS [movil] 6. Contraseña guardada, nada publicado, partidos y cierre siguen
+PASS [movil] 7. Publicada con los 3 partidos y el cierre elegido, sin borrador: {"partidos":[["León","Santos"],["Toluca","Pachuca"],["Atlas","Tigres"]],"cierre":"2026-10-17T02:30:00.000Z"}
+PAGEERRORS [movil] 0
+RESUMEN [movil] pass=8 fail=0
