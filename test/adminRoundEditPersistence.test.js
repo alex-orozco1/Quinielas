@@ -15,14 +15,15 @@ const path = require("node:path");
 
 const indexSrc = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
 
-function extractHandlerBody(source, anchor, windowSize){
-  const idx = source.indexOf(anchor);
-  assert.ok(idx !== -1, `could not locate anchor "${anchor}"`);
-  return source.slice(idx, idx + windowSize);
-}
-
-// The "if(editingRound){" branch inside the qz-publish-round click handler.
-const editHandler = extractHandlerBody(indexSrc, "if(editingRound){", 2700);
+// The "if(editingRound){" branch inside the qz-publish-round click handler,
+// up to its closing `return;`: the 409 guard and the #35 draft cleanup made it
+// longer than the old fixed 2700-character window.
+const editHandler = (() => {
+  const start = indexSrc.indexOf("if(editingRound){");
+  const end = indexSrc.indexOf("\n        return;\n      }", start);
+  assert.ok(start !== -1 && end > start, "could not locate the edit branch");
+  return indexSrc.slice(start, end);
+})();
 
 test("CASE C/D/G: deep-snapshots the ENTIRE round object before any mutation, not just matches/deadline", () => {
   assert.ok(editHandler.includes("const roundSnapshot = JSON.parse(JSON.stringify(editingRound));"), "must deep-clone the whole round -- a shallow {matches, deadline} snapshot would silently drop published/provider/externalRoundId/results/resultsPublished/customBetResults etc.");
