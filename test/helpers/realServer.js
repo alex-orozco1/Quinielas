@@ -80,7 +80,7 @@ async function call(method, urlPath, { body, ip, cookie, headers } = {}) {
   const r = await fetch(`http://127.0.0.1:${port}${urlPath}`, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let json = null; try { json = JSON.parse(text); } catch (e) { /* not JSON */ }
-  return { status: r.status, body: json, setCookies: r.headers.getSetCookie() };
+  return { status: r.status, body: json, text, setCookies: r.headers.getSetCookie() };
 }
 // One browser: keeps the latest value of each cookie it was given.
 function Browser(ip) {
