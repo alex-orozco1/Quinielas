@@ -35,20 +35,23 @@ test("CA-1: /crear says what QRACKS does and what the organizer does, before the
   assert.ok(!/\$|MXN|gratis|Plus|automátic|participantes|jornadas máximo/i.test(copy), "no price, plan, limit or automation promise in the intro");
 });
 
-test("CA-2: /crear no longer asks for WhatsApp or email; the fields are name, your name, league (optional), link and admin password", () => {
+test("CA-2: /crear no longer asks for WhatsApp or email; the fields are name, your name, league (optional) and link", () => {
   assert.ok(!/qz-c-contact|WhatsApp o correo|draft\.contact|contact:/.test(crear), "no contact field, draft key or payload");
   const ids = [...crear.matchAll(/<(?:input|select)[^>]*id="(qz-c-[a-z-]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(ids, ["qz-c-name", "qz-c-creator", "qz-c-league", "qz-c-slug", "qz-c-pass"]);
+  // Onboarding B: no admin password at creation; it is set before publishing.
+  assert.deepEqual(ids, ["qz-c-name", "qz-c-creator", "qz-c-league", "qz-c-slug"]);
   const api = extractFunction(indexSrc, "async function apiCreateQuiniela(");
   assert.ok(!/contact/.test(api), "the create call does not send a contact");
+  assert.ok(!/password/.test(api), "nor a password");
   // The QRACKS contact for Plus (platform settings) is a different thing and stays.
   assert.ok(indexSrc.includes('upgradeContact: document.getElementById("qz-c-contact").value.trim()'));
 });
 
-test("CA-3 (server): the organizer contact is optional; group, creator and password are still required", () => {
+test("CA-3 (server): the organizer contact is optional; group and creator are still required", () => {
   const start = serverSrc.indexOf('app.post("/api/create-quiniela"');
   const route = serverSrc.slice(start, serverSrc.indexOf("\napp.", start + 10));
-  assert.ok(route.includes("if (!cleanGroupName || !cleanCreatorName || !cleanPassword) {"));
+  // Onboarding B: the admin password is optional too (set before publishing).
+  assert.ok(route.includes("if (!cleanGroupName || !cleanCreatorName) {"));
   assert.ok(!/!cleanContact/.test(route), "a missing contact is not a 400");
   assert.ok(route.includes("contact: cleanContact,"), "an older client that still sends it keeps it stored");
 });
@@ -56,7 +59,8 @@ test("CA-3 (server): the organizer contact is optional; group, creator and passw
 test("CA-4: one name for the admin password, told apart from the personal PIN", () => {
   const visible = indexSrc.replace(/^\s*\/\/.*$/gm, "");
   assert.ok(!/contraseña de dueño/i.test(visible), "Ajustes no longer calls it «contraseña de dueño»");
-  assert.ok(crear.includes("Es distinta de tu PIN. La usarás poco: para los ajustes protegidos de tu quiniela y para recuperar tu PIN si lo olvidas. Anótala en un lugar seguro."));
+  assert.ok(!/Ajustes del dueño|Solo el dueño/.test(visible), "nor «Ajustes del dueño» / «Solo el dueño»");
+  assert.ok(!/contraseña/i.test(crear), "onboarding B: /crear does not mention a password at all");
   assert.ok(setupPin.includes("Crea tu PIN personal"));
   // The PIN help, exactly as the Founder set it.
   assert.ok(setupPin.includes('<p class="login-sub">4 números para entrar como ${esc(creator.name)} desde cualquier teléfono</p>'));
@@ -74,7 +78,10 @@ test("CA-5: path A (after /crear) — the PIN step confirms the quiniela, and th
   const fn = extractFunction(indexSrc, "function showPinSavedNotice(name)");
   assert.ok(fn.includes('el.setAttribute("role", "status");'), "announced to screen readers");
   assert.ok(fn.includes("root.prepend(el);"), "lives on the next screen, replaced by the following one");
+  // With an admin password (an older client sent one) the strip says how to
+  // recover; without one (onboarding B) it shows the warning instead.
   assert.ok(fn.includes("Entras como ${esc(name)} con esos 4 números. Si lo olvidas, lo recuperas con tu contraseña de administrador."));
+  assert.ok(fn.includes("Entras como ${esc(name)} con esos 4 números.<p class=\"qz-pin-saved-warning\">${SAVE_YOUR_PIN_WARNING_HTML}</p>"));
   // The app branch of the resolver is awaited, so the notice never lands before it.
   const resolver = extractFunction(indexSrc, "async function renderAdminSetupResolve()");
   assert.ok(resolver.includes('activeTab = "jornada";\n      await render();'));
@@ -104,20 +111,20 @@ test("CA-7: errors name the field and move focus there; a wrong admin password k
   assert.ok(modal.includes('"owner", (password) => apiSetPinResult(participantId, null, newPin, password)'), "same PIN, same limiter target");
 });
 
-test("CA-8: Enter creates; double submits are ignored; «Mostrar» toggles the password", () => {
+test("CA-8: Enter creates; double submits are ignored", () => {
   assert.ok(crear.includes('if(e.key !== "Enter" || e.target.tagName !== "INPUT") return;'));
   assert.ok(crear.includes('document.getElementById("qz-c-submit").click();'));
   assert.ok(crear.includes("if(creating) return;") && crear.includes("submitBtn.disabled = true;"));
-  assert.ok(crear.includes('id="qz-c-pass-toggle" aria-pressed="false"'));
-  assert.ok(crear.includes('passInput.type = show ? "text" : "password";'));
+  // «Mostrar / Ocultar» moved with the password to the forms that ask for
+  // one (onboardingAdminPassword.test.js).
 });
 
-test("CA-9: the /crear draft survives a reload of the tab, never with the admin password", () => {
+test("CA-9: the /crear draft survives a reload of the tab, and holds no password", () => {
   const save = extractFunction(indexSrc, "function saveCrearDraft(draft)");
   assert.ok(save.includes("window.sessionStorage.setItem(CREAR_DRAFT_KEY"));
   assert.ok(!/password/.test(save), "the password is never written");
   const load = extractFunction(indexSrc, "function loadCrearDraft()");
-  assert.ok(load.includes('password: ""'));
+  assert.ok(!/password/.test(load), "nor read back");
   assert.ok(crear.includes("const draft = renderCrear._draft || loadCrearDraft();"));
   assert.ok(crear.indexOf("clearCrearDraft();") < crear.indexOf('window.location.href = "/q/"'), "cleared once the quiniela exists");
 });

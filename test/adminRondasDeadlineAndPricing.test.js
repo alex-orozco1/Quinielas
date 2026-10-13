@@ -68,7 +68,7 @@ test("CASE C: a genuine future datetime is accepted", () => {
 
 test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's reconcilePenaltyLedger/mutation, and before the create-new-round branch's meta.rounds.push", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 4300);
+  const body = indexSrc.slice(idx, idx + 4800);
   const validateIdx = body.indexOf("isSetupDeadlineValid(draft.deadline, serverNow())");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const pushIdx = body.indexOf("meta.rounds.push(round);");

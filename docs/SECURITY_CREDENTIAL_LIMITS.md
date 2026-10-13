@@ -10,13 +10,13 @@ Toda comparación de una credencial que manda quien hace la petición pasa por `
 
 | Credencial | Por dónde llega | Target |
 |---|---|---|
-| PIN de un participante (admin o no) | `X-Qracks-Auth` + `X-Qracks-Participant`; body de `verify-pin`, `set-pin` | `pin:<id>` |
+| PIN de un participante (admin o no) | `X-Qracks-Auth` + `X-Qracks-Participant`; body de `verify-pin`, `set-pin`; header de `set-admin-password` (el PIN del creador) | `pin:<id>` |
 | Contraseña de administrador (owner) | `X-Qracks-Auth` sin `X-Qracks-Participant`; body de `verify-owner` | `owner` |
 | Contraseña de plataforma | `X-Qracks-Platform-Auth`; body de `verify-platform` | `platform` (scope `__platform__`) |
 
 Rutas cubiertas: `GET/POST /api/kv/*` (meta, picks, filas de plataforma), `picks-batch`,
 `submit-bet-answer`, `verify-pin`, `set-pin` (PIN actual y claim del primer PIN de admin),
-`verify-owner`, `verify-platform`, `migrate-quiniela`, plan, checkout, torneo (nuevo ciclo,
+`set-admin-password` (PIN del creador, §5.3), `verify-owner`, `verify-platform`, `migrate-quiniela`, plan, checkout, torneo (nuevo ciclo,
 cierre), sync, resultados deportivos y todas las rutas `/api/platform*`. Un test
 (`credentialAttempts.test.js`) falla si aparece un `verifyPassword()` fuera del limitador.
 
@@ -315,17 +315,65 @@ demostrando la contraseña de administrador de la quiniela.
     otro modal encima.
   - Una confirmación vacía vuelve a pedirse, sin decir "no coinciden".
   - Lo encontraron Product QA sobre `b67a0ce` y Technical QA sobre `26366a7`.
-- **Sin contraseña de administrador** (quinielas heredadas; crear una quiniela la exige) no hay
-  recuperación por esta vía. P3 conocidos, sin corregir:
-  - La pantalla se queda en "Esa no es la contraseña de administrador.": el primer paso
-    (`verify-owner`) no distingue ese caso, y el texto de ayuda para `409 no_admin_password` no se llega
-    a mostrar.
-  - `409 no_admin_password` dice sin credencial que esa quiniela no tiene contraseña. `verify-owner` ya
-    lo revelaba por tiempo (mediana local: 43 ms con contraseña, 1,9 ms sin ella), así que no añade
-    información nueva. Ocultarlo del todo exigiría un scrypt falso y contar el intento.
+- **Sin contraseña de administrador** no hay recuperación por esta vía. Desde onboarding B (§5.3) es
+  el estado de toda quiniela nueva hasta que su creador configura la contraseña, además de algunas
+  heredadas.
+  - La pantalla ya no pide una contraseña que no existe: lee `ownerPasswordSet` de la meta y explica
+    que no es posible recuperar el PIN desde ahí, que una sesión abierta en otro dispositivo sigue
+    sirviendo y, a un co-admin, que otro admin puede resetearle el PIN desde Participantes. No promete
+    soporte.
+  - `409 no_admin_password` dice sin credencial que esa quiniela no tiene contraseña; la meta pública
+    ya lo dice (`ownerPasswordSet`), así que no añade información nueva.
 - Pruebas: `test/adminPinRecovery.test.js` (estructura) y `test/adminPinRecovery.integration.test.js`
   (servidor real con PostgreSQL local: sesiones y cookies viejas, mismo PIN, limitador compartido,
   concurrencia, reinicio).
+
+### 5.3 Primera contraseña de administrador (onboarding B)
+
+Una quiniela creada desde onboarding B no pide la contraseña al crearse y guarda quién la creó
+(`creatorId`, sólo del servidor: ninguna escritura lo cambia ni se lo da a una quiniela heredada). El
+creador la configura al intentar publicar la primera jornada.
+
+- **Servidor:** `POST /api/set-admin-password` con `{ metaKey, password }` y el PIN del creador en
+  `X-Qracks-Auth` ligado con `X-Qracks-Participant` = creador. Una sesión abierta no basta.
+  - Un co-admin, un participante o nadie recibe `403 not_creator` antes de comparar nada.
+  - El PIN pasa por el limitador (`pin:<creador>`): 10 fallos y espera (`429`). El dispositivo de
+    confianza del creador conserva su propio presupuesto.
+  - Bajo el bloqueo de la fila y sólo si no hay contraseña: con peticiones concurrentes gana una y las
+    demás reciben `409 already_set`.
+  - Mínimo 8 caracteres (`400 admin_password_too_short`); también al cambiarla en Ajustes en una
+    quiniela con creador.
+  - Una quiniela sin creador recibe `409 not_applicable`: conserva sus reglas.
+  - El dispositivo que la configura queda de confianza para la contraseña y para el PIN; el log sólo
+    dice `admin_password_set { slug }`.
+- **Mientras no hay contraseña** (sólo quinielas con creador):
+  - nada se publica: la escritura que publicaría una jornada recibe `409 admin_password_required`,
+    venga de quien venga;
+  - sólo el creador nombra o quita admins (`403 creator_only` para los demás);
+  - ningún PIN abre Ajustes (`verify-owner` no tiene el respaldo por PIN);
+  - el primer PIN del creador no se autoriza con el PIN de otro admin, sólo con el claim de creación o
+    la contraseña.
+- **Siempre** (quinielas con creador, antes y después de la contraseña):
+  - nombre, cuota y puntos por acierto sólo cambian con la contraseña o la plataforma; con un PIN o
+    una sesión, también la del creador, se conservan los guardados y la respuesta lo dice
+    (`ruleFieldsKept`);
+  - quitar, degradar o resetear el PIN del creador exige la contraseña o la plataforma
+    (`403 creator_protected`).
+- Pruebas: `test/adminPasswordOnPublish.integration.test.js` (servidor real con PostgreSQL local) y
+  `test/onboardingAdminPassword.test.js` (pantallas).
+- **En la pantalla:** si la creadora escribió su PIN en esta misma visita, configurar la contraseña no
+  se lo vuelve a pedir; lo envía desde la memoria (nunca se guarda en el navegador) y el servidor lo
+  valida igual. Tras recargar, o si el servidor lo rechaza, se le pide.
+- **Pestaña atrasada:** antes de mostrar el formulario para crear la contraseña o de decirle a un
+  co-admin que falta, el cliente pregunta al servidor (`ownerPasswordSet` de la meta). Si otra pestaña
+  u otro dispositivo ya la configuró, no pide nada ni bloquea la publicación.
+- **Pendiente, corrección aparte:** en las quinielas heredadas (sin creador), nombre, cuota y puntos
+  siguen protegidos sólo por la pantalla de Ajustes; un admin con PIN puede cambiarlos por la API. La
+  suite lo registra como `todo` (alex-orozco1/Quinielas#33).
+- **Límite conocido (H-1, alex-orozco1/Quinielas#34):** una creadora que nunca eligió su PIN y vuelve
+  desde otro navegador, o pasados los 7 días de la cookie de creación, no tiene una vía propia: el
+  PIN de otro admin no autoriza su asiento y todavía no hay contraseña. Cualquier mecanismo nuevo de
+  recuperación requiere una propuesta aparte.
 
 ## 6. Fuera de alcance de esta entrega
 

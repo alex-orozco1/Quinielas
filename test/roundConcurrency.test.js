@@ -330,6 +330,7 @@ test("SERVER: TODA escritura de un meta pasa por el embudo stampMetaWrite", () =
       storedAfterAnswer: "stampMetaWrite(value, beforeAnswer)",
       storedAfterPin: "stampMetaWrite(value, beforePinChange)",
       storedAfterRegistration: "stampMetaWrite(value, beforeRegistration)",
+      storedAfterPassword: "stampMetaWrite(value, beforePassword)",
     }[w.value];
     if (selladoAntes) {
       assert.ok(src.includes(`const ${w.value} = ${selladoAntes}`) || w.value === "mergedValue",

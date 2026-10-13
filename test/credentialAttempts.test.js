@@ -437,13 +437,18 @@ test("SERVER: trusted-device cookies are signed, scoped, and handed out only aft
   const setPin = routeBody('app.post("/api/set-pin"');
   assert.ok(setPin.indexOf("participant.pin = hashUnlessUnchanged(newPin, participant.pin);") < setPin.indexOf("trustDevice(req, res, claimSlug, participant.id, participant.pin);"), "the device that changed the PIN is trusted for the NEW one");
   assert.ok(routeBody('app.post("/api/self-register"').includes("trustDevice(req, res, derivedSlug, newParticipant.id, newParticipant.pin);"));
-  assert.ok(routeBody('app.post("/api/create-quiniela"').includes("trustDevice(req, res, cleanSlug, OWNER_TARGET, meta.settings.ownerPassword);"));
+  // Onboarding B: only when an older client still sent the password at creation.
+  assert.ok(routeBody('app.post("/api/create-quiniela"').includes("if (meta.settings.ownerPassword) trustDevice(req, res, cleanSlug, OWNER_TARGET, meta.settings.ownerPassword);"));
+  const setAdminPassword = routeBody('app.post("/api/set-admin-password"');
+  assert.ok(setAdminPassword.includes("trustDevice(req, res, slug, OWNER_TARGET, storedAfterPassword.settings.ownerPassword);"));
+  assert.ok(setAdminPassword.includes("trustDevice(req, res, slug, participant.id, participant.pin);"));
   const kv = routeBody('app.post("/api/kv/:key"');
-  assert.ok(kv.includes('const mayChangeOwnerPw = authTier === "owner" || authTier === "platform" || (authTier === "admin-pin" && !oldOwnerPw);'));
+  // The same rule mergeProtectedMetaFields applied to the password itself.
+  assert.ok(kv.includes("const mayChangeOwnerPw = metaMerge.canChangeOwnerPassword;"));
   assert.ok(kv.includes("if (mayChangeOwnerPw && typeof typedOwnerPw === \"string\" && typedOwnerPw && !isHashed(typedOwnerPw)"), "only the writer who typed the new admin password, and may change it, is trusted for it");
   assert.ok(kv.includes("trustDevice(req, res, PLATFORM_SCOPE, PLATFORM_TARGET, finalValue.dashboardPassword);"), "a new platform password: the panel that set it is trusted for it");
   const grants = (serverSrc.match(/trustDevice\(req, res, [^)]*\)/g) || []).filter((g) => !g.includes("slug, target, stored"));
-  assert.equal(grants.length, 11, "the nine grants above and the two of ¿Olvidaste tu PIN?, each naming a stored credential: " + grants.join(" | "));
+  assert.equal(grants.length, 13, "the nine grants above, the two of ¿Olvidaste tu PIN? and the two of the first admin password, each naming a stored credential: " + grants.join(" | "));
   assert.ok(grants.every((g) => g.split(",").length === 5), "five arguments: the last is the stored credential");
   // A trust token is never a session or a setup claim.
   assert.ok(serverSrc.includes("if (session.purpose) return null;"));
@@ -467,10 +472,14 @@ test("SERVER: credential endpoints answer 429 too_many_attempts when the limit i
 });
 
 test("FRONTEND: a PIN goes out bound to the current user; the admin password goes out alone", () => {
-  const fn = indexSrc.slice(indexSrc.indexOf("function setAuthHeaders(headers, cred){"), indexSrc.indexOf("function setAuthHeaders(headers, cred){") + 500);
+  const at = indexSrc.indexOf("function setAuthHeaders(headers, cred, bindTo){");
+  assert.ok(at !== -1);
+  const fn = indexSrc.slice(at, at + 700);
   assert.ok(fn.includes('headers["X-Qracks-Auth"] = cred;'));
   assert.ok(fn.includes('if(cred === currentUserPinCache && cred !== ownerPasswordCache && currentUser && currentUser.id != null){'));
   assert.ok(fn.includes('headers["X-Qracks-Participant"] = String(currentUser.id);'));
+  // Onboarding B: the creator's PIN for the first admin password is bound to the creator.
+  assert.ok(fn.includes('if(bindTo != null) headers["X-Qracks-Participant"] = String(bindTo);'));
   assert.equal((indexSrc.match(/X-Qracks-Auth/g) || []).length, 1, "every request sets the header through setAuthHeaders");
 });
 
@@ -479,7 +488,7 @@ test("FRONTEND: a PIN goes out bound to the current user; the admin password goe
 test("SERVER: an admin-role change the writer may not make refuses the whole write with owner_password_required", () => {
   const merge = serverSrc.slice(serverSrc.indexOf("function mergeProtectedMetaFields("), serverSrc.indexOf("function mergeProtectedPlatformFields("));
   assert.ok(merge.includes("if (!!p.isAdmin !== !!old.isAdmin) adminRoleChangesRefused += 1;"));
-  assert.ok(/if \(!canChangeOwnerFields && !old && p\.isAdmin\) \{[\s\S]{0,250}adminRoleChangesRefused \+= 1;/.test(merge), "adding a new admin is refused too");
+  assert.ok(/if \(!canChangeAdminRoles && !old && p\.isAdmin\) \{[\s\S]{0,250}adminRoleChangesRefused \+= 1;/.test(merge), "adding a new admin is refused too");
   assert.ok(merge.includes("adminRoleChangesRefused,"));
   const post = routeBody('app.post("/api/kv/:key"');
   const refuseAt = post.indexOf("if (metaMerge.adminRoleChangesRefused > 0) {");

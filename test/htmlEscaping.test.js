@@ -143,6 +143,8 @@ function unsafe(src) {
 const PERMITIDAS = [
   // Constantes del propio código.
   { expr: "id", en: 'class="qz-wait-notice" id="${id}"', por: "credentialWaitNoticeHtml sólo recibe ids fijos" },
+  { expr: "id", en: '<input class="qz-modal-input" id="${id}" type="password" maxlength="200"', por: "passwordFieldHtml sólo recibe ids fijos" },
+  { expr: "id", en: 'data-pass-toggle="${id}" aria-controls="${id}"', por: "passwordFieldHtml sólo recibe ids fijos" },
   { expr: "label", en: "<span>${label}Demasiados intentos.", por: "ya es esc(opts.label)" },
   { expr: "label", en: "<span>${label}Ya puedes intentarlo de nuevo.", por: "ya es esc(opts.label)" },
   { expr: "t.id", en: "data-tab=\"${t.id}\"", por: "pestañas fijas" },
@@ -166,6 +168,7 @@ const PERMITIDAS = [
   { expr: "round.number", en: "logAudit(\"Reabrió jornada\", `Jornada ${round.number}`)", por: "detalle de logAudit" },
   { expr: "champion.name", en: "`🏆 El campeón es ${champion.name} con ${champion.pts} puntos.", por: "mensaje de qzConfirm" },
   { expr: "champion.pts", en: "`🏆 El campeón es ${champion.name} con ${champion.pts} puntos.", por: "mensaje de qzConfirm" },
+  { expr: "creator.name", en: "? `Antes de publicar la primera jornada, ${creator.name} (quien creó la quiniela)", por: "mensaje de qzAlert" },
   { expr: "p.name", en: "title: `¿Resetear el PIN de ${p.name}?`", por: "título de qzConfirm" },
   { expr: "p.name", en: "title: `¿Borrar a ${p.name}?`", por: "título de qzConfirm" },
   { expr: "slug", en: "title: `¿Mover esta quiniela a ${window.location.origin}/q/${slug}?`", por: "título de qzConfirm" },
