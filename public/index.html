@@ -1464,6 +1464,12 @@
     payment_id_conflict: "Ese registro de pago ya existe. Actualizamos los datos; vuelve a intentarlo.",
     invalid_params: "Falta información, o algo no tiene el formato correcto.",
     invalid_metaKey: "Falta información, o algo no tiene el formato correcto.",
+    // El servidor rechaza un dato de la quiniela con otra forma (metaIds.js,
+    // metaNumbers.js, metaShape.js). Ningún flujo de la app lo provoca; si
+    // pasa, nada se guardó y recargar trae el estado bueno.
+    invalid_id: "Algún dato no tiene el formato correcto y no se guardó nada. Recarga la página e intenta de nuevo.",
+    invalid_number: "Algún dato no tiene el formato correcto y no se guardó nada. Recarga la página e intenta de nuevo.",
+    invalid_value: "Algún dato no tiene el formato correcto y no se guardó nada. Recarga la página e intenta de nuevo.",
     slug_taken: "Ese link ya lo está usando otra quiniela.",
     not_found: "No encontramos esa quiniela.",
     participant_not_found: "No encontramos a esa persona en la quiniela.",
@@ -1744,6 +1750,11 @@
       Object.keys(cur).forEach(k => { if(!(k in fp)) delete cur[k]; });
       return Object.assign(cur, fp);
     });
+    // Lo que el servidor no tiene, la pestaña tampoco. Una clave que sólo
+    // existía aquí (una penalización recién activada que no se llegó a
+    // guardar, una entrada de bitácora de un intento que falló) se iría con el
+    // siguiente guardado como si se hubiera aplicado.
+    Object.keys(target).forEach(k => { if(!(k in fresh)) delete target[k]; });
     Object.assign(target, fresh, { participants });
   }
   async function setMetaWithError(meta, opts){
@@ -1758,18 +1769,27 @@
       // bueno, repintar y decirlo en una línea. El usuario no tiene por qué
       // saber qué es una revisión.
       if(!result.ok && result.error === "rounds_conflict"){
+        let adopted = false;
         try{
           const fresh = await getMeta({ owner: adminOrOwnerCred() });
           // Mutado en sitio: cada pantalla que tenga este mismo objeto ve la
           // corrección sin necesidad de cambiar la referencia.
           if(fresh) adoptFreshMeta(meta, fresh);
+          adopted = !!fresh;
         }catch(e){ console.error("refresh tras rounds_conflict falló", e); }
         invalidatePlan();
         // Repintar ANTES del aviso, y el aviso colgado de document.body: al
         // revés se borraría solo.
         try{ await render(); }catch(e){ console.error("render tras rounds_conflict falló", e); }
         notice("Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
-        return { ...result, reconciled: true };
+        // `reconciled`: esta pestaña YA tiene el estado del servidor. Quien
+        // llamó no debe reponer lo que tenía antes de guardar: esa copia es más
+        // vieja que la del servidor, y como la pestaña ya tiene la revisión
+        // nueva, el siguiente guardado la escribiría encima de los cambios que
+        // este conflicto acaba de proteger. Sólo es verdad si de verdad se
+        // adoptó: si no se pudo traer, la pestaña sigue con lo suyo y reponer
+        // es lo correcto.
+        return { ...result, reconciled: adopted };
       }
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
@@ -1959,7 +1979,7 @@
     }else if(result.error === "round_locked"){
       liveEl.innerHTML = `<span style="color:var(--red);">La jornada ya cerró. Ya no es posible modificar estos pronósticos.</span>`;
     }else{
-      liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error, result))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${round.id}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
+      liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error, result))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${esc(round.id)}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
       const retryBtn = document.getElementById("qz-retry-picks-" + round.id);
       if(retryBtn){
         // Un error del guardado manual delega su reintento al mismo flujo
@@ -2960,12 +2980,16 @@
     const old = meta.golScorerBet;
     if(old && old.enabled){
       const id = uid("cb");
+      // La apuesta nueva sólo puede llevar números: el servidor rechaza otra
+      // cosa en una apuesta que no estaba guardada (metaNumbers.js).
+      const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v
+        : (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : fallback);
       meta.customBets.push({
         id,
         label: "Goleador de la liga",
         scope: "temporada",
-        points: old.bonusPoints != null ? old.bonusPoints : 3,
-        closesAtRound: old.closesAtRound || null
+        points: num(old.bonusPoints, 3),
+        closesAtRound: num(old.closesAtRound, null) || null
       });
       meta.participants.forEach(p => {
         if(p.golScorerGuess){
@@ -3626,10 +3650,10 @@
 
   function setupMatchRowHtml(m){
     return `
-      <div class="match-edit-row" data-mid="${m.id}">
+      <div class="match-edit-row" data-mid="${esc(m.id)}">
         <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off"></div>
         <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off"></div>
-        <button class="icon-x" data-remove="${m.id}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+        <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
       </div>
     `;
   }
@@ -3758,7 +3782,7 @@
         trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
         renderAdminSetupInvite();
       } else {
-        meta.rounds = meta.rounds.map(r => r.id === roundId ? snapshot : r);
+        if(!result.reconciled) meta.rounds = meta.rounds.map(r => r.id === roundId ? snapshot : r);
         // No longer touching `round`/`liveRound` here at all -- the next
         // click re-fetches whatever object now lives in meta.rounds by id
         // (the freshly restored snapshot), so there's nothing stale left
@@ -3909,9 +3933,9 @@
       const result = await setMetaWithError(meta);
       if(result.ok){
         trackEvent("first_participant_added", { source: "admin_setup" });
-        feedback.textContent = `✓ ${added.length} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
+        feedback.textContent = `✓ ${esc(added.length)} participante${added.length===1?"":"s"} añadido${added.length===1?"":"s"}`;
       }else{
-        meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
+        if(!result.reconciled) meta.participants = meta.participants.filter(p => !added.some(n => n.toLowerCase() === p.name.toLowerCase()) || !added.includes(p.name));
         feedback.textContent = "";
         showPlanBlock(result);
       }
@@ -3949,7 +3973,7 @@
   function renderLogin(){
     const sortedParticipants = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     const names = sortedParticipants.map(p => `
-      <button class="name-btn" data-id="${p.id}">
+      <button class="name-btn" data-id="${esc(p.id)}">
         ${esc(p.name)} ${p.hasPin ? "🔒" : ""}
         ${p.isAdmin ? `<span class="role">ADMIN</span>` : ``}
       </button>
@@ -4115,7 +4139,7 @@
               <div class="qz-brand-context">${esc(meta.groupName)}</div>
               ${currentUser.isAdmin ? `<span class="qz-plan-badge" id="qz-plan-badge" ${planState && planState.plan === "PLUS" ? "" : "hidden"}>★ Plus</span>` : ``}
             </div>
-            ${contextRound ? `<div class="qz-brand-round">Jornada ${contextRound.number}</div>` : ``}
+            ${contextRound ? `<div class="qz-brand-round">Jornada ${esc(contextRound.number)}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             ${currentUser.isAdmin ? `<span class="qz-tooltip-wrap${headerShareTooltipVisible ? ' qz-tooltip-active' : ''}" id="qz-header-copy-wrap"><button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Compartir esta quiniela" aria-label="Compartir esta quiniela" aria-describedby="qz-header-copy-tooltip" aria-expanded="${headerShareTooltipVisible ? 'true' : 'false'}" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button><span class="qz-tooltip-bubble" id="qz-header-copy-tooltip" role="tooltip">Compartir esta quiniela</span></span>` : ``}
@@ -4322,13 +4346,13 @@
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
-          <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${pending.round.number}.</p>
+          <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${esc(pending.round.number)}.</p>
         </div>
       ` : ``}</div>
       ${showPaymentNote ? `
         <div class="card" style="border-color:var(--red);background:#F6E1DE;margin-bottom:14px;">
           <div class="eyebrow" style="color:#7d251d;">💰 Falta tu pago</div>
-          <p style="margin:4px 0 0;">Si no pagas tu cuota, se te van a restar <strong>${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1} punto${(penalty.pointsPerRound===1)?'':'s'}</strong> por cada jornada a partir de la <strong>Jornada ${penalty.startsAtRound}</strong>, hasta que el admin haya recibido tu pago.</p>
+          <p style="margin:4px 0 0;">Si no pagas tu cuota, se te van a restar <strong>${esc(penalty.pointsPerRound != null ? penalty.pointsPerRound : 1)} punto${(penalty.pointsPerRound===1)?'':'s'}</strong> por cada jornada a partir de la <strong>Jornada ${esc(penalty.startsAtRound)}</strong>, hasta que el admin haya recibido tu pago.</p>
         </div>
       ` : ``}
       ${temporadaBets.map(bet => {
@@ -4340,18 +4364,18 @@
           statusText = "Ya cerró — no se puede cambiar.";
         }else if(hasSavedAnswer){
           statusText = bet.closesAtRound
-            ? `Puedes modificar tu respuesta hasta antes de que inicie la Jornada ${bet.closesAtRound}.`
+            ? `Puedes modificar tu respuesta hasta antes de que inicie la Jornada ${esc(bet.closesAtRound)}.`
             : "Puedes modificar tu respuesta cuando quieras.";
         }else{
-          statusText = bet.closesAtRound ? `Se elige a más tardar antes de que inicie la Jornada ${bet.closesAtRound}.` : "Escribe tu apuesta.";
+          statusText = bet.closesAtRound ? `Se elige a más tardar antes de que inicie la Jornada ${esc(bet.closesAtRound)}.` : "Escribe tu apuesta.";
         }
         return `
         <div class="card" style="margin-bottom:14px;">
-          <div class="eyebrow">🎯 ${esc(bet.label)} (+${bet.points} pts si le atinas)</div>
+          <div class="eyebrow">🎯 ${esc(bet.label)} (+${esc(bet.points)} pts si le atinas)</div>
           <p class="muted" style="margin-top:-4px;">${statusText}</p>
           <div class="row2">
-            <input type="text" id="qz-cb-input-${bet.id}" placeholder="Escribe tu respuesta" value="${esc(myGuess)}" ${locked ? "disabled" : ""}>
-            ${locked ? "" : `<button class="btn btn-gold" data-cb-save="${bet.id}">Guardar</button>`}
+            <input type="text" id="qz-cb-input-${esc(bet.id)}" placeholder="Escribe tu respuesta" value="${esc(myGuess)}" ${locked ? "disabled" : ""}>
+            ${locked ? "" : `<button class="btn btn-gold" data-cb-save="${esc(bet.id)}">Guardar</button>`}
           </div>
         </div>
       `;
@@ -4425,7 +4449,7 @@
       await ensureAllPicksLoaded();
     }
 
-    list.innerHTML = rounds.map(r => `<div class="card" id="qz-round-${r.id}" style="padding:16px;"></div>`).join("");
+    list.innerHTML = rounds.map(r => `<div class="card" id="qz-round-${esc(r.id)}" style="padding:16px;"></div>`).join("");
 
     rounds.forEach(round => {
       const box = document.getElementById("qz-round-" + round.id);
@@ -4479,12 +4503,12 @@
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     box.innerHTML = `
       <div class="clock-card" style="margin-bottom:14px;">
-        <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `Jornada ${round.number} · cierre de quiniela`}</div>
-        <div id="qz-clockbody-${round.id}">${clockDigitsHtml(round.deadline)}</div>
+        <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `Jornada ${esc(round.number)} · cierre de quiniela`}</div>
+        <div id="qz-clockbody-${esc(round.id)}">${clockDigitsHtml(round.deadline)}</div>
       </div>
-      <div id="qz-matches-${round.id}"></div>
-      <p class="muted" id="qz-savestatus-${round.id}" style="text-align:center;">Tus picks se guardan solos apenas los eliges.</p>
-      <button class="btn btn-primary" data-save="${round.id}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>
+      <div id="qz-matches-${esc(round.id)}"></div>
+      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;">Tus picks se guardan solos apenas los eliges.</p>
+      <button class="btn btn-primary" data-save="${esc(round.id)}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>
       ${jornadaBets.length ? `
         <div class="card" style="margin-top:14px;">
           <div class="eyebrow">🎯 Preguntas de esta jornada</div>
@@ -4492,13 +4516,13 @@
             const extra = roundPicks.__extra || {};
             return `
               <div class="field">
-                <label>${esc(bet.label)} (+${bet.points} pts)</label>
-                <input type="text" data-cb-jornada="${bet.id}" placeholder="Escribe tu respuesta" value="${esc(extra[bet.id] || '')}">
+                <label>${esc(bet.label)} (+${esc(bet.points)} pts)</label>
+                <input type="text" data-cb-jornada="${esc(bet.id)}" placeholder="Escribe tu respuesta" value="${esc(extra[bet.id] || '')}">
               </div>
             `;
           }).join("")}
-          <button class="btn btn-gold" id="qz-cb-jornada-save-${round.id}" style="width:100%;padding:10px;">Guardar respuestas</button>
-          <p class="muted" id="qz-cb-jornada-status-${round.id}" style="text-align:center;margin-top:6px;"></p>
+          <button class="btn btn-gold" id="qz-cb-jornada-save-${esc(round.id)}" style="width:100%;padding:10px;">Guardar respuestas</button>
+          <p class="muted" id="qz-cb-jornada-status-${esc(round.id)}" style="text-align:center;margin-top:6px;"></p>
         </div>
       ` : ``}
     `;
@@ -4509,7 +4533,7 @@
       return `
         <div class="match-card">
           ${matchTeamsHtml(m)}
-          <div class="pick-row" data-match="${m.id}">
+          <div class="pick-row" data-match="${esc(m.id)}">
             <button class="pick-btn ${pick==='A'?'selected':''}" data-val="A">${esc(m.teamA)}</button>
             <button class="pick-btn ${pick==='D'?'selected':''}" data-val="D">Empate</button>
             <button class="pick-btn ${pick==='B'?'selected':''}" data-val="B">${esc(m.teamB)}</button>
@@ -4607,7 +4631,7 @@
     const pickLabel = (val, m) => val==='A' ? m.teamA : val==='B' ? m.teamB : val==='D' ? 'Empate' : '—';
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Jornada ${round.number}</span>
+        <span>Jornada ${esc(round.number)}</span>
         <span class="badge unpaid">🔒 Cerrada, esperando resultado</span>
       </div>
       ${round.matches.map(m => {
@@ -4666,7 +4690,7 @@
     }).join("");
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Jornada ${round.number}</span>
+        <span>Jornada ${esc(round.number)}</span>
         <span class="badge paid">${correct}/${total} aciertos</span>
       </div>
       ${matchesHtml}
@@ -4742,9 +4766,9 @@
               <tr class="${p.id===currentUser.id?'me':''}">
                 <td class="pos ${ranks[i]===1?'top1':''}" style="text-align:center;">${medal(ranks[i]) || ranks[i]}</td>
                 <td style="text-align:center;">${movementHtml(p, ranks[i])}</td>
-                <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${p.penalty} por no pagar</span>` : ''}</td>
-                <td style="text-align:center;font-weight:700;">${p.pts}</td>
-                <td style="text-align:center;" class="muted">${i===0 ? "líder" : "−" + (leaderPts - p.pts)}</td>
+                <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}</td>
+                <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
+                <td style="text-align:center;" class="muted">${esc(i===0 ? "líder" : "−" + (leaderPts - p.pts))}</td>
                 <td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>
               </tr>
             `).join("")}
@@ -4752,7 +4776,7 @@
         </table>
         </div>
       </div>
-      <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${meta.settings.entryFee} · ❌ = pendiente · ▲▼ = movimiento desde la jornada pasada</p>
+      <p class="muted" style="text-align:center;">✅ = pagó su cuota de $${esc(meta.settings.entryFee)} · ❌ = pendiente · ▲▼ = movimiento desde la jornada pasada</p>
       `}
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Evolución de posiciones</span></div>
@@ -4950,7 +4974,7 @@
     legendEl.innerHTML = orderedList.map(p => {
       const on = chartSelectedIds.has(p.id);
       const color = colorOf(p.id);
-      return `<button class="btn btn-sm" data-chip="${p.id}" style="border:1.5px solid ${on?color:'var(--line)'};background:${on?color+'22':'var(--chalk)'};color:${on?'var(--ink)':'var(--ink-soft)'};">
+      return `<button class="btn btn-sm" data-chip="${esc(p.id)}" style="border:1.5px solid ${on?color:'var(--line)'};background:${on?color+'22':'var(--chalk)'};color:${on?'var(--ink)':'var(--ink-soft)'};">
         <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;"></span>${esc(p.name)}
       </button>`;
     }).join("");
@@ -4992,12 +5016,12 @@
       gridLines.push(`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`);
       gridLines.push(`<text x="${padL-8}" y="${yy+4}" font-size="10" text-anchor="end" fill="var(--ink-soft)" font-family="Manrope, sans-serif">${rank}°</text>`);
     });
-    const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Manrope, sans-serif">J${rn}</text>`).join("");
+    const xLabels = rounds.map((rn,i) => `<text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="var(--ink-soft)" font-family="Manrope, sans-serif">J${esc(rn)}</text>`).join("");
 
     const lines = Array.from(chartSelectedIds).map(id => {
       const pts = (series[id]||[]).map((v,i) => `${x(i)},${y(v)}`).join(" ");
       const dots = (series[id]||[]).map((v,i) => `<circle cx="${x(i)}" cy="${y(v)}" r="3" fill="${colorOf(id)}"/>`).join("");
-      return `<polyline points="${pts}" fill="none" stroke="${colorOf(id)}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
+      return `<polyline points="${esc(pts)}" fill="none" stroke="${colorOf(id)}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
     }).join("");
 
     svgEl.innerHTML = `
@@ -5021,9 +5045,9 @@
           return `
             <div style="padding:10px 0;border-bottom:1px solid var(--line);">
               <div>
-                ${t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${t.champion.pts} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`}
+                ${t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${esc(t.champion.pts)} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`}
               </div>
-              <div class="muted" style="margin-bottom:6px;">Cerrado el ${date} · ${t.rounds.length} jornadas jugadas</div>
+              <div class="muted" style="margin-bottom:6px;">Cerrado el ${date} · ${esc(t.rounds.length)} jornadas jugadas</div>
               ${t.standings && t.standings.length ? `
                 <details>
                   <summary class="muted" style="cursor:pointer;">Ver tabla final completa</summary>
@@ -5031,7 +5055,7 @@
                     <tbody>
                       ${(() => {
                         const tRanks = computeDenseRanks(t.standings);
-                        return t.standings.map((s,i) => `<tr><td class="pos ${tRanks[i]===1?'top1':''}">${tRanks[i]}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${s.pts}</td></tr>`).join("");
+                        return t.standings.map((s,i) => `<tr><td class="pos ${tRanks[i]===1?'top1':''}">${tRanks[i]}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${esc(s.pts)}</td></tr>`).join("");
                       })()}
                     </tbody>
                   </table>
@@ -5061,8 +5085,8 @@
     const list = document.getElementById("qz-hist-list");
     list.innerHTML = published.map(r => `
       <div class="history-item">
-        <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos</span></div>
-        <button class="btn btn-ghost btn-sm" data-round="${r.id}">Ver detalle</button>
+        <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos</span></div>
+        <button class="btn btn-ghost btn-sm" data-round="${esc(r.id)}">Ver detalle</button>
       </div>
     `).join("");
     list.querySelectorAll("button[data-round]").forEach(btn => {
@@ -5099,12 +5123,12 @@
     detail.innerHTML = `
       ${mvps.length ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;">
-          <div class="eyebrow" style="color:var(--gold-dim);">🏅 MVP de la Jornada ${round.number}</div>
-          <p style="margin:4px 0 0;">${mvps.map(esc).join(", ")} — ${maxCorrect} de ${round.matches.length} aciertos</p>
+          <div class="eyebrow" style="color:var(--gold-dim);">🏅 MVP de la Jornada ${esc(round.number)}</div>
+          <p style="margin:4px 0 0;">${mvps.map(esc).join(", ")} — ${maxCorrect} de ${esc(round.matches.length)} aciertos</p>
         </div>
       ` : ``}
       <div class="card" style="overflow-x:auto;">
-        <h3>Jornada ${round.number} — detalle</h3>
+        <h3>Jornada ${esc(round.number)} — detalle</h3>
         <table>
           <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Pts</th></tr></thead>
           <tbody>
@@ -6148,11 +6172,11 @@
       return `
         <div class="history-item">
           <div>
-            <strong>${esc(bet.label)}</strong> <span class="muted">· ${scopeLabel} · +${bet.points} pts${bet.scope==="temporada" && bet.closesAtRound ? ` · cierra en Jornada ${bet.closesAtRound}` : ""}</span>
+            <strong>${esc(bet.label)}</strong> <span class="muted">· ${scopeLabel} · +${esc(bet.points)} pts${bet.scope==="temporada" && bet.closesAtRound ? ` · cierra en Jornada ${esc(bet.closesAtRound)}` : ""}</span>
           </div>
           <div style="display:flex;gap:6px;">
-            <button class="btn btn-ghost btn-sm" data-edit-bet="${bet.id}">Editar</button>
-            <button class="btn btn-danger btn-sm" data-del-bet="${bet.id}">Eliminar</button>
+            <button class="btn btn-ghost btn-sm" data-edit-bet="${esc(bet.id)}">Editar</button>
+            <button class="btn btn-danger btn-sm" data-del-bet="${esc(bet.id)}">Eliminar</button>
           </div>
         </div>
       `;
@@ -6173,8 +6197,8 @@
             </select>
           </div>
           <div class="row2">
-            <div class="field"><label>Puntos si le atina</label><input type="number" id="qz-cb-points" value="${draft ? draft.points : 3}"></div>
-            <div class="field" id="qz-cb-closes-wrap" style="${scope==='jornada' ? 'display:none;' : ''}"><label>Se cierra antes de que inicie la jornada</label><input type="number" id="qz-cb-closes" value="${draft && draft.closesAtRound ? draft.closesAtRound : ''}" placeholder="Opcional"></div>
+            <div class="field"><label>Puntos si le atina</label><input type="number" id="qz-cb-points" value="${esc(draft ? draft.points : 3)}"></div>
+            <div class="field" id="qz-cb-closes-wrap" style="${scope==='jornada' ? 'display:none;' : ''}"><label>Se cierra antes de que inicie la jornada</label><input type="number" id="qz-cb-closes" value="${esc(draft && draft.closesAtRound ? draft.closesAtRound : '')}" placeholder="Opcional"></div>
           </div>
           <p class="muted" style="margin-top:-8px;">Los participantes escriben su respuesta libremente. Tú decides a mano quién le atinó — todavía no validamos esto en automático.</p>
           <div style="display:flex;gap:8px;">
@@ -6220,7 +6244,7 @@
                       const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
                       return `
                         <td style="text-align:center;">${ans && ans.guess ? esc(ans.guess) : '<span class="muted">—</span>'}</td>
-                        <td style="text-align:center;"><input type="checkbox" data-role="cb-correct" data-pid="${p.id}" data-bet="${bet.id}" ${ans && ans.correct ? "checked" : ""} ${ans && ans.guess ? "" : "disabled"}></td>
+                        <td style="text-align:center;"><input type="checkbox" data-role="cb-correct" data-pid="${esc(p.id)}" data-bet="${esc(bet.id)}" ${ans && ans.correct ? "checked" : ""} ${ans && ans.guess ? "" : "disabled"}></td>
                       `;
                     }).join("")}
                   </tr>
@@ -6242,8 +6266,8 @@
           <label><input type="checkbox" id="qz-penalty-enabled" ${penalty.enabled ? "checked" : ""}> Activar penalización</label>
         </div>
         <div class="row2">
-          <div class="field"><label>A partir de la jornada</label><input type="number" id="qz-penalty-round" value="${penalty.startsAtRound ? penalty.startsAtRound : ''}" placeholder="Ej. 5"></div>
-          <div class="field"><label>Puntos a restar por jornada</label><input type="number" id="qz-penalty-points" value="${penalty.pointsPerRound != null ? penalty.pointsPerRound : 1}"></div>
+          <div class="field"><label>A partir de la jornada</label><input type="number" id="qz-penalty-round" value="${esc(penalty.startsAtRound ? penalty.startsAtRound : '')}" placeholder="Ej. 5"></div>
+          <div class="field"><label>Puntos a restar por jornada</label><input type="number" id="qz-penalty-points" value="${esc(penalty.pointsPerRound != null ? penalty.pointsPerRound : 1)}"></div>
         </div>
         <button class="btn btn-primary" id="qz-save-penalty">Guardar</button>
       </div>
@@ -6344,10 +6368,12 @@
       if(result.ok){
         toast("✅ Listo, la penalización quedó guardada.");
       }else{
-        penalty.enabled = previousEnabled;
-        penalty.startsAtRound = previousStartsAtRound;
-        penalty.pointsPerRound = previousPointsPerRound;
-        meta.participants = participantsSnapshot;
+        if(!result.reconciled){
+          penalty.enabled = previousEnabled;
+          penalty.startsAtRound = previousStartsAtRound;
+          penalty.pointsPerRound = previousPointsPerRound;
+          meta.participants = participantsSnapshot;
+        }
         toast(humanizeError(result.error, result));
       }
     });
@@ -6514,17 +6540,17 @@
       return `
         <div class="card">
           <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-            <span>Jornada ${round.number} · ${total} partidos</span>
+            <span>Jornada ${esc(round.number)} · ${total} partidos</span>
             <div style="display:flex;gap:6px;">
-              ${missingNames.length ? `<button class="btn btn-ghost btn-sm" data-copy="${round.id}">📋 Copiar</button>` : ``}
-              ${missingNames.length ? `<button class="btn btn-gold btn-sm" data-whatsapp="${round.id}">🟢 Abrir en WhatsApp</button>` : ``}
+              ${missingNames.length ? `<button class="btn btn-ghost btn-sm" data-copy="${esc(round.id)}">📋 Copiar</button>` : ``}
+              ${missingNames.length ? `<button class="btn btn-gold btn-sm" data-whatsapp="${esc(round.id)}">🟢 Abrir en WhatsApp</button>` : ``}
             </div>
           </div>
           <p class="muted" style="margin-top:-4px;">No se muestran los picks de nadie, solo si ya contestaron.</p>
           <table>
             <thead><tr><th>Participante</th><th>Estatus</th></tr></thead>
             <tbody>
-              ${rows.map(r => `<tr><td>${esc(r.name)}</td><td><span class="badge ${r.cls}">${r.icon} ${r.label}</span></td></tr>`).join("")}
+              ${rows.map(r => `<tr><td>${esc(r.name)}</td><td><span class="badge ${r.cls}">${r.icon} ${esc(r.label)}</span></td></tr>`).join("")}
             </tbody>
           </table>
         </div>
@@ -6608,9 +6634,13 @@
     if(result.ok){
       renderAdmin(document.getElementById("qz-main"));
     }else{
-      meta.rounds = snapshot;
-      meta.participants = participantsSnapshot;
       btn.disabled = false;
+      // Tras un 409 la pestaña ya tiene el estado del servidor (ver
+      // setMetaWithError): reponer el arreglo viejo revertiría cualquier jornada.
+      if(!result.reconciled){
+        meta.rounds = snapshot;
+        meta.participants = participantsSnapshot;
+      }
       toast(humanizeError(result.error, result));
     }
   }
@@ -6661,10 +6691,10 @@
 
     function matchRowHtml(m, idx){
       return `
-        <div class="match-edit-row" data-mid="${m.id}">
+        <div class="match-edit-row" data-mid="${esc(m.id)}">
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
-          <button class="icon-x" data-remove="${m.id}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+          <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
         </div>
       `;
     }
@@ -6676,13 +6706,13 @@
     // the paywall is rendered from ITS answer (see showUpgradeSheet).
     const createCardHtml = `
       <div class="card" id="qz-round-form">
-        <div class="eyebrow">${editingRound ? `Editando jornada ${editingRound.number}` : `Crear jornada ${nextNumber}`}</div>
+        <div class="eyebrow">${editingRound ? `Editando jornada ${esc(editingRound.number)}` : `Crear jornada ${nextNumber}`}</div>
         ${editingRound && editingRound.resultsPublished ? `<p class="muted" style="color:var(--red);">Esta jornada ya tiene resultados publicados. Si cambias los equipos, los resultados guardados podrían dejar de tener sentido — revísalos después de guardar.</p>` : ``}
         <div id="qz-match-rows">${draft.matches.map(matchRowHtml).join("")}</div>
         <button class="btn btn-ghost btn-sm" id="qz-add-match" style="margin-bottom:14px;">+ Agregar partido</button>
         <div class="field">
           <label>Fecha y hora límite para votar</label>
-          <input type="datetime-local" id="qz-deadline" value="${draft.deadline}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">
+          <input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">
           <p class="muted" id="qz-deadline-error" style="color:var(--red);display:none;margin-top:4px;"></p>
         </div>
         <div style="display:flex;gap:8px;">
@@ -6722,11 +6752,11 @@
           const faseTxt = r.phaseLabel ? ` · ${esc(r.phaseLabel)}` : "";
           return `
           <div class="history-item">
-            <div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
+            <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
             <div style="display:flex;gap:6px;">
-              ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${r.id}">Publicar jornada</button>` : ``}
-              <button class="btn btn-ghost btn-sm" data-edit-round="${r.id}">Editar</button>
-              <button class="btn btn-danger btn-sm" data-del-round="${r.id}">Eliminar</button>
+              ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${esc(r.id)}">Publicar jornada</button>` : ``}
+              <button class="btn btn-ghost btn-sm" data-edit-round="${esc(r.id)}">Editar</button>
+              <button class="btn btn-danger btn-sm" data-del-round="${esc(r.id)}">Eliminar</button>
             </div>
           </div>
         `;
@@ -6837,7 +6867,7 @@
           toast(`✅ Listo, la Jornada ${round.number} ya es visible para los participantes.`);
           renderAdmin(document.getElementById("qz-main"));
         }else{
-          round.published = false; // roll back the in-memory flip on failure
+          if(!result.reconciled) round.published = false; // roll back the in-memory flip on failure
           if(result.error === "plan_lifecycle_limit_reached") showPlanBlock(result);
           else toast(humanizeError(result.error, result));
           btn.disabled = false;
@@ -6934,13 +6964,13 @@
           // snapshot (every field, not just matches/deadline), and the
           // participants array goes back too (undoing whatever
           // reconciliation just did) -- never a partial revert.
-          meta.rounds = meta.rounds.map(r => r.id === editingRound.id ? roundSnapshot : r);
-          meta.participants = participantsSnapshot;
+          if(!result.reconciled){ meta.rounds = meta.rounds.map(r => r.id === editingRound.id ? roundSnapshot : r); meta.participants = participantsSnapshot; }
           // Force the form to rebuild from the restored round on the next
           // render, instead of showing the failed edit as if it had stuck.
           renderAdminRondas._draft = null;
           showPlanBlock(result);
-          renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
+          if(!result.reconciled) renderAdminRondas(body); // stay in edit mode (_editingId untouched) -- fresh, re-enabled button, ready to retry
+          else renderAdmin(document.getElementById("qz-main"));
         }
         return;
       }
@@ -7170,7 +7200,7 @@
       if(hit){
         found++;
         const niceDate = new Date(hit.date).toLocaleDateString("es-MX", {day:"2-digit", month:"short", year:"numeric"});
-        tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${m.id}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
+        tag.innerHTML = `Sugerido: <strong>${esc(hit.score)}</strong> (${niceDate}) <button type="button" class="btn btn-gold btn-sm" data-accept-suggestion="${esc(m.id)}" data-suggested-val="${hit.result}" style="margin-left:6px;">✓ Usar este resultado</button>`;
         tag.style.color = "var(--pitch-light)";
       } else if(unscorableByMatch[m.id]){
         // Se encontró el partido, pero su resultado no puede alimentar el 1X2.
@@ -7187,7 +7217,7 @@
     if(statusEl){
       const blockedTxt = blocked ? ` ${blocked} partido${blocked===1?"":"s"} hay que capturarlo${blocked===1?"":"s"} a mano.` : "";
       statusEl.textContent = (found
-        ? `${found} de ${round.matches.length} partidos encontrados. Revisa y confirma antes de guardar.`
+        ? `${found} de ${esc(round.matches.length)} partidos encontrados. Revisa y confirma antes de guardar.`
         : "No se encontraron resultados todavía para esta jornada — puede que los partidos no se hayan jugado aún. Puedes capturarlos manualmente.") + blockedTxt;
     }
     form.querySelectorAll("[data-accept-suggestion]").forEach(btn => {
@@ -7226,7 +7256,7 @@
           <button class="btn btn-ghost btn-sm" id="qz-bulk-autofill">🔎 Buscar resultados pendientes (todas)</button>
         </div>
         <select id="qz-round-select">
-          ${eligibleRounds.slice().reverse().map(r => `<option value="${r.id}" ${r.id===target?'selected':''}>Jornada ${r.number} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
+          ${eligibleRounds.slice().reverse().map(r => `<option value="${esc(r.id)}" ${r.id===target?'selected':''}>Jornada ${esc(r.number)} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
         </select>
         <p class="muted" id="qz-bulk-autofill-status" style="margin-top:8px;margin-bottom:-4px;"></p>
       </div>
@@ -7254,7 +7284,7 @@
           renderAdminResultados._bulkUnscorable = data.unscorable || {};
           const roundIdsWithHits = Object.keys(renderAdminResultados._bulkCache).filter(id => (renderAdminResultados._bulkCache[id] || []).length);
           bulkStatusEl.textContent = roundIdsWithHits.length
-            ? `Se encontraron resultados para ${roundIdsWithHits.length} jornada${roundIdsWithHits.length===1?"":"s"} pendiente${roundIdsWithHits.length===1?"":"s"}. Selecciónala${roundIdsWithHits.length===1?"":"s"} arriba para revisar y confirmar.`
+            ? `Se encontraron resultados para ${esc(roundIdsWithHits.length)} jornada${roundIdsWithHits.length===1?"":"s"} pendiente${roundIdsWithHits.length===1?"":"s"}. Selecciónala${roundIdsWithHits.length===1?"":"s"} arriba para revisar y confirmar.`
             : "No se encontraron resultados nuevos para las jornadas pendientes por ahora.";
           // If the round currently open already got resolved by this bulk
           // pass, show it immediately — no need to click the per-round
@@ -7324,23 +7354,23 @@
           ${correcting ? `<span class="badge unpaid" style="margin-left:6px;">✏️ Corrigiendo — lo publicado no cambia hasta que confirmes</span>` : ``}
         </p>
         <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-          <span>Jornada ${round.number} — resultado de cada partido</span>
+          <span>Jornada ${esc(round.number)} — resultado de cada partido</span>
           ${editable ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>` : ``}
         </div>
         <p class="muted" id="qz-autofill-status" style="margin-top:-4px;"></p>
         ${round.matches.map(m => `
-          <div class="match-card" style="margin-bottom:10px;" id="qz-rescard-${m.id}">
+          <div class="match-card" style="margin-bottom:10px;" id="qz-rescard-${esc(m.id)}">
             <div class="match-teams">
               <span class="match-team left">${esc(m.teamA)}</span>
               <span class="match-vs">VS</span>
               <span class="match-team right">${esc(m.teamB)}</span>
             </div>
-            <div class="pick-row" data-result-match="${m.id}" ${editable ? "" : "style=\"pointer-events:none;\""}>
+            <div class="pick-row" data-result-match="${esc(m.id)}" ${editable ? "" : "style=\"pointer-events:none;\""}>
               <button class="pick-btn ${source[m.id]==='A'?'selected':''}" data-val="A" ${editable ? "" : "disabled"}>${esc(m.teamA)}</button>
               <button class="pick-btn ${source[m.id]==='D'?'selected':''}" data-val="D" ${editable ? "" : "disabled"}>Empate</button>
               <button class="pick-btn ${source[m.id]==='B'?'selected':''}" data-val="B" ${editable ? "" : "disabled"}>${esc(m.teamB)}</button>
             </div>
-            <div class="result-tag" id="qz-suggest-${m.id}"></div>
+            <div class="result-tag" id="qz-suggest-${esc(m.id)}"></div>
           </div>
         `).join("")}
         ${editable ? `
@@ -7363,7 +7393,7 @@
       </div>
       ${jornadaBets.length ? `
         <div class="card" style="padding:8px 12px;overflow-x:auto;">
-          <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas de esta jornada (Jornada ${round.number})</div>
+          <div class="eyebrow" style="padding:10px 12px 0;">Validar apuestas de esta jornada (Jornada ${esc(round.number)})</div>
           <p class="muted" style="padding:0 12px;margin-top:-4px;">Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
           <table>
             <thead>
@@ -7385,7 +7415,7 @@
                     const correct = round.customBetResults && round.customBetResults[bet.id] ? round.customBetResults[bet.id][p.id] : false;
                     return `
                       <td style="text-align:center;">${guess ? esc(guess) : '<span class="muted">—</span>'}</td>
-                      <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" data-pid="${p.id}" data-bet="${bet.id}" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
+                      <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" data-pid="${esc(p.id)}" data-bet="${esc(bet.id)}" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
                     `;
                   }).join("")}
                 </tr>
@@ -7507,9 +7537,11 @@
           }
         }else{
           // Don't leave the in-memory state claiming this published when it didn't.
-          round.resultsPublished = wasAlreadyPublished;
-          round.results = previousResults;
-          if(wasAlreadyPublished) round.draftResults = editable;
+          if(!result.reconciled){
+            round.resultsPublished = wasAlreadyPublished;
+            round.results = previousResults;
+            if(wasAlreadyPublished) round.draftResults = editable;
+          }
           toast(humanizeError(result.error, result));
         }
         publishBtn.disabled = false;
@@ -7563,9 +7595,11 @@
         if(result.ok){
           toast("🔓 Jornada reabierta — ya pueden volver a votar");
         }else{
-          round.resultsPublished = previousResultsPublished;
-          round.deadline = previousDeadline;
-          meta.participants = participantsSnapshot;
+          if(!result.reconciled){
+            round.resultsPublished = previousResultsPublished;
+            round.deadline = previousDeadline;
+            meta.participants = participantsSnapshot;
+          }
           toast(humanizeError(result.error, result));
         }
         reopenBtn.disabled = false;
@@ -7590,7 +7624,7 @@
       logDiv.className = "card";
       logDiv.innerHTML = `
         <div class="eyebrow">Bitácora de resultados</div>
-        <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${logEntries.length}.</p>
+        <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${esc(logEntries.length)}.</p>
         <table>
           <tbody>
             ${logEntries.map(e => `
@@ -7643,7 +7677,7 @@
           <thead><tr><th>Nombre</th><th style="text-align:center;">Admin</th><th style="text-align:center;">Pagó</th><th style="text-align:center;">PIN</th><th style="text-align:center;"></th></tr></thead>
           <tbody>
             ${sortedParticipants.map(p => `
-              <tr data-pid="${p.id}">
+              <tr data-pid="${esc(p.id)}">
                 <td><input type="text" value="${esc(p.name)}" data-role="rename" style="border:none;background:transparent;padding:2px;font-weight:600;"></td>
                 <td style="text-align:center;"><input type="checkbox" data-role="admin" ${p.isAdmin?'checked':''}></td>
                 <td style="text-align:center;"><input type="checkbox" data-role="paid" ${p.paid?'checked':''}></td>
@@ -7675,7 +7709,7 @@
         renderAdminParticipantes(body);
         toast("✅ Listo, el participante quedó agregado.");
       }else{
-        meta.participants = snapshot;
+        if(!result.reconciled) meta.participants = snapshot;
         addBtn.disabled = false;
         showPlanBlock(result);
       }
@@ -7711,12 +7745,12 @@
         // participants sitting in meta.participants even after showing this
         // same error — a later render/action elsewhere in the app would
         // have seen phantom participants the server never actually has.
-        meta.participants = snapshot;
+        if(!result.reconciled) meta.participants = snapshot;
         statusEl.textContent = "";
         showPlanBlock(result);
         return;
       }
-      toast(`✅ Listo, se agregaron ${added.length} participante${added.length===1?'':'s'}.`);
+      toast(`✅ Listo, se agregaron ${esc(added.length)} participante${added.length===1?'':'s'}.`);
       renderAdminParticipantes(body);
     });
     body.querySelectorAll("tr[data-pid]").forEach(row => {
@@ -7735,7 +7769,7 @@
           toast("✅ Listo, el nombre quedó actualizado.");
           renderAdminParticipantes(body);
         }else{
-          p.name = previousName;
+          if(!result.reconciled) p.name = previousName;
           e.target.value = previousName;
           toast(humanizeError(result.error, result));
         }
@@ -7763,7 +7797,7 @@
             ? ("✅ " + esc(p.name) + " ahora es admin" + (p.hasPin ? "" : ". Para poner su PIN necesitará la contraseña de administrador o que otro admin escriba su PIN en su teléfono."))
             : ("✅ " + esc(p.name) + " ya no es admin"));
         }else{
-          p.isAdmin = previousValue;
+          if(!result.reconciled) p.isAdmin = previousValue;
           e.target.checked = previousValue;
           toast(humanizeError(result.error, result));
         }
@@ -7789,8 +7823,10 @@
               : "🔒 PIN reseteado — la próxima vez que entre podrá poner uno nuevo");
             renderAdminParticipantes(body);
           }else{
-            p.pin = previousPin;
-            p.hasPin = previousHasPin;
+            if(!result.reconciled){
+              p.pin = previousPin;
+              p.hasPin = previousHasPin;
+            }
             resetBtn.disabled = false;
             toast(humanizeError(result.error, result));
           }
@@ -7820,7 +7856,7 @@
         const result = await setMetaWithError(meta);
         paidCheckbox.disabled = false;
         if(!result.ok){
-          meta.participants = participantsSnapshot;
+          if(!result.reconciled) meta.participants = participantsSnapshot;
           e.target.checked = previousValue;
           toast(humanizeError(result.error, result));
         }
@@ -7838,7 +7874,7 @@
         if(result.ok){
           renderAdminParticipantes(body);
         }else{
-          meta.participants = snapshot;
+          if(!result.reconciled) meta.participants = snapshot;
           removeBtn.disabled = false;
           toast(humanizeError(result.error, result));
         }
@@ -7921,9 +7957,9 @@
         <div class="eyebrow">Nombre del grupo</div>
         <div class="field"><input type="text" id="qz-group-name" value="${esc(meta.groupName)}"></div>
         <div class="eyebrow">Cuota por participante (MXN)</div>
-        <div class="field"><input type="number" id="qz-fee" value="${meta.settings.entryFee}"></div>
+        <div class="field"><input type="number" id="qz-fee" value="${esc(meta.settings.entryFee)}"></div>
         <div class="eyebrow">Puntos por acierto</div>
-        <div class="field"><input type="number" id="qz-points-per-pick" value="${meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1}"></div>
+        <div class="field"><input type="number" id="qz-points-per-pick" value="${esc(meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1)}"></div>
         <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
         <div class="field">
           <select id="qz-sportsdb-league">
@@ -8855,7 +8891,7 @@
         <div class="card">
           <div class="eyebrow">Crecimiento</div>
           <div class="row2" style="margin-bottom:10px;">
-            <div><div class="eyebrow">Quinielas totales</div><div class="display" style="font-size:28px;">${idx.quinielas.length}</div></div>
+            <div><div class="eyebrow">Quinielas totales</div><div class="display" style="font-size:28px;">${esc(idx.quinielas.length)}</div></div>
             <div><div class="eyebrow">Participantes totales</div><div class="display" style="font-size:28px;">${totalParticipants}</div></div>
           </div>
           <div class="row2">
@@ -9207,13 +9243,13 @@
                 <span>👁 ${esc(tenantMeta.groupName)} — solo lectura</span>
                 <button class="btn btn-ghost btn-sm" id="qz-inspect-close">Cerrar</button>
               </div>
-              <p class="muted">${tenantMeta.participants.length} participantes · ${tenantMeta.rounds.length} jornadas creadas</p>
+              <p class="muted">${esc(tenantMeta.participants.length)} participantes · ${esc(tenantMeta.rounds.length)} jornadas creadas</p>
               <div class="row2">
                 <div>
                   <div class="eyebrow">Tabla</div>
                   <table>
                     <thead><tr><th>Participante</th><th>Pts</th></tr></thead>
-                    <tbody>${standings.map(s => `<tr><td>${esc(s.name)}</td><td>${s.pts}</td></tr>`).join("")}</tbody>
+                    <tbody>${standings.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.pts)}</td></tr>`).join("")}</tbody>
                   </table>
                 </div>
                 <div>
@@ -9431,7 +9467,7 @@
                 <tr>
                   <td class="pos ${spectatorRanks[i]===1?'top1':''}" style="text-align:center;">${spectatorRanks[i]}</td>
                   <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
-                  <td style="text-align:center;font-weight:700;">${p.pts}</td>
+                  <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -9440,7 +9476,7 @@
         ${published.length ? `
           <div class="section-title" style="margin-top:20px;"><span class="display" style="font-size:22px;">Jornadas jugadas</span></div>
           <div class="card">
-            ${published.map(r => `<div class="history-item"><div><strong>Jornada ${r.number}</strong> <span class="muted">· ${r.matches.length} partidos</span></div></div>`).join("")}
+            ${published.map(r => `<div class="history-item"><div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos</span></div></div>`).join("")}
           </div>
         ` : ``}
         <p class="muted" style="text-align:center;margin-top:20px;">👁 Estás viendo esta quiniela en modo solo lectura — no puedes votar ni modificar nada.</p>

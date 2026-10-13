@@ -37,6 +37,9 @@ const {
   storedRoundsRevision, resolveRoundsWrite, stampRoundsRevision,
 } = require("./roundsConcurrency");
 const tournamentScope = require("./tournamentScope");
+const { validateMetaIds } = require("./metaIds");
+const { validateMetaNumbers } = require("./metaNumbers");
+const { validateMetaShape } = require("./metaShape");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
@@ -1172,7 +1175,9 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite) {
 
   const oldParticipants = (oldValue && Array.isArray(oldValue.participants)) ? oldValue.participants : [];
   let adminRoleChangesRefused = 0;
-  const oldById = {};
+  // Sin prototipo: un participante guardado con id `__proto__` no puede
+  // convertirse en el "anterior" de todos los demás.
+  const oldById = Object.create(null);
   oldParticipants.forEach((p) => { oldById[p.id] = p; });
   if (Array.isArray(merged.participants)) {
     merged.participants.forEach((p) => {
@@ -1297,10 +1302,12 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta, reque
   if (selfParticipantIds.has(info.participantId)) return picksValue; // only the participant sees their own open-round answers
 
   const now = Date.now();
+  // Como texto: las claves de los picks siempre lo son, y una jornada con id
+  // numérico (heredada) no puede dejar de contar como abierta por el tipo.
   const openRoundIds = new Set(
     (meta.rounds || [])
       .filter((r) => new Date(r.deadline).getTime() > now)
-      .map((r) => r.id)
+      .map((r) => String(r && r.id))
   );
   const filtered = {};
   for (const roundId in picksValue) {
@@ -1335,7 +1342,7 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta, reque
 async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta, nowMs) {
   const meta = preloadedMeta !== undefined ? preloadedMeta : await getRow(info.metaKey);
   if (!meta) return { ok: true };
-  const roundsById = {};
+  const roundsById = Object.create(null);   // un id nunca resuelve a Object.prototype
   (meta.rounds || []).forEach((r) => { roundsById[r.id] = r; });
   const old = oldValue || {};
   const fresh = newValue || {};
@@ -1377,7 +1384,7 @@ const VALID_RESULT_VALUES = new Set(["A", "D", "B"]);
 function validateRoundsIntegrity(newValue, oldValue, nowMs) {
   if (!Array.isArray(newValue.rounds)) return { ok: true };
   const now = nowMs != null ? nowMs : Date.now();
-  const oldRoundsById = {};
+  const oldRoundsById = Object.create(null);   // un id nunca resuelve a Object.prototype
   if (oldValue && Array.isArray(oldValue.rounds)) {
     for (const r of oldValue.rounds) oldRoundsById[r.id] = r;
   }
@@ -1820,6 +1827,29 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: roundsCheck.reason, roundNumber: roundsCheck.roundNumber });
         }
+        // Las listas son listas y los objetos, objetos (metaShape.js): las
+        // pantallas y la protección de los campos del dueño dan por hecha esa
+        // forma.
+        const shapeCheck = validateMetaShape(mergedValue, oldValue);
+        if (!shapeCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: shapeCheck.reason, field: shapeCheck.field });
+        }
+        // Los ids nuevos de jornadas, partidos, participantes y apuestas vuelven
+        // a pintarse en atributos HTML para todos: sólo con la forma de siempre
+        // (metaIds.js).
+        const idsCheck = validateMetaIds(mergedValue, oldValue);
+        if (!idsCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: idsCheck.reason, kind: idsCheck.kind });
+        }
+        // Lo mismo para los números que se pintan: jornada, puntos, cuota,
+        // penalización (metaNumbers.js).
+        const numbersCheck = validateMetaNumbers(mergedValue, oldValue);
+        if (!numbersCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: numbersCheck.reason, field: numbersCheck.field });
+        }
 
         // MON-001B: real, atomic, server-side enforcement of the actual
         // approved commercial model (see planLimits.js) — fixes both
@@ -2115,6 +2145,13 @@ app.delete("/api/kv/:key", async (req, res) => {
 
 // ---------- narrow self-service endpoints ----------
 
+// Las rutas públicas que reciben `metaKey` en el cuerpo (registrarse, PIN,
+// contraseña de dueño, sesión) sólo pueden apuntar a la meta de una quiniela,
+// igual que picks-batch y submit-bet-answer: nunca a otra fila de kv.
+function isQuinielaMetaKey(key) {
+  return key === "quiniela_meta_v1" || (typeof key === "string" && /^quiniela:[a-z0-9-]{1,60}:meta$/.test(key));
+}
+
 // The quiniela a metaKey names: its slug, or null for the legacy root key.
 // Used to scope credential checks to the row actually being read or written,
 // never to a client-supplied `slug`.
@@ -2127,6 +2164,7 @@ app.post("/api/verify-owner", rateLimit("verify-owner"), async (req, res) => {
   try {
     const { metaKey, password } = req.body || {};
     if (!metaKey) return res.status(400).json({ error: "missing_metaKey" });
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const value = await getRow(metaKey);
     if (!value) return res.json({ ok: false });
     const credSlug = slugFromMetaKey(metaKey);
@@ -2182,6 +2220,7 @@ app.post("/api/verify-pin", rateLimit("verify-pin"), async (req, res) => {
   try {
     const { metaKey, participantId, pin } = req.body || {};
     if (!metaKey || !participantId) return res.status(400).json({ error: "missing_params" });
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const value = await getRow(metaKey);
     const participant = value ? (value.participants || []).find((p) => p.id === participantId) : null;
     // A participant with no PIN yet isn't "verified" — the frontend should
@@ -2232,6 +2271,7 @@ app.post("/api/set-pin", rateLimit("verify-pin"), async (req, res) => {
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     // MON-001F: same lock-bypass fix as submit-bet-answer — an unlocked
     // read-modify-write of the whole meta document could revert concurrent
     // changes to rounds, results, participants or settings. The current-PIN
@@ -2322,6 +2362,7 @@ app.post("/api/recover-admin-pin", rateLimit("recover-admin-pin"), async (req, r
     if (!metaKey || !participantId || !/^\d{4}$/.test(String(newPin || ""))) {
       return res.status(400).json({ error: "invalid_params" });
     }
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const slug = slugFromMetaKey(metaKey);
     if (!slug) return res.status(400).json({ error: "invalid_params" });
     const client = await pool.connect();
@@ -2382,6 +2423,7 @@ app.post("/api/verify-session", async (req, res) => {
   try {
     const { slug, metaKey } = req.body || {};
     if (!metaKey) return res.status(400).json({ error: "missing_params" });
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     const session = readSessionFromCookie(req, slug);
     if (!session) {
       res.clearCookie(sessionCookieName(slug), SESSION_COOKIE_CLEAR_OPTIONS);
@@ -2432,6 +2474,7 @@ app.post("/api/self-register", async (req, res) => {
       // path out of this function.
       return res.status(400).json({ error: "invalid_params" });
     }
+    if (!isQuinielaMetaKey(metaKey)) return res.status(400).json({ error: "invalid_metaKey" });
     // MON-001B: converted from an unlocked read-then-write (the same real
     // race MON-001A left open: two people registering at the exact same
     // moment could both read "9 participants" and both get accepted,
@@ -2444,7 +2487,9 @@ app.post("/api/self-register", async (req, res) => {
     const derivedSlug = metaKeyMatch ? metaKeyMatch[1] : null;
     const platformIdx = derivedSlug ? await getRowLocked("platform_index", client) : null;
     const value = await getRowLocked(metaKey, client);
-    if (!value) {
+    // La quiniela heredada que ya se mudó a /q/<slug> sólo guarda a dónde se
+    // fue: nadie se registra ahí.
+    if (!value || value.migratedTo) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "not_found" });
     }
@@ -6318,15 +6363,18 @@ function escapeHtml(s) {
 
 function injectMeta(html, { title, description, url }) {
   let out = html;
+  // Con una función, el valor entra tal cual: en una cadena de reemplazo,
+  // un `$&` o `$'` dentro del nombre del grupo se interpretaría como patrón.
+  const put = (re, value) => { out = out.replace(re, (_, open, close) => open + value + close); };
   if (title != null) {
-    out = out.replace(/(<title id="page-title">)[^<]*(<\/title>)/, `$1${title}$2`);
-    out = out.replace(/(<meta property="og:title" content=")[^"]*("\s+id="og-title">)/, `$1${title}$2`);
+    put(/(<title id="page-title">)[^<]*(<\/title>)/, title);
+    put(/(<meta property="og:title" content=")[^"]*("\s+id="og-title">)/, title);
   }
   if (description != null) {
-    out = out.replace(/(<meta property="og:description" content=")[^"]*("\s+id="og-description">)/, `$1${description}$2`);
+    put(/(<meta property="og:description" content=")[^"]*("\s+id="og-description">)/, description);
   }
   if (url != null) {
-    out = out.replace(/(<meta property="og:url" content=")[^"]*("\s+id="og-url">)/, `$1${url}$2`);
+    put(/(<meta property="og:url" content=")[^"]*("\s+id="og-url">)/, url);
   }
   return out;
 }
