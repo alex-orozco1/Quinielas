@@ -68,10 +68,11 @@ test("SERVER: the device that recovers gets a session and trust for the NEW PIN;
   assert.ok(commit < at("trustDevice(req, res, slug, participant.id, participant.pin);"));
   assert.ok(route.includes("trustDevice(req, res, slug, OWNER_TARGET, ownerPassword);"));
   assert.ok(route.includes("res.json({ ok: true, participantRevs: participantRevMap(storedAfterPin) });"));
-  // 400 invalid_params ×2, 404, 403 not_admin, 409, 403 wrong_admin_password, the ok above, 500.
-  assert.equal((route.match(/res(\.status\(\d+\))?\.json\(/g) || []).length, 8, "every answer is accounted for");
-  const errors = (route.match(/json\(\{ error: "([a-z_]+)" \}\)/g) || []).map((s) => s.match(/"([a-z_]+)"/)[1]);
-  assert.deepEqual(errors, ["invalid_params", "invalid_params", "not_found", "not_admin", "no_admin_password", "wrong_admin_password", "server_error"]);
+  // 400 invalid_params, 400 invalid_metaKey (only a quiniela's meta), 400 invalid_params, 404,
+  // 403 not_admin, 409, 403 wrong_admin_password, the ok above, 500.
+  assert.equal((route.match(/res(\.status\(\d+\))?\.json\(/g) || []).length, 9, "every answer is accounted for");
+  const errors = (route.match(/json\(\{ error: "([a-zA-Z_]+)" \}\)/g) || []).map((s) => s.match(/"([a-zA-Z_]+)"/)[1]);
+  assert.deepEqual(errors, ["invalid_params", "invalid_metaKey", "invalid_params", "not_found", "not_admin", "no_admin_password", "wrong_admin_password", "server_error"]);
   // No PIN (old or new) and no hash in any answer: the only keys ever sent back.
   const keys = (route.match(/\.json\(\{[^}]*\}/g) || []).flatMap((s) => [...s.matchAll(/([A-Za-z]+):/g)].map((m) => m[1]));
   assert.deepEqual([...new Set(keys)].sort(), ["error", "ok", "participantRevs"], "no PIN in any answer");
