@@ -5321,10 +5321,13 @@
     });
     const leagueSel = document.getElementById("qz-wz-league");
     if(leagueSel) leagueSel.addEventListener("change", () => { d.leaguePick = leagueSel.value; setupPersist(); setupFieldError("qz-wz-liga-err", ""); });
+    // The link that had the focus is replaced by its opposite: the focus goes
+    // there (or to «Elegir una liga»), never back to the page.
+    const focusFirst = (...ids) => { for(const id of ids){ const el = document.getElementById(id); if(el){ el.focus(); return; } } };
     const manualBtn = document.getElementById("qz-wz-manual");
-    if(manualBtn) manualBtn.addEventListener("click", () => { d.manual = true; d.leaguePick = ""; setSetupCal(null); setupPersist(); renderSetupFlow(); });
+    if(manualBtn) manualBtn.addEventListener("click", () => { d.manual = true; d.leaguePick = ""; setSetupCal(null); setupPersist(); renderSetupFlow(); focusFirst("qz-wz-use-cal", "qz-wz-pick-league", "qz-wz-title"); });
     const useCal = document.getElementById("qz-wz-use-cal");
-    if(useCal) useCal.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); });
+    if(useCal) useCal.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); focusFirst("qz-wz-manual", "qz-wz-title"); });
     const pickLeague = document.getElementById("qz-wz-pick-league");
     if(pickLeague) pickLeague.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); const s = document.getElementById("qz-wz-league"); if(s) s.focus(); });
     document.getElementById("qz-wz-extras-sw").addEventListener("click", async () => {
@@ -5367,7 +5370,9 @@
         ]);
         return;
       }
-      if(!d.questions.length){
+      // R3: with questions already in the quiniela (kept on publishing),
+      // adding none here is a valid choice, not a missing step.
+      if(!d.questions.length && !setupKeptQuestions().length){
         setupAlert(main, "Activaste las preguntas extra pero todavía no añadiste ninguna. Añade una o apaga la opción.", [
           { label: "Añadir una", run: () => { d.builder.open = true; setupPersist(); repaint(); const s = document.getElementById("qz-wz-q-tpl"); if(s) s.focus(); } },
           { label: "Apagar", run: () => { d.extrasOn = false; setupPersist(); repaint(); } },
@@ -5561,14 +5566,15 @@
     if(dl) rows.deadline = dl.value;
     saveRoundDraft(rows.kind, { matches: rows.matches, deadline: rows.deadline }, rows.base);
   }
-  // H3: each field is named with its side and its match («Local, partido 2»);
-  // the number is kept in step by renumberSetupRows when rows come and go.
+  // H3: each field has its visible label (for/id) and a name with its side
+  // and its match («Local, partido 2»); the number is kept in step by
+  // renumberSetupRows when rows come and go.
   function wzMatchRowHtml(m, imported, n){
     return `
       <div class="qz-wz-match" data-mid="${esc(m.id)}">
         <div class="match-edit-row">
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-wz-a-${esc(m.id)}">Local<span class="qz-sr" data-mnum>, partido ${esc(n)}</span></label><input type="text" id="qz-wz-a-${esc(m.id)}" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" aria-describedby="qz-wz-row-err-${esc(m.id)}"></div>
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-wz-b-${esc(m.id)}">Visitante<span class="qz-sr" data-mnum>, partido ${esc(n)}</span></label><input type="text" id="qz-wz-b-${esc(m.id)}" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" aria-describedby="qz-wz-row-err-${esc(m.id)}"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-wz-a-${esc(m.id)}">Local</label><input type="text" id="qz-wz-a-${esc(m.id)}" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" aria-label="Local, partido ${esc(n)}" aria-describedby="qz-wz-row-err-${esc(m.id)}"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-wz-b-${esc(m.id)}">Visitante</label><input type="text" id="qz-wz-b-${esc(m.id)}" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" aria-label="Visitante, partido ${esc(n)}" aria-describedby="qz-wz-row-err-${esc(m.id)}"></div>
           <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido ${esc(n)}">✕</button>
         </div>
         <p class="qz-field-error" id="qz-wz-row-err-${esc(m.id)}" role="alert" hidden></p>
@@ -5577,7 +5583,7 @@
   }
   function renumberSetupRows(rowsEl){
     rowsEl.querySelectorAll(".qz-wz-match").forEach((row, i) => {
-      row.querySelectorAll("[data-mnum]").forEach(el => { el.textContent = ", partido " + (i + 1); });
+      row.querySelectorAll("input[data-role]").forEach(el => { el.setAttribute("aria-label", (el.dataset.role === "teamA" ? "Local" : "Visitante") + ", partido " + (i + 1)); });
       const x = row.querySelector("[data-remove]");
       if(x) x.setAttribute("aria-label", "Quitar partido " + (i + 1));
     });
@@ -6020,6 +6026,16 @@
     const keptBefore = setupKeptSignature();
     await refreshSetupMeta();
     if(setupFlow !== flow) return;
+    // An earlier try did publish this round and its answer never came back
+    // (nor the re-read after it): the round is there, so it is not published
+    // twice nor called «changed elsewhere», and the rules are compared one by
+    // one with what the server has (R2), never celebrated.
+    const done = flow.rows ? setupAlreadyPublished(flow.rows, problem.clean) : null;
+    if(done){
+      clearRoundDraft(flow.rows.kind);
+      finishSetupPublish(done, setupRulesDiff(setupTargetRules(done.number)));
+      return;
+    }
     if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow); return; }
     // R3: the questions the quiniela already has changed meanwhile (another
     // admin or tab): what was reviewed is not what would be kept.
@@ -6093,7 +6109,7 @@
     const rows = flow.rows;
     const review = !!rows && rows.kind !== "new";
     flow.notice = { kind: "alert", retry: false, html: problem.field === "deadline"
-      ? "El cierre que elegiste ya pasó mientras esperábamos tu confirmación. No se publicó nada y tu jornada sigue en borrador: revísala y elige un cierre nuevo."
+      ? "El cierre que elegiste ya pasó antes de que se pudiera publicar. No se publicó nada y tu jornada sigue en borrador: revísala y elige un cierre nuevo."
       : esc(problem.message) + " No se publicó nada." };
     if(review){ setSetupCal(null); flow.rows = null; renderSetupFlow(); loadSetupCalendar(false); return; }
     renderSetupFlow();
@@ -9232,6 +9248,8 @@
         document.getElementById("qz-r-points-ex").textContent = n != null ? pointsExample(n) : "";
       });
       document.getElementById("qz-r-points-save").addEventListener("click", async (e) => {
+        // Read first: once something was awaited (the confirmation), currentTarget is null.
+        const btn = e.currentTarget;
         const n = parsePositiveInt(pointsInput.value);
         if(n == null){ setupFieldError("qz-r-points-err", "Escribe un número entero de 1 en adelante.", pointsInput); return; }
         if(n === points){ toast("Los puntos ya eran esos."); return; }
@@ -9240,7 +9258,7 @@
             { title: "¿Cambiar los puntos por acierto?", confirmLabel: "Cambiar puntos", cancelLabel: "Cancelar" });
           if(!ok) return;
         }
-        const done = setupBusy(e.currentTarget, "Guardando…");
+        const done = setupBusy(btn, "Guardando…");
         const saved = await saveProtected("pointsPerCorrectPick", n, "qz-r-points-err", "✅ Listo, los puntos por acierto quedaron guardados.");
         done();
         if(saved){ markHelpLearned("reglas.puntos"); repaint(); }
@@ -9269,6 +9287,8 @@
       repaint();
     });
     document.getElementById("qz-r-pen-save").addEventListener("click", async (e) => {
+      // Read first: once something was awaited (the confirmation), currentTarget is null.
+      const btn = e.currentTarget;
       let next;
       if(st.pen.enabled){
         const pp = document.getElementById("qz-r-pen-points"), ps = document.getElementById("qz-r-pen-start");
@@ -9292,7 +9312,7 @@
         }
         next = { ...penalty, enabled: false };
       }
-      const done = setupBusy(e.currentTarget, "Guardando…");
+      const done = setupBusy(btn, "Guardando…");
       const before = meta.paymentPenalty ? { ...meta.paymentPenalty } : undefined;
       const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
       // Never configured before: the rounds that already closed are settled as
@@ -9804,6 +9824,9 @@
     const persistDraft = () => saveRoundDraft(draftKind, draft, draft.base);
     const leagueId = meta.settings.sportsdbLeagueId || "4350";
     const leagueTeams = await fetchSportsdbTeams(leagueId);
+    // The admin moved to another tab while the teams were on their way: this
+    // panel is no longer on screen, so there is nothing to paint or wire.
+    if(!body.isConnected) return;
     // Only fall back to the static Liga MX list for Liga MX itself (today's
     // historical default) — for any other league, an empty result means "we
     // don't know this league's roster," not "show Liga MX teams instead."
@@ -9812,14 +9835,15 @@
       .slice()
       .sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
 
-    // H3: each field is named with its side and its match; the form is
-    // rebuilt whenever a row comes or goes, so the numbers stay right.
+    // H3: each field has its visible label (for/id) and a name with its side
+    // and its match; the form is rebuilt whenever a row comes or goes, so the
+    // numbers stay right.
     function matchRowHtml(m, idx){
       const n = idx + 1;
       return `
         <div class="match-edit-row" data-mid="${esc(m.id)}">
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-rm-a-${esc(m.id)}">Local<span class="qz-sr">, partido ${esc(n)}</span></label><input type="text" id="qz-rm-a-${esc(m.id)}" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-describedby="qz-rm-err-${esc(m.id)}"></div>
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-rm-b-${esc(m.id)}">Visitante<span class="qz-sr">, partido ${esc(n)}</span></label><input type="text" id="qz-rm-b-${esc(m.id)}" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-describedby="qz-rm-err-${esc(m.id)}"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-rm-a-${esc(m.id)}">Local</label><input type="text" id="qz-rm-a-${esc(m.id)}" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Local, partido ${esc(n)}" aria-describedby="qz-rm-err-${esc(m.id)}"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-rm-b-${esc(m.id)}">Visitante</label><input type="text" id="qz-rm-b-${esc(m.id)}" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Visitante, partido ${esc(n)}" aria-describedby="qz-rm-err-${esc(m.id)}"></div>
           <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido ${esc(n)}">✕</button>
         </div>
         <p class="qz-field-error" id="qz-rm-err-${esc(m.id)}" role="alert" hidden></p>

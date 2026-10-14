@@ -39,7 +39,7 @@ test("R4 · apagar calcula lo que la penalización resta hoy (registro + jornada
   assert.ok(off.includes('title: "¿Apagar la penalización?", confirmLabel: "Apagar", cancelLabel: "Cancelar"'));
   // Nada se toca antes de la confirmación: ni el registro, ni la regla, ni el botón.
   const confirmAt = save.indexOf("await qzConfirm(");
-  for (const write of ["reconcilePenaltyLedger(meta);", "meta.paymentPenalty = next;", "setMetaWithError(meta)", "setupBusy(e.currentTarget"]) {
+  for (const write of ["reconcilePenaltyLedger(meta);", "meta.paymentPenalty = next;", "setMetaWithError(meta)", "setupBusy(btn"]) {
     assert.ok(save.indexOf(write) > confirmAt, write + " va después de la confirmación");
   }
   assert.ok(!off.includes("reconcilePenaltyLedger") && !off.includes("meta.paymentPenalty ="), "cancelar no deja nada a medias");
@@ -257,22 +257,22 @@ test("H2 · Admin → Jornadas: la fila a medias se señala antes de cualquier o
 test("H3 · asistente: Local y Visitante tienen etiqueta ligada (for/id) con el número de partido; ✕ dice cuál quita; el error se anuncia en el campo", () => {
   const row = new Function(`${ESC}\nconst fmtKickoff = () => "";\n${fn("function wzMatchRowHtml(m, imported, n)")}\nreturn wzMatchRowHtml;`)();
   const html = row({ id: "m_7", teamA: "León", teamB: "" }, false, 2);
-  assert.ok(html.includes('<label for="qz-wz-a-m_7">Local<span class="qz-sr" data-mnum>, partido 2</span></label><input type="text" id="qz-wz-a-m_7"'));
-  assert.ok(html.includes('<label for="qz-wz-b-m_7">Visitante<span class="qz-sr" data-mnum>, partido 2</span></label><input type="text" id="qz-wz-b-m_7"'));
+  assert.ok(html.includes('<label for="qz-wz-a-m_7">Local</label><input type="text" id="qz-wz-a-m_7"') && html.includes('aria-label="Local, partido 2"'));
+  assert.ok(html.includes('<label for="qz-wz-b-m_7">Visitante</label><input type="text" id="qz-wz-b-m_7"') && html.includes('aria-label="Visitante, partido 2"'));
   assert.ok(html.includes('aria-label="Quitar partido 2"'));
   assert.equal((html.match(/aria-describedby="qz-wz-row-err-m_7"/g) || []).length, 2);
   assert.ok(html.includes('<p class="qz-field-error" id="qz-wz-row-err-m_7" role="alert" hidden></p>'));
   // Al quitar una fila, los números se rehacen.
   const ren = fn("function renumberSetupRows(rowsEl)");
-  assert.ok(ren.includes('el.textContent = ", partido " + (i + 1);') && ren.includes('x.setAttribute("aria-label", "Quitar partido " + (i + 1));'));
+  assert.ok(ren.includes('el.setAttribute("aria-label", (el.dataset.role === "teamA" ? "Local" : "Visitante") + ", partido " + (i + 1));') && ren.includes('x.setAttribute("aria-label", "Quitar partido " + (i + 1));'));
 });
 
 test("H3 · Admin → Jornadas: lo mismo, con el combo de equipos", () => {
   const body = fn("async function renderAdminRondas(body)");
   const row = new Function(`${ESC}\n${extractFunctionBody(body, "function matchRowHtml(m, idx)")}\nreturn matchRowHtml;`)();
   const html = row({ id: "m_3", teamA: "", teamB: "Santos" }, 0);
-  assert.ok(html.includes('<label for="qz-rm-a-m_3">Local<span class="qz-sr">, partido 1</span></label><input type="text" id="qz-rm-a-m_3"'));
-  assert.ok(html.includes('<label for="qz-rm-b-m_3">Visitante<span class="qz-sr">, partido 1</span></label><input type="text" id="qz-rm-b-m_3"'));
+  assert.ok(html.includes('<label for="qz-rm-a-m_3">Local</label><input type="text" id="qz-rm-a-m_3"') && html.includes('aria-label="Local, partido 1"'));
+  assert.ok(html.includes('<label for="qz-rm-b-m_3">Visitante</label><input type="text" id="qz-rm-b-m_3"') && html.includes('aria-label="Visitante, partido 1"'));
   assert.ok(html.includes('role="combobox"') && html.includes('aria-label="Quitar partido 1"'));
   assert.ok(html.includes('<p class="qz-field-error" id="qz-rm-err-m_3" role="alert" hidden></p>'));
 });
@@ -297,4 +297,56 @@ test("P3 · la invitación: «Copiar link» ya no dice que nadie ha entrado, y c
   assert.ok(sheet.includes('feedback.textContent = "✓ Link copiado. Pégalo donde quieras.";'));
   assert.ok(sheet.includes('const showFeedback = () => { try{ feedback.scrollIntoView({ block: "nearest" }); }catch(e){} };'));
   assert.equal((sheet.match(/showFeedback\(\);/g) || []).length, 3, "WhatsApp, Copiar y Añadir participantes");
+});
+
+// ---- R2 · hallado en el E2E de esta ronda ------------------------------------
+
+test("R2 · «Reintentar» tras perder la respuesta y la relectura: si la jornada ya está publicada, no se llama «cambio en otro dispositivo» ni se publica otra vez; se comparan las reglas", () => {
+  const click = fn("async function setupPublishClickNow(btn)");
+  const refresh = click.indexOf("await refreshSetupMeta();");
+  const done = click.indexOf("const done = flow.rows ? setupAlreadyPublished(flow.rows, problem.clean) : null;");
+  const elsewhere = click.indexOf("if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow); return; }");
+  assert.ok(refresh !== -1 && done > refresh && elsewhere > done, "después de leer el servidor y antes de «cambió en otra pestaña»");
+  const block = click.slice(done, elsewhere);
+  assert.ok(block.includes("clearRoundDraft(flow.rows.kind);"));
+  assert.ok(block.includes("finishSetupPublish(done, setupRulesDiff(setupTargetRules(done.number)));"));
+  assert.ok(!/setMetaWithError|setupPublish\(/.test(block), "nada se escribe");
+});
+
+test("P3 · Admin → Jornadas: si el admin cambia de pestaña mientras llegan los equipos, no se cablea un panel que ya no está (antes: error en consola)", () => {
+  const body = fn("async function renderAdminRondas(body)");
+  const at = body.indexOf("const leagueTeams = await fetchSportsdbTeams(leagueId);");
+  assert.ok(at !== -1 && body.indexOf("if(!body.isConnected) return;") > at);
+  assert.ok(body.indexOf("if(!body.isConnected) return;") < body.indexOf("body.innerHTML = `"));
+});
+
+test("R3 · con preguntas ya guardadas, no añadir ninguna nueva no bloquea el paso 1 (antes: «todavía no añadiste ninguna»)", () => {
+  const src = indexSrc;
+  const at = src.indexOf('"Activaste las preguntas extra pero todavía no añadiste ninguna. Añade una o apaga la opción."');
+  const guard = src.lastIndexOf("if(", at);
+  assert.ok(src.slice(guard, at).includes("if(!d.questions.length && !setupKeptQuestions().length){"));
+});
+
+test("ningún manejador usa event.currentTarget después de un await (ahí ya es null: «Apagar» y «Guardar puntos» con confirmación fallaban)", () => {
+  const bad = [];
+  const re = /async \((e|ev|evt)\) => \{/g;
+  let m;
+  while ((m = re.exec(indexSrc))) {
+    let depth = 1, i = m.index + m[0].length;
+    for (; i < indexSrc.length && depth; i++) { if (indexSrc[i] === "{") depth++; else if (indexSrc[i] === "}") depth--; }
+    const body = indexSrc.slice(m.index + m[0].length, i);
+    const a = body.indexOf("await ");
+    const c = a === -1 ? -1 : body.indexOf(m[1] + ".currentTarget", a);
+    if (c !== -1) bad.push(indexSrc.slice(0, m.index + m[0].length + c).split("\n").length);
+  }
+  assert.deepEqual(bad, []);
+  const reglas = fn("async function renderAdminReglas(body, opts)");
+  assert.ok(/qz-r-points-save"\)\.addEventListener\("click", async \(e\) => \{\s*\/\/[^\n]*\n\s*const btn = e\.currentTarget;/.test(reglas));
+  assert.ok(/qz-r-pen-save"\)\.addEventListener\("click", async \(e\) => \{\s*\/\/[^\n]*\n\s*const btn = e\.currentTarget;/.test(reglas));
+});
+
+test("P3 · bloque 1: «Prefiero armar los partidos a mano» y «Mejor usar el calendario» dejan el foco en su contraparte, no en la página", () => {
+  const liga = fn("function renderSetupLiga(main)");
+  assert.ok(liga.includes('renderSetupFlow(); focusFirst("qz-wz-use-cal", "qz-wz-pick-league", "qz-wz-title"); });'));
+  assert.ok(liga.includes('renderSetupFlow(); focusFirst("qz-wz-manual", "qz-wz-title"); });'));
 });
