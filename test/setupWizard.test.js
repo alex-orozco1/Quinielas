@@ -459,8 +459,11 @@ test("P2-2 · sin la contraseña de administrador (co-admin) hay salida: se dice
   // la penalización; no la copia de esta pestaña.
   assert.ok(keep.indexOf("await refreshSetupMeta();") < keep.indexOf("const stored = storedRuleValues();"));
   assert.ok(keep.includes("d.penOn = true;") && keep.includes("d.penPoints = penPoints;"));
-  // Y la contraseña se decide con lo guardado en el servidor.
+  // Y la contraseña se decide con lo guardado en el servidor; si en esa
+  // consulta cambiaron las jornadas, no se publica (Technical QA, ronda 2).
   assert.ok(click.indexOf("await refreshSetupMeta();") < click.indexOf("setupChangesProtectedRules(rules)"));
+  const changedAt = click.indexOf("if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow); return; }");
+  assert.ok(changedAt > click.indexOf("await refreshSetupMeta();") && changedAt < click.indexOf("const number = setupPublishNumber();"), "antes de calcular el número que se publica");
   assert.ok(fn("async function setupPublishClick(btn)").includes("setupClickPending = true;"), "un doble toque no abre dos preguntas");
   assert.ok(fn("function setupChangesProtectedRules(rules)").includes("const stored = storedRuleValues();"));
 });
@@ -639,6 +642,10 @@ test("co-admin · «Dejar puntos y cuota como están» usa lo que tiene el servi
     const setupPublishNumber = () => 12;
     const setupPublishMessage = (kind, html) => said.push(html);
     const getMeta = async () => JSON.parse(JSON.stringify(server));
+    let loads = 0;
+    const loadSetupCalendar = () => { loads++; };
+    ${fn("function setSetupCal(cal)")}
+    ${fn("function setupRoundsChangedElsewhere(flow, lead)")}
     const adminOrOwnerCred = () => "x";
     const console = { error(){} };
     ${fn("function esc(s)")}
@@ -648,7 +655,7 @@ test("co-admin · «Dejar puntos y cuota como están» usa lo que tiene el servi
     ${fn("function storedRuleValues()")}
     ${fn("async function refreshSetupMeta()")}
     ${fn("async function setupKeepStoredRules()")}
-    return { start(d){ setupFlow = { d }; return setupFlow; }, setupKeepStoredRules };
+    return { start(d){ setupFlow = { d }; return setupFlow; }, setupKeepStoredRules, loads: () => loads };
   `)(tab, server, said);
   const flow = env.start({ points: 4, payOn: false, fee: null, penOn: false, penPoints: 1, penFrom: null });
   await env.setupKeepStoredRules();
@@ -666,6 +673,17 @@ test("co-admin · «Dejar puntos y cuota como están» usa lo que tiene el servi
   const flow3 = env.start({ points: 3, payOn: true, fee: 200, penOn: false, penPoints: 1, penFrom: null });
   await env.setupKeepStoredRules();
   assert.equal(flow3.d.penFrom, 14);
+  // Technical QA (ronda 2, P2 nuevo): si mientras tanto cambiaron las jornadas
+  // en el servidor, no se deja «toca Publicar jornada N» con un número que ya
+  // no es: se vuelve al resumen con el aviso de cambios, sin publicar.
+  server.roundsRevision = 5;
+  said.length = 0;
+  const flow4 = env.start({ points: 1, payOn: false, fee: null, penOn: false, penPoints: 1, penFrom: null });
+  await env.setupKeepStoredRules();
+  assert.deepEqual(said, [], "sin el mensaje de «toca Publicar jornada N»");
+  assert.match(flow4.notice.html, /^Listo: dejamos .* Hubo cambios en las jornadas de esta quiniela desde otra pestaña o dispositivo\. Revisa el resumen y vuelve a tocar «Publicar»\. No se publicó nada\.$/);
+  assert.equal(flow4.cal, null);
+  assert.equal(env.loads(), 1, "el calendario se vuelve a buscar");
   assert.equal(tab.settings.entryFee, 200, "la pestaña se queda con la copia del servidor");
 });
 

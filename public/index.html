@@ -5740,12 +5740,24 @@
     try{ fresh = await getMeta({ owner: adminOrOwnerCred() }); }catch(e){ console.error("setup meta refresh failed", e); }
     adoptSetupMeta(fresh, true);
   }
+  // The rounds changed on the server since this summary was painted (another
+  // tab or device imported or published one): the round or its number may not
+  // be the one on screen. As with a conflict: back to the summary, the
+  // calendar looked up again, nothing published. `lead`: plain HTML first.
+  function setupRoundsChangedElsewhere(flow, lead){
+    setSetupCal(null);
+    flow.rows = null;
+    flow.notice = { kind: "alert", html: (lead || "") + "Hubo cambios en las jornadas de esta quiniela desde otra pestaña o dispositivo. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada.", retry: false };
+    renderSetupFlow();
+    loadSetupCalendar(false);
+  }
   // Without the admin password (a co-admin, or a creator who doesn't have it
   // at hand): the draft takes the points and the payments (fee and penalty)
   // back as the SERVER has them now. Nothing is published here; the summary
   // shows the change and publishing is one more tap, as always.
   async function setupKeepStoredRules(){
     const flow = setupFlow;
+    const revBefore = meta.roundsRevision;
     await refreshSetupMeta();
     if(setupFlow !== flow) return;
     const d = flow.d;
@@ -5784,8 +5796,10 @@
       changed.push(`la quiniela sin cuota (así no se registran pagos ni se restan puntos${pen ? "; la penalización guardada se apaga al publicar" : ""})`);
     }
     setupPersist();
+    const what = changed.length ? `Listo: dejamos ${changed.join(", ")}, como ya estaban guardados.` : `Tu resumen ya tiene los puntos y la cuota guardados.`;
+    if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow, what + " "); return; }
     renderSetupFlow();
-    setupPublishMessage("ok", `${changed.length ? `Listo: dejamos ${changed.join(", ")}, como ya estaban guardados.` : `Tu resumen ya tiene los puntos y la cuota guardados.`} Todavía no se publicó nada: revisa el resumen y toca «Publicar jornada ${esc(setupPublishNumber())}».`);
+    setupPublishMessage("ok", `${what} Todavía no se publicó nada: revisa el resumen y toca «Publicar jornada ${esc(setupPublishNumber())}».`);
   }
   let setupPublishInFlight = false;
   let setupClickPending = false;
@@ -5803,8 +5817,12 @@
     if(problem.field){ renderSetupFlow(); return; }
     // What is stored decides whether the password is needed (points and fee,
     // and whether the password exists): asked to the server, not this tab.
+    // If the rounds changed meanwhile, what was reviewed is not what would
+    // be published: back to the summary (Technical QA, ronda 2).
+    const revBefore = meta.roundsRevision;
     await refreshSetupMeta();
     if(setupFlow !== flow) return;
+    if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow); return; }
     // Onboarding B: without an admin password nothing is published. The
     // modal saves it and comes back here; publishing takes one more tap.
     if(needsAdminPasswordToPublish()){
