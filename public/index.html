@@ -1216,8 +1216,11 @@
   #quiniela-root .qz-qcard-chips{ display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
   #quiniela-root .qz-when{ margin:4px 0 8px; padding-left:18px; font-size:14px; line-height:1.5; }
   #quiniela-root .qz-table-scroll{ overflow-x:auto; }
-  #quiniela-root .qz-name-cell{ max-width:168px; overflow:hidden; text-overflow:ellipsis; }
-  #quiniela-root .qz-name-cell input{ max-width:150px; }
+  #quiniela-root .qz-name-cell{ min-width:132px; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+  #quiniela-root .qz-name-cell input{ width:100%; min-width:120px; }
+  /* Tabla: the name wraps (with its badges below) instead of being cut. */
+  #quiniela-root .qz-name-cell.qz-name-wrap{ white-space:normal; overflow:visible; min-width:120px; max-width:200px; }
+  #quiniela-root .qz-name-wrap .badge{ display:inline-block; margin-top:2px; }
   #quiniela-root tr.me .qz-sticky-col{ background:#FBF3DE; }
   #quiniela-root .qz-next{ border-color:var(--gold); background:#FFF9EC; }
   #quiniela-root .qz-next .qz-wz-actions{ margin-top:6px; }
@@ -1704,7 +1707,10 @@
     incomplete_results: "Faltan resultados por capturar antes de poder publicar.",
     round_not_closed: "Todavía no puedes publicar resultados oficiales de esta jornada — el plazo para votar no ha cerrado.",
     unpublished_round_results: "Esta jornada todavía no está publicada para los participantes. Publícala primero en Admin → Jornadas.",
-    bet_locked: "Esta apuesta ya cerró.",
+    bet_locked: "Esta pregunta ya cerró.",
+    // MS2: a tournament question closes with an existing round that has not closed yet.
+    bet_close_required: "Elige con qué jornada cierra la pregunta del torneo: una jornada que exista y no haya cerrado.",
+    bet_close_past: "Esa jornada ya cerró. Elige una jornada cuyo cierre todavía no haya pasado.",
     bet_not_found: "No encontramos esa apuesta.",
     name_taken: "Ya existe alguien con ese nombre — búscalo en la lista de arriba.",
     invalid_key: "Eso no se puede guardar aquí.",
@@ -6501,7 +6507,7 @@
     return `
       <div class="qz-bet-row">
         <div class="qz-bet-q">${esc(bet.label)} <span class="muted">· +${esc(bet.points)} ${esc(pointsWord(bet.points))} si aciertas</span></div>
-        <p class="muted qz-tight">${esc(close.text)}${locked || !close.round ? "" : " Puedes cambiar tu respuesta hasta entonces."}</p>
+        ${locked ? `` : `<p class="muted qz-tight">${esc(close.text)}${close.round ? " Puedes cambiar tu respuesta hasta entonces." : ""}</p>`}
         ${locked ? `` : `
           <div class="qz-bet-input">
             <input type="text" id="qz-cb-input-${esc(bet.id)}" maxlength="200" placeholder="Tu respuesta" value="${esc(savedBetGuess(bet.id))}" aria-label="Tu respuesta: ${esc(bet.label)}">
@@ -6514,9 +6520,11 @@
   function tournamentBetsCardHtml(bets){
     const answered = bets.filter(b => savedBetGuess(b.id)).length;
     const openUnanswered = bets.some(b => !customBetsLocked(b) && !savedBetGuess(b.id));
+    const closed = bets.filter(b => customBetsLocked(b)).length;
+    const closedNote = closed === bets.length ? (closed === 1 ? " · ya cerró" : " · ya cerraron") : closed ? ` · ${closed} ${closed === 1 ? "cerrada" : "cerradas"}` : "";
     return `
       <details class="card qz-bets-card" ${openUnanswered ? "open" : ""}>
-        <summary><span class="qz-bets-title">🎯 Preguntas del torneo</span> <span class="muted">· ${esc(answered)} de ${esc(bets.length)} respondidas</span></summary>
+        <summary><span class="qz-bets-title">🎯 Preguntas del torneo</span> <span class="muted">· ${esc(answered)} de ${esc(bets.length)} respondidas${esc(closedNote)}</span></summary>
         <p class="muted qz-tight">Lo que escribes no se guarda solo: toca «Guardar respuesta» en cada pregunta. Tus puntos se suman cuando el admin marca quién acertó.</p>
         ${bets.map(tournamentBetRowHtml).join("")}
       </details>`;
@@ -6854,7 +6862,7 @@
               <tr class="${p.id===currentUser.id?'me':''}">
                 <td class="pos ${ranks[i]===1?'top1':''}" style="text-align:center;">${medal(ranks[i]) || ranks[i]}</td>
                 <td style="text-align:center;">${movementHtml(p, ranks[i])}</td>
-                <td class="qz-sticky-col qz-name-cell" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}</td>
+                <td class="qz-sticky-col qz-name-cell qz-name-wrap" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}</td>
                 <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
                 <td style="text-align:center;" class="muted">${esc(i===0 ? "líder" : "−" + (leaderPts - p.pts))}</td>
                 ${payTracked ? `<td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>` : ``}
@@ -8417,14 +8425,18 @@
         </div>
       </div>`;
   }
-  async function renderAdminReglas(body){
-    body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;
-    const migrated = ensureCustomBets();
-    if(migrated) await setMeta(meta);
-    try{ await ensureAllPicksLoaded(); }catch(e){ console.error("reglas picks load failed", e); }
-    if(!body.isConnected) return;
+  // opts.quick: a repaint of this same screen (no «Cargando…», no reload of
+  // the picks it already has).
+  async function renderAdminReglas(body, opts){
+    if(!(opts && opts.quick)){
+      body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;
+      const migrated = ensureCustomBets();
+      if(migrated) await setMeta(meta);
+      try{ await ensureAllPicksLoaded(); }catch(e){ console.error("reglas picks load failed", e); }
+      if(!body.isConnected) return;
+    }
     const st = renderAdminReglas._state || (renderAdminReglas._state = { form: null, grade: null, pen: null });
-    const repaint = () => renderAdminReglas(body);
+    const repaint = () => renderAdminReglas(body, { quick: true });
     const s = meta.settings || {};
     const points = s.pointsPerCorrectPick != null ? s.pointsPerCorrectPick : 1;
     const fee = typeof s.entryFee === "number" ? s.entryFee : 0;
