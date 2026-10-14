@@ -739,6 +739,12 @@ test("barra fija · nada del recorrido queda debajo: se reserva su altura real y
   assert.ok(indexSrc.includes("html:has(#qz-setup-bar) #quiniela-root .toast{ bottom:calc(var(--qz-bar-h, 0px) + 12px); }"));
   // En un teléfono angosto, cada equipo en su renglón: un nombre largo se lee completo.
   assert.ok(indexSrc.includes('#quiniela-root .qz-wz-match .match-edit-row{ grid-template-columns:minmax(0, 1fr) auto; grid-template-areas:"a x" "b x"; row-gap:6px; }'));
+  // Technical QA (ronda 3): al volver a tocar «Publicar», la tarjeta del intento
+  // anterior se quita; nunca convive con el aviso del intento nuevo.
+  const click = fn("async function setupPublishClickNow(btn)");
+  const cleared = click.indexOf('const oldNotice = document.getElementById("qz-wz-notice");');
+  assert.ok(cleared !== -1 && cleared < click.indexOf("await refreshSetupMeta();"));
+  assert.ok(click.includes("if(oldNotice) oldNotice.remove();"));
   // El aviso de jornadas cambiadas va encima de la jornada, no al final del resumen.
   const sum = fn("function renderSetupResumen(main)");
   assert.ok(!sum.includes("setupPublishMessage(setupFlow.notice.kind"));

@@ -5866,7 +5866,11 @@
   }
   async function setupPublishClickNow(btn){
     const flow = setupFlow;
+    // A new try: what the previous one said (its card above the round, or
+    // the message by the button) no longer holds, so it goes now.
     flow.notice = null;
+    const oldNotice = document.getElementById("qz-wz-notice");
+    if(oldNotice) oldNotice.remove();
     setupPublishMessage(null, "");
     const problem = setupRoundProblem();
     if(problem.field){ renderSetupFlow(); return; }
