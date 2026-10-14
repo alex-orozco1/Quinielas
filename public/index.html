@@ -391,10 +391,13 @@
   #quiniela-root .divider{ height:1px; background:var(--line); margin:16px 0; }
   #quiniela-root .toast{
     position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
-    background:var(--pitch-dark); color:var(--chalk); padding:10px 18px; border-radius:999px;
+    background:var(--pitch-dark); color:var(--chalk); padding:10px 16px; border-radius:12px;
+    width:max-content; max-width:min(560px, calc(100vw - 32px)); line-height:1.4; text-align:center; overflow-wrap:anywhere;
     font-size:13px; font-weight:600; box-shadow:var(--shadow); z-index:100;
     opacity:0; pointer-events:none; transition:opacity .25s ease, transform .25s ease;
   }
+  /* in the setup flow, above its fixed bar, never over its buttons */
+  html:has(#qz-setup-bar) #quiniela-root .toast{ bottom:calc(var(--qz-bar-h, 0px) + 12px); }
   #quiniela-root .toast.show{ opacity:1; transform:translateX(-50%) translateY(-4px); }
 
   /* Aviso de espera por demasiados intentos: fijo junto al formulario, con
@@ -1256,7 +1259,16 @@
   #quiniela-root .qz-steps li.done{ border-top-color:var(--pitch-light); }
   #quiniela-root .qz-steps li.current{ border-top-color:var(--gold); color:var(--ink); font-weight:800; }
   #quiniela-root .qz-setup-grid{ display:grid; grid-template-columns:minmax(0, 1fr); gap:20px; }
-  #quiniela-root .qz-setup-main{ min-width:0; padding-bottom:110px; }
+  #quiniela-root .qz-setup-main{ min-width:0; padding-bottom:calc(var(--qz-bar-h, 96px) + 24px); }
+  /* nothing the flow scrolls to (a notice, a field, the focus) ends under the fixed bar */
+  html:has(#qz-setup-bar){ scroll-padding-bottom:calc(var(--qz-bar-h, 0px) + 16px); }
+  #quiniela-root .qz-setup-wrap *{ scroll-margin-bottom:calc(var(--qz-bar-h, 0px) + 16px); scroll-margin-top:12px; }
+  /* what changes what will be published: a card that stays in the flow */
+  #quiniela-root .qz-wz-callout{ background:#FFF9EC; border:1px solid #F0D79A; border-left:4px solid #D6A73C; border-radius:10px; padding:12px 14px; margin:0 0 12px; font-size:14px; line-height:1.45; color:#3F2D00; overflow-wrap:anywhere; }
+  #quiniela-root .qz-wz-callout p{ margin:0; }
+  #quiniela-root .qz-wz-callout p + p{ margin-top:4px; }
+  #quiniela-root .qz-wz-callout-title{ font-weight:800; font-size:15px; color:#2B1F00; }
+  #quiniela-root .qz-wz-notice{ margin:0 0 12px; overflow-wrap:anywhere; }
   #quiniela-root .qz-setup-aside{ display:none; }
   #quiniela-root .qz-wz-title{ font-size:28px; margin:4px 0 4px; line-height:1.15; }
   #quiniela-root .qz-wz-title:focus{ outline:none; }
@@ -1385,6 +1397,7 @@
   .qz-sheet p{ font-size:14px; line-height:1.5; margin:0 0 6px; }
   .qz-sheet .muted{ color:#4B5B53; font-size:13px; }
   .qz-sheet .qz-tight{ margin:2px 0 6px; }
+  .qz-sheet .qz-sheet-note{ background:#FFF9EC; border:1px solid #F0D79A; border-left:4px solid #D6A73C; border-radius:10px; padding:10px 12px; font-size:14px; line-height:1.45; color:#3F2D00; }
   .qz-sheet .btn{ font-family:inherit; border:none; border-radius:10px; padding:10px 16px; font-weight:700; cursor:pointer; }
   .qz-sheet .btn:focus-visible, .qz-sheet .qz-linkbtn:focus-visible, .qz-sheet-x:focus-visible{ outline:3px solid #D6A73C; outline-offset:2px; }
   .qz-sheet .btn-primary{ background:#0F2E22; color:#F7F5EC; }
@@ -4717,34 +4730,37 @@
     const got = Number.isFinite(fresh.roundsRevision) ? fresh.roundsRevision : -1;
     if(current ? got < have : got <= have) return;
     const manual = !current && !!setupFlow && !!setupFlow.cal && setupFlow.cal.state === "manual";
-    const numberBefore = manual ? setupPublishNumber() : null;
     adoptFreshMeta(meta, fresh);
     if(current || !setupFlow) return;
+    // The calendar arrived after «a mano»: the number moves past the
+    // calendar's rounds, and the repainted step says so in its card
+    // (setupManualNumberCardHtml), never in a toast that goes away.
     if(manual && (setupFlow.d.step === "jornada" || setupFlow.d.step === "resumen")) renderSetupFlow();
     else renderSetupAside();
-    // The calendar arrived after «a mano»: the number moves past the
-    // calendar's rounds. Said, never silently.
-    const numberAfter = manual ? setupPublishNumber() : null;
-    if(manual && numberAfter !== numberBefore){
-      toast("Llegó el calendario de tu liga: tu jornada a mano ahora es la Jornada " + numberAfter + ", para no repetir el número de una jornada del calendario. Tus partidos y tu cierre siguen igual.", 8000);
-    }
   }
   // MS2 · A round prepared by hand in a quiniela whose league calendar is
   // already imported takes the number after the last one (the calendar keeps
-  // its own numbers; the same rule as Admin → Jornadas). Said before
-  // publishing, with the way to play the calendar's round instead.
-  // Plain text; "" when there is nothing to explain.
-  function setupManualNumberNote(number, where){
-    const prepared = meta.rounds.filter(r => r && r.published === false).map(r => r.number);
-    if(!setupLeagueId() || !prepared.length || !number) return "";
-    const lo = Math.min(...prepared), hi = Math.max(...prepared);
-    const { round } = pickPlayableRound(meta.rounds, serverNow());
-    const how = where === "resumen"
-      ? "toca «Editar» en este bloque y luego «Probar de nuevo con el calendario»"
-      : "toca «Probar de nuevo con el calendario»";
-    return "El calendario de tu liga ya tiene " + (lo === hi ? "la Jornada " + lo : "las jornadas " + lo + " a " + hi)
-      + ". Para no repetir sus números, tu jornada a mano será la Jornada " + number + "."
-      + (round ? " Si prefieres jugar la Jornada " + round.number + " del calendario, " + how + ": ahí también puedes cambiar sus partidos." : "");
+  // its own numbers; the same rule as Admin → Jornadas, and still the
+  // Founder's decision). It changes what will be published, so it is a card
+  // that stays in the flow, above the round, never a toast that goes away.
+  // Plain text; null when there is nothing to explain.
+  function setupManualNumberInfo(number){
+    const taken = meta.rounds.filter(r => r && Number.isInteger(r.number)).map(r => r.number);
+    if(!setupLeagueId() || !taken.length || !number) return null;
+    const lo = Math.min(...taken), hi = Math.max(...taken);
+    return {
+      title: "Tu jornada manual será la Jornada " + number + ".",
+      body: "El calendario de esta liga ya ocupa " + (lo === hi ? "el número " + lo : "los números " + lo + "–" + hi) + ". Tus partidos y el cierre que elegiste se conservan.",
+    };
+  }
+  function setupManualNumberCardHtml(number){
+    const info = setupManualNumberInfo(number);
+    if(!info) return "";
+    return `
+      <section class="qz-wz-callout" id="qz-wz-number-card" role="status">
+        <p class="qz-wz-callout-title">${esc(info.title)}</p>
+        <p>${esc(info.body)}</p>
+      </section>`;
   }
   // Runs the lookup and applies its answer, unless something newer decided in
   // the meantime: a later lookup, or setSetupCal.
@@ -4844,6 +4860,23 @@
     const next = document.getElementById("qz-setup-next");
     next.addEventListener("click", () => { if(!next.disabled) onNext(next); });
     if(opts && opts.disabled) next.disabled = true;
+    trackSetupBarHeight(bar);
+  }
+  // The action bar is fixed at the bottom on a phone. Its real height (it
+  // grows when its label wraps, at 320 px) goes to --qz-bar-h: the flow
+  // reserves it below its content and anything scrolled into view (a notice,
+  // a field with an error, the focus) stops above it. Not fixed (laptop): 0.
+  let setupBarObserver = null;
+  function trackSetupBarHeight(bar){
+    const apply = () => {
+      if(!bar.isConnected) return;
+      const fixed = getComputedStyle(bar).position === "fixed";
+      document.documentElement.style.setProperty("--qz-bar-h", (fixed ? Math.ceil(bar.getBoundingClientRect().height) : 0) + "px");
+    };
+    apply();
+    if(setupBarObserver) setupBarObserver.disconnect();
+    setupBarObserver = typeof ResizeObserver === "function" ? new ResizeObserver(apply) : null;
+    if(setupBarObserver) setupBarObserver.observe(bar);
   }
   function setupBusy(btn, label){
     const prev = btn.textContent;
@@ -5508,7 +5541,7 @@
     if(!rows){ setSetupCal(null); renderSetupFlow(); return; }
     const imported = cal.state === "review";
     const number = imported ? rows.round.number : nextRoundNumber();
-    const manualNote = imported ? "" : setupManualNumberNote(number, "jornada");
+    const numberCardHtml = imported ? "" : setupManualNumberCardHtml(number);
     const leagueLabel = setupLeagueLabel(setupLeagueId());
     const tournamentQs = d.extrasOn ? d.questions.filter(q => q.scope === "temporada") : [];
     const minDeadline = toLocalInputValue(new Date(serverNow()).toISOString());
@@ -5517,6 +5550,7 @@
     main.innerHTML = `
       ${setupHeadHtml("jornada", imported ? "Ésta es la próxima jornada que todavía se puede jugar." : "Agrega los partidos que van a jugar.")}
       ${skipped ? `<p class="qz-wz-warn">La Jornada ${esc(skipped.number)} ya empezó (${esc(skipped.started)} ${skipped.started === 1 ? "partido ya inició" : "partidos ya iniciaron"}), así que te sugerimos la Jornada ${esc(number)}, la próxima que todavía se puede jugar completa.</p>` : ``}
+      ${numberCardHtml}
       <section class="card qz-wz-card" aria-labelledby="qz-wz-round-t">
         <div class="qz-wz-round-head">
           <h2 class="qz-wz-h2" id="qz-wz-round-t">Jornada ${esc(number)}</h2>
@@ -5525,7 +5559,6 @@
         <p class="muted qz-tight">${imported
           ? `Es la primera que vas a publicar. Las demás jornadas del calendario de ${esc(leagueLabel || "tu liga")} quedan preparadas; las publicas cuando quieras.`
           : "Será tu primera jornada publicada."}</p>
-        ${!imported && manualNote ? `<p class="qz-wz-note" id="qz-wz-number-note">${esc(manualNote)}</p>` : ``}
         <p class="qz-wz-count muted" id="qz-wz-count"></p>
         <div id="qz-wz-rows">${matchRowsHtml}</div>
         ${imported ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(tzShortName(rows.round.deadline))}).</p>` : ``}
@@ -5635,6 +5668,13 @@
     const needsPassword = needsAdminPasswordToPublish();
     const imported = cal.state === "review";
     const editBtn = (step) => `<button class="btn btn-ghost btn-sm" data-wz-edit="${step}">Editar</button>`;
+    // Built by its own function, which escapes what it paints.
+    const numberCardHtml = imported ? "" : setupManualNumberCardHtml(number);
+    // flow.notice.html is built here from fixed text and esc() values.
+    const notice = setupFlow.notice;
+    const noticeHtml = notice
+      ? `<div class="${notice.kind === "ok" ? "qz-pw-saved" : "qz-wz-alert"} qz-wz-notice" id="qz-wz-notice" role="${notice.kind === "ok" ? "status" : "alert"}"><p>${notice.html}</p></div>`
+      : ``;
     main.innerHTML = `
       ${setupHeadHtml("resumen", `Nada se publica hasta que toques «Publicar jornada ${number}».`)}
       <div class="qz-sum-grid">
@@ -5656,10 +5696,11 @@
             ` : `<p>Sin registro de pagos.</p>`}
             ${payProblem ? `<p class="qz-field-error">${esc(payProblem)}</p>` : ``}
           </section>
+          ${noticeHtml}
+          ${numberCardHtml}
           <section class="card qz-wz-card qz-sum-section" aria-labelledby="qz-sum-3">
             <div class="qz-sum-head"><h2 class="qz-wz-h2" id="qz-sum-3">Jornada ${esc(number)}</h2>${editBtn("jornada")}</div>
             <p class="muted">Jornada ${esc(number)}${leagueId && imported ? ` · ${esc(leagueLabel)}` : " · partidos a mano"} · ${esc(clean.length)} ${clean.length === 1 ? "partido" : "partidos"}</p>
-            ${imported ? `` : `${esc(setupManualNumberNote(number, "resumen")) ? `<p class="qz-wz-note">${esc(setupManualNumberNote(number, "resumen"))}</p>` : ``}`}
             ${kickZone ? `<div class="qz-sum-matches-head" aria-hidden="true"><span>Partido</span><span>Inicio del partido</span></div>` : ``}
             <ul class="qz-sum-matches">${clean.map(m => `<li><span>${esc(m.teamA)} vs ${esc(m.teamB)}</span>${m.kickoffAt ? `<span class="muted"><span class="qz-sr">Inicio del partido: </span>${esc(fmtKickoff(m.kickoffAt))}</span>` : ``}</li>`).join("")}</ul>
             ${kickZone ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(kickZone)}).</p>` : ``}
@@ -5690,7 +5731,13 @@
       try{ window.scrollTo({ top: 0 }); }catch(e){}
       const h = document.getElementById("qz-wz-title"); if(h) h.focus();
     }));
-    if(setupFlow.notice){ setupPublishMessage(setupFlow.notice.kind, setupFlow.notice.html, setupFlow.notice.retry); }
+    // A notice about the round itself (it changed elsewhere) stays above the
+    // round until the next try; brought into view once.
+    const noticeEl = document.getElementById("qz-wz-notice");
+    if(noticeEl && !setupFlow.notice.seen){
+      setupFlow.notice.seen = true;
+      if(typeof noticeEl.scrollIntoView === "function") noticeEl.scrollIntoView({ block: "center" });
+    }
     const label = needsPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;
     setupBar("jornada", label, (btn) => setupPublishClick(btn), { summary: true, disabled: !!(roundProblem || payProblem) });
   }
@@ -5952,8 +5999,8 @@
       const done = setupAlreadyPublished(rows, problem.clean);
       if(done){
         clearRoundDraft(rows.kind);
-        finishSetupPublish(done, null);
-        if(!setupRulesStored(rules)) toast(`La Jornada ${done.number} ya estaba publicada, pero tus reglas no se guardaron desde aquí. Revísalas en Admin → Tus reglas.`, 7000);
+        finishSetupPublish(done, null, setupRulesStored(rules) ? null
+          : "La Jornada " + done.number + " ya estaba publicada, pero tus reglas no se guardaron desde aquí. Revísalas en Admin → Tus reglas.");
         return;
       }
     }
@@ -6008,17 +6055,20 @@
     const bets = meta.customBets || [];
     return points === rules.points && fee === rules.fee && rules.bets.every(b => bets.some(x => x.id === b.id));
   }
-  function finishSetupPublish(round, result){
+  // note: plain text about what was published (rules that did not change),
+  // shown inside the invitation sheet; never a toast over its buttons.
+  function finishSetupPublish(round, result, note){
     clearRoundDraft(SETUP_DRAFT_KIND);
     trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
     setupFlow = null;
     setupContinuityResolved = true;
     activeTab = "jornada";
     renderApp();
-    openInviteSheet({ first: true, round });
-    if(result && result.ruleFieldsKept){
-      toast("La jornada se publicó, pero no se guardaron los puntos ni la cuota: hace falta la contraseña de administrador. Cámbialos en Admin → Tus reglas.", 7000);
-    }
+    if(setupBarObserver){ setupBarObserver.disconnect(); setupBarObserver = null; }
+    const kept = result && result.ruleFieldsKept
+      ? "La jornada se publicó, pero no se guardaron los puntos ni la cuota: hace falta la contraseña de administrador. Cámbialos en Admin → Tus reglas."
+      : null;
+    openInviteSheet({ first: true, round, note: note || kept });
   }
 
   // ---- invitar ------------------------------------------------------------------
@@ -6076,6 +6126,7 @@
       <div class="qz-modal-card qz-sheet" role="dialog" aria-modal="true" aria-labelledby="qz-invite-title" tabindex="-1">
         <button class="qz-sheet-x" id="qz-invite-x" aria-label="Cerrar">✕</button>
         <h2 class="qz-sheet-title" id="qz-invite-title">${first && round ? `🎉 ¡Tu quiniela y la Jornada ${esc(round.number)} ya están listas!` : "Invita a tus amigos"}</h2>
+        ${opts && opts.note ? `<p class="qz-sheet-note" role="status">${esc(opts.note)}</p>` : ``}
         <p>Invita a tus amigos para que entren y hagan sus pronósticos antes del cierre.</p>
         ${round && !isRoundLocked(round) ? `<p class="muted">Cierre de la Jornada ${esc(round.number)}: <strong>${esc(fmtWhenTz(round.deadline))}</strong>.</p>` : ``}
         <div class="qz-sheet-actions">

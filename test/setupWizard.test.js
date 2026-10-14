@@ -289,11 +289,14 @@ test("publicar · el éxito y la invitación sólo después de que el servidor c
   const pub = fn("async function setupPublish(btn, problem, number, rules)");
   const ok = pub.slice(pub.indexOf("if(result.ok){"), pub.indexOf("if(!result.reconciled)"));
   assert.ok(ok.includes("clearRoundDraft(rows.kind);") && ok.includes("finishSetupPublish(round, result);"));
-  const finish = fn("function finishSetupPublish(round, result)");
+  const finish = fn("function finishSetupPublish(round, result, note)");
   assert.ok(finish.includes("clearRoundDraft(SETUP_DRAFT_KIND);"));
   assert.ok(finish.indexOf("setupContinuityResolved = true;") < finish.indexOf("renderApp();"), "sin esto, la continuidad volvería a abrir la invitación a pantalla completa");
-  assert.ok(finish.indexOf("renderApp();") < finish.indexOf("openInviteSheet({ first: true, round });"));
+  assert.ok(finish.indexOf("renderApp();") < finish.indexOf("openInviteSheet({ first: true, round, note: note || kept });"));
   assert.ok(finish.includes("result.ruleFieldsKept"), "si el servidor conservó puntos o cuota, se dice");
+  // Founder (ronda 3): lo que se dice de lo publicado queda en la hoja, no en un toast sobre sus botones.
+  assert.ok(!finish.includes("toast("));
+  assert.ok(fn("function openInviteSheet(opts)").includes('${opts && opts.note ? `<p class="qz-sheet-note" role="status">${esc(opts.note)}</p>` : ``}'));
 });
 
 test("publicar · las reglas que escribe: preguntas de torneo ligadas a la jornada publicada, pagos apagados sin cuota ni penalización oculta", () => {
@@ -361,7 +364,7 @@ test("publicar · una respuesta perdida: antes de decir algo se pregunta al serv
   const conflictMsg = fail.indexOf("No se publicó nada.");
   assert.ok(recheck !== -1 && recheck < already && already < conflictMsg, "primero el servidor, después el aviso");
   assert.ok(fail.slice(recheck, already).includes("adoptFreshMeta(meta, fresh);"));
-  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, null);"));
+  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, null, setupRulesStored(rules) ? null"));
   const found = fn("function setupAlreadyPublished(rows, clean)");
   assert.ok(found.includes("const r = meta.rounds.find(x => x.id === rows.round.id);"), "calendario: la misma jornada");
   assert.ok(found.includes("return meta.rounds.find(published) || null;"), "a mano: los mismos ids de partido");
@@ -558,10 +561,11 @@ test("calendario · elegir «a mano» mientras carga: la respuesta tardía no vu
     assert.equal(flow.rows.deadline, "2026-10-20T19:00");
     // Las jornadas que el servidor sí importó llegan a la meta (son más nuevas),
     // sin cambiar la decisión; el número de la jornada a mano se mueve después
-    // de las del calendario, y se dice (Product QA, ronda 2).
+    // de las del calendario, y el paso se vuelve a pintar con su tarjeta
+    // (Founder, ronda 3: una tarjeta en el flujo, no un toast).
     assert.equal(meta.roundsRevision, 1);
-    assert.equal(h.env.toasts.length, 1, how);
-    assert.match(h.env.toasts[0], /tu jornada a mano ahora es la Jornada 14, para no repetir el número de una jornada del calendario\. Tus partidos y tu cierre siguen igual\./);
+    assert.equal(h.env.toasts.length, 0, how);
+    assert.ok(h.env.renders.flow >= 1, `${how}: se repinta el paso con la tarjeta del número`);
   }
 });
 
@@ -687,22 +691,55 @@ test("co-admin · «Dejar puntos y cuota como están» usa lo que tiene el servi
   assert.equal(tab.settings.entryFee, 200, "la pestaña se queda con la copia del servidor");
 });
 
-test("numeración · una jornada a mano con el calendario ya importado explica su número y cómo jugar la del calendario", () => {
-  const meta = { settings: { sportsdbLeagueId: "4350" }, rounds: [round(11, -1, [-2]), round(12, 48, [50]), round(17, 800, [802])] };
-  const note = new Function("meta", "serverNowMs", `
-    const serverNow = () => serverNowMs;
+test("numeración · una tarjeta en el flujo, encima de la jornada, dice el número real y qué se conserva (Founder, ronda 3)", () => {
+  const make = (metaObj) => new Function("meta", `
+    ${fn("function esc(s)")}
     ${fn("function setupLeagueId()")}
-    ${fn("function isRoundUsableForSetup(round, nowMs)")}
-    ${fn("function startedMatchesOf(round, nowMs)")}
-    ${fn("function pickPlayableRound(rounds, nowMs)")}
-    ${fn("function setupManualNumberNote(number, where)")}
-    return setupManualNumberNote;
-  `)(meta, NOW);
-  assert.equal(note(18, "jornada"), "El calendario de tu liga ya tiene las jornadas 11 a 17. Para no repetir sus números, tu jornada a mano será la Jornada 18. Si prefieres jugar la Jornada 12 del calendario, toca «Probar de nuevo con el calendario»: ahí también puedes cambiar sus partidos.");
-  assert.match(note(18, "resumen"), /toca «Editar» en este bloque y luego «Probar de nuevo con el calendario»/);
-  // Sin calendario importado, o sin liga, no hay nada que explicar.
-  assert.equal(new Function("meta", "serverNowMs", `const serverNow = () => serverNowMs; ${fn("function setupLeagueId()")} ${fn("function isRoundUsableForSetup(round, nowMs)")} ${fn("function startedMatchesOf(round, nowMs)")} ${fn("function pickPlayableRound(rounds, nowMs)")} ${fn("function setupManualNumberNote(number, where)")} return setupManualNumberNote;`)({ settings: {}, rounds: [] }, NOW)(1, "jornada"), "");
-  // Se pinta, escapada, en el paso 3 a mano y en el resumen.
-  assert.ok(fn("function renderSetupRoundForm(main)").includes('<p class="qz-wz-note" id="qz-wz-number-note">${esc(manualNote)}</p>'));
-  assert.ok(fn("function renderSetupResumen(main)").includes('<p class="qz-wz-note">${esc(setupManualNumberNote(number, "resumen"))}</p>'));
+    ${fn("function setupManualNumberInfo(number)")}
+    ${fn("function setupManualNumberCardHtml(number)")}
+    return { setupManualNumberInfo, setupManualNumberCardHtml };
+  `)(metaObj);
+  const withCal = make({ settings: { sportsdbLeagueId: "4350" }, rounds: [round(11, -1, [-2]), round(12, 48, [50]), round(17, 800, [802])] });
+  assert.deepEqual(withCal.setupManualNumberInfo(18), {
+    title: "Tu jornada manual será la Jornada 18.",
+    body: "El calendario de esta liga ya ocupa los números 11–17. Tus partidos y el cierre que elegiste se conservan.",
+  });
+  const card = withCal.setupManualNumberCardHtml(18);
+  assert.match(card, /<section class="qz-wz-callout" id="qz-wz-number-card" role="status">/);
+  assert.ok(card.includes("Tu jornada manual será la Jornada 18.") && card.includes("ya ocupa los números 11–17."));
+  assert.equal(make({ settings: { sportsdbLeagueId: "4350" }, rounds: [round(12, 48, [50])] }).setupManualNumberInfo(13).body.slice(0, 50), "El calendario de esta liga ya ocupa el número 12. ");
+  // Sin liga o sin jornadas del calendario, no hay nada que explicar.
+  assert.equal(make({ settings: {}, rounds: [] }).setupManualNumberCardHtml(1), "");
+  assert.equal(make({ settings: { sportsdbLeagueId: "4350" }, rounds: [] }).setupManualNumberCardHtml(1), "");
+  // Encima de la sección de la jornada, en el paso 3 y en el resumen; el
+  // encabezado, el resumen y el botón usan el mismo número.
+  const form = fn("function renderSetupRoundForm(main)");
+  assert.ok(form.includes("${numberCardHtml}\n      <section class=\"card qz-wz-card\" aria-labelledby=\"qz-wz-round-t\">"));
+  assert.ok(form.includes("const numberCardHtml = imported ? \"\" : setupManualNumberCardHtml(number);"));
+  const sum = fn("function renderSetupResumen(main)");
+  assert.ok(sum.includes("${noticeHtml}\n          ${numberCardHtml}\n          <section class=\"card qz-wz-card qz-sum-section\" aria-labelledby=\"qz-sum-3\">"));
+  assert.ok(sum.includes("const numberCardHtml = imported ? \"\" : setupManualNumberCardHtml(number);"));
+  assert.ok(sum.includes("`Publicar jornada ${number}`") && sum.includes('id="qz-sum-3">Jornada ${esc(number)}</h2>'));
+  // Ningún aviso flotante para esto.
+  assert.ok(!fn("function adoptSetupMeta(fresh, current)").includes("toast("));
 });
+
+test("barra fija · nada del recorrido queda debajo: se reserva su altura real y lo que se lleva a la vista se detiene encima", () => {
+  const bar = fn("function setupBar(backStep, nextLabel, onNext, opts)");
+  assert.ok(bar.includes("trackSetupBarHeight(bar);"));
+  const track = fn("function trackSetupBarHeight(bar)");
+  assert.ok(track.includes('document.documentElement.style.setProperty("--qz-bar-h", (fixed ? Math.ceil(bar.getBoundingClientRect().height) : 0) + "px");'));
+  assert.ok(track.includes("new ResizeObserver(apply)"), "crece si su texto baja de línea");
+  assert.ok(indexSrc.includes("#quiniela-root .qz-setup-main{ min-width:0; padding-bottom:calc(var(--qz-bar-h, 96px) + 24px); }"));
+  assert.ok(indexSrc.includes("html:has(#qz-setup-bar){ scroll-padding-bottom:calc(var(--qz-bar-h, 0px) + 16px); }"));
+  assert.ok(indexSrc.includes("#quiniela-root .qz-setup-wrap *{ scroll-margin-bottom:calc(var(--qz-bar-h, 0px) + 16px);"));
+  // El toast: un rectángulo que se lee completo, encima de la barra.
+  assert.ok(indexSrc.includes("width:max-content; max-width:min(560px, calc(100vw - 32px));"));
+  assert.ok(!/#quiniela-root \.toast\{[^}]*border-radius:999px/.test(indexSrc));
+  assert.ok(indexSrc.includes("html:has(#qz-setup-bar) #quiniela-root .toast{ bottom:calc(var(--qz-bar-h, 0px) + 12px); }"));
+  // El aviso de jornadas cambiadas va encima de la jornada, no al final del resumen.
+  const sum = fn("function renderSetupResumen(main)");
+  assert.ok(!sum.includes("setupPublishMessage(setupFlow.notice.kind"));
+  assert.ok(sum.includes('id="qz-wz-notice"'));
+});
+
