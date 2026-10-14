@@ -737,6 +737,8 @@ test("barra fija · nada del recorrido queda debajo: se reserva su altura real y
   assert.ok(indexSrc.includes("width:max-content; max-width:min(560px, calc(100vw - 32px));"));
   assert.ok(!/#quiniela-root \.toast\{[^}]*border-radius:999px/.test(indexSrc));
   assert.ok(indexSrc.includes("html:has(#qz-setup-bar) #quiniela-root .toast{ bottom:calc(var(--qz-bar-h, 0px) + 12px); }"));
+  // En un teléfono angosto, cada equipo en su renglón: un nombre largo se lee completo.
+  assert.ok(indexSrc.includes('#quiniela-root .qz-wz-match .match-edit-row{ grid-template-columns:minmax(0, 1fr) auto; grid-template-areas:"a x" "b x"; row-gap:6px; }'));
   // El aviso de jornadas cambiadas va encima de la jornada, no al final del resumen.
   const sum = fn("function renderSetupResumen(main)");
   assert.ok(!sum.includes("setupPublishMessage(setupFlow.notice.kind"));

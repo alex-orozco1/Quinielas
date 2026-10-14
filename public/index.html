@@ -1336,6 +1336,14 @@
   #quiniela-root .qz-wz-count{ margin:6px 0; font-weight:700; }
   #quiniela-root .qz-wz-match{ margin-bottom:8px; }
   #quiniela-root .qz-wz-match .match-edit-row{ margin-bottom:2px; }
+  /* on a narrow phone each team gets its own line, so a long name reads whole */
+  @media (max-width:480px){
+    #quiniela-root .qz-wz-match{ padding-bottom:8px; border-bottom:1px solid var(--line); }
+    #quiniela-root .qz-wz-match .match-edit-row{ grid-template-columns:minmax(0, 1fr) auto; grid-template-areas:"a x" "b x"; row-gap:6px; }
+    #quiniela-root .qz-wz-match .match-edit-row > :nth-child(1){ grid-area:a; }
+    #quiniela-root .qz-wz-match .match-edit-row > :nth-child(2){ grid-area:b; }
+    #quiniela-root .qz-wz-match .match-edit-row > .icon-x{ grid-area:x; align-self:center; }
+  }
   #quiniela-root .qz-wz-match input{ font-size:16px; }
   #quiniela-root .qz-wz-kick{ margin:0 0 6px; font-size:12.5px; }
   /* the action bar: fixed at the bottom on a phone, at the end of the column on a laptop */
