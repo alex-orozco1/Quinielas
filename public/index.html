@@ -1346,6 +1346,7 @@
   #quiniela-root .qz-sum-qs{ margin:4px 0 6px; padding-left:18px; font-size:14px; }
   #quiniela-root .qz-sum-qs li{ margin-bottom:4px; }
   #quiniela-root .qz-sum-matches{ list-style:none; margin:6px 0; padding:0; }
+  #quiniela-root .qz-sum-matches-head{ display:flex; justify-content:space-between; gap:10px; margin-top:8px; padding-bottom:4px; border-bottom:1px solid var(--line); font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); }
   #quiniela-root .qz-sum-matches li{ display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:6px 0; border-bottom:1px solid var(--line); font-weight:600; }
   #quiniela-root .qz-infocard ul{ margin:4px 0 0; padding-left:18px; font-size:14px; line-height:1.5; }
   @media (min-width:901px){
@@ -4453,6 +4454,15 @@
     if(d.getFullYear() !== new Date(serverNow()).getFullYear()) opts.year = "numeric";
     try{ return d.toLocaleString("es-MX", opts); }catch(e){ return d.toLocaleString(); }
   }
+  // The time zone the screen writes times in (this device's), as fmtWhenTz
+  // names it: «GMT-6». Taken at that instant, in case it changes with DST.
+  function tzShortName(iso){
+    const d = new Date(iso || serverNow());
+    try{
+      const part = new Intl.DateTimeFormat("es-MX", { timeZoneName: "short" }).formatToParts(d).find(p => p.type === "timeZoneName");
+      return part ? part.value : "";
+    }catch(e){ return ""; }
+  }
   // «sáb 17 oct · 7:00 p.m.»: a kickoff, next to its match.
   function fmtKickoff(iso){
     const d = new Date(iso);
@@ -4651,16 +4661,20 @@
 
   // Looks up the calendar for step 3: syncs it when there is a league and
   // nothing imported yet (or on «Reintentar»), then picks the round. Never
-  // throws; a failure is a state the screen explains.
-  async function resolveSetupCalendar(force){
+  // throws; a failure is a state the screen explains. It RETURNS the state
+  // instead of setting it: only loadSetupCalendar applies it, and only while
+  // this lookup is still the latest decision (isCurrent). null: superseded.
+  async function resolveSetupCalendar(force, isCurrent){
     const flow = setupFlow;
-    if(!flow) return;
+    if(!flow) return null;
     const leagueId = setupLeagueId();
-    if(flow.d.manual || !leagueId){ flow.cal = { state: "manual" }; return; }
+    if(flow.d.manual || !leagueId) return { state: "manual" };
     const hasImported = meta.rounds.some(r => r.published === false);
     if(!hasImported || force){
-      flow.cal = { state: "loading", since: Date.now() };
-      if(flow.d.step === "jornada" || flow.d.step === "resumen") renderSetupFlow();
+      if(isCurrent()){
+        flow.cal = { state: "loading", since: Date.now() };
+        if(flow.d.step === "jornada" || flow.d.step === "resumen") renderSetupFlow();
+      }
       let res = null, data = null;
       try{
         res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sync-competition`, {
@@ -4671,36 +4685,63 @@
       }catch(e){ console.error("setup sync-competition failed", e); }
       let fresh = null;
       try{ fresh = await getMeta({ owner: adminOrOwnerCred() }); }catch(e){ console.error("setup meta refresh failed", e); }
-      if(fresh) adoptFreshMeta(meta, fresh);
-      if(setupFlow !== flow) return;
+      const current = isCurrent();
+      adoptSetupMeta(fresh, current);
+      // An answer that arrives after a newer decision (the manual way, another
+      // league, a later lookup) decides nothing.
+      if(!current) return null;
+      if(flow.d.manual) return { state: "manual" };
       const failed = !res || !res.ok || !data || data.ok === false;
       if(failed && !meta.rounds.some(r => r.published === false)){
-        flow.cal = {
+        return {
           state: "fail",
           commercial: !!(res && res.status === 402),
           failMessage: res && res.status === 402
             ? humanizeError(data && data.error, data)
             : sportsDataFailureMessage(data && data.reliabilityState),
         };
-        return;
       }
     }
     const { round, skipped } = pickPlayableRound(meta.rounds, serverNow());
-    if(round){ flow.cal = { state: "review", roundId: round.id, skipped }; return; }
-    flow.cal = { state: meta.rounds.some(r => r.published === false) ? "none" : "empty", skipped };
+    if(round) return { state: "review", roundId: round.id, skipped };
+    return { state: meta.rounds.some(r => r.published === false) ? "none" : "empty", skipped };
   }
-  // Runs the lookup and repaints what depends on it. A later lookup wins over
-  // an earlier one still in flight.
+  // The meta a calendar lookup brings back never replaces a newer copy (two
+  // lookups can finish in reverse order). One that is no longer the latest
+  // still brings rounds the server imported meanwhile, and the screen that
+  // shows the round number is repainted with them; it changes no decision.
+  function adoptSetupMeta(fresh, current){
+    if(!fresh) return;
+    const have = Number.isFinite(meta.roundsRevision) ? meta.roundsRevision : -1;
+    const got = Number.isFinite(fresh.roundsRevision) ? fresh.roundsRevision : -1;
+    if(current ? got < have : got <= have) return;
+    adoptFreshMeta(meta, fresh);
+    if(current || !setupFlow) return;
+    if(setupFlow.cal && setupFlow.cal.state === "manual" && (setupFlow.d.step === "jornada" || setupFlow.d.step === "resumen")) renderSetupFlow();
+    else renderSetupAside();
+  }
+  // Runs the lookup and applies its answer, unless something newer decided in
+  // the meantime: a later lookup, or setSetupCal.
   async function loadSetupCalendar(force){
     if(!setupFlow) return;
     const flow = setupFlow;
     const token = {};
     flow.calToken = token;
     flow.rows = null;
-    await resolveSetupCalendar(force);
-    if(setupFlow !== flow || flow.calToken !== token) return;
+    const isCurrent = () => setupFlow === flow && flow.calToken === token;
+    const cal = await resolveSetupCalendar(force, isCurrent);
+    if(!cal || !isCurrent()) return;
+    flow.cal = cal;
     if(flow.d.step === "jornada" || flow.d.step === "resumen") renderSetupFlow();
     else { renderSetupAside(); refreshExtraCloseTexts(); }
+  }
+  // A decision about the calendar taken here (the manual way, back to the
+  // calendar, another league): it replaces whatever a lookup still in flight
+  // would answer.
+  function setSetupCal(cal){
+    if(!setupFlow) return;
+    setupFlow.calToken = null;
+    setupFlow.cal = cal;
   }
   // Step 1 stays as typed; only the closing lines of the questions follow the
   // calendar once it is known.
@@ -4854,7 +4895,7 @@
           <dt>Puntos por acierto</dt><dd>${esc(d.points)} ${esc(pointsWord(d.points))}</dd>
           <dt>Preguntas extra</dt><dd>${qs.length ? `${esc(qs.length)} ${qs.length === 1 ? "pregunta" : "preguntas"}<ul class="qz-sum-list">${qs.map(q => `<li>${esc(q.text)} <span class="muted">· +${esc(q.points)} · ${esc(scopeLabel(q.scope))}${q.scope === "temporada" ? ` · ${esc(extraCloseShort("temporada", closeRound))}` : ""}</span></li>`).join("")}</ul>` : (d.extrasOn ? `${pending}` : "Ninguna")}</dd>
           <dt>Pagos</dt><dd>${SETUP_STEPS.indexOf(d.step) < 1 ? pending : d.payOn ? `Cuota $${esc(d.fee != null ? d.fee : "—")} MXN${d.penOn ? ` · −${esc(d.penPoints)} por jornada sin pagar` : ""}` : "Sin registro de pagos"}</dd>
-          <dt>Jornada</dt><dd>${publishNumber ? `Jornada ${esc(publishNumber)}${closeRound && closeRound.deadline ? ` · cierra ${esc(fmtWhenTz(closeRound.deadline))}` : ""}` : pending}</dd>
+          <dt>Jornada</dt><dd>${publishNumber ? `Jornada ${esc(publishNumber)}${closeRound && closeRound.deadline ? ` · cierre de pronósticos: ${esc(fmtWhenTz(closeRound.deadline))}` : ""}` : pending}</dd>
         </dl>
         <p class="muted qz-sum-foot">Nada se publica hasta el último paso.</p>
       </div>`;
@@ -5120,11 +5161,11 @@
     const leagueSel = document.getElementById("qz-wz-league");
     if(leagueSel) leagueSel.addEventListener("change", () => { d.leaguePick = leagueSel.value; setupPersist(); setupFieldError("qz-wz-liga-err", ""); });
     const manualBtn = document.getElementById("qz-wz-manual");
-    if(manualBtn) manualBtn.addEventListener("click", () => { d.manual = true; d.leaguePick = ""; setupFlow.cal = null; setupPersist(); renderSetupFlow(); });
+    if(manualBtn) manualBtn.addEventListener("click", () => { d.manual = true; d.leaguePick = ""; setSetupCal(null); setupPersist(); renderSetupFlow(); });
     const useCal = document.getElementById("qz-wz-use-cal");
-    if(useCal) useCal.addEventListener("click", () => { d.manual = false; setupFlow.cal = null; setupPersist(); renderSetupFlow(); });
+    if(useCal) useCal.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); });
     const pickLeague = document.getElementById("qz-wz-pick-league");
-    if(pickLeague) pickLeague.addEventListener("click", () => { d.manual = false; setupFlow.cal = null; setupPersist(); renderSetupFlow(); const s = document.getElementById("qz-wz-league"); if(s) s.focus(); });
+    if(pickLeague) pickLeague.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); const s = document.getElementById("qz-wz-league"); if(s) s.focus(); });
     document.getElementById("qz-wz-extras-sw").addEventListener("click", async () => {
       if(d.extrasOn && d.questions.length){
         const ok = await qzConfirm(`Tus ${d.questions.length} ${d.questions.length === 1 ? "pregunta se queda" : "preguntas se quedan"} en este borrador, pero no se publicarán.`,
@@ -5199,7 +5240,7 @@
         return;
       }
       d.leaguePick = "";
-      flow.cal = null;
+      setSetupCal(null);
     }
     const to = d.fromSummary ? "resumen" : "pagos";
     setupGo(to);
@@ -5367,7 +5408,7 @@
           <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off"></div>
           <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
         </div>
-        ${imported ? `<p class="qz-wz-kick muted">${m.kickoffAt ? esc(fmtKickoff(m.kickoffAt)) : "Horario por confirmar"}</p>` : ``}
+        ${imported ? `<p class="qz-wz-kick muted">${m.kickoffAt ? `Inicio del partido: ${esc(fmtKickoff(m.kickoffAt))}` : "Inicio del partido por confirmar"}</p>` : ``}
       </div>`;
   }
   function renderSetupJornada(main){
@@ -5422,7 +5463,7 @@
       return;
     }
     main.querySelectorAll("[data-wz-manual]").forEach(b => b.addEventListener("click", () => {
-      d.manual = true; setupFlow.cal = { state: "manual" }; setupFlow.rows = null; setupPersist(); renderSetupFlow();
+      d.manual = true; setSetupCal({ state: "manual" }); setupFlow.rows = null; setupPersist(); renderSetupFlow();
     }));
     main.querySelectorAll("[data-wz-retry]").forEach(b => b.addEventListener("click", () => loadSetupCalendar(true)));
     setupBar("pagos", "Revisar y publicar", () => {}, { disabled: true });
@@ -5438,7 +5479,7 @@
     const d = setupFlow.d;
     const cal = setupFlow.cal;
     const rows = setupRows();
-    if(!rows){ setupFlow.cal = null; renderSetupFlow(); return; }
+    if(!rows){ setSetupCal(null); renderSetupFlow(); return; }
     const imported = cal.state === "review";
     const number = imported ? rows.round.number : nextRoundNumber();
     const leagueLabel = setupLeagueLabel(setupLeagueId());
@@ -5459,12 +5500,13 @@
           : "Será tu primera jornada publicada."}</p>
         <p class="qz-wz-count muted" id="qz-wz-count"></p>
         <div id="qz-wz-rows">${matchRowsHtml}</div>
+        ${imported ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(tzShortName(rows.round.deadline))}).</p>` : ``}
         <button class="btn btn-ghost btn-sm" id="qz-wz-add-match">+ Agregar partido</button>
         <p class="qz-field-error" id="qz-wz-rows-err" role="alert" hidden></p>
         ${!imported && setupLeagueId() ? `<p><button class="qz-linkbtn" id="qz-wz-try-cal">Probar de nuevo con el calendario de ${esc(leagueLabel || "tu liga")}</button></p>` : ``}
       </section>
       <section class="card qz-wz-card" aria-labelledby="qz-wz-deadline-l">
-        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos</label>
+        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos para todos los partidos (${esc(tzShortName(rows.deadline ? new Date(rows.deadline).toISOString() : null))})</label>
           <input type="datetime-local" id="qz-wz-deadline" value="${esc(rows.deadline)}" min="${esc(minDeadline)}"></div>
         <p class="muted qz-tight">Hasta esta hora tus amigos pueden elegir y cambiar sus pronósticos. Todos los partidos de la Jornada ${esc(number)} comparten este cierre.</p>
         <p class="muted qz-tight" id="qz-wz-first"></p>
@@ -5513,7 +5555,7 @@
     deadlineEl.addEventListener("input", onDeadline);
     deadlineEl.addEventListener("change", onDeadline);
     const tryCal = document.getElementById("qz-wz-try-cal");
-    if(tryCal) tryCal.addEventListener("click", () => { d.manual = false; setupFlow.cal = null; setupFlow.rows = null; setupPersist(); loadSetupCalendar(false); renderSetupFlow(); });
+    if(tryCal) tryCal.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupFlow.rows = null; setupPersist(); loadSetupCalendar(false); renderSetupFlow(); });
     refresh();
     setupBar("pagos", "Revisar y publicar", () => {
       const problem = setupRoundProblem();
@@ -5548,7 +5590,7 @@
     }
     if(cal.state !== "review" && cal.state !== "manual"){ setupGo("jornada"); return; }
     const rows = setupRows();
-    if(!rows){ setupFlow.cal = null; setupGo("jornada"); return; }
+    if(!rows){ setSetupCal(null); setupGo("jornada"); return; }
     const number = setupPublishNumber();
     const leagueId = setupLeagueId();
     const leagueLabel = setupLeagueLabel(leagueId);
@@ -5557,6 +5599,8 @@
     const roundProblem = setupDeadlineProblem(rows.deadline, clean, serverNow()) || (clean.length ? "" : "Agrega al menos un partido con los dos equipos.");
     const qs = d.extrasOn ? d.questions : [];
     const closeRound = { number, deadline: deadlineIso };
+    const firstKick = clean.find(m => m.kickoffAt);
+    const kickZone = firstKick ? tzShortName(firstKick.kickoffAt) : "";
     const penFrom = d.penFrom != null ? d.penFrom : number;
     const payProblem = d.payOn && d.fee == null ? "Escribe la cuota en pesos (un número mayor que 0)."
       : d.payOn && d.penOn ? penaltyStartProblem(penFrom, number) : "";
@@ -5587,8 +5631,10 @@
           <section class="card qz-wz-card qz-sum-section" aria-labelledby="qz-sum-3">
             <div class="qz-sum-head"><h2 class="qz-wz-h2" id="qz-sum-3">Jornada ${esc(number)}</h2>${editBtn("jornada")}</div>
             <p class="muted">Jornada ${esc(number)}${leagueId && imported ? ` · ${esc(leagueLabel)}` : " · partidos a mano"} · ${esc(clean.length)} ${clean.length === 1 ? "partido" : "partidos"}</p>
-            <ul class="qz-sum-matches">${clean.map(m => `<li><span>${esc(m.teamA)} vs ${esc(m.teamB)}</span>${m.kickoffAt ? `<span class="muted">${esc(fmtKickoff(m.kickoffAt))}</span>` : ``}</li>`).join("")}</ul>
-            <p>Cierre: <strong>${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "sin elegir"}</strong></p>
+            ${kickZone ? `<div class="qz-sum-matches-head" aria-hidden="true"><span>Partido</span><span>Inicio del partido</span></div>` : ``}
+            <ul class="qz-sum-matches">${clean.map(m => `<li><span>${esc(m.teamA)} vs ${esc(m.teamB)}</span>${m.kickoffAt ? `<span class="muted"><span class="qz-sr">Inicio del partido: </span>${esc(fmtKickoff(m.kickoffAt))}</span>` : ``}</li>`).join("")}</ul>
+            ${kickZone ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(kickZone)}).</p>` : ``}
+            <p>Cierre de pronósticos para todos los partidos: <strong>${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "sin elegir"}</strong></p>
             ${roundProblem ? `<p class="qz-field-error">${esc(roundProblem)}</p>` : ``}
           </section>
         </div>
@@ -5784,7 +5830,7 @@
         // That round changed under this tab (published or removed elsewhere).
         adoptFreshMeta(meta, snapshot);
         setupPublishInFlight = false; flow.publishing = false;
-        flow.cal = null; flow.rows = null;
+        setSetupCal(null); flow.rows = null;
         flow.notice = { kind: "alert", html: "La jornada que ibas a publicar cambió en otra pestaña. Revisa el resumen. No se publicó nada.", retry: false };
         await loadSetupCalendar(false);
         return;
@@ -5828,7 +5874,7 @@
     // A conflict repainted the app (setMetaWithError): back to this summary,
     // with the calendar looked up again from what the server has now.
     if(result.error === "rounds_conflict"){
-      flow.cal = null; flow.rows = null;
+      setSetupCal(null); flow.rows = null;
       flow.notice = { kind: "alert", html: "Hubo cambios en esta quiniela desde otra pestaña. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada.", retry: false };
       renderSetupFlow();
       await loadSetupCalendar(false);

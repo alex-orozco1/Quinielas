@@ -205,12 +205,12 @@ test("PIN · el titular de la pantalla del PIN no se repite en el recorrido", ()
 });
 
 test("calendario · se espera la sincronización antes de elegir la jornada, con el esqueleto antes de pedirla", () => {
-  const body = fn("async function resolveSetupCalendar(force)");
+  const body = fn("async function resolveSetupCalendar(force, isCurrent)");
   const loading = body.indexOf('flow.cal = { state: "loading", since: Date.now() };');
   const fetchAt = body.indexOf("await fetch(`/api/quinielas/");
   const pick = body.indexOf("pickPlayableRound(meta.rounds, serverNow())");
   assert.ok(loading !== -1 && loading < fetchAt && fetchAt < pick);
-  assert.ok(body.indexOf("adoptFreshMeta(meta, fresh);") < pick, "elige sobre lo que el servidor tiene después de importar");
+  assert.ok(body.indexOf("adoptSetupMeta(fresh, current);") < pick, "elige sobre lo que el servidor tiene después de importar");
   // Falla, vacío o sin jornadas futuras: un estado que la pantalla explica.
   assert.ok(body.includes('state: "fail"') && body.includes('"none" : "empty"'));
   const ui = fn("function renderSetupJornada(main)");
@@ -467,4 +467,146 @@ test("P2-3 · los textos dicen cuándo se ven los puntos marcados: la Tabla apar
   assert.ok(indexSrc.includes("Al marcar «¿Atinó?», ${esc(markedPointsWhen())}."));
   assert.ok(fn("function renderReglasGrade(box, bet)").includes("${esc(markedPointsWhen())}"));
   assert.ok(indexSrc.includes("${tableShowsScores() ? `` : `<p class=\"muted qz-tight\">La Tabla de posiciones aparece cuando publicas los resultados de la primera jornada."));
+});
+
+// ---- Revisión del Founder: la carga del calendario (P2) ----------------------
+// Las funciones reales de la carga, con la red simulada: cada fetch/getMeta
+// queda pendiente hasta que la prueba lo resuelve, en el orden que elige.
+function calendarHarness(metaObj) {
+  const pending = [];
+  const later = () => { let resolve; const p = new Promise((r) => { resolve = r; }); return { p, resolve }; };
+  const env = new Function("meta", "pending", "later", "serverNowMs", `
+    let setupFlow = null;
+    const SLUG = "q";
+    const serverNow = () => serverNowMs;
+    const renders = { flow: 0, aside: 0 };
+    const renderSetupFlow = () => { renders.flow++; };
+    const renderSetupAside = () => { renders.aside++; };
+    const refreshExtraCloseTexts = () => {};
+    const setAuthHeaders = (h) => h;
+    const adminOrOwnerCred = () => "x";
+    const humanizeError = (e) => String(e);
+    const sportsDataFailureMessage = () => "falla";
+    const console = { error(){} };
+    // Cada carga pide dos cosas a la red: la sincronización y la meta.
+    const fetch = () => { const d = later(); pending.push({ kind: "sync", d }); return d.p; };
+    const getMeta = () => { const d = later(); pending.push({ kind: "meta", d }); return d.p; };
+    ${fn("function setupLeagueId()")}
+    ${fn("function isRoundUsableForSetup(round, nowMs)")}
+    ${fn("function startedMatchesOf(round, nowMs)")}
+    ${fn("function pickPlayableRound(rounds, nowMs)")}
+    ${fn("function adoptFreshMeta(target, fresh)")}
+    ${fn("async function resolveSetupCalendar(force, isCurrent)")}
+    ${fn("function adoptSetupMeta(fresh, current)")}
+    ${fn("async function loadSetupCalendar(force)")}
+    ${fn("function setSetupCal(cal)")}
+    return {
+      start(d){ setupFlow = { d, cal: null, rows: null, publishing: false, notice: null }; return setupFlow; },
+      flow: () => setupFlow, renders, loadSetupCalendar, setSetupCal,
+    };
+  `)(metaObj, pending, later, NOW);
+  // Resuelve la n-ésima petición pendiente de ese tipo y deja correr las promesas.
+  const settle = async (kind, nth, value) => {
+    const req = pending.filter((x) => x.kind === kind)[nth];
+    assert.ok(req, `${kind} #${nth} existe`);
+    req.d.resolve(value);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const okSync = { ok: true, json: async () => ({ ok: true }) };
+  return { env, settle, okSync, pending };
+}
+const imported = (rev, list) => ({ settings: { sportsdbLeagueId: "4350" }, participants: [], roundsRevision: rev, rounds: list });
+
+test("calendario · elegir «a mano» mientras carga: la respuesta tardía no vuelve a la Jornada 12 y el borrador manual se queda", async () => {
+  for (const how of ["botón", "nueva carga"]) {
+    const meta = imported(0, []);
+    const h = calendarHarness(meta);
+    const flow = h.env.start({ manual: false, step: "jornada" });
+    const slow = h.env.loadSetupCalendar(false);
+    assert.equal(flow.cal.state, "loading");
+    // El admin elige preparar los partidos a mano (el botón del paso 3), o una
+    // carga posterior resuelve «manual» porque d.manual ya es true.
+    flow.d.manual = true;
+    if (how === "botón") h.env.setSetupCal({ state: "manual" });
+    else await h.env.loadSetupCalendar(false);
+    assert.equal(flow.cal.state, "manual", how);
+    const rows = { kind: "new", matches: [{ id: "m1", teamA: "León", teamB: "Puebla" }], deadline: "2026-10-20T19:00" };
+    flow.rows = rows;
+    // Termina la carga anterior: trae la Jornada 12 importada.
+    await h.settle("sync", 0, h.okSync);
+    await h.settle("meta", 0, imported(1, [round(11, -1, [-2]), round(12, 48, [50]), round(13, 120, [122])]));
+    await slow;
+    assert.equal(flow.cal.state, "manual", `${how}: la decisión más reciente se respeta`);
+    assert.equal(flow.d.manual, true);
+    assert.equal(flow.rows, rows, `${how}: los partidos y el cierre del borrador manual siguen`);
+    assert.deepEqual(flow.rows.matches, [{ id: "m1", teamA: "León", teamB: "Puebla" }]);
+    assert.equal(flow.rows.deadline, "2026-10-20T19:00");
+    // Las jornadas que el servidor sí importó llegan a la meta (son más nuevas),
+    // sin cambiar la decisión.
+    assert.equal(meta.roundsRevision, 1);
+  }
+});
+
+test("calendario · dos cargas que terminan en orden inverso: gana la más reciente y la meta no retrocede", async () => {
+  const meta = imported(0, []);
+  const h = calendarHarness(meta);
+  const flow = h.env.start({ manual: false, step: "resumen" });
+  const first = h.env.loadSetupCalendar(true);
+  const second = h.env.loadSetupCalendar(true);
+  // La segunda termina primero, con la meta más nueva (la Jornada 11 ya empezó).
+  await h.settle("sync", 1, h.okSync);
+  await h.settle("meta", 0, imported(2, [round(11, -1, [-2]), round(12, 48, [50])]));
+  await second;
+  assert.deepEqual({ state: flow.cal.state, roundId: flow.cal.roundId }, { state: "review", roundId: "r_12" });
+  // La primera termina después, con una copia más vieja (la 11 todavía jugable).
+  await h.settle("sync", 0, h.okSync);
+  await h.settle("meta", 1, imported(1, [round(11, 24, [26]), round(12, 48, [50])]));
+  await first;
+  assert.deepEqual({ state: flow.cal.state, roundId: flow.cal.roundId }, { state: "review", roundId: "r_12" }, "la respuesta vieja no decide");
+  assert.equal(meta.roundsRevision, 2, "ni pone la meta vieja encima de la nueva");
+  assert.equal(meta.rounds.find((r) => r.number === 11).deadline, iso(-1));
+  // Y una falla tardía tampoco convierte la jornada elegida en «No pudimos traer el calendario».
+  const third = h.env.loadSetupCalendar(true);
+  const fourth = h.env.loadSetupCalendar(true);
+  await h.settle("sync", 3, h.okSync);
+  await h.settle("meta", 2, imported(3, [round(12, 48, [50])]));
+  await fourth;
+  await h.settle("sync", 2, { ok: false, status: 500, json: async () => ({ ok: false }) });
+  await h.settle("meta", 3, null);
+  await third;
+  assert.deepEqual({ state: flow.cal.state, roundId: flow.cal.roundId }, { state: "review", roundId: "r_12" });
+});
+
+test("calendario · toda decisión directa sobre el calendario invalida la carga en curso", () => {
+  // Ninguna asignación de flow.cal fuera de la carga misma (que sólo escribe
+  // «cargando» si sigue vigente) y de setSetupCal.
+  const writes = [...indexSrc.matchAll(/\b(?:setupFlow|flow)\.cal = /g)].map((m) => m.index);
+  const allowed = [
+    indexSrc.indexOf('flow.cal = { state: "loading", since: Date.now() };'),
+    indexSrc.indexOf("flow.cal = cal;\n    if(flow.d.step"),
+    indexSrc.indexOf("setupFlow.cal = cal;\n  }"),
+  ];
+  assert.ok(allowed.every((i) => i !== -1));
+  assert.deepEqual(writes.filter((i) => !allowed.includes(i)).map((i) => indexSrc.slice(i, i + 60)), []);
+  const resolver = fn("async function resolveSetupCalendar(force, isCurrent)");
+  assert.ok(resolver.indexOf("if(!current) return null;") < resolver.indexOf("const failed ="), "la respuesta vieja no decide nada");
+  assert.ok(fn("function setSetupCal(cal)").includes("setupFlow.calToken = null;"));
+});
+
+test("horarios · cada hora dice qué es: «Inicio del partido», «Cierre de pronósticos para todos los partidos» y la zona", () => {
+  const sum = fn("function renderSetupResumen(main)");
+  assert.ok(sum.includes("<span>Partido</span><span>Inicio del partido</span>"));
+  assert.ok(sum.includes('<span class="qz-sr">Inicio del partido: </span>${esc(fmtKickoff(m.kickoffAt))}'), "también para lectores de pantalla");
+  assert.ok(sum.includes("Horarios en la zona de este dispositivo (${esc(kickZone)})."));
+  assert.ok(sum.includes("<p>Cierre de pronósticos para todos los partidos: <strong>"));
+  assert.ok(!sum.includes("<p>Cierre: <strong>"));
+  assert.ok(fn("function wzMatchRowHtml(m, imported)").includes("Inicio del partido: ${esc(fmtKickoff(m.kickoffAt))}"));
+  assert.ok(fn("function renderSetupRoundForm(main)").includes(">Cierre de pronósticos para todos los partidos (${esc(tzShortName("));
+  // La zona que se nombra para los partidos es la misma con la que se escribe el cierre.
+  const t = new Function("serverNowMs", `const serverNow = () => serverNowMs; ${fn("function fmtWhenTz(iso)")} ${fn("function tzShortName(iso)")} return { fmtWhenTz, tzShortName };`)(NOW);
+  for (const at of [iso(72), iso(24 * 200)]) {
+    const zone = t.tzShortName(at);
+    assert.ok(zone, at);
+    assert.ok(t.fmtWhenTz(at).endsWith(zone), `${t.fmtWhenTz(at)} termina con ${zone}`);
+  }
 });
