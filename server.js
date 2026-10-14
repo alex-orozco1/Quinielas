@@ -40,6 +40,7 @@ const tournamentScope = require("./tournamentScope");
 const { validateMetaIds } = require("./metaIds");
 const { validateMetaNumbers } = require("./metaNumbers");
 const { validateMetaShape } = require("./metaShape");
+const { validateBetClosures } = require("./metaBets");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
@@ -1724,9 +1725,13 @@ app.post("/api/submit-bet-answer", async (req, res) => {
       }
       // Same lock rule the UI already shows (bet closes when its linked round's
       // deadline passes) — enforced here too, not just hidden in the frontend.
+      // Judged by Postgres's clock inside this transaction, with the row
+      // locked, exactly like picks: an answer that arrives after the deadline
+      // is refused even if it was sent a moment before.
       if (bet.closesAtRound) {
         const closingRound = (value.rounds || []).find((r) => r.number === bet.closesAtRound);
-        if (closingRound && Date.now() > new Date(closingRound.deadline).getTime()) {
+        const dbNowMs = closingRound ? (await client.query("SELECT NOW() as now")).rows[0].now.getTime() : null;
+        if (closingRound && dbNowMs > new Date(closingRound.deadline).getTime()) {
           await client.query("ROLLBACK");
           return res.status(403).json({ error: "bet_locked" });
         }
@@ -2008,6 +2013,14 @@ app.post("/api/kv/:key", async (req, res) => {
         if (!numbersCheck.ok) {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: numbersCheck.reason, field: numbersCheck.field });
+        }
+        // Una pregunta de torneo nueva (o a la que se le cambia el cierre)
+        // cierra con una jornada que existe y todavía no cerró (metaBets.js):
+        // sin eso, sus respuestas se podrían cambiar para siempre.
+        const betsCheck = validateBetClosures(mergedValue, oldValue);
+        if (!betsCheck.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: betsCheck.reason, betId: betsCheck.betId });
         }
 
         // MON-001B: real, atomic, server-side enforcement of the actual

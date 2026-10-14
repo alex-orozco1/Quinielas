@@ -68,7 +68,7 @@ test("CASE C: a genuine future datetime is accepted", () => {
 
 test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's reconcilePenaltyLedger/mutation, and before the create-new-round branch's meta.rounds.push", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 4800);
+  const body = indexSrc.slice(idx, idx + 5200);
   const validateIdx = body.indexOf("isSetupDeadlineValid(draft.deadline, serverNow())");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const pushIdx = body.indexOf("meta.rounds.push(round);");
@@ -79,7 +79,7 @@ test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's re
 
 test("CASE D: on a past deadline, editingRound itself is never touched (not even entered) -- the original round stays completely intact", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 1200);
+  const body = indexSrc.slice(idx, idx + 1400);
   const validateBlockIdx = body.indexOf("if(!isSetupDeadlineValid(draft.deadline, serverNow())){");
   const editingRoundIdx = body.indexOf("if(editingRound){");
   assert.ok(validateBlockIdx !== -1 && editingRoundIdx !== -1 && validateBlockIdx < editingRoundIdx);

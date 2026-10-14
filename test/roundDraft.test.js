@@ -302,48 +302,6 @@ test("#35 · cerrar el torneo borra los borradores de esta persona en esta quini
 
 // ======================= el cableado =======================
 
-test("#35 · «Prepara tu primera jornada» restaura, guarda al escribir y borra al publicar", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupManual(opts)");
-  assert.ok(body.includes("const saved = loadNewRoundDraft(meta);"), "del torneo en curso, salvo que ya esté publicado");
-  assert.ok(body.includes("const matches = saved ? saved.matches : [blankMatch(), blankMatch()];"));
-  assert.ok(body.includes('deadlineValue: saved ? saved.deadline : "",'));
-  assert.ok(/wireSetupMatchRows\(matches, \(\) => saveRoundDraft\("new",\s*\{ matches, deadline: document\.getElementById\("qz-setup-deadline"\)\.value \}, newRoundDraftBase\(meta\)\)\);/.test(body));
-  const okIdx = body.indexOf("if(result.ok){");
-  const ok = body.slice(okIdx, body.indexOf("} else {", okIdx));
-  assert.ok(ok.includes('clearRoundDraft("new");') && ok.indexOf('clearRoundDraft("new");') < ok.indexOf("renderAdminSetupInvite();"),
-    "publicada: el borrador ya no hace falta");
-  assert.ok(!body.slice(body.indexOf("} else {", okIdx)).includes("clearRoundDraft"), "si no se publicó, lo escrito se queda");
-  // Nunca una segunda copia, y el paso de la contraseña (opción B) va antes.
-  const guard = body.indexOf("if(dropIfAlreadyPublished(clean)){ await renderAdminSetupResolve(); return; }");
-  assert.ok(guard !== -1);
-  assert.ok(body.indexOf('if(!(await gateFirstPublish(cta, "before"))) return;') < guard);
-  assert.ok(guard < body.indexOf("meta.rounds.push(round);"));
-});
-
-test("#35 · «Revisa tu primera jornada» restaura sobre la copia completa, con su huella, y borra al publicar", () => {
-  const body = extractFunctionBody(indexSrc, "function renderAdminSetupReview(round)");
-  assert.ok(body.includes('const draftKind = "edit:" + roundId;'));
-  assert.ok(body.includes("const draftBase = roundDraftBase(round);"));
-  assert.ok(body.includes("const saved = loadRoundDraft(draftKind, draftBase);"));
-  assert.ok(body.indexOf("const matches = round.matches.map(m => ({...m}));") < body.indexOf("mergeRoundDraftMatches(matches, saved.matches)"),
-    "sobre la copia completa ({...m}), para no perder los datos del proveedor");
-  assert.ok(body.includes('if(saved) document.getElementById("qz-setup-deadline").value = saved.deadline;'));
-  assert.ok(body.includes("}, draftBase));"), "lo que se guarda lleva la huella de la jornada");
-  const okIdx = body.indexOf("if(result.ok){");
-  assert.ok(body.slice(okIdx, body.indexOf("} else {", okIdx)).includes("clearRoundDraft(draftKind);"));
-  assert.ok(!body.slice(body.indexOf("} else {", okIdx)).includes("clearRoundDraft"));
-});
-
-test("#35 · las filas del setup avisan de cada cambio: escribir, añadir, quitar y el cierre", () => {
-  const wire = extractFunctionBody(indexSrc, "function wireSetupMatchRows(matches, onChange)");
-  const row = extractFunctionBody(indexSrc, "function wireOneSetupRow(matches, mid, changed)");
-  assert.ok(wire.includes('deadlineEl.addEventListener("input", changed);'));
-  assert.ok(wire.includes('deadlineEl.addEventListener("change", changed);'), "hay selectores móviles que sólo avisan con change");
-  assert.ok(/insertAdjacentHTML[\s\S]*changed\(\);/.test(wire), "añadir un partido");
-  assert.ok(/m\[inp\.dataset\.role\] = inp\.value;\s*changed\(\);/.test(row), "escribir un equipo");
-  assert.ok(/row\.remove\(\);\s*changed\(\);/.test(row), "quitar un partido");
-});
-
 test("#35 · Admin → Jornadas: arranca del borrador, lo guarda en cada cambio y lo borra al terminar", () => {
   const body = extractFunctionBody(indexSrc, "async function renderAdminRondas(body)");
   assert.ok(body.includes("draft = roundsFormDraft(editingRound, meta);"));
@@ -402,18 +360,11 @@ test("#35 · borrar una jornada borra también una edición suya sin guardar", (
   assert.ok(ok.includes('clearRoundDraft("edit:" + roundId);'));
 });
 
-test("#35 · lo restaurado se pinta escapado: nombres e ids, en el setup y en Admin → Jornadas", () => {
-  const escSrc = extractFunctionBody(indexSrc, "function esc(s)");
-  const rowSrc = extractFunctionBody(indexSrc, "function setupMatchRowHtml(m)");
-  const row = new Function(`${escSrc}\n${rowSrc}\nreturn setupMatchRowHtml;`)();
-  const html = row({ id: 'm_1"><img src=x onerror=alert(1)>', teamA: '"><img src=x onerror=alert(2)>', teamB: "</script><svg onload=alert(3)>" });
-  assert.ok(!/<img|<svg|<\/script/i.test(html), html);
-  assert.ok(html.includes("&quot;&gt;&lt;img") && html.includes("&lt;/script&gt;"));
+test("#35 · lo restaurado se pinta escapado en Admin → Jornadas (el setup: setupWizard.test.js)", () => {
   const rondas = extractFunctionBody(indexSrc, "async function renderAdminRondas(body)");
   const adminRow = rondas.slice(rondas.indexOf("function matchRowHtml(m, idx)"), rondas.indexOf("const createCardHtml"));
   for (const frag of ['data-mid="${esc(m.id)}"', 'value="${esc(m.teamA)}"', 'value="${esc(m.teamB)}"', 'data-remove="${esc(m.id)}"']) {
     assert.ok(adminRow.includes(frag), "Admin → Jornadas: " + frag);
-    assert.ok(rowSrc.includes(frag), "setup: " + frag);
   }
 });
 

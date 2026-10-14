@@ -26,7 +26,8 @@ async function conTodo(tag) {
   const v = await read(q);
   v.rounds.push({ id: "r_num1234", number: 1, deadline: new Date(Date.now() + 2 * 864e5).toISOString(), results: {}, resultsPublished: false, published: true,
     matches: [{ id: "m_num1234", teamA: "León", teamB: "Santos" }] });
-  v.customBets = [{ id: "cb_num1234", label: "Campeón", scope: "temporada", points: 3, closesAtRound: 2 }];
+  // Cierra con la jornada 1, que existe y no ha cerrado (metaBets.js).
+  v.customBets = [{ id: "cb_num1234", label: "Campeón", scope: "temporada", points: 3, closesAtRound: 1 }];
   v.paymentPenalty = { enabled: true, startsAtRound: 2, pointsPerRound: 1 };
   v.settings.entryFee = 150;
   v.settings.pointsPerCorrectPick = 2;
@@ -72,13 +73,14 @@ test.describe("números de la meta (servidor real)", () => {
     v.settings.entryFee = 200;
     v.settings.pointsPerCorrectPick = 1.5;
     v.customBets[0].points = 0;
-    v.customBets[0].closesAtRound = null;
+    // El cierre de una pregunta de torneo ya no se puede quitar (metaBets.js);
+    // aquí se queda en la jornada 1.
     v.paymentPenalty.startsAtRound = null;
     const r = await write(q, v);
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const s = await stored(q);
     assert.deepEqual([s.settings.entryFee, s.settings.pointsPerCorrectPick, s.customBets[0].points, s.customBets[0].closesAtRound, s.paymentPenalty.startsAtRound],
-      [200, 1.5, 0, null, null]);
+      [200, 1.5, 0, 1, null]);
   });
 
   itest("un número raro que YA estaba guardado no impide seguir guardando la quiniela", async () => {

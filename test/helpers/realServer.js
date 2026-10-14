@@ -150,6 +150,18 @@ async function dbQuery(sql, params) {
   await client.connect();
   try { return await client.query(sql, params); } finally { await client.end(); }
 }
+// Holds the kv row's lock (SELECT … FOR UPDATE in an open transaction) while
+// `whileLocked()` runs, then releases it: a request the server starts in the
+// meantime waits for the lock, so it is judged at the moment it really runs.
+async function withRowLocked(key, whileLocked) {
+  const client = new pg.Client({ connectionString: dbUrl });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT 1 FROM kv WHERE key = $1 FOR UPDATE", [key]);
+    try { return await whileLocked(); } finally { await client.query("COMMIT"); }
+  } finally { await client.end(); }
+}
 async function setup() {
   if (SKIP) return;
   pg = require("pg");
@@ -167,6 +179,6 @@ async function teardown() {
 const serverOutput = () => serverLog;
 
 module.exports = {
-  SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, serverOutput,
+  SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, withRowLocked, serverOutput,
   freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom,
 };

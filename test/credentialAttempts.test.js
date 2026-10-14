@@ -511,7 +511,7 @@ test("FRONTEND: the admin toggle asks for the admin password instead of claiming
 
 test("FRONTEND: PIN and password screens say 'too many attempts' when that is the reason", () => {
   assert.ok(/function pinFailureMessage\(result, fallback\)\{\s*return result && result\.error === "too_many_attempts"/.test(indexSrc));
-  assert.equal((indexSrc.match(/toast\(pinFailureMessage\(/g) || []).length, 6, "PIN login, change PIN, admin re-auth, Ajustes, Panel de plataforma, ¿Olvidaste tu PIN?");
+  assert.equal((indexSrc.match(/toast\(pinFailureMessage\(/g) || []).length, 7, "PIN login, change PIN, admin re-auth, Ajustes, Tus reglas, Panel de plataforma, ¿Olvidaste tu PIN?");
 });
 
 // ---- "éxito falso" after a participants refresh (Product QA F4) ----------
