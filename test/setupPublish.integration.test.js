@@ -80,6 +80,23 @@ test.describe("publicar con el cierre vencido (servidor real)", () => {
     assert.equal((await stored(q)).rounds.find((r) => r.number === 13).published, true);
   });
 
+  itest("el orden de las revisiones: una jornada mal formada sigue siendo 400; una pregunta del torneo ligada a la jornada vencida dice que la jornada venció (no un error de la pregunta)", async () => {
+    const q = await quiniela("pub-orden");
+    let v = await read(q);
+    const mal = jornada(1, enMs(-60e3));
+    mal.matches = { no: "es lista" };
+    v.rounds.push(mal);
+    let r = await write(q, v);
+    assert.deepEqual([r.status, r.body.error], [400, "invalid_value"]);
+    v = await read(q);
+    v.rounds.push(jornada(1, enMs(-60e3)));
+    v.customBets = [{ id: "cb_campeon", label: "¿Quién será campeón?", scope: "temporada", points: 5, closesAtRound: 1 }];
+    r = await write(q, v);
+    assert.deepEqual([r.status, r.body], [409, { error: "round_deadline_passed", roundNumber: 1 }]);
+    const s = await stored(q);
+    assert.deepEqual([s.rounds.length, (s.customBets || []).length], [0, 0], "nada se guardó");
+  });
+
   itest("lo ya publicado no se toca: corregir partidos, publicar resultados y reabrir con el cierre vencido siguen funcionando", async () => {
     const q = await quiniela("pub-historia");
     let v = await seed(q, (x) => { x.rounds.push(jornada(1, enMs(-3600e3))); });

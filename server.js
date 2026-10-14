@@ -2002,11 +2002,6 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(409).json({ error: "admin_password_required" });
         }
-        const lateRound = lateNewlyPublishedRound(oldValue, mergedValue, Date.now());
-        if (lateRound) {
-          await client.query("ROLLBACK");
-          return res.status(409).json({ error: "round_deadline_passed", roundNumber: lateRound.number });
-        }
         const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
         if (!roundsCheck.ok) {
           await client.query("ROLLBACK");
@@ -2034,6 +2029,16 @@ app.post("/api/kv/:key", async (req, res) => {
         if (!numbersCheck.ok) {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: numbersCheck.reason, field: numbersCheck.field });
+        }
+        // MS2 · R1: una jornada que pasa a publicada con su cierre ya vencido
+        // (la pestaña esperó, o la escritura esperó la fila) no se publica. Va
+        // después de las revisiones de forma (400) y antes de la de las
+        // preguntas, que de otro modo diría que su jornada ya cerró. Lo ya
+        // publicado (corregir, resultados, reabrir) no pasa por aquí.
+        const lateRound = lateNewlyPublishedRound(oldValue, mergedValue, Date.now());
+        if (lateRound) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "round_deadline_passed", roundNumber: lateRound.number });
         }
         // Una pregunta de torneo nueva (o a la que se le cambia el cierre)
         // cierra con una jornada que existe y todavía no cerró (metaBets.js):
