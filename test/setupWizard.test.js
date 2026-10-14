@@ -297,6 +297,9 @@ test("publicar · el éxito y la invitación sólo después de que el servidor c
   // Founder (ronda 3): lo que se dice de lo publicado queda en la hoja, no en un toast sobre sus botones.
   assert.ok(!finish.includes("toast("));
   assert.ok(fn("function openInviteSheet(opts)").includes('${opts && opts.note ? `<p class="qz-sheet-note" role="status">${esc(opts.note)}</p>` : ``}'));
+  // Product QA (ronda 3): en un teléfono bajo la hoja nunca es más alta que la
+  // pantalla; se desplaza por dentro y su título, ✕ y nota se alcanzan.
+  assert.ok(indexSrc.includes(".qz-sheet-overlay .qz-sheet{ max-height:100vh; max-height:100dvh; overflow-y:auto; overscroll-behavior:contain; }"));
 });
 
 test("publicar · las reglas que escribe: preguntas de torneo ligadas a la jornada publicada, pagos apagados sin cuota ni penalización oculta", () => {

@@ -1399,6 +1399,9 @@
   @media (max-width:640px){
     .qz-sheet-overlay{ align-items:flex-end !important; padding:0 !important; }
     .qz-sheet-overlay .qz-sheet{ max-width:none; width:100%; margin:0 !important; border-radius:18px 18px 0 0; padding-bottom:calc(18px + env(safe-area-inset-bottom)); }
+    /* never taller than the screen: on a short phone the sheet scrolls inside,
+       so its title, ✕ and notes stay reachable instead of going off the top */
+    .qz-sheet-overlay .qz-sheet{ max-height:100vh; max-height:100dvh; overflow-y:auto; overscroll-behavior:contain; }
   }
   /* The sheet lives in <body>, outside #quiniela-root: its buttons need their own look. */
   .qz-sheet{ font-family:'Manrope', sans-serif; color:#10231C; }
