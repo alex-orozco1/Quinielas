@@ -1099,6 +1099,22 @@ function newlyPublishedRoundIds(oldValue, newValue) {
   return (Array.isArray(newValue && newValue.rounds) ? newValue.rounds : [])
     .filter((r) => r && r.published !== false && !published.has(r.id)).map((r) => r.id);
 }
+// MS2 · R1. A round that becomes visible in this write (a new one, or a
+// prepared one that gets published) needs a deadline still ahead, judged by
+// this server when the write arrives: a tab that waited (a refresh, a
+// password) past the deadline must not open a round that already closed.
+// Rounds that were already published (corrections, results, reopening) are
+// not new publications and are never judged here. Returns the late round.
+function lateNewlyPublishedRound(oldValue, newValue, nowMs) {
+  const ids = new Set(newlyPublishedRoundIds(oldValue, newValue));
+  if (!ids.size) return null;
+  for (const r of newValue.rounds) {
+    if (!r || !ids.has(r.id)) continue;
+    const t = new Date(r.deadline).getTime();
+    if (!Number.isFinite(t) || t <= nowMs) return r;
+  }
+  return null;
+}
 function cleanAdminPassword(value) {
   if (typeof value !== "string") return null;
   const clean = value.trim();
@@ -1985,6 +2001,11 @@ app.post("/api/kv/:key", async (req, res) => {
           && newlyPublishedRoundIds(oldValue, mergedValue).length > 0) {
           await client.query("ROLLBACK");
           return res.status(409).json({ error: "admin_password_required" });
+        }
+        const lateRound = lateNewlyPublishedRound(oldValue, mergedValue, Date.now());
+        if (lateRound) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "round_deadline_passed", roundNumber: lateRound.number });
         }
         const roundsCheck = validateRoundsIntegrity(mergedValue, oldValue);
         if (!roundsCheck.ok) {

@@ -59,7 +59,7 @@ const pure = new Function("serverNowMs", `
   ${fn("function pickPlayableRound(rounds, nowMs)")}
   ${fn("function firstKickoffMs(matches)")}
   ${fn("function setupDeadlineProblem(deadlineInputValue, matches, nowMs)")}
-  ${fn("function extraQuestionProblem(state, questions, ignoreKey)")}
+  ${fn("function extraQuestionProblem(state, questions, ignoreKey, kept)")}
   ${fn("function penaltyStartProblem(from, publishNumber)")}
   return { parsePositiveInt, parseFee, pointsExample, penaltyExample, defaultSetupDraft, parseSetupDraft,
     pickPlayableRound, setupDeadlineProblem, extraQuestionProblem, penaltyStartProblem, emptyExtraBuilder };
@@ -288,15 +288,18 @@ test("publicar · una sola escritura: lo cambiado se repone si falla, y el reint
 test("publicar · el éxito y la invitación sólo después de que el servidor confirme; el borrador se borra entonces", () => {
   const pub = fn("async function setupPublish(btn, problem, number, rules)");
   const ok = pub.slice(pub.indexOf("if(result.ok){"), pub.indexOf("if(!result.reconciled)"));
-  assert.ok(ok.includes("clearRoundDraft(rows.kind);") && ok.includes("finishSetupPublish(round, result);"));
-  const finish = fn("function finishSetupPublish(round, result, note)");
+  assert.ok(ok.includes("clearRoundDraft(rows.kind);") && ok.includes("finishSetupPublish(round, pending);"));
+  assert.ok(ok.includes("const pending = setupRulesDiff(rules);"), "lo guardado se compara regla por regla (R2)");
+  const finish = fn("function finishSetupPublish(round, pending)");
   assert.ok(finish.includes("clearRoundDraft(SETUP_DRAFT_KIND);"));
   assert.ok(finish.indexOf("setupContinuityResolved = true;") < finish.indexOf("renderApp();"), "sin esto, la continuidad volvería a abrir la invitación a pantalla completa");
-  assert.ok(finish.indexOf("renderApp();") < finish.indexOf("openInviteSheet({ first: true, round, note: note || kept });"));
-  assert.ok(finish.includes("result.ruleFieldsKept"), "si el servidor conservó puntos o cuota, se dice");
+  assert.ok(finish.indexOf("renderApp();") < finish.indexOf("openInviteSheet({ first: true, round, pending: lines });"));
+  assert.ok(ok.includes("if(result.ruleFieldsKept){"), "si el servidor conservó puntos o cuota, se compara con lo que tiene");
   // Founder (ronda 3): lo que se dice de lo publicado queda en la hoja, no en un toast sobre sus botones.
   assert.ok(!finish.includes("toast("));
-  assert.ok(fn("function openInviteSheet(opts)").includes('${opts && opts.note ? `<p class="qz-sheet-note" role="status">${esc(opts.note)}</p>` : ``}'));
+  const sheet = fn("function openInviteSheet(opts)");
+  assert.ok(sheet.includes('<ul>${pendingLines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>'));
+  assert.ok(sheet.includes("(pendingLines.length ? `La Jornada ${esc(round.number)} ya está publicada` : `🎉 ¡Tu quiniela y la Jornada ${esc(round.number)} ya están listas!`)"), "sin celebrar reglas que no se guardaron");
   // Product QA (ronda 3): en un teléfono bajo la hoja nunca es más alta que la
   // pantalla; se desplaza por dentro y su título, ✕ y nota se alcanzan.
   assert.ok(indexSrc.includes(".qz-sheet-overlay .qz-sheet{ max-height:100vh; max-height:100dvh; overflow-y:auto; overscroll-behavior:contain; }"));
@@ -367,11 +370,12 @@ test("publicar · una respuesta perdida: antes de decir algo se pregunta al serv
   const conflictMsg = fail.indexOf("No se publicó nada.");
   assert.ok(recheck !== -1 && recheck < already && already < conflictMsg, "primero el servidor, después el aviso");
   assert.ok(fail.slice(recheck, already).includes("adoptFreshMeta(meta, fresh);"));
-  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, null, setupRulesStored(rules) ? null"));
+  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, setupRulesDiff(rules));"));
   const found = fn("function setupAlreadyPublished(rows, clean)");
   assert.ok(found.includes("const r = meta.rounds.find(x => x.id === rows.round.id);"), "calendario: la misma jornada");
   assert.ok(found.includes("return meta.rounds.find(published) || null;"), "a mano: los mismos ids de partido");
-  assert.ok(fn("function setupRulesStored(rules)").includes("rules.bets.every(b => bets.some(x => x.id === b.id))"));
+  // El retorno temprano «a mano» (ya publicada con esos partidos) también compara las reglas.
+  assert.ok(pub.includes("finishSetupPublish(done, setupRulesDiff(rules));\n      return;\n    }\n    setupPublishInFlight = true;"));
 });
 
 test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó no bloquea cada guardado: se trae el estado bueno", () => {
@@ -754,3 +758,106 @@ test("barra fija · nada del recorrido queda debajo: se reserva su altura real y
   assert.ok(sum.includes('id="qz-wz-notice"'));
 });
 
+
+
+// ---- Revisión adicional (ronda 4): R1, R2, R3 ---------------------------------
+
+test("R1 · el cierre se revisa otra vez justo antes de escribir, después de toda espera; si venció, nada se publica y el borrador queda", () => {
+  const pub = fn("async function setupPublish(btn, problem, number, rules)");
+  const recheck = pub.indexOf("const fresh = setupRoundProblem();");
+  assert.ok(recheck !== -1 && recheck < pub.indexOf("await setMetaWithError(meta, { betsEdited: true });"));
+  assert.ok(pub.includes("if(fresh.field){ setupPublishStopped(flow, fresh); return; }"));
+  // Entre esa revisión y la escritura no hay ninguna espera.
+  const between = pub.slice(recheck, pub.indexOf("await setMetaWithError(meta, { betsEdited: true });"));
+  assert.equal((between.match(/await /g) || []).length, 1, "sólo la de «la jornada cambió en otra pestaña», que no escribe");
+  assert.ok(pub.includes('if(result.error === "round_deadline_passed"){ setupPublishStopped(flow, { field: "deadline" }); return; }'), "y si el servidor lo juzga vencido");
+  const stop = fn("function setupPublishStopped(flow, problem)");
+  assert.ok(stop.includes("No se publicó nada y tu jornada sigue en borrador"));
+  assert.ok(!stop.includes("clearRoundDraft("), "el borrador no se borra");
+});
+
+const rulesDiff = (metaObj) => new Function("meta", `
+  ${fn("function pointsWord(n)")}
+  ${fn("function scopeLabel(scope)")}
+  ${fn("function setupRulesDiff(rules)")}
+  return setupRulesDiff;
+`)(metaObj);
+const wanted = { points: 2, fee: 100, penalty: { enabled: true, startsAtRound: 12, pointsPerRound: 5 },
+  bets: [{ id: "cb_qa1", label: "¿Quién será campeón?", scope: "temporada", points: 5, closesAtRound: 12 }] };
+
+test("R2 · se comparan todas las reglas (penalización y cada pregunta completa), no sólo puntos, cuota e ids", () => {
+  const same = { settings: { pointsPerCorrectPick: 2, entryFee: 100 }, paymentPenalty: { enabled: true, startsAtRound: 12, pointsPerRound: 5 },
+    customBets: [{ id: "cb_qa1", label: "¿Quién será campeón?", scope: "temporada", points: 5, closesAtRound: 12 }] };
+  assert.deepEqual(rulesDiff(same)(wanted), []);
+  // B publicó primero sin penalización: lo de A no se celebra.
+  assert.deepEqual(rulesDiff({ ...same, paymentPenalty: { enabled: false, startsAtRound: 12, pointsPerRound: 5 } })(wanted),
+    ["Penalización: querías −5 por jornada sin pagar desde la Jornada 12; quedó apagada."]);
+  // Mismo id, otro contenido (texto, alcance, puntos, cierre).
+  const otra = { ...same, customBets: [{ id: "cb_qa1", label: "Campeón", scope: "jornada", points: 3, closesAtRound: null }] };
+  assert.deepEqual(rulesDiff(otra)(wanted), ["Pregunta «¿Quién será campeón?»: quedó con el texto «Campeón», se responde cada jornada, 3 puntos, sin cierre."]);
+  // Sin la pregunta, con otros puntos y cuota, y una penalización que se quería apagada.
+  const lejos = { settings: { pointsPerCorrectPick: 1, entryFee: 0 }, paymentPenalty: { enabled: true, startsAtRound: 1, pointsPerRound: 2 }, customBets: [] };
+  assert.deepEqual(rulesDiff(lejos)({ ...wanted, penalty: null }), [
+    "Puntos por acierto: querías 2; quedaron en 1.",
+    "Cuota: querías $100 MXN; quedó sin cuota.",
+    "Penalización: la dejaste apagada; está activa (−2 por jornada sin pagar desde la Jornada 1).",
+    "Pregunta «¿Quién será campeón?»: no se guardó.",
+  ]);
+});
+
+test("R2 · lo que no quedó se dice en la hoja y queda en «Tus reglas» hasta revisarlo; no se aplica solo", () => {
+  const finish = fn("function finishSetupPublish(round, pending)");
+  assert.ok(finish.includes("if(lines.length) storeSetupPending(round, lines); else clearSetupPending();"));
+  const reglas = fn("async function renderAdminReglas(body, opts)");
+  assert.ok(reglas.includes("const pending = loadSetupPending();"));
+  assert.ok(reglas.includes("No cambiamos lo que guardó otra persona. Si quieres estas reglas, cámbialas aquí abajo."));
+  assert.ok(reglas.includes('if(pendingDone) pendingDone.addEventListener("click", () => { clearSetupPending(); repaint(); });'));
+});
+
+const keptEnv = (metaObj) => new Function("meta", `
+  ${fn("function pointsWord(n)")}
+  ${fn("function scopeLabel(scope)")}
+  ${fn("function fmtWhenTz(iso)")}
+  const serverNow = () => Date.now();
+  ${fn("function betCloseLine(bet)")}
+  ${constLine("EXTRA_TEMPLATES")}
+  ${fn("function extraTemplate(key)")}
+  ${fn("function isPositiveInt(v)")}
+  ${fn("function parsePositiveInt(raw)")}
+  ${fn("function extraQuestionProblem(state, questions, ignoreKey, kept)")}
+  ${fn("function setupKeptQuestions()")}
+  ${fn("function keptQuestionDetail(q)")}
+  let setupFlow = null;
+  ${fn("function setupDuplicateOfKept()")}
+  return { setupKeptQuestions, keptQuestionDetail, extraQuestionProblem, setupDuplicateOfKept, setFlow: (f) => { setupFlow = f; } };
+`)(metaObj);
+
+test("R3 · las preguntas que la quiniela ya tiene se muestran (también el goleador antiguo), se conservan y cuentan para duplicados", () => {
+  const m = { customBetsMigrated: true, rounds: [round(12, 48, [50])],
+    customBets: [{ id: "cb_x", label: "¿Quién será campeón?", scope: "temporada", points: 5, closesAtRound: 12 }, { id: "cb_y", label: "¿Habrá penal?", scope: "jornada", points: 2 }] };
+  const e = keptEnv(m);
+  const kept = e.setupKeptQuestions();
+  assert.deepEqual(kept.map((q) => [q.text, q.scope, q.points, q.closesAtRound]), [["¿Quién será campeón?", "temporada", 5, 12], ["¿Habrá penal?", "jornada", 2, null]]);
+  assert.match(e.keptQuestionDetail(kept[0]), /^\+5 puntos · Una vez por torneo · Cierra con la Jornada 12: /);
+  assert.equal(e.keptQuestionDetail(kept[1]), "+2 puntos · Cada jornada · cierra con cada jornada");
+  // Una nueva igual a una guardada no se añade.
+  assert.match(e.extraQuestionProblem({ template: "custom", text: "¿habrá PENAL?", points: "3" }, [], null, kept), /^Tu quiniela ya tiene esta pregunta/);
+  // Y si alguien la guarda mientras tanto, publicar se detiene.
+  e.setFlow({ d: { extrasOn: true, questions: [{ key: "qa1", text: "¿Habrá penal?" }] } });
+  assert.equal(e.setupDuplicateOfKept(), "¿Habrá penal?");
+  // El goleador antiguo, sin migrar, también se conserva.
+  const legacy = keptEnv({ rounds: [], golScorerBet: { enabled: true, bonusPoints: 4, closesAtRound: null } }).setupKeptQuestions();
+  assert.deepEqual(legacy.map((q) => [q.text, q.points]), [["Goleador de la liga", 4]]);
+});
+
+test("R3 · bloque 1, resumen y lateral muestran lo que se conserva; publicar se detiene si eso cambió en otra pestaña", () => {
+  assert.ok(fn("function renderSetupLiga(main)").includes("${keptHtml}"));
+  const sum = fn("function renderSetupResumen(main)");
+  assert.ok(sum.includes("${qs.length || keptQs.length ? `") && sum.includes("${keptListHtml}"));
+  assert.ok(fn("function renderSetupAside()").includes("keptQs.map(q => `<li>${esc(q.text)} <span class=\"muted\">· ya guardada</span></li>`)"));
+  const click = fn("async function setupPublishClickNow(btn)");
+  assert.ok(click.indexOf("const keptBefore = setupKeptSignature();") < click.indexOf("await refreshSetupMeta();"));
+  assert.ok(click.includes("if(dup || setupKeptSignature() !== keptBefore){"));
+  // Nada de esto quita preguntas: publicar sólo añade las nuevas.
+  assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes("rules.bets.forEach(b => { if(!meta.customBets.some(x => x.id === b.id)) meta.customBets.push(b); });"));
+});

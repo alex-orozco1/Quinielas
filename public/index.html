@@ -1267,6 +1267,8 @@
   #quiniela-root .qz-wz-callout{ background:#FFF9EC; border:1px solid #F0D79A; border-left:4px solid #D6A73C; border-radius:10px; padding:12px 14px; margin:0 0 12px; font-size:14px; line-height:1.45; color:#3F2D00; overflow-wrap:anywhere; }
   #quiniela-root .qz-wz-callout p{ margin:0; }
   #quiniela-root .qz-wz-callout p + p{ margin-top:4px; }
+  #quiniela-root .qz-wz-callout ul{ margin:6px 0; padding-left:18px; }
+  #quiniela-root .qz-wz-callout .btn{ margin-top:8px; }
   #quiniela-root .qz-wz-callout-title{ font-weight:800; font-size:15px; color:#2B1F00; }
   #quiniela-root .qz-wz-notice{ margin:0 0 12px; overflow-wrap:anywhere; }
   #quiniela-root .qz-setup-aside{ display:none; }
@@ -1408,6 +1410,7 @@
   .qz-sheet p{ font-size:14px; line-height:1.5; margin:0 0 6px; }
   .qz-sheet .muted{ color:#4B5B53; font-size:13px; }
   .qz-sheet .qz-tight{ margin:2px 0 6px; }
+  .qz-sheet .qz-sheet-note ul{ margin:4px 0 6px; padding-left:18px; font-size:14px; line-height:1.45; }
   .qz-sheet .qz-sheet-note{ background:#FFF9EC; border:1px solid #F0D79A; border-left:4px solid #D6A73C; border-radius:10px; padding:10px 12px; font-size:14px; line-height:1.45; color:#3F2D00; }
   .qz-sheet .btn{ font-family:inherit; border:none; border-radius:10px; padding:10px 16px; font-weight:700; cursor:pointer; }
   .qz-sheet .btn:focus-visible, .qz-sheet .qz-linkbtn:focus-visible, .qz-sheet-x:focus-visible{ outline:3px solid #D6A73C; outline-offset:2px; }
@@ -1732,6 +1735,7 @@
     participant_not_found: "No encontramos a esa persona en la quiniela.",
     incomplete_results: "Faltan resultados por capturar antes de poder publicar.",
     round_not_closed: "Todavía no puedes publicar resultados oficiales de esta jornada — el plazo para votar no ha cerrado.",
+    round_deadline_passed: "El cierre de esa jornada ya pasó. Elige un cierre nuevo antes de publicarla.",
     unpublished_round_results: "Esta jornada todavía no está publicada para los participantes. Publícala primero en Admin → Jornadas.",
     bet_locked: "Esta pregunta ya cerró.",
     // MS2: a tournament question closes with an existing round that has not closed yet.
@@ -4955,6 +4959,7 @@
     const leagueId = setupLeagueId();
     const closeRound = setupCloseRound();
     const qs = d.extrasOn ? d.questions : [];
+    const keptQs = setupKeptQuestions();
     const pending = `<span class="qz-sum-pending">Pendiente</span>`;
     const publishNumber = setupPublishNumber();
     aside.innerHTML = `
@@ -4963,7 +4968,7 @@
         <dl class="qz-sum-dl">
           <dt>Liga</dt><dd>${leagueId ? `${esc(setupLeagueLabel(leagueId) || "Guardada")}${d.manual ? " · esta jornada a mano" : ""}` : d.manual ? "Partidos a mano" : `${pending}`}</dd>
           <dt>Puntos por acierto</dt><dd>${esc(d.points)} ${esc(pointsWord(d.points))}</dd>
-          <dt>Preguntas extra</dt><dd>${qs.length ? `${esc(qs.length)} ${qs.length === 1 ? "pregunta" : "preguntas"}<ul class="qz-sum-list">${qs.map(q => `<li>${esc(q.text)} <span class="muted">· +${esc(q.points)} · ${esc(scopeLabel(q.scope))}${q.scope === "temporada" ? ` · ${esc(extraCloseShort("temporada", closeRound))}` : ""}</span></li>`).join("")}</ul>` : (d.extrasOn ? `${pending}` : "Ninguna")}</dd>
+          <dt>Preguntas extra</dt><dd>${qs.length || keptQs.length ? `${esc(qs.length + keptQs.length)} ${qs.length + keptQs.length === 1 ? "pregunta" : "preguntas"}<ul class="qz-sum-list">${keptQs.map(q => `<li>${esc(q.text)} <span class="muted">· ya guardada</span></li>`).join("")}${qs.map(q => `<li>${esc(q.text)} <span class="muted">· +${esc(q.points)} · ${esc(scopeLabel(q.scope))}${q.scope === "temporada" ? ` · ${esc(extraCloseShort("temporada", closeRound))}` : ""}</span></li>`).join("")}</ul>` : (d.extrasOn ? `${pending}` : "Ninguna")}</dd>
           <dt>Pagos</dt><dd>${SETUP_STEPS.indexOf(d.step) < 1 ? pending : d.payOn ? `Cuota $${esc(d.fee != null ? d.fee : "—")} MXN${d.penOn ? ` · −${esc(d.penPoints)} por jornada sin pagar` : ""}` : "Sin registro de pagos"}</dd>
           <dt>Jornada</dt><dd>${publishNumber ? `Jornada ${esc(publishNumber)}${closeRound && closeRound.deadline ? ` · cierre de pronósticos: ${esc(fmtWhenTz(closeRound.deadline))}` : ""}` : pending}</dd>
         </dl>
@@ -5047,15 +5052,54 @@
       <p class="qz-sr" id="qz-wz-q-live" aria-live="polite"></p>`;
   }
   // Pure: "" or the problem with a question about to be added or saved.
-  function extraQuestionProblem(state, questions, ignoreKey){
+  // R3: kept — the questions the quiniela already has (they stay); a new one
+  // that repeats one of them is not added either.
+  function extraQuestionProblem(state, questions, ignoreKey, kept){
     if(!state.template) return "Selecciona una pregunta.";
     const t = extraTemplate(state.template);
     const text = t ? t.text : String(state.text || "").trim();
     if(!text) return "Escribe tu pregunta.";
     if(parsePositiveInt(state.points) == null) return "Escribe cuántos puntos vale (número entero de 1 en adelante).";
     const norm = (s) => String(s).trim().toLocaleLowerCase("es");
+    if((kept || []).some(q => norm(q.text) === norm(text))) return "Tu quiniela ya tiene esta pregunta y se conserva como está. Para cambiarla, usa Admin → Tus reglas después de publicar.";
     if(questions.some(q => q.key !== ignoreKey && norm(q.text) === norm(text))) return "Ya añadiste esta pregunta. Edítala en su tarjeta.";
     return "";
+  }
+  // R3: the questions the quiniela already has — added in «Tus reglas», by
+  // another admin or tab, or the old «goleador» the next save migrates.
+  // Publishing keeps every one of them, so the setup shows them, checks new
+  // ones against them and never removes them.
+  function setupKeptQuestions(){
+    const list = (Array.isArray(meta.customBets) ? meta.customBets : [])
+      .filter(b => b && typeof b === "object" && typeof b.label === "string" && b.label.trim())
+      .map(b => ({ id: b.id, text: b.label, scope: b.scope === "temporada" ? "temporada" : "jornada", points: b.points, closesAtRound: b.closesAtRound || null }));
+    const old = meta.golScorerBet;
+    if(!meta.customBetsMigrated && old && old.enabled){
+      list.push({ id: "legacy-goleador", text: "Goleador de la liga", scope: "temporada", points: Number(old.bonusPoints) || 3, closesAtRound: Number(old.closesAtRound) || null });
+    }
+    return list;
+  }
+  // Plain text: points, how it is answered and its real close.
+  function keptQuestionDetail(q){
+    const close = q.scope === "temporada" ? (betCloseLine({ scope: "temporada", closesAtRound: q.closesAtRound }) || "sin cierre") : "cierra con cada jornada";
+    return "+" + q.points + " " + pointsWord(q.points) + " · " + scopeLabel(q.scope) + " · " + close;
+  }
+  function keptQuestionsListHtml(kept){
+    return `<ul class="qz-sum-qs qz-kept-qs">${kept.map(q => `<li><strong>${esc(q.text)}</strong><span class="muted"> · ${esc(keptQuestionDetail(q))} · ya guardada</span></li>`).join("")}</ul>`;
+  }
+  // What identifies the kept set, to notice it changed under this tab.
+  function setupKeptSignature(){
+    return JSON.stringify(setupKeptQuestions().map(q => [q.id, q.text, q.scope, q.points, q.closesAtRound]));
+  }
+  // A new question of this setup that repeats a kept one (someone added it
+  // meanwhile): its text, or "".
+  function setupDuplicateOfKept(){
+    const d = setupFlow.d;
+    if(!d.extrasOn) return "";
+    const norm = (s) => String(s).trim().toLocaleLowerCase("es");
+    const kept = setupKeptQuestions().map(q => norm(q.text));
+    const dup = d.questions.find(q => kept.includes(norm(q.text)));
+    return dup ? dup.text : "";
   }
   function wireExtrasPanel(main){
     const d = setupFlow.d;
@@ -5108,7 +5152,7 @@
       const q = d.questions.find(x => x.key === d.editor.key);
       if(!q){ d.editor = null; setupPersist(); repaint(); return; }
       const state = { template: q.template, text: d.editor.text, scope: d.editor.scope, points: d.editor.points };
-      const problem = extraQuestionProblem(state, d.questions, q.key);
+      const problem = extraQuestionProblem(state, d.questions, q.key, setupKeptQuestions());
       if(problem){ setupFieldError("qz-wz-e-err", problem); return; }
       const t = extraTemplate(q.template);
       q.text = t ? t.text : state.text.trim();
@@ -5144,7 +5188,7 @@
   }
   function addExtraFromBuilder(repaint, say){
     const d = setupFlow.d;
-    const problem = extraQuestionProblem(d.builder, d.questions, null);
+    const problem = extraQuestionProblem(d.builder, d.questions, null, setupKeptQuestions());
     if(problem){
       const field = !d.builder.template ? "qz-wz-q-tpl" : problem === "Escribe tu pregunta." ? "qz-wz-q-text" : problem.startsWith("Escribe cuántos") ? "qz-wz-q-points" : null;
       setupFieldError("qz-wz-q-err", problem, field ? document.getElementById(field) : null);
@@ -5171,6 +5215,14 @@
     const d = setupFlow.d;
     const leagueId = setupLeagueId();
     const leagueLabel = setupLeagueLabel(leagueId);
+    // R3: the questions already in the quiniela, which publishing keeps.
+    const kept = setupKeptQuestions();
+    const keptHtml = kept.length ? `
+        <div class="qz-wz-kept" id="qz-wz-kept">
+          <p class="qz-wz-line"><strong>Tu quiniela ya tiene ${esc(kept.length)} ${kept.length === 1 ? "pregunta extra; se conserva" : "preguntas extra; se conservan"} al publicar:</strong></p>
+          ${keptQuestionsListHtml(kept)}
+          <p class="muted qz-tight">Para cambiarlas o quitarlas, usa Admin → Tus reglas después de publicar. Aquí puedes añadir otras.</p>
+        </div>` : ``;
     main.innerHTML = `
       ${setupHeadHtml("liga", "Elige tu liga y cuántos puntos vale cada acierto. Lo demás es opcional.")}
       <section class="card qz-wz-card" aria-labelledby="qz-wz-liga-t">
@@ -5205,6 +5257,7 @@
         <p class="qz-field-error" id="qz-wz-points-err" role="alert" hidden></p>
       </section>
       <section class="card qz-wz-card" aria-labelledby="qz-wz-extras-t">
+        ${keptHtml}
         <div class="qz-switch-row">
           <div>
             <div class="qz-switch-title" id="qz-wz-extras-t">Preguntas y puntos extra</div>
@@ -5670,6 +5723,8 @@
     const deadlineIso = rows.deadline ? new Date(rows.deadline).toISOString() : null;
     const roundProblem = setupDeadlineProblem(rows.deadline, clean, serverNow()) || (clean.length ? "" : "Agrega al menos un partido con los dos equipos.");
     const qs = d.extrasOn ? d.questions : [];
+    const keptQs = setupKeptQuestions();
+    const keptListHtml = keptQs.length ? keptQuestionsListHtml(keptQs) : "";
     const closeRound = { number, deadline: deadlineIso };
     const firstKick = clean.find(m => m.kickoffAt);
     const kickZone = firstKick ? tzShortName(firstKick.kickoffAt) : "";
@@ -5694,9 +5749,10 @@
             <div class="qz-sum-head"><h2 class="qz-wz-h2" id="qz-sum-1">Tu liga y forma de jugar</h2>${editBtn("liga")}</div>
             <p>Liga: <strong>${leagueId ? esc(leagueLabel || "Guardada") : "sin liga (partidos a mano)"}</strong></p>
             <p>Puntos por acierto: <strong>${esc(d.points)} ${esc(pointsWord(d.points))}</strong> <span class="muted">(acierta quien pronostica ganador o empate)</span></p>
-            ${qs.length ? `
+            ${qs.length || keptQs.length ? `
               <p>Preguntas extra:</p>
-              <ul class="qz-sum-qs">${qs.map(q => `<li><strong>${esc(q.text)}</strong><span class="muted"> · +${esc(q.points)} ${esc(pointsWord(q.points))} · ${esc(scopeLabel(q.scope))} · ${esc(extraCloseShort(q.scope, closeRound))}</span></li>`).join("")}</ul>
+              ${keptListHtml}
+              ${qs.length ? `<ul class="qz-sum-qs">${qs.map(q => `<li><strong>${esc(q.text)}</strong><span class="muted"> · +${esc(q.points)} ${esc(pointsWord(q.points))} · ${esc(scopeLabel(q.scope))} · ${esc(extraCloseShort(q.scope, closeRound))}</span></li>`).join("")}</ul>` : ``}
             ` : `<p>Preguntas extra: <strong>ninguna</strong></p>`}
           </section>
           <section class="card qz-wz-card qz-sum-section" aria-labelledby="qz-sum-2">
@@ -5882,9 +5938,20 @@
     // If the rounds changed meanwhile, what was reviewed is not what would
     // be published: back to the summary (Technical QA, ronda 2).
     const revBefore = meta.roundsRevision;
+    const keptBefore = setupKeptSignature();
     await refreshSetupMeta();
     if(setupFlow !== flow) return;
     if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow); return; }
+    // R3: the questions the quiniela already has changed meanwhile (another
+    // admin or tab): what was reviewed is not what would be kept.
+    const dup = setupDuplicateOfKept();
+    if(dup || setupKeptSignature() !== keptBefore){
+      flow.notice = { kind: "alert", retry: false, html: dup
+        ? `La pregunta «${esc(dup)}» ya está guardada en tu quiniela (la añadió otra persona o pestaña). Quítala de «Tu liga y forma de jugar» o cámbiala. No se publicó nada.`
+        : "Cambiaron las preguntas guardadas en tu quiniela desde otra pestaña o dispositivo. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada." };
+      renderSetupFlow();
+      return;
+    }
     // Onboarding B: without an admin password nothing is published. The
     // modal saves it and comes back here; publishing takes one more tap.
     if(needsAdminPasswordToPublish()){
@@ -5940,8 +6007,26 @@
     }
     await setupPublish(btn, problem, number, rules);
   }
+  // R1: a deadline that passed while this tab waited (the server's answer,
+  // the password) publishes nothing. The draft stays; the admin picks a new
+  // deadline (or, on the calendar, the round it suggests now).
+  function setupPublishStopped(flow, problem){
+    const rows = flow.rows;
+    const review = !!rows && rows.kind !== "new";
+    flow.notice = { kind: "alert", retry: false, html: problem.field === "deadline"
+      ? "El cierre que elegiste ya pasó mientras esperábamos tu confirmación. No se publicó nada y tu jornada sigue en borrador: revísala y elige un cierre nuevo."
+      : esc(problem.message) + " No se publicó nada." };
+    if(review){ setSetupCal(null); flow.rows = null; renderSetupFlow(); loadSetupCalendar(false); return; }
+    renderSetupFlow();
+  }
   async function setupPublish(btn, problem, number, rules){
     const flow = setupFlow;
+    // Checked again here, after every wait and right before writing, with
+    // the server's clock (serverNow): what was valid when «Publicar» was
+    // tapped may not be now.
+    const fresh = setupRoundProblem();
+    if(fresh.field){ setupPublishStopped(flow, fresh); return; }
+    problem = fresh;
     const rows = flow.rows;
     const isReview = rows.kind !== "new";
     // #35: a manual round whose rows were already published (the answer to an
@@ -5949,7 +6034,8 @@
     if(!isReview && isRoundDraftPublished({ matches: problem.clean }, meta.rounds)){
       clearRoundDraft("new");
       const done = meta.rounds.find(r => (r.matches || []).some(m => problem.clean.some(c => c.id === m.id)));
-      finishSetupPublish(done, null);
+      // meta is the server's copy (refreshed at the tap): its rules are compared too.
+      finishSetupPublish(done, setupRulesDiff(rules));
       return;
     }
     setupPublishInFlight = true;
@@ -5996,7 +6082,17 @@
     if(setupFlow !== flow) return;
     if(result.ok){
       clearRoundDraft(rows.kind);
-      finishSetupPublish(round, result);
+      // The server kept points or fee (no admin password): compare with what
+      // it really has, not with this tab's wish.
+      let unread = false;
+      if(result.ruleFieldsKept){
+        let fresh = null;
+        try{ fresh = await getMeta({ owner: adminOrOwnerCred() }); }catch(e){ console.error("setup publish rules re-check failed", e); }
+        if(fresh) adoptFreshMeta(meta, fresh); else unread = true;
+      }
+      const pending = setupRulesDiff(rules);
+      if(unread) pending.unshift("Puntos y cuota: no se guardaron; hace falta la contraseña de administrador.");
+      finishSetupPublish(round, pending);
       return;
     }
     if(!result.reconciled) adoptFreshMeta(meta, snapshot);
@@ -6014,8 +6110,9 @@
       const done = setupAlreadyPublished(rows, problem.clean);
       if(done){
         clearRoundDraft(rows.kind);
-        finishSetupPublish(done, null, setupRulesStored(rules) ? null
-          : "La Jornada " + done.number + " ya estaba publicada, pero tus reglas no se guardaron desde aquí. Revísalas en Admin → Tus reglas.");
+        // The round is there; the rules may not be (someone else published
+        // it first, or this write never arrived): compared one by one.
+        finishSetupPublish(done, setupRulesDiff(rules));
         return;
       }
     }
@@ -6047,6 +6144,8 @@
       setupPublishMessage("alert", "No pudimos confirmar si se publicó. Revisa tu conexión y toca «Reintentar». Si ya estaba publicada, no se publica dos veces.", true);
       return;
     }
+    // The server judged the deadline already passed (its own clock).
+    if(result.error === "round_deadline_passed"){ setupPublishStopped(flow, { field: "deadline" }); return; }
     const known = result.error && result.error !== "unknown_error" && ERROR_MESSAGES[result.error];
     setupPublishMessage("alert", (known ? esc(humanizeError(result.error, result)) + " " : "") + "No se publicó nada; tu configuración sigue aquí.", true);
   }
@@ -6062,17 +6161,57 @@
     }
     return meta.rounds.find(published) || null;
   }
-  // Whether the rules of this setup are the ones the server has.
-  function setupRulesStored(rules){
+  // R2: every rule this setup wanted against what `meta` holds (which must be
+  // the server's copy): points, fee, the penalty and each question whole
+  // (text, how it is answered, points, close). Plain-text lines, one per
+  // rule that did not stay as configured; [] when everything is stored.
+  // A published round never means its rules were stored.
+  function setupRulesDiff(rules){
     const s = meta.settings || {};
+    const lines = [];
     const points = s.pointsPerCorrectPick != null ? s.pointsPerCorrectPick : 1;
+    if(points !== rules.points) lines.push("Puntos por acierto: querías " + rules.points + "; quedaron en " + points + ".");
     const fee = typeof s.entryFee === "number" ? s.entryFee : 0;
+    const feeText = (f) => f ? "$" + f + " MXN" : "sin cuota";
+    if(fee !== rules.fee) lines.push("Cuota: querías " + feeText(rules.fee) + "; quedó " + feeText(fee) + ".");
+    const pen = meta.paymentPenalty && meta.paymentPenalty.enabled ? meta.paymentPenalty : null;
+    const want = rules.penalty;
+    const penText = (p) => "−" + p.pointsPerRound + " por jornada sin pagar desde la Jornada " + p.startsAtRound;
+    if(want && (!pen || pen.pointsPerRound !== want.pointsPerRound || pen.startsAtRound !== want.startsAtRound)){
+      lines.push("Penalización: querías " + penText(want) + "; " + (pen ? "quedó en " + penText(pen) : "quedó apagada") + ".");
+    } else if(!want && pen){
+      lines.push("Penalización: la dejaste apagada; está activa (" + penText(pen) + ").");
+    }
     const bets = meta.customBets || [];
-    return points === rules.points && fee === rules.fee && rules.bets.every(b => bets.some(x => x.id === b.id));
+    rules.bets.forEach(b => {
+      const x = bets.find(y => y && y.id === b.id);
+      if(!x){ lines.push("Pregunta «" + b.label + "»: no se guardó."); return; }
+      const diffs = [];
+      if(x.label !== b.label) diffs.push("el texto «" + x.label + "»");
+      if(x.scope !== b.scope) diffs.push("se responde " + scopeLabel(x.scope).toLowerCase());
+      if(x.points !== b.points) diffs.push(x.points + " " + pointsWord(x.points));
+      if((x.closesAtRound || null) !== (b.closesAtRound || null)) diffs.push(x.closesAtRound ? "cierre con la Jornada " + x.closesAtRound : "sin cierre");
+      if(diffs.length) lines.push("Pregunta «" + b.label + "»: quedó con " + diffs.join(", ") + ".");
+    });
+    return lines;
   }
-  // note: plain text about what was published (rules that did not change),
-  // shown inside the invitation sheet; never a toast over its buttons.
-  function finishSetupPublish(round, result, note){
+  // What did not stay as configured is kept for this admin (this tab), for
+  // «Tus reglas»; nothing of it is written over what someone else saved.
+  function setupPendingKey(){ return "qracks_setup_pending:" + (SLUG || "root") + ":" + ((currentUser && currentUser.id) || "anon"); }
+  function storeSetupPending(round, lines){
+    try{ window.sessionStorage.setItem(setupPendingKey(), JSON.stringify({ v: 1, round: round ? round.number : null, lines })); }catch(e){}
+  }
+  function loadSetupPending(){
+    try{
+      const d = JSON.parse(window.sessionStorage.getItem(setupPendingKey()) || "null");
+      return d && d.v === 1 && Array.isArray(d.lines) && d.lines.length && d.lines.every(l => typeof l === "string") ? d : null;
+    }catch(e){ return null; }
+  }
+  function clearSetupPending(){ try{ window.sessionStorage.removeItem(setupPendingKey()); }catch(e){} }
+  // pending: setupRulesDiff lines (rules that did not stay as configured),
+  // shown inside the invitation sheet and kept for «Tus reglas»; never a
+  // toast over its buttons, never a celebration of rules that were not stored.
+  function finishSetupPublish(round, pending){
     clearRoundDraft(SETUP_DRAFT_KIND);
     trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
     setupFlow = null;
@@ -6080,10 +6219,9 @@
     activeTab = "jornada";
     renderApp();
     if(setupBarObserver){ setupBarObserver.disconnect(); setupBarObserver = null; }
-    const kept = result && result.ruleFieldsKept
-      ? "La jornada se publicó, pero no se guardaron los puntos ni la cuota: hace falta la contraseña de administrador. Cámbialos en Admin → Tus reglas."
-      : null;
-    openInviteSheet({ first: true, round, note: note || kept });
+    const lines = Array.isArray(pending) ? pending : [];
+    if(lines.length) storeSetupPending(round, lines); else clearSetupPending();
+    openInviteSheet({ first: true, round, pending: lines });
   }
 
   // ---- invitar ------------------------------------------------------------------
@@ -6134,14 +6272,21 @@
     const first = !!(opts && opts.first);
     const round = inviteRound(opts && opts.round);
     const link = inviteLink();
+    const pendingLines = opts && Array.isArray(opts.pending) ? opts.pending : [];
+    const pendingHtml = pendingLines.length ? `
+        <div class="qz-sheet-note" role="status">
+          <p><strong>Algunas reglas no quedaron como las configuraste:</strong></p>
+          <ul>${pendingLines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
+          <p>No cambiamos lo que guardó otra persona. Revísalas en Admin → Tus reglas.</p>
+        </div>` : ``;
     const overlay = document.createElement("div");
     overlay.className = "qz-modal-overlay qz-modal-scroll qz-sheet-overlay";
     overlay.id = "qz-invite-sheet";
     overlay.innerHTML = `
       <div class="qz-modal-card qz-sheet" role="dialog" aria-modal="true" aria-labelledby="qz-invite-title" tabindex="-1">
         <button class="qz-sheet-x" id="qz-invite-x" aria-label="Cerrar">✕</button>
-        <h2 class="qz-sheet-title" id="qz-invite-title">${first && round ? `🎉 ¡Tu quiniela y la Jornada ${esc(round.number)} ya están listas!` : "Invita a tus amigos"}</h2>
-        ${opts && opts.note ? `<p class="qz-sheet-note" role="status">${esc(opts.note)}</p>` : ``}
+        <h2 class="qz-sheet-title" id="qz-invite-title">${first && round ? (pendingLines.length ? `La Jornada ${esc(round.number)} ya está publicada` : `🎉 ¡Tu quiniela y la Jornada ${esc(round.number)} ya están listas!`) : "Invita a tus amigos"}</h2>
+        ${pendingHtml}
         <p>Invita a tus amigos para que entren y hagan sus pronósticos antes del cierre.</p>
         ${round && !isRoundLocked(round) ? `<p class="muted">Cierre de la Jornada ${esc(round.number)}: <strong>${esc(fmtWhenTz(round.deadline))}</strong>.</p>` : ``}
         <div class="qz-sheet-actions">
@@ -8792,8 +8937,19 @@
       : `<p class="muted qz-tight">🔒 Para cambiarlos, desbloquea con tu contraseña de administrador (arriba).</p>`;
     const cardsHtml = bets.map(reglasBetCardHtml).join("");
     const formHtml = st.form ? reglasBetFormHtml(st.form) : "";
+    // R2: what the first publish could not store (someone else saved first),
+    // kept for this admin until reviewed; nothing of it is applied by itself.
+    const pending = loadSetupPending();
+    const pendingHtml = pending ? `
+        <section class="qz-wz-callout" id="qz-r-pending" role="status">
+          <p class="qz-wz-callout-title">Reglas que configuraste y no quedaron guardadas${pending.round ? ` (al publicar la Jornada ${esc(pending.round)})` : ``}</p>
+          <ul class="qz-r-pending-list">${pending.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
+          <p>No cambiamos lo que guardó otra persona. Si quieres estas reglas, cámbialas aquí abajo.</p>
+          <button class="btn btn-ghost btn-sm" id="qz-r-pending-done">Ya lo revisé</button>
+        </section>` : ``;
     body.innerHTML = `
       <div class="qz-rules">
+        ${pendingHtml}
         <section class="card qz-rules-head">
           <h2 class="qz-wz-h2">Tus reglas</h2>
           <p class="muted qz-tight">Puntos, preguntas extra, cuota y penalización. Lo que cambies aquí vale desde ahora.</p>
@@ -8882,6 +9038,8 @@
       </div>
     `;
     wireHelp(body, repaint);
+    const pendingDone = document.getElementById("qz-r-pending-done");
+    if(pendingDone) pendingDone.addEventListener("click", () => { clearSetupPending(); repaint(); });
     // Unlock: the same check as Ajustes, so later writes carry the password.
     const unlockBtn = document.getElementById("qz-rules-unlock");
     if(unlockBtn){
