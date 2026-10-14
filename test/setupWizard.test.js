@@ -378,3 +378,93 @@ test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó n
   assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes("await setMetaWithError(meta, { betsEdited: true });"));
   assert.ok(indexSrc.includes("const result = await setMetaWithError(meta, { betsEdited: true });\n      saveForm.disabled = false;"));
 });
+
+// ---- Product QA (ronda 1): P1-1, P2-1, P2-2, P2-3 ---------------------------
+
+// «Tus reglas» → Editar, ejecutado con una meta de prueba.
+const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
+  const serverNow = () => serverNowMs;
+  const allPicksCache = {};
+  ${constLine("EXTRA_TEMPLATES")}
+  const EXTRA_CUSTOM_KEY = "custom";
+  const EXTRA_TEXT_MAX = 200;
+  ${fn("function esc(s)")}
+  ${fn("function extraTemplate(key)")}
+  ${fn("function scopeLabel(scope)")}
+  ${fn("function scopeHelp(scope)")}
+  ${fn("function fmtWhenTz(iso)")}
+  ${fn("function isRoundLocked(round)")}
+  ${fn("function customBetsLocked(bet)")}
+  ${fn("function betAnswerCount(bet)")}
+  ${fn("function closableRounds()")}
+  ${fn("function betCloseLine(bet)")}
+  ${fn("function betCloseFixed(bet)")}
+  ${fn("function reglasBetFormHtml(f)")}
+  return reglasBetFormHtml;
+`)(NOW, metaObj);
+const editForm = (bet) => ({ id: bet.id, template: "custom", text: bet.label, scope: bet.scope, points: String(bet.points), closes: bet.closesAtRound ? String(bet.closesAtRound) : "" });
+
+test("P1-1 · editar una pregunta del torneo que ya cerró no ofrece otro cierre: no se reabre por accidente", () => {
+  const bet = { id: "cb_x", label: "¿Quién gana?", scope: "temporada", points: 5, closesAtRound: 12 };
+  const meta = { rounds: [round(12, -2, [-1], true), round(13, 48, [50]), round(14, 120, [122])], customBets: [bet], participants: [] };
+  const html = reglasForm(meta)(editForm(bet));
+  assert.ok(!html.includes('id="qz-rb-closes"'), "sin selector: el navegador no puede preseleccionar la Jornada 13");
+  assert.ok(html.includes("Cierra con la Jornada 12") && html.includes("Ya cerró."));
+  // Al guardar, el cierre que se escribe es el que ya tenía.
+  const save = indexSrc.slice(indexSrc.indexOf('const saveForm = document.getElementById("qz-rb-save");'));
+  assert.ok(save.includes(": betCloseFixed(editingBet) ? editingBet.closesAtRound"));
+  // Y si cerró con el formulario abierto, no se guarda otro cierre.
+  assert.ok(save.includes('toast("Esta pregunta acaba de cerrar: su cierre ya no se cambia. No se guardó nada.");'));
+});
+
+test("P1-1 · una pregunta abierta conserva su jornada elegida; una ligada a una jornada que ya no existe la conserva marcada", () => {
+  const open = { id: "cb_o", label: "Campeón", scope: "temporada", points: 5, closesAtRound: 14 };
+  const gone = { id: "cb_g", label: "Goleador", scope: "temporada", points: 3, closesAtRound: 9 };
+  const meta = { rounds: [round(13, 48, [50]), round(14, 120, [122])], customBets: [open, gone], participants: [] };
+  const form = reglasForm(meta);
+  const a = form(editForm(open));
+  assert.match(a, /<option value="14" selected>Jornada 14/);
+  assert.doesNotMatch(a, /<option value="13" selected>/);
+  const b = form(editForm(gone));
+  assert.match(b, /<option value="9" selected>Jornada 9 · ya no existe<\/option>/, "guardar sin tocarla no cambia nada");
+  assert.doesNotMatch(b, /<option value="13" selected>/);
+  // Sin cierre (pregunta antigua): se pide elegir, no se elige solo.
+  const legacy = { id: "cb_l", label: "Antigua", scope: "temporada", points: 1, closesAtRound: null };
+  const c = reglasForm({ ...meta, customBets: [legacy] })(editForm(legacy));
+  assert.match(c, /<option value="" selected disabled>Elige una jornada<\/option>/);
+});
+
+test("P2-1 · «Siguiente paso» sin jornada publicada no promete un borrador que no existe en esta pestaña", () => {
+  const info = fn("async function nextStepInfo()");
+  assert.ok(!indexSrc.includes("sigue guardado en este dispositivo"));
+  assert.ok(info.includes("text: loadSetupDraft(meta)"));
+  assert.ok(info.includes("Lo que ya configuraste en esta pestaña sigue aquí."));
+  assert.ok(info.includes("Elige tus reglas, tus pagos y tu primera jornada. Nada se publica hasta que lo confirmes."));
+});
+
+test("P2-2 · sin la contraseña de administrador (co-admin) hay salida: se dice de quién es y se pueden dejar puntos y cuota como están", () => {
+  const click = fn("async function setupPublishClick(btn)");
+  assert.ok(click.includes('altLabel: keepLabel'));
+  assert.ok(click.includes('const keepLabel = "Dejar puntos y cuota como están";'));
+  assert.ok(click.includes('"Para guardar los puntos y la cuota hace falta la contraseña de administrador" + (creator ? ", que creó " + creator.name : "")'));
+  assert.ok(click.includes("if(attempt && attempt.alt){ setupKeepStoredRules(); return; }"));
+  assert.ok(click.includes("Pídesela, o toca otra vez «Publicar jornada"));
+  // Dejar como están no publica: cambia el borrador y vuelve al resumen.
+  const keep = fn("function setupKeepStoredRules()");
+  assert.ok(!keep.includes("setupPublish("), "no publica por su cuenta");
+  assert.ok(keep.includes("d.points = stored.points;"));
+  assert.ok(keep.includes("d.payOn = false;") && keep.includes("d.fee = stored.fee;"));
+  assert.ok(keep.includes("Todavía no se publicó nada"));
+  assert.ok(fn("function setupChangesProtectedRules(rules)").includes("const stored = storedRuleValues();"));
+});
+
+test("P2-3 · los textos dicen cuándo se ven los puntos marcados: la Tabla aparece al publicar los primeros resultados", () => {
+  const when = fn("function markedPointsWhen()");
+  assert.ok(when.includes("return tableShowsScores()"));
+  assert.ok(when.includes("la tabla de posiciones aparece cuando publicas los resultados de la primera jornada"));
+  assert.ok(fn("async function renderTabla(main)").includes("const hasScoredResults = tableShowsScores();"), "la misma condición que la Tabla");
+  assert.ok(!indexSrc.includes("Marca «¿Atinó?» a quien acertó; los puntos se suman a la tabla al momento."));
+  assert.ok(indexSrc.includes("Al marcar «¿Atinó?», ${esc(markedPointsWhen())}."));
+  assert.ok(fn("function renderReglasGrade(box, bet)").includes("${esc(markedPointsWhen())}"));
+  assert.ok(indexSrc.includes("${tableShowsScores() ? `` : `<p class=\"muted qz-tight\">La Tabla de posiciones aparece cuando publicas los resultados de la primera jornada."));
+});

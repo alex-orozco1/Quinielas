@@ -3599,6 +3599,17 @@
     return true; // still mark migrated even if there was nothing to migrate
   }
 
+  // The Tabla shows positions once the results of a round are published;
+  // before that it says «Aún no hay resultados», even with points marked.
+  function tableShowsScores(){
+    return meta.rounds.some(r => r.resultsPublished);
+  }
+  // When the points of a marked hit show up, said truthfully for this state.
+  function markedPointsWhen(){
+    return tableShowsScores()
+      ? "los puntos se suman a la tabla al momento"
+      : "los puntos ya cuentan; la tabla de posiciones aparece cuando publicas los resultados de la primera jornada";
+  }
   function customBetsLocked(bet){
     if(bet.scope !== "temporada" || !bet.closesAtRound) return false;
     const closingRound = meta.rounds.find(r => r.number === bet.closesAtRound);
@@ -4889,7 +4900,7 @@
           ` : `<p class="qz-wz-line">Se responde: <strong>${esc(scopeLabel(scope).toLowerCase())}</strong></p>`}
           <div class="field qz-field-narrow"><label for="${p}-points">Puntos si acierta</label>
             <input type="text" inputmode="numeric" id="${p}-points" value="${esc(state.points)}" autocomplete="off"></div>
-          <p class="muted qz-tight">Se suman a la tabla cuando tú marcas quién acertó.</p>
+          <p class="muted qz-tight">Cuentan para la tabla cuando tú marcas quién acertó.</p>
           <p class="qz-wz-close" id="${p}-close">${esc(extraCloseLong(scope, closeRound))}</p>
         `}
         <p class="qz-field-error" id="${p}-err" role="alert" hidden></p>
@@ -5632,12 +5643,45 @@
       })),
     };
   }
+  // The points and the fee as stored (what the server keeps without the
+  // admin password).
+  function storedRuleValues(){
+    const s = meta.settings || {};
+    return {
+      points: s.pointsPerCorrectPick != null ? s.pointsPerCorrectPick : 1,
+      fee: typeof s.entryFee === "number" ? s.entryFee : 0,
+    };
+  }
   // Whether this publish changes a rule only the admin password can change.
   function setupChangesProtectedRules(rules){
-    const s = meta.settings || {};
-    const storedPoints = s.pointsPerCorrectPick != null ? s.pointsPerCorrectPick : 1;
-    const storedFee = typeof s.entryFee === "number" ? s.entryFee : 0;
-    return storedPoints !== rules.points || storedFee !== rules.fee;
+    const stored = storedRuleValues();
+    return stored.points !== rules.points || stored.fee !== rules.fee;
+  }
+  // Without the admin password (a co-admin, or a creator who doesn't have it
+  // at hand): the draft takes the stored points and fee back. Nothing is
+  // published here; the summary shows the change and publishing is one more
+  // tap, as always.
+  function setupKeepStoredRules(){
+    const d = setupFlow.d;
+    const stored = storedRuleValues();
+    const changed = [];
+    if(d.points !== stored.points){
+      d.points = stored.points;
+      changed.push(`los puntos en ${esc(stored.points)} por acierto`);
+    }
+    if((d.payOn ? d.fee : 0) !== stored.fee){
+      if(stored.fee > 0){
+        d.payOn = true;
+        d.fee = stored.fee;
+        changed.push(`la cuota en $${esc(stored.fee)} MXN`);
+      } else {
+        d.payOn = false;
+        changed.push("la quiniela sin cuota (así no se registran pagos ni se restan puntos)");
+      }
+    }
+    setupPersist();
+    renderSetupFlow();
+    setupPublishMessage("ok", `${changed.length ? `Listo: dejamos ${changed.join(" y ")}, como ya estaban guardados.` : `Los puntos y la cuota ya son los guardados.`} Todavía no se publicó nada: revisa el resumen y toca «Publicar jornada ${esc(setupPublishNumber())}».`);
   }
   let setupPublishInFlight = false;
   async function setupPublishClick(btn){
@@ -5673,11 +5717,22 @@
     // password (the server keeps the stored ones otherwise): asked now, so
     // the publish never goes out half-applied.
     if(meta.creatorId && !ownerPasswordCache && setupChangesProtectedRules(rules)){
-      const attempt = await promptCredential("Para guardar los puntos y la cuota hace falta tu contraseña de administrador.",
-        { title: "Confirma tu contraseña", confirmLabel: "Confirmar y publicar", secret: true }, "owner", (pw) => verifyOwnerPasswordResult(pw));
+      // Only the creator sets that password: a co-admin is told whose it is,
+      // and either of them can go on without changing the points or the fee.
+      const mine = isCreator(currentUser);
+      const creator = creatorOfMeta();
+      const keepLabel = "Dejar puntos y cuota como están";
+      const attempt = await promptCredential(mine
+          ? "Para guardar los puntos y la cuota hace falta tu contraseña de administrador."
+          : "Para guardar los puntos y la cuota hace falta la contraseña de administrador" + (creator ? ", que creó " + creator.name : "") + ". Si no la tienes, pídesela o deja los puntos y la cuota como están.",
+        { title: mine ? "Confirma tu contraseña" : "Contraseña de administrador", confirmLabel: "Confirmar y publicar", secret: true, altLabel: keepLabel },
+        "owner", (pw) => verifyOwnerPasswordResult(pw));
       if(setupFlow !== flow) return;
-      if(attempt === null || attempt.alt){
-        setupPublishMessage("alert", "No se publicó nada. Sin la contraseña de administrador no se pueden guardar los puntos ni la cuota; tu configuración sigue aquí.");
+      if(attempt && attempt.alt){ setupKeepStoredRules(); return; }
+      if(attempt === null){
+        setupPublishMessage("alert", mine
+          ? `No se publicó nada. Sin la contraseña de administrador no se pueden guardar los puntos ni la cuota; tu configuración sigue aquí. Si prefieres no cambiarlos, toca otra vez «Publicar jornada ${esc(number)}» y elige «${keepLabel}».`
+          : `No se publicó nada. Los puntos y la cuota sólo cambian con la contraseña de administrador${creator ? `, que creó ${esc(creator.name)}` : ``}. Pídesela, o toca otra vez «Publicar jornada ${esc(number)}» y elige «${keepLabel}». Tu configuración sigue aquí.`);
         return;
       }
       if(!attempt.result || !attempt.result.ok){
@@ -6462,7 +6517,15 @@
   async function nextStepInfo(){
     const published = meta.rounds.filter(r => r.published !== false).sort((a, b) => a.number - b.number);
     if(!published.length){
-      return { title: "Publica tu primera jornada", text: "Lo que ya configuraste sigue guardado en este dispositivo.", actions: [{ id: "continue", label: "Continuar" }] };
+      // The setup draft lives only in this tab (sessionStorage): say so only
+      // when this tab has one.
+      return {
+        title: "Publica tu primera jornada",
+        text: loadSetupDraft(meta)
+          ? "Lo que ya configuraste en esta pestaña sigue aquí. Nada se publica hasta que lo confirmes."
+          : "Elige tus reglas, tus pagos y tu primera jornada. Nada se publica hasta que lo confirmes.",
+        actions: [{ id: "continue", label: "Continuar" }],
+      };
     }
     const open = published.filter(r => !isRoundLocked(r));
     const others = meta.participants.filter(p => p.id !== currentUser.id);
@@ -6895,7 +6958,7 @@
     const paidCount = meta.participants.filter(p=>p.paid).length;
     const payTracked = paymentsTracked();
     const totalP = meta.participants.length;
-    const hasScoredResults = meta.rounds.some(r => r.resultsPublished);
+    const hasScoredResults = tableShowsScores();
     const { feeDisplay, recaudadoDisplay } = feeSummaryHtml(fee, paidCount, totalP);
     main.innerHTML = `
       ${screenHeaderHtml("tabla", "Tabla de posiciones", `
@@ -8328,7 +8391,7 @@
     "reglas.extras": "Las preguntas extra suman cuando tú marcas quién acertó. Las del torneo se califican aquí; las de cada jornada, en Admin → Resultados.",
     "reglas.pagos": "Tus amigos te pagan directamente a ti. Marca «Pagó» en Participantes cuando recibas el pago. La penalización resta puntos por cada jornada que cierre sin pago.",
     "participantes.pago": "Marca «Pagó» cuando recibas la cuota. Quien está marcado ya no pierde puntos en las jornadas siguientes; lo que ya se le restó se queda.",
-    "resultados.calificar": "Aquí ves lo que respondió cada quien. Marca «¿Atinó?» a quien acertó; los puntos se suman a la tabla al momento.",
+    "resultados.calificar": "Aquí ves lo que respondió cada quien. Marca «¿Atinó?» a quien acertó: esos puntos cuentan desde ese momento. La Tabla los muestra en cuanto hay resultados publicados de alguna jornada.",
   });
   const helpForced = new Set();
   // MS2: whether this quiniela keeps a record of payments at all (a fee, a
@@ -8413,6 +8476,11 @@
     if(!r) return `Cierra con la Jornada ${bet.closesAtRound} (esa jornada ya no existe)`;
     return `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}${r.published === false ? " (todavía sin publicar)" : ""}`;
   }
+  // A tournament question that already closed keeps its close: editing its
+  // text or points never moves it, so its answers can't reopen by accident.
+  function betCloseFixed(bet){
+    return !!(bet && bet.scope === "temporada" && customBetsLocked(bet));
+  }
   function reglasBetCardHtml(bet){
     const answers = betAnswerCount(bet);
     const hits = betHitCount(bet);
@@ -8443,7 +8511,14 @@
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
     const scope = tpl ? tpl.scope : (f.scope || "jornada");
     const rounds = closableRounds();
-    const roundOptions = rounds.map(r => `<option value="${esc(r.number)}" ${Number(f.closes) === r.number ? "selected" : ""}>Jornada ${esc(r.number)} · ${esc(fmtWhenTz(r.deadline))}${r.published === false ? " · sin publicar" : ""}</option>`).join("");
+    const closeFixed = editing && betCloseFixed(bet);
+    // Its close points to a round that no longer exists: that value stays the
+    // selected one (saving without touching it changes nothing) until the
+    // admin picks another.
+    const goneClose = editing && bet && bet.scope === "temporada" && bet.closesAtRound && !meta.rounds.some(r => r.number === bet.closesAtRound)
+      ? bet.closesAtRound : null;
+    const roundOptions = (goneClose != null ? `<option value="${esc(goneClose)}" ${Number(f.closes) === goneClose ? "selected" : ""}>Jornada ${esc(goneClose)} · ya no existe</option>` : ``)
+      + rounds.map(r => `<option value="${esc(r.number)}" ${Number(f.closes) === r.number ? "selected" : ""}>Jornada ${esc(r.number)} · ${esc(fmtWhenTz(r.deadline))}${r.published === false ? " · sin publicar" : ""}</option>`).join("");
     return `
       <div class="qz-qform" id="qz-rb-form">
         <div class="qz-qform-title">${editing ? "Editar pregunta" : "Nueva pregunta"}</div>
@@ -8469,10 +8544,13 @@
           ` : `<p class="qz-wz-line">Se responde: <strong>${esc(scopeLabel(scope).toLowerCase())}</strong></p>`}
           <div class="field qz-field-narrow"><label for="qz-rb-points">Puntos si acierta</label>
             <input type="text" inputmode="numeric" id="qz-rb-points" value="${esc(f.points)}" autocomplete="off"></div>
-          <p class="muted qz-tight">Se suman a la tabla cuando tú marcas quién acertó.</p>
-          ${scope === "temporada" ? `
+          <p class="muted qz-tight">Cuentan para la tabla cuando tú marcas quién acertó.</p>
+          ${scope === "temporada" && closeFixed ? `
+            <p class="qz-wz-line">${esc(betCloseLine(bet))}. <strong>Ya cerró.</strong></p>
+            <p class="muted qz-tight">Tus amigos ya no pueden responderla. Para no reabrir sus respuestas por accidente, el cierre de una pregunta que ya cerró no se cambia; puedes corregir el texto o los puntos y calificarla abajo.</p>
+          ` : scope === "temporada" ? `
             <div class="field qz-field-select"><label for="qz-rb-closes">Cierra con</label>
-              ${rounds.length
+              ${rounds.length || goneClose != null
                 ? `<select id="qz-rb-closes"><option value="" ${f.closes ? "" : "selected"} disabled>Elige una jornada</option>${roundOptions}</select>`
                 : `<p class="qz-wz-warn">No hay ninguna jornada por cerrar. Crea o prepara una jornada en Admin → Jornadas para poder ligar esta pregunta a su cierre.</p>`}
             </div>
@@ -8598,6 +8676,7 @@
               <li><strong>Preguntas de cada jornada:</strong> cuando marcas «¿Atinó?» en Admin → Resultados, aunque todavía no hayas publicado los resultados de los partidos.</li>
               <li><strong>Penalización:</strong> cuando cierra una jornada publicada y la persona no ha pagado.</li>
             </ul>
+            ${tableShowsScores() ? `` : `<p class="muted qz-tight">La Tabla de posiciones aparece cuando publicas los resultados de la primera jornada. Los puntos que marques antes ya cuentan y se verán ahí.</p>`}
             ${jBets.length ? `<p class="muted qz-tight">Las preguntas de cada jornada se califican en Admin → Resultados, en la jornada que corresponde.</p><button class="btn btn-ghost btn-sm" id="qz-r-go-results">Ir a Resultados</button>` : ``}
           </section>
         </div>
@@ -8764,7 +8843,16 @@
       const problem = extraQuestionProblem({ template: f.template, text: f.text, points: f.points }, meta.customBets.map(b => ({ key: b.id, text: b.label })), f.id);
       if(problem){ setupFieldError("qz-rb-err", problem); return; }
       const scope = tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
-      const closes = scope === "temporada" ? parsePositiveInt(f.closes) : null;
+      // It closed while this form was open: the close it had stays.
+      if(scope === "temporada" && betCloseFixed(editingBet) && f.closes !== "" && parsePositiveInt(f.closes) !== editingBet.closesAtRound){
+        f.closes = String(editingBet.closesAtRound);
+        repaint();
+        toast("Esta pregunta acaba de cerrar: su cierre ya no se cambia. No se guardó nada.");
+        return;
+      }
+      const closes = scope !== "temporada" ? null
+        : betCloseFixed(editingBet) ? editingBet.closesAtRound
+        : parsePositiveInt(f.closes);
       if(scope === "temporada" && closes == null){ setupFieldError("qz-rb-err", "Elige con qué jornada cierra."); return; }
       const newPoints = parsePositiveInt(f.points);
       if(editingBet && newPoints !== editingBet.points){
@@ -8838,7 +8926,7 @@
     box.innerHTML = `
       <p class="muted qz-tight">${esc(answered)} de ${esc(people.length)} respondieron · ${esc(hits)} ${hits === 1 ? "marcado como acertado" : "marcados como acertados"}</p>
       ${locked
-        ? `<p class="qz-wz-note">${esc(close)}. Ya cerró: marca a quien acertó; los puntos se suman a la tabla al momento.</p>`
+        ? `<p class="qz-wz-note">${esc(close)}. Ya cerró: marca a quien acertó; ${esc(markedPointsWhen())}.</p>`
         : `<p class="qz-wz-warn">Esta pregunta sigue abierta: tus amigos todavía pueden cambiar su respuesta. Si marcas un acierto ahora y luego la cambian, la marca se queda. Conviene calificar después del cierre.</p>`}
       <p class="muted qz-tight">Cada quien escribe su respuesta a su manera; tú decides quién acertó.</p>
       <div class="qz-table-scroll">
@@ -9952,7 +10040,7 @@
         <div class="card" style="padding:8px 12px;overflow-x:auto;">
           <div class="qz-sec-head" style="padding:10px 12px 0;"><div class="eyebrow">Calificar preguntas de la Jornada ${esc(round.number)}</div>${helpLinkHtml("resultados.calificar")}</div>
           <div style="padding:0 12px;">${helpBlockHtml("resultados.calificar")}</div>
-          <p class="muted" style="padding:0 12px;margin-top:-4px;">Los puntos se suman a la tabla al momento de marcar «¿Atinó?». Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
+          <p class="muted" style="padding:0 12px;margin-top:-4px;">Al marcar «¿Atinó?», ${esc(markedPointsWhen())}. Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
           <table>
             <thead>
               <tr>
