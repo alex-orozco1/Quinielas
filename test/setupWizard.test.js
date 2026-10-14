@@ -220,9 +220,9 @@ test("calendario · se espera la sincronización antes de elegir la jornada, con
 
 test("bloque 3 · las filas avisan de cada cambio (escribir, añadir, quitar y el cierre) y se guardan en el borrador de #35", () => {
   const form = fn("function renderSetupRoundForm(main)");
-  assert.ok(/m\[inp\.dataset\.role\] = inp\.value; changed\(\);/.test(form), "escribir un equipo");
-  assert.ok(/rowsEl\.insertAdjacentHTML\("beforeend", wzMatchRowHtml\(m, false\)\);\s*wireRow\(m\);\s*changed\(\);/.test(form), "añadir un partido");
-  assert.ok(/row\.remove\(\);\s*changed\(\);/.test(form), "quitar un partido");
+  assert.ok(/m\[inp\.dataset\.role\] = inp\.value;\s*if\(matchRowState\(m\) !== "partial"\) clearRowError\(row, "qz-wz-row-err-" \+ m\.id\);\s*changed\(\);/.test(form), "escribir un equipo");
+  assert.ok(/rowsEl\.insertAdjacentHTML\("beforeend", wzMatchRowHtml\(m, false, rows\.matches\.length\)\);\s*wireRow\(m\);\s*changed\(\);/.test(form), "añadir un partido");
+  assert.ok(/row\.remove\(\);\s*renumberSetupRows\(rowsEl\);\s*changed\(\);/.test(form), "quitar un partido");
   assert.ok(form.includes('deadlineEl.addEventListener("input", onDeadline);') && form.includes('deadlineEl.addEventListener("change", onDeadline);'), "hay selectores móviles que sólo avisan con change");
   assert.ok(form.includes("const changed = () => { saveSetupRows(); refresh(); renderSetupAside(); };"));
   assert.ok(fn("function saveSetupRows()").includes("saveRoundDraft(rows.kind, { matches: rows.matches, deadline: rows.deadline }, rows.base);"));
@@ -244,7 +244,7 @@ test("#35 · revisar la jornada importada restaura sobre la copia completa, con 
 
 test("#35 · lo restaurado se pinta escapado en las filas del setup", () => {
   const escSrc = fn("function esc(s)");
-  const rowSrc = fn("function wzMatchRowHtml(m, imported)");
+  const rowSrc = fn("function wzMatchRowHtml(m, imported, n)");
   const row = new Function(`${escSrc}\nconst fmtKickoff = () => "";\n${rowSrc}\nreturn wzMatchRowHtml;`)();
   const html = row({ id: 'm_1"><img src=x onerror=alert(1)>', teamA: '"><img src=x onerror=alert(2)>', teamB: "</script><svg onload=alert(3)>" }, true);
   assert.ok(!/<img|<svg|<\/script/i.test(html), html);
@@ -629,7 +629,7 @@ test("horarios · cada hora dice qué es: «Inicio del partido», «Cierre de pr
   assert.ok(sum.includes("Horarios en la zona de este dispositivo (${esc(kickZone)})."));
   assert.ok(sum.includes("<p>Cierre de pronósticos para todos los partidos: <strong>"));
   assert.ok(!sum.includes("<p>Cierre: <strong>"));
-  assert.ok(fn("function wzMatchRowHtml(m, imported)").includes("Inicio del partido: ${esc(fmtKickoff(m.kickoffAt))}"));
+  assert.ok(fn("function wzMatchRowHtml(m, imported, n)").includes("Inicio del partido: ${esc(fmtKickoff(m.kickoffAt))}"));
   assert.ok(fn("function renderSetupRoundForm(main)").includes(">Cierre de pronósticos para todos los partidos (${esc(tzShortName("));
   // La zona que se nombra para los partidos es la misma con la que se escribe el cierre.
   const t = new Function("serverNowMs", `const serverNow = () => serverNowMs; ${fn("function fmtWhenTz(iso)")} ${fn("function tzShortName(iso)")} return { fmtWhenTz, tzShortName };`)(NOW);

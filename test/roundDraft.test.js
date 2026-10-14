@@ -310,7 +310,7 @@ test("#35 · Admin → Jornadas: arranca del borrador, lo guarda en cada cambio 
   assert.ok(body.indexOf("isRoundDraftPublished(draft, meta.rounds)") < body.indexOf("draft = roundsFormDraft(editingRound, meta);"));
   assert.ok(body.includes('const draftKind = editingRound ? "edit:" + editingRound.id : "new";'));
   assert.ok(body.includes("const persistDraft = () => saveRoundDraft(draftKind, draft, draft.base);"), "cada borrador con su base: la jornada, o el torneo");
-  assert.ok(/m\[inp\.dataset\.role\] = inp\.value;\s*persistDraft\(\);/.test(body), "escribir (y elegir del combo, que dispara input)");
+  assert.ok(/m\[inp\.dataset\.role\] = inp\.value;\s*if\(matchRowState\(m\) !== "partial"\) clearRowError\(row, "qz-rm-err-" \+ mid\);\s*persistDraft\(\);/.test(body), "escribir (y elegir del combo, que dispara input)");
   assert.ok(/draft\.matches = draft\.matches\.filter\(x=>x\.id!==mid\);\s*persistDraft\(\);/.test(body), "quitar");
   assert.ok(/draft\.matches\.push\(blankMatch\(\)\);\s*persistDraft\(\);/.test(body), "añadir");
   assert.ok(body.includes("const onDeadline = (e) => { draft.deadline = e.target.value; persistDraft(); };"));

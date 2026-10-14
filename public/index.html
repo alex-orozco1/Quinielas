@@ -127,6 +127,16 @@
   #quiniela-root .qz-brand-round{
     font-weight:600; font-size:12.5px; color:rgba(247,245,236,0.65); margin-top:1px;
   }
+  /* R5: a valid name or question with no spaces (up to its limit) wraps inside
+     its own box instead of widening the page. Text is never hidden; tables keep
+     their own horizontal scroll. */
+  #quiniela-root .qz-header-top > div:first-child{ min-width:0; }
+  #quiniela-root .qz-brand-context{ overflow-wrap:anywhere; }
+  #quiniela-root :is(.card p, .card li, .card h2, .card h3, .card dd, .card label, .card legend, .card summary, .card blockquote,
+    .qz-qcard-text, .qz-qcard-meta, .qz-qcard-close, .qz-bet-q, .qz-wz-callout, .qz-wz-note, .qz-wz-warn, .qz-wz-alert, .qz-wz-line,
+    .qz-sum-qs li, .qz-sum-list li, .qz-sheet-note, .qz-modal-message, .toast){ overflow-wrap:anywhere; }
+  #quiniela-root .card select{ max-width:100%; }
+  #quiniela-root th.qz-bet-th{ min-width:140px; max-width:240px; overflow-wrap:anywhere; white-space:normal; }
   #quiniela-root .qz-user-dropdown{ position:relative; flex-shrink:0; }
   #quiniela-root .qz-user-toggle{
     display:flex; align-items:center; gap:6px;
@@ -1250,7 +1260,8 @@
   /* ---------- MS2 · el primer recorrido del admin (tres bloques) ---------- */
   #quiniela-root .qz-setup-wrap{ max-width:1080px; margin:0 auto; padding:16px 16px 0; }
   #quiniela-root .qz-setup-top{ display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
-  #quiniela-root .qz-setup-brand{ display:flex; align-items:center; gap:6px; font-weight:800; font-size:12px; letter-spacing:0.1em; color:var(--gold-dim); }
+  #quiniela-root .qz-setup-brand{ display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; font-weight:800; font-size:12px; letter-spacing:0.1em; color:var(--gold-dim); }
+  #quiniela-root .qz-setup-brand .muted{ overflow-wrap:anywhere; min-width:0; }
   #quiniela-root .qz-setup-brand img{ border-radius:4px; }
   #quiniela-root .qz-setup-brand .muted{ margin-left:6px; font-size:13px; letter-spacing:0; font-weight:600; }
   #quiniela-root .qz-steps-progress{ margin:0; font-size:12.5px; font-weight:700; color:var(--pitch-light); }
@@ -4152,6 +4163,33 @@
     (rounds || []).forEach(r => ((r && r.matches) || []).forEach(m => { if(m && m.id) ids.add(m.id); }));
     return !!draft && (draft.matches || []).some(m => m && ids.has(m.id));
   }
+  // Pure (H2): how a match row counts when a round is saved.
+  //  "ok"      both teams.
+  //  "empty"   nothing typed: ignored.
+  //  "partial" only one team, typed by hand: it has to be completed or removed
+  //            before saving, never dropped without a word.
+  //  "pending" imported from the calendar with its rival still unknown
+  //            (DATA-004 §6): kept as the calendar has it.
+  function matchRowState(m){
+    const a = !!String((m && m.teamA) || "").trim(), b = !!String((m && m.teamB) || "").trim();
+    if(a && b) return "ok";
+    if(m && m.externalEventId) return "pending";
+    return a || b ? "partial" : "empty";
+  }
+  // Pure: the rows a saved round keeps (empty ones go), and the first row
+  // that still has only one team, with the side that is missing.
+  function roundRowsCheck(matches){
+    const list = matches || [];
+    const partial = list.find(m => matchRowState(m) === "partial") || null;
+    return {
+      clean: list.filter(m => { const st = matchRowState(m); return st === "ok" || st === "pending"; }),
+      complete: list.filter(m => matchRowState(m) === "ok").length,
+      partial,
+      partialCount: list.filter(m => matchRowState(m) === "partial").length,
+      missing: partial ? (String(partial.teamA || "").trim() ? "teamB" : "teamA") : null,
+    };
+  }
+  const PARTIAL_ROW_MESSAGE = "A este partido le falta un equipo. Escríbelo o quita el partido con ✕.";
   // Pure: blank rows and no deadline are not worth keeping.
   function isRoundDraftEmpty(draft){
     return !draft.deadline && draft.matches.every(m => !String(m.teamA || "").trim() && !String(m.teamB || "").trim());
@@ -5523,16 +5561,38 @@
     if(dl) rows.deadline = dl.value;
     saveRoundDraft(rows.kind, { matches: rows.matches, deadline: rows.deadline }, rows.base);
   }
-  function wzMatchRowHtml(m, imported){
+  // H3: each field is named with its side and its match («Local, partido 2»);
+  // the number is kept in step by renumberSetupRows when rows come and go.
+  function wzMatchRowHtml(m, imported, n){
     return `
       <div class="qz-wz-match" data-mid="${esc(m.id)}">
         <div class="match-edit-row">
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off"></div>
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off"></div>
-          <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-wz-a-${esc(m.id)}">Local<span class="qz-sr" data-mnum>, partido ${esc(n)}</span></label><input type="text" id="qz-wz-a-${esc(m.id)}" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" aria-describedby="qz-wz-row-err-${esc(m.id)}"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-wz-b-${esc(m.id)}">Visitante<span class="qz-sr" data-mnum>, partido ${esc(n)}</span></label><input type="text" id="qz-wz-b-${esc(m.id)}" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" aria-describedby="qz-wz-row-err-${esc(m.id)}"></div>
+          <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido ${esc(n)}">✕</button>
         </div>
+        <p class="qz-field-error" id="qz-wz-row-err-${esc(m.id)}" role="alert" hidden></p>
         ${imported ? `<p class="qz-wz-kick muted">${m.kickoffAt ? `Inicio del partido: ${esc(fmtKickoff(m.kickoffAt))}` : "Inicio del partido por confirmar"}</p>` : ``}
       </div>`;
+  }
+  function renumberSetupRows(rowsEl){
+    rowsEl.querySelectorAll(".qz-wz-match").forEach((row, i) => {
+      row.querySelectorAll("[data-mnum]").forEach(el => { el.textContent = ", partido " + (i + 1); });
+      const x = row.querySelector("[data-remove]");
+      if(x) x.setAttribute("aria-label", "Quitar partido " + (i + 1));
+    });
+  }
+  // H2: the error goes next to the row, on the field that is missing.
+  function showRowError(rowEl, errId, missingRole, message){
+    if(!rowEl) return false;
+    const inp = rowEl.querySelector(`input[data-role="${missingRole}"]`);
+    setupFieldError(errId, message, inp);
+    return true;
+  }
+  function clearRowError(rowEl, errId){
+    if(!rowEl) return;
+    setupFieldError(errId, "");
+    rowEl.querySelectorAll("input[data-role]").forEach(i => i.removeAttribute("aria-invalid"));
   }
   function renderSetupJornada(main){
     const d = setupFlow.d;
@@ -5587,6 +5647,10 @@
     }
     main.querySelectorAll("[data-wz-manual]").forEach(b => b.addEventListener("click", () => {
       d.manual = true; setSetupCal({ state: "manual" }); setupFlow.rows = null; setupPersist(); renderSetupFlow();
+      // The button that had the focus is gone: it goes to the step's title,
+      // as on every step change, not to the page.
+      const h = document.getElementById("qz-wz-title");
+      if(h) h.focus();
     }));
     main.querySelectorAll("[data-wz-retry]").forEach(b => b.addEventListener("click", () => loadSetupCalendar(true)));
     setupBar("pagos", "Revisar y publicar", () => {}, { disabled: true });
@@ -5610,7 +5674,7 @@
     const tournamentQs = d.extrasOn ? d.questions.filter(q => q.scope === "temporada") : [];
     const minDeadline = toLocalInputValue(new Date(serverNow()).toISOString());
     const skipped = imported && cal.skipped && cal.skipped.number < number ? cal.skipped : null;
-    const matchRowsHtml = rows.matches.map(m => wzMatchRowHtml(m, imported)).join("");
+    const matchRowsHtml = rows.matches.map((m, i) => wzMatchRowHtml(m, imported, i + 1)).join("");
     main.innerHTML = `
       ${setupHeadHtml("jornada", imported ? "Ésta es la próxima jornada que todavía se puede jugar." : "Agrega los partidos que van a jugar.")}
       ${skipped ? `<p class="qz-wz-warn">La Jornada ${esc(skipped.number)} ya empezó (${esc(skipped.started)} ${skipped.started === 1 ? "partido ya inició" : "partidos ya iniciaron"}), así que te sugerimos la Jornada ${esc(number)}, la próxima que todavía se puede jugar completa.</p>` : ``}
@@ -5642,8 +5706,10 @@
     const rowsEl = document.getElementById("qz-wz-rows");
     const deadlineEl = document.getElementById("qz-wz-deadline");
     const refresh = () => {
-      const filled = rows.matches.filter(m => String(m.teamA || "").trim() && String(m.teamB || "").trim()).length;
-      document.getElementById("qz-wz-count").textContent = `${filled} ${filled === 1 ? "partido" : "partidos"}`;
+      const check = roundRowsCheck(rows.matches);
+      const filled = check.clean.length;
+      document.getElementById("qz-wz-count").textContent = `${filled} ${filled === 1 ? "partido" : "partidos"}`
+        + (check.partialCount ? ` · ${check.partialCount} sin completar` : "");
       const first = firstKickoffMs(rows.matches);
       const firstEl = document.getElementById("qz-wz-first");
       const missing = rows.matches.some(m => !m.kickoffAt);
@@ -5655,11 +5721,16 @@
     const wireRow = (m) => {
       const row = rowsEl.querySelector(`.qz-wz-match[data-mid="${m.id}"]`);
       if(!row) return;
-      row.querySelectorAll("input[data-role]").forEach(inp => inp.addEventListener("input", () => { m[inp.dataset.role] = inp.value; changed(); }));
+      row.querySelectorAll("input[data-role]").forEach(inp => inp.addEventListener("input", () => {
+        m[inp.dataset.role] = inp.value;
+        if(matchRowState(m) !== "partial") clearRowError(row, "qz-wz-row-err-" + m.id);
+        changed();
+      }));
       row.querySelector("[data-remove]").addEventListener("click", () => {
         const idx = rows.matches.indexOf(m);
         if(idx !== -1) rows.matches.splice(idx, 1);
         row.remove();
+        renumberSetupRows(rowsEl);
         changed();
       });
     };
@@ -5667,7 +5738,7 @@
     document.getElementById("qz-wz-add-match").addEventListener("click", () => {
       const m = blankMatch();
       rows.matches.push(m);
-      rowsEl.insertAdjacentHTML("beforeend", wzMatchRowHtml(m, false));
+      rowsEl.insertAdjacentHTML("beforeend", wzMatchRowHtml(m, false, rows.matches.length));
       wireRow(m);
       changed();
       const inp = rowsEl.querySelector(`.qz-wz-match[data-mid="${m.id}"] input`);
@@ -5684,7 +5755,11 @@
     refresh();
     setupBar("pagos", "Revisar y publicar", () => {
       const problem = setupRoundProblem();
-      if(problem.field === "rows"){ setupFieldError("qz-wz-rows-err", problem.message); return; }
+      if(problem.field === "rows"){
+        const row = problem.mid ? Array.from(rowsEl.querySelectorAll(".qz-wz-match")).find(r => r.dataset.mid === problem.mid) : null;
+        if(showRowError(row, "qz-wz-row-err-" + problem.mid, problem.missing, problem.message)){ setupFieldError("qz-wz-rows-err", ""); return; }
+        setupFieldError("qz-wz-rows-err", problem.message); return;
+      }
       if(problem.field === "deadline"){ setupFieldError("qz-wz-deadline-err", problem.message, deadlineEl); return; }
       saveSetupRows();
       setupGo("resumen");
@@ -5696,8 +5771,10 @@
     if(!rows) return { field: "rows", message: "Elige tu primera jornada en el paso 3." };
     const dl = document.getElementById("qz-wz-deadline");
     if(dl) rows.deadline = dl.value;
-    const clean = rows.matches.filter(m => String(m.teamA || "").trim() && String(m.teamB || "").trim());
-    if(!clean.length) return { field: "rows", message: "Agrega al menos un partido con los dos equipos." };
+    const check = roundRowsCheck(rows.matches);
+    if(check.partial) return { field: "rows", message: PARTIAL_ROW_MESSAGE, mid: check.partial.id, missing: check.missing };
+    const clean = check.clean;
+    if(!check.complete) return { field: "rows", message: "Agrega al menos un partido con los dos equipos." };
     const problem = setupDeadlineProblem(rows.deadline, clean, serverNow());
     if(problem) return { field: "deadline", message: problem };
     return { field: null, clean, deadline: rows.deadline };
@@ -5719,9 +5796,11 @@
     const number = setupPublishNumber();
     const leagueId = setupLeagueId();
     const leagueLabel = setupLeagueLabel(leagueId);
-    const clean = rows.matches.filter(m => String(m.teamA || "").trim() && String(m.teamB || "").trim());
+    const rowsCheck = roundRowsCheck(rows.matches);
+    const clean = rowsCheck.clean;
     const deadlineIso = rows.deadline ? new Date(rows.deadline).toISOString() : null;
-    const roundProblem = setupDeadlineProblem(rows.deadline, clean, serverNow()) || (clean.length ? "" : "Agrega al menos un partido con los dos equipos.");
+    const roundProblem = (rowsCheck.partial ? "A un partido le falta un equipo. Toca «Editar» para escribirlo o quitar el partido." : "")
+      || setupDeadlineProblem(rows.deadline, clean, serverNow()) || (rowsCheck.complete ? "" : "Agrega al menos un partido con los dos equipos.");
     const qs = d.extrasOn ? d.questions : [];
     const keptQs = setupKeptQuestions();
     const keptListHtml = keptQs.length ? keptQuestionsListHtml(keptQs) : "";
@@ -5769,7 +5848,7 @@
             <div class="qz-sum-head"><h2 class="qz-wz-h2" id="qz-sum-3">Jornada ${esc(number)}</h2>${editBtn("jornada")}</div>
             <p class="muted">Jornada ${esc(number)}${leagueId && imported ? ` · ${esc(leagueLabel)}` : " · partidos a mano"} · ${esc(clean.length)} ${clean.length === 1 ? "partido" : "partidos"}</p>
             ${kickZone ? `<div class="qz-sum-matches-head" aria-hidden="true"><span>Partido</span><span>Inicio del partido</span></div>` : ``}
-            <ul class="qz-sum-matches">${clean.map(m => `<li><span>${esc(m.teamA)} vs ${esc(m.teamB)}</span>${m.kickoffAt ? `<span class="muted"><span class="qz-sr">Inicio del partido: </span>${esc(fmtKickoff(m.kickoffAt))}</span>` : ``}</li>`).join("")}</ul>
+            <ul class="qz-sum-matches">${clean.map(m => `<li><span>${esc(m.teamA || "Por definir")} vs ${esc(m.teamB || "Por definir")}</span>${m.kickoffAt ? `<span class="muted"><span class="qz-sr">Inicio del partido: </span>${esc(fmtKickoff(m.kickoffAt))}</span>` : ``}</li>`).join("")}</ul>
             ${kickZone ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(kickZone)}).</p>` : ``}
             <p>Cierre de pronósticos para todos los partidos: <strong>${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "sin elegir"}</strong></p>
             ${roundProblem ? `<p class="qz-field-error">${esc(roundProblem)}</p>` : ``}
@@ -6303,6 +6382,9 @@
     document.body.appendChild(overlay);
     const trap = attachModalFocusTrap(overlay);
     const feedback = overlay.querySelector("#qz-invite-feedback");
+    // The answer to a button shows where the person is looking, even on a
+    // short screen where it sits below the fold.
+    const showFeedback = () => { try{ feedback.scrollIntoView({ block: "nearest" }); }catch(e){} };
     let closed = false;
     const close = async (thenView) => {
       if(closed) return;
@@ -6326,20 +6408,23 @@
       feedback.textContent = w === null
         ? "Tu navegador bloqueó la ventana. Usa «Copiar link» y pégalo en WhatsApp."
         : "Se abrió WhatsApp con el mensaje listo. Tú decides si lo envías.";
+      showFeedback();
     });
     overlay.querySelector("#qz-invite-copy").addEventListener("click", async () => {
       try{
         await navigator.clipboard.writeText(link);
         markSharedInvite(SLUG);
         trackEvent("invite_shared", { source: "setup_copy_link" });
-        feedback.textContent = "✓ Link copiado. Pégalo donde quieras; nadie ha entrado todavía.";
+        // Copying says nothing about who already entered (some may have).
+        feedback.textContent = "✓ Link copiado. Pégalo donde quieras.";
       }catch(e){
         feedback.innerHTML = `No se pudo copiar. Mantén presionado el link para copiarlo:<br><span class="qz-select-all">${esc(link)}</span>`;
       }
+      showFeedback();
     });
     overlay.querySelector("#qz-invite-add").addEventListener("click", async () => {
       const msg = await addParticipantsByName();
-      if(msg != null && document.body.contains(overlay)) feedback.textContent = msg;
+      if(msg != null && document.body.contains(overlay)){ feedback.textContent = msg; showFeedback(); }
     });
     overlay.querySelector(".qz-modal-card").focus();
   }
@@ -6968,42 +7053,74 @@
     if(guess) return when ? `✅ Guardada: «${guess}». Puedes cambiarla hasta el ${when}.` : `✅ Guardada: «${guess}».`;
     return "Todavía no respondes.";
   }
+  // H1: what a participant typed in an answer and has not saved yet, per
+  // question («t:betId») and, for the questions of a round, per round
+  // («j:roundId:betId»). Kept in this tab across repaints and reloads, so
+  // saving one answer never wipes another; never sent by itself — only that
+  // answer's own «Guardar» sends it.
+  function answerDraftKey(){ return "qracks_answer_drafts:" + (SLUG || "root") + ":" + ((currentUser && currentUser.id) || "anon"); }
+  function loadAnswerDrafts(){
+    try{
+      const d = JSON.parse(window.sessionStorage.getItem(answerDraftKey()) || "{}");
+      return d && typeof d === "object" && !Array.isArray(d) ? d : {};
+    }catch(e){ return {}; }
+  }
+  function answerDraft(k){ const v = loadAnswerDrafts()[k]; return typeof v === "string" ? v : null; }
+  function setAnswerDraft(k, v){
+    try{
+      const d = loadAnswerDrafts();
+      if(v == null) delete d[k]; else d[k] = String(v).slice(0, 200);
+      window.sessionStorage.setItem(answerDraftKey(), JSON.stringify(d));
+    }catch(e){}
+  }
+  // Whether the tournament card was left open or closed by the participant
+  // (null: not touched yet in this view).
+  let tournamentBetsOpen = null;
   function tournamentBetRowHtml(bet){
     const locked = customBetsLocked(bet);
     const ans = currentUser.customBetAnswers && currentUser.customBetAnswers[bet.id];
     const close = tournamentBetClose(bet);
+    const draft = locked ? null : answerDraft("t:" + bet.id);
+    const unsaved = draft != null && draft.trim() !== savedBetGuess(bet.id);
     return `
       <div class="qz-bet-row">
         <div class="qz-bet-q">${esc(bet.label)} <span class="muted">· +${esc(bet.points)} ${esc(pointsWord(bet.points))} si aciertas</span></div>
         ${locked ? `` : `<p class="muted qz-tight">${esc(close.text)}${close.round ? " Puedes cambiar tu respuesta hasta entonces." : ""}</p>`}
         ${locked ? `` : `
           <div class="qz-bet-input">
-            <input type="text" id="qz-cb-input-${esc(bet.id)}" maxlength="200" placeholder="Tu respuesta" value="${esc(savedBetGuess(bet.id))}" aria-label="Tu respuesta: ${esc(bet.label)}">
+            <input type="text" id="qz-cb-input-${esc(bet.id)}" maxlength="200" placeholder="Tu respuesta" value="${esc(draft != null ? draft : savedBetGuess(bet.id))}" aria-label="Tu respuesta: ${esc(bet.label)}">
             <button class="btn btn-gold" data-cb-save="${esc(bet.id)}">Guardar respuesta</button>
           </div>`}
-        <p class="qz-bet-status" id="qz-cb-status-${esc(bet.id)}" role="status" aria-live="polite">${esc(tournamentBetStatus(bet))}</p>
+        <p class="qz-bet-status" id="qz-cb-status-${esc(bet.id)}" role="status" aria-live="polite">${unsaved ? "Cambios sin guardar. Toca «Guardar respuesta»." : esc(tournamentBetStatus(bet))}</p>
         ${ans && ans.correct === true ? `<p class="qz-bet-hit">Acertaste ✅ +${esc(bet.points)} ${esc(pointsWord(bet.points))}</p>` : ``}
       </div>`;
   }
   function tournamentBetsCardHtml(bets){
     const answered = bets.filter(b => savedBetGuess(b.id)).length;
     const openUnanswered = bets.some(b => !customBetsLocked(b) && !savedBetGuess(b.id));
+    // Open while something is unsaved, else as the participant left it.
+    const hasDraft = bets.some(b => !customBetsLocked(b) && answerDraft("t:" + b.id) != null);
+    const open = hasDraft || (tournamentBetsOpen != null ? tournamentBetsOpen : openUnanswered);
     const closed = bets.filter(b => customBetsLocked(b)).length;
     const closedNote = closed === bets.length ? (closed === 1 ? " · ya cerró" : " · ya cerraron") : closed ? ` · ${closed} ${closed === 1 ? "cerrada" : "cerradas"}` : "";
     return `
-      <details class="card qz-bets-card" ${openUnanswered ? "open" : ""}>
+      <details class="card qz-bets-card" id="qz-bets-card" ${open ? "open" : ""}>
         <summary><span class="qz-bets-title">🎯 Preguntas del torneo</span> <span class="muted">· ${esc(answered)} de ${esc(bets.length)} respondidas${esc(closedNote)}</span></summary>
         <p class="muted qz-tight">Lo que escribes no se guarda solo: toca «Guardar respuesta» en cada pregunta. Tus puntos se suman cuando el admin marca quién acertó.</p>
         ${bets.map(tournamentBetRowHtml).join("")}
       </details>`;
   }
   function wireTournamentBets(main){
+    const card = document.getElementById("qz-bets-card");
+    if(card) card.addEventListener("toggle", () => { tournamentBetsOpen = card.open; });
     root.querySelectorAll("[data-cb-save]").forEach(btn => {
       const betId = btn.dataset.cbSave;
       const input = document.getElementById("qz-cb-input-" + betId);
       const statusEl = document.getElementById("qz-cb-status-" + betId);
       if(input) input.addEventListener("input", () => {
-        if(input.value.trim() !== savedBetGuess(betId)) statusEl.textContent = "Cambios sin guardar. Toca «Guardar respuesta».";
+        const same = input.value.trim() === savedBetGuess(betId);
+        setAnswerDraft("t:" + betId, same ? null : input.value);
+        statusEl.textContent = same ? tournamentBetStatus(meta.customBets.find(b => b.id === betId) || { id: betId }) : "Cambios sin guardar. Toca «Guardar respuesta».";
       });
       btn.addEventListener("click", async () => {
         const val = input.value.trim();
@@ -7016,14 +7133,22 @@
           if(!currentUser.customBetAnswers) currentUser.customBetAnswers = {};
           const prev = currentUser.customBetAnswers[betId];
           currentUser.customBetAnswers[betId] = { guess: val, correct: prev ? prev.correct : null };
+          // Only this answer's draft goes (unless it changed while saving);
+          // the others stay as typed.
+          const d = answerDraft("t:" + betId);
+          if(d == null || d.trim() === val) setAnswerDraft("t:" + betId, null);
           toast("✅ Listo, tu respuesta quedó guardada.");
-          renderJornada(main);
+          await renderJornada(main);
+          const back = document.getElementById("qz-cb-input-" + betId);
+          if(back) back.focus({ preventScroll: true });
           return;
         }
         btn.disabled = false;
         btn.textContent = "Guardar respuesta";
         if(result.error === "bet_locked"){
-          // Closed while it was on its way: nothing changed on the server.
+          // Closed while it was on its way: nothing changed on the server,
+          // and nothing typed there can be saved any more.
+          setAnswerDraft("t:" + betId, null);
           statusEl.textContent = "Esta pregunta acaba de cerrar y tu respuesta no se guardó." + (savedBetGuess(betId) ? ` Tu respuesta anterior («${savedBetGuess(betId)}») se conserva.` : "");
           input.disabled = true;
           btn.remove();
@@ -7056,6 +7181,11 @@
   function renderRoundVoting(box, round, isHeroRound){
     const roundPicks = myPicks[round.id] || {};
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
+    // A draft that matches what is saved is not a pending change.
+    const roundDraftsPending = jornadaBets.some(b => {
+      const d = answerDraft("j:" + round.id + ":" + b.id);
+      return d != null && d.trim() !== ((roundPicks.__extra || {})[b.id] || "");
+    });
     box.innerHTML = `
       <div class="clock-card" style="margin-bottom:14px;">
         <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `Jornada ${esc(round.number)} · cierre de quiniela`}</div>
@@ -7070,16 +7200,17 @@
           <p class="muted qz-tight">Cierran con la Jornada ${esc(round.number)}: ${esc(fmtWhenTz(round.deadline))}. Puedes cambiar tus respuestas hasta entonces.</p>
           ${jornadaBets.map(bet => {
             const extra = roundPicks.__extra || {};
+            const draft = answerDraft("j:" + round.id + ":" + bet.id);
             return `
               <div class="field">
-                <label>${esc(bet.label)} (+${esc(bet.points)} ${esc(pointsWord(bet.points))})</label>
-                <input type="text" data-cb-jornada="${esc(bet.id)}" placeholder="Escribe tu respuesta" value="${esc(extra[bet.id] || '')}">
+                <label for="qz-cbj-${esc(round.id)}-${esc(bet.id)}">${esc(bet.label)} (+${esc(bet.points)} ${esc(pointsWord(bet.points))})</label>
+                <input type="text" id="qz-cbj-${esc(round.id)}-${esc(bet.id)}" data-cb-jornada="${esc(bet.id)}" maxlength="200" placeholder="Escribe tu respuesta" value="${esc(draft != null ? draft : (extra[bet.id] || ''))}">
               </div>
             `;
           }).join("")}
           <p class="muted qz-tight">Lo que escribes aquí no se guarda solo: toca «Guardar respuestas».</p>
           <button class="btn btn-gold" id="qz-cb-jornada-save-${esc(round.id)}" style="width:100%;padding:10px;">Guardar respuestas</button>
-          <p class="muted" id="qz-cb-jornada-status-${esc(round.id)}" style="text-align:center;margin-top:6px;" role="status" aria-live="polite">${Object.values(roundPicks.__extra || {}).some(v => v) ? "✅ Respuestas guardadas." : ""}</p>
+          <p class="muted" id="qz-cb-jornada-status-${esc(round.id)}" style="text-align:center;margin-top:6px;" role="status" aria-live="polite">${roundDraftsPending ? "Cambios sin guardar." : Object.values(roundPicks.__extra || {}).some(v => v) ? "✅ Respuestas guardadas." : ""}</p>
         </div>
       ` : ``}
     `;
@@ -7100,20 +7231,32 @@
     }).join("");
     const jornadaSaveBtn = document.getElementById("qz-cb-jornada-save-" + round.id);
     box.querySelectorAll("[data-cb-jornada]").forEach(inp => inp.addEventListener("input", () => {
+      const saved = ((myPicks[round.id] || {}).__extra || {})[inp.dataset.cbJornada] || "";
+      setAnswerDraft("j:" + round.id + ":" + inp.dataset.cbJornada, inp.value.trim() === saved ? null : inp.value);
       const st = document.getElementById("qz-cb-jornada-status-" + round.id);
       if(st) st.textContent = "Cambios sin guardar.";
     }));
     if(jornadaSaveBtn){
-      jornadaSaveBtn.addEventListener("click", async () => {
+      const runJornadaSave = async () => {
         if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
         if(!myPicks[round.id]) myPicks[round.id] = {};
         if(!myPicks[round.id].__extra) myPicks[round.id].__extra = {};
+        const sent = {};
         box.querySelectorAll("[data-cb-jornada]").forEach(inp => {
+          sent[inp.dataset.cbJornada] = inp.value.trim();
           myPicks[round.id].__extra[inp.dataset.cbJornada] = inp.value.trim();
         });
         const stEl = document.getElementById("qz-cb-jornada-status-" + round.id);
-        await attemptSavePicks(stEl, round);
-      });
+        // Saved (here or through «Reintentar»): the drafts of what was sent
+        // go, unless the participant kept typing while it was on its way.
+        // Not saved: they stay for the retry.
+        await attemptSavePicks(stEl, round, () => Object.keys(sent).forEach(id => {
+          const k = "j:" + round.id + ":" + id;
+          const d = answerDraft(k);
+          if(d == null || d.trim() === sent[id]) setAnswerDraft(k, null);
+        }), false, runJornadaSave);
+      };
+      jornadaSaveBtn.addEventListener("click", runJornadaSave);
     }
     matchesDiv.querySelectorAll(".pick-row").forEach(row => {
       row.querySelectorAll(".pick-btn").forEach(btn => {
@@ -9136,9 +9279,14 @@
         if(from == null){ setupFieldError("qz-r-pen-err", "Escribe desde qué jornada (número entero de 1 en adelante).", ps); return; }
         next = { enabled: true, startsAtRound: from, pointsPerRound: n };
       } else {
-        const applied = meta.participants.some(p => Object.values(p.penalizedRounds || {}).some(v => v > 0));
-        if(applied){
-          const ok = await qzConfirm("Dejarás de restar puntos. Además, los descuentos ya aplicados dejan de contar en la tabla mientras esté apagada; quedan guardados y regresan si la vuelves a activar.",
+        // R4: what the penalty takes off TODAY (penaltyPointsFor: the stored
+        // ledger plus closed rounds not yet settled, exactly what the table
+        // shows), computed without writing anything; «Cancelar» saves nothing.
+        // What happens to those discounts when it is off is unchanged.
+        const effective = meta.participants.map(p => penaltyPointsFor(p)).filter(x => x > 0);
+        if(effective.length){
+          const total = effective.reduce((a, b) => a + b, 0);
+          const ok = await qzConfirm("Hoy la penalización le resta " + total + " " + pointsWord(total) + " en total a " + effective.length + " " + (effective.length === 1 ? "persona" : "personas") + ". Si la apagas, dejas de restar puntos y esos descuentos dejan de contar en la tabla mientras esté apagada; quedan guardados y regresan si la vuelves a activar.",
             { title: "¿Apagar la penalización?", confirmLabel: "Apagar", cancelLabel: "Cancelar" });
           if(!ok) return;
         }
@@ -9664,13 +9812,17 @@
       .slice()
       .sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
 
+    // H3: each field is named with its side and its match; the form is
+    // rebuilt whenever a row comes or goes, so the numbers stay right.
     function matchRowHtml(m, idx){
+      const n = idx + 1;
       return `
         <div class="match-edit-row" data-mid="${esc(m.id)}">
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Local</label><input type="text" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
-          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label>Visitante</label><input type="text" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
-          <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido">✕</button>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-rm-a-${esc(m.id)}">Local<span class="qz-sr">, partido ${esc(n)}</span></label><input type="text" id="qz-rm-a-${esc(m.id)}" value="${esc(m.teamA)}" data-role="teamA" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-describedby="qz-rm-err-${esc(m.id)}"></div>
+          <div class="field qz-combo-wrap" style="margin-bottom:0;"><label for="qz-rm-b-${esc(m.id)}">Visitante<span class="qz-sr">, partido ${esc(n)}</span></label><input type="text" id="qz-rm-b-${esc(m.id)}" value="${esc(m.teamB)}" data-role="teamB" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-describedby="qz-rm-err-${esc(m.id)}"></div>
+          <button class="icon-x" data-remove="${esc(m.id)}" title="Quitar partido" aria-label="Quitar partido ${esc(n)}">✕</button>
         </div>
+        <p class="qz-field-error" id="qz-rm-err-${esc(m.id)}" role="alert" hidden></p>
       `;
     }
 
@@ -9863,6 +10015,7 @@
           inp.addEventListener("input", () => {
             const m = draft.matches.find(x=>x.id===mid);
             m[inp.dataset.role] = inp.value;
+            if(matchRowState(m) !== "partial") clearRowError(row, "qz-rm-err-" + mid);
             persistDraft();
           });
           wireTeamCombobox(inp, comboTeams);
@@ -9901,8 +10054,16 @@
     }
 
     document.getElementById("qz-publish-round").addEventListener("click", async () => {
-      const clean = draft.matches.filter(m => m.teamA.trim() && m.teamB.trim());
-      if(!clean.length){ toast("Agrega al menos un partido con ambos equipos"); return; }
+      // H2: a row with only one team is not dropped; it is pointed out.
+      // A calendar match still waiting for its rival stays as it is.
+      const rowsCheck = roundRowsCheck(draft.matches);
+      if(rowsCheck.partial){
+        const row = Array.from(document.querySelectorAll("#qz-match-rows [data-mid]")).find(r => r.dataset.mid === rowsCheck.partial.id);
+        showRowError(row, "qz-rm-err-" + rowsCheck.partial.id, rowsCheck.missing, PARTIAL_ROW_MESSAGE);
+        return;
+      }
+      const clean = rowsCheck.clean;
+      if(!rowsCheck.complete){ toast("Agrega al menos un partido con ambos equipos"); return; }
       if(!draft.deadline){ toast("Selecciona la fecha y hora límite"); return; }
       // Same rule, same helper as Admin Setup Continuity's own screens --
       // reused directly rather than duplicated. `min` above is a UX hint
@@ -10402,7 +10563,7 @@
             <thead>
               <tr>
                 <th class="qz-sticky-col">Participante</th>
-                ${jornadaBets.map(bet => `<th colspan="2" style="text-align:center;">${esc(bet.label)}</th>`).join("")}
+                ${jornadaBets.map(bet => `<th colspan="2" class="qz-bet-th" style="text-align:center;">${esc(bet.label)}</th>`).join("")}
               </tr>
               <tr>
                 <th class="qz-sticky-col"></th>

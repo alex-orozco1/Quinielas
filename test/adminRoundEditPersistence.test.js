@@ -122,6 +122,19 @@ test("CASE E: the handler only ever mutates .matches and .deadline on the round 
 // (3) the `clean` filter itself -- wired together against a controlled
 // match object, not a reimplementation. ----
 
+// The real H2 helpers (matchRowState, roundRowsCheck) that now build `clean`.
+function realFunction(signature){
+  const start = indexSrc.indexOf(signature);
+  assert.ok(start !== -1, `could not locate "${signature}"`);
+  let depth = 0, i = indexSrc.indexOf("{", start + signature.length);
+  for (; i < indexSrc.length; i++) {
+    if (indexSrc[i] === "{") depth++;
+    else if (indexSrc[i] === "}") { depth--; if (depth === 0) break; }
+  }
+  return indexSrc.slice(start, i + 1);
+}
+const rowHelpers = realFunction("function matchRowState(m)") + "\n" + realFunction("function roundRowsCheck(matches)");
+
 function assertRealFragment(source, fragment){
   assert.ok(source.includes(fragment), `could not locate real source fragment: "${fragment}"`);
   return fragment;
@@ -134,9 +147,10 @@ test("QA BLOCKER: editing ONLY teamA on an imported match preserves externalEven
   // reimplementation of it.
   const draftMatchesExpr = assertRealFragment(indexSrc, "editingRound.matches.map(m => ({...m}))");
   const inputHandlerLine = assertRealFragment(indexSrc, "m[inp.dataset.role] = inp.value;");
-  const cleanExpr = assertRealFragment(indexSrc, "draft.matches.filter(m => m.teamA.trim() && m.teamB.trim())");
+  const cleanExpr = assertRealFragment(indexSrc, "roundRowsCheck(draft.matches)") + ".clean";
 
   const runPipeline = new Function("editingRound", `
+    ${rowHelpers}
     // Step 1: exactly how draft.matches is constructed from editingRound.matches.
     const draft = { matches: ${draftMatchesExpr} };
     // Step 2: exactly how the real input handler mutates a match when the
@@ -181,9 +195,10 @@ test("QA BLOCKER: editing ONLY teamA on an imported match preserves externalEven
 
 test("QA BLOCKER (deadline-only edit): editing only the deadline leaves every match's fields, including external metadata, completely untouched", () => {
   const draftMatchesExpr = assertRealFragment(indexSrc, "editingRound.matches.map(m => ({...m}))");
-  const cleanExpr = assertRealFragment(indexSrc, "draft.matches.filter(m => m.teamA.trim() && m.teamB.trim())");
+  const cleanExpr = assertRealFragment(indexSrc, "roundRowsCheck(draft.matches)") + ".clean";
 
   const runPipeline = new Function("editingRound", `
+    ${rowHelpers}
     const draft = { matches: ${draftMatchesExpr} };
     // No input event fired at all -- this is a deadline-only edit.
     const clean = ${cleanExpr};

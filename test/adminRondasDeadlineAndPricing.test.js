@@ -35,7 +35,7 @@ const NOW = new Date("2026-08-22T15:00:00.000Z").getTime();
 
 test("Admin -> Jornadas' publish-round click handler reuses isSetupDeadlineValid directly -- no new/duplicated date-validation function was introduced", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 1400);
+  const body = indexSrc.slice(idx, idx + 2400);
   assert.ok(body.includes("isSetupDeadlineValid(draft.deadline, serverNow())"), "must call the existing shared helper");
   const occurrences = [...indexSrc.matchAll(/function isSetupDeadlineValid\(deadlineInputValue, nowMs\)\{/g)];
   assert.equal(occurrences.length, 1, "isSetupDeadlineValid must be defined exactly once in the whole file");
@@ -68,7 +68,7 @@ test("CASE C: a genuine future datetime is accepted", () => {
 
 test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's reconcilePenaltyLedger/mutation, and before the create-new-round branch's meta.rounds.push", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 5200);
+  const body = indexSrc.slice(idx, idx + 6200);
   const validateIdx = body.indexOf("isSetupDeadlineValid(draft.deadline, serverNow())");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const pushIdx = body.indexOf("meta.rounds.push(round);");
@@ -79,7 +79,7 @@ test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's re
 
 test("CASE D: on a past deadline, editingRound itself is never touched (not even entered) -- the original round stays completely intact", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 1400);
+  const body = indexSrc.slice(idx, idx + 2400);
   const validateBlockIdx = body.indexOf("if(!isSetupDeadlineValid(draft.deadline, serverNow())){");
   const editingRoundIdx = body.indexOf("if(editingRound){");
   assert.ok(validateBlockIdx !== -1 && editingRoundIdx !== -1 && validateBlockIdx < editingRoundIdx);
@@ -89,7 +89,7 @@ test("CASE D: on a past deadline, editingRound itself is never touched (not even
 
 test("CASE G: the exact required inline copy is shown via a real DOM error element, not toast alone -- and nothing about matches/deadline/published is reset alongside it", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 1200);
+  const body = indexSrc.slice(idx, idx + 2200);
   assert.ok(body.includes('deadlineErrorEl.textContent = "Elige una fecha y hora a partir de ahora.";'));
   assert.ok(body.includes("deadlineErrorEl.style.display = \"block\";"));
   const errBlockIdx = body.indexOf("if(!isSetupDeadlineValid");
