@@ -198,6 +198,7 @@ const PERMITIDAS = [
   { expr: "round.number", en: "lines.push(`Haz tus pronósticos de la Jornada ${round.number} antes del ${fmtWhenTz(round.deadline)}.`)", por: "mensaje para WhatsApp" },
   { expr: "fmtWhenTz(round.deadline)", en: "lines.push(`Haz tus pronósticos de la Jornada ${round.number} antes del ${fmtWhenTz(round.deadline)}.`)", por: "mensaje para WhatsApp" },
   { expr: "added.length", en: "return `✓ ${added.length}", por: "aviso que se pinta con textContent" },
+  { expr: "done.number", en: "toast(`La Jornada ${done.number} ya estaba publicada", por: "toast" },
   { expr: "bet.closesAtRound", en: "text: `Cierra con la Jornada ${bet.closesAtRound} (fecha por confirmar).`", por: "texto de tournamentBetClose, que se pinta con esc()" },
   { expr: "r.number", en: "text: `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}.`", por: "texto de tournamentBetClose, que se pinta con esc()" },
   { expr: "fmtWhenTz(r.deadline)", en: "text: `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}.`", por: "texto de tournamentBetClose, que se pinta con esc()" },

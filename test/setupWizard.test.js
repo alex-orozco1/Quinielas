@@ -265,7 +265,7 @@ test("publicar · una sola escritura: lo cambiado se repone si falla, y el reint
   const reconcile = pub.indexOf("reconcilePenaltyLedger(meta);");
   const relocate = pub.indexOf("round = meta.rounds.find(r => r.id === rows.round.id);");
   const deadline = pub.indexOf("round.deadline = new Date(problem.deadline).toISOString();");
-  const write = pub.indexOf("const result = await setMetaWithError(meta);");
+  const write = pub.indexOf("const result = await setMetaWithError(meta, { betsEdited: true });");
   assert.ok(snap !== -1 && snap < reconcile && reconcile < deadline && deadline < write, "copia antes de tocar nada; la penalización se asienta antes de mover el cierre");
   assert.ok(relocate !== -1 && relocate < deadline, "busca la jornada por id en cada intento, nunca una referencia vieja");
   assert.equal((pub.match(/setMetaWithError\(/g) || []).length, 1, "jornada y reglas en la misma escritura");
@@ -351,4 +351,29 @@ test("textos · la especificación usa «pronósticos»; el cierre de las pregun
   assert.ok(fn("function renderSetupRoundForm(main)").includes("Hasta esta hora tus amigos pueden elegir y cambiar sus pronósticos."));
   assert.ok(indexSrc.includes("Tus pronósticos de partidos se guardan solos apenas los eliges."), "y no promete guardar solas las respuestas escritas");
   assert.ok(indexSrc.includes("Lo que escribes aquí no se guarda solo: toca «Guardar respuestas»."));
+});
+
+test("publicar · una respuesta perdida: antes de decir algo se pregunta al servidor, y lo ya publicado no se publica dos veces", () => {
+  const pub = fn("async function setupPublish(btn, problem, number, rules)");
+  const fail = pub.slice(pub.indexOf("if(!result.reconciled) adoptFreshMeta(meta, snapshot);"));
+  const recheck = fail.indexOf('if(result.error === "network_error" && !result.reconciled){');
+  const already = fail.indexOf("const done = setupAlreadyPublished(rows, problem.clean);");
+  const conflictMsg = fail.indexOf("No se publicó nada.");
+  assert.ok(recheck !== -1 && recheck < already && already < conflictMsg, "primero el servidor, después el aviso");
+  assert.ok(fail.slice(recheck, already).includes("adoptFreshMeta(meta, fresh);"));
+  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, null);"));
+  const found = fn("function setupAlreadyPublished(rows, clean)");
+  assert.ok(found.includes("const r = meta.rounds.find(x => x.id === rows.round.id);"), "calendario: la misma jornada");
+  assert.ok(found.includes("return meta.rounds.find(published) || null;"), "a mano: los mismos ids de partido");
+  assert.ok(fn("function setupRulesStored(rules)").includes("rules.bets.every(b => bets.some(x => x.id === b.id))"));
+});
+
+test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó no bloquea cada guardado: se trae el estado bueno", () => {
+  const save = fn("async function setMetaWithError(meta, opts)");
+  const block = save.slice(save.indexOf('if(!result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited)){'));
+  assert.ok(block.length > 0);
+  assert.ok(block.indexOf("adoptFreshMeta(meta, fresh);") < block.indexOf("return { ...result, reconciled: adopted };"));
+  // Quien sí crea o edita preguntas recibe el error para corregirlo.
+  assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes("await setMetaWithError(meta, { betsEdited: true });"));
+  assert.ok(indexSrc.includes("const result = await setMetaWithError(meta, { betsEdited: true });\n      saveForm.disabled = false;"));
 });

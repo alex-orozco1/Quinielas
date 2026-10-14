@@ -68,6 +68,27 @@ test.describe("preguntas de torneo: el cierre (servidor real)", () => {
     assert.deepEqual((await stored(q)).customBets, [antigua]);
   });
 
+  itest("una quiniela con el «goleador» antiguo sin migrar se sigue pudiendo guardar al mudarlo (cierre vencido o vacío)", async () => {
+    const q = await quiniela("bets-goleador");
+    for (const closesAtRound of [1, null]) {
+      const base = await stored(q);
+      delete base.customBetsMigrated;
+      base.customBets = [];
+      base.golScorerBet = { enabled: true, bonusPoints: 3, closesAtRound };
+      base.rounds = [jornada(1, new Date(Date.now() - 864e5).toISOString())];
+      await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(base)]);
+      const v = await read(q);
+      v.customBetsMigrated = true;
+      v.customBets = [{ id: "cb_gol" + (closesAtRound || 0) + "abc", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound }];
+      const r = await write(q, v);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      // Y lo que el admin guarde después (la penalización, por ejemplo) también.
+      const w = await read(q);
+      w.paymentPenalty = { enabled: true, startsAtRound: 1, pointsPerRound: 1 };
+      assert.equal((await write(q, w)).status, 200);
+    }
+  });
+
   itest("contestar antes del cierre guarda; después responde 403 bet_locked y la respuesta guardada no cambia", async () => {
     const q = await quiniela("bets-plazo");
     const v = await read(q);

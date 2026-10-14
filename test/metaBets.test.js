@@ -56,3 +56,18 @@ test("preguntas · sin preguntas, o con formas raras, no hay nada que juzgar aqu
   assert.deepEqual(check({ rounds: [] }, {}), { ok: true });
   assert.deepEqual(check({ customBets: [null, "x", 3] }, {}), { ok: true });
 });
+
+test("preguntas · la mudanza única del «goleador» antiguo se respeta tal cual (datos viejos, no una pregunta nueva)", () => {
+  const prev = { golScorerBet: { enabled: true, bonusPoints: 3, closesAtRound: 11 }, rounds: [ronda(11, PASADA)] };
+  const goleador = (closesAtRound) => ({ id: "cb_migrado1", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound });
+  for (const closesAtRound of [11, null]) {
+    assert.deepEqual(check({ ...prev, customBetsMigrated: true, customBets: [goleador(closesAtRound)] }, prev), { ok: true }, String(closesAtRound));
+  }
+  // Sólo esa: otra pregunta nueva en el mismo guardado sigue necesitando cierre.
+  const otra = torneo({ id: "cb_otra00001", closesAtRound: null });
+  assert.equal(check({ ...prev, customBetsMigrated: true, customBets: [goleador(11), otra] }, prev).betId, "cb_otra00001");
+  // Ya migrada antes (otra pestaña): una segunda mudanza es una pregunta nueva.
+  assert.equal(check({ ...prev, customBetsMigrated: true, customBets: [goleador(11)] }, { ...prev, customBetsMigrated: true }).reason, "bet_close_past");
+  // Sin goleador activo no hay nada que mudar.
+  assert.equal(check({ customBetsMigrated: true, customBets: [goleador(null)], rounds: [] }, { golScorerBet: { enabled: false } }).reason, "bet_close_required");
+});

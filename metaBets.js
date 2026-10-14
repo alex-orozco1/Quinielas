@@ -26,6 +26,20 @@ function byId(items) {
   return map;
 }
 
+// La migración única del «goleador» antiguo (`golScorerBet`, ensureCustomBets en
+// el cliente) lo convierte en una pregunta de torneo con el cierre que ya
+// tenía. Son datos viejos que se mudan, no una pregunta nueva: se respetan tal
+// cual, como las demás preguntas antiguas. Devuelve el id de esa pregunta
+// cuando este guardado es esa migración, o null.
+function legacyScorerBetId(next, prev) {
+  const old = obj(prev.golScorerBet);
+  if (prev.customBetsMigrated || next.customBetsMigrated !== true || !old.enabled) return null;
+  const before = new Set(list(prev.customBets).map((b) => b && b.id));
+  const moved = list(next.customBets).filter((b) => b && typeof b === "object"
+    && b.label === "Goleador de la liga" && b.scope === "temporada" && !before.has(b.id));
+  return moved.length === 1 ? moved[0].id : null;
+}
+
 // Pure. `{ ok: true }`, o `{ ok: false, reason, betId }` con la primera pregunta
 // de torneo cuyo cierre no se puede aceptar:
 //   - `bet_close_required`: sin jornada de cierre, o con un número de jornada
@@ -38,8 +52,10 @@ function validateBetClosures(newValue, oldValue, nowMs) {
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const oldBets = byId(list(prev.customBets));
   const rounds = list(next.rounds);
+  const legacyId = legacyScorerBetId(next, prev);
   for (const bet of list(next.customBets)) {
     if (!bet || typeof bet !== "object" || bet.scope !== "temporada") continue;
+    if (legacyId !== null && bet.id === legacyId) continue;
     const before = oldBets.get(bet.id);
     if (before && before.scope === "temporada" && before.closesAtRound === bet.closesAtRound) continue;
     const n = bet.closesAtRound;

@@ -2028,6 +2028,22 @@
         // es lo correcto.
         return { ...result, reconciled: adopted };
       }
+      // MS2: el servidor rechazó una pregunta del torneo sin un cierre válido
+      // que esta pestaña no acaba de crear ni editar (la borraron en otra
+      // pestaña, o esta pestaña está atrasada). Igual que un conflicto: se trae
+      // el estado bueno, se repinta y se dice en una línea, en vez de que cada
+      // guardado siguiente falle por algo que la persona no tocó.
+      if(!result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited)){
+        let adopted = false;
+        try{
+          const fresh = await getMeta({ owner: adminOrOwnerCred() });
+          if(fresh) adoptFreshMeta(meta, fresh);
+          adopted = !!fresh;
+        }catch(e){ console.error("refresh tras bet_close falló", e); }
+        try{ await render(); }catch(e){ console.error("render tras bet_close falló", e); }
+        notice("Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
+        return { ...result, reconciled: adopted };
+      }
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
         // HOTFIX-001: sin esto, la siguiente escritura de ESTA pestaña se
@@ -5719,7 +5735,7 @@
       round = { id: uid("r"), number, matches: problem.clean, deadline: new Date(problem.deadline).toISOString(), results: {}, resultsPublished: false, published: true };
       meta.rounds.push(round);
     }
-    const result = await setMetaWithError(meta);
+    const result = await setMetaWithError(meta, { betsEdited: true });
     setupPublishInFlight = false;
     flow.publishing = false;
     if(setupFlow !== flow) return;
@@ -5729,6 +5745,25 @@
       return;
     }
     if(!result.reconciled) adoptFreshMeta(meta, snapshot);
+    // The answer to an earlier try may have been lost on the way back while
+    // the server did publish: then this try is a conflict, or it never got an
+    // answer either. Ask the server what it has before saying anything.
+    if(result.error === "network_error" && !result.reconciled){
+      try{
+        const fresh = await getMeta({ owner: adminOrOwnerCred() });
+        if(fresh) adoptFreshMeta(meta, fresh);
+      }catch(e){ console.error("setup publish re-check failed", e); }
+    }
+    if(setupFlow !== flow) return;
+    if(result.error === "rounds_conflict" || result.error === "network_error"){
+      const done = setupAlreadyPublished(rows, problem.clean);
+      if(done){
+        clearRoundDraft(rows.kind);
+        finishSetupPublish(done, null);
+        if(!setupRulesStored(rules)) toast(`La Jornada ${done.number} ya estaba publicada, pero tus reglas no se guardaron desde aquí. Revísalas en Admin → Tus reglas.`, 7000);
+        return;
+      }
+    }
     // A conflict repainted the app (setMetaWithError): back to this summary,
     // with the calendar looked up again from what the server has now.
     if(result.error === "rounds_conflict"){
@@ -5758,6 +5793,26 @@
     }
     const known = result.error && result.error !== "unknown_error" && ERROR_MESSAGES[result.error];
     setupPublishMessage("alert", (known ? esc(humanizeError(result.error, result)) + " " : "") + "No se publicó nada; tu configuración sigue aquí.", true);
+  }
+  // The round this setup publishes, if the server already has it published:
+  // the same imported round (calendar) or the same match ids (manual; they
+  // are made here and kept when publishing).
+  function setupAlreadyPublished(rows, clean){
+    const ids = new Set(clean.map(m => m.id));
+    const published = (r) => r && r.published !== false && (r.matches || []).some(m => m && ids.has(m.id));
+    if(rows.kind !== "new"){
+      const r = meta.rounds.find(x => x.id === rows.round.id);
+      return published(r) ? r : null;
+    }
+    return meta.rounds.find(published) || null;
+  }
+  // Whether the rules of this setup are the ones the server has.
+  function setupRulesStored(rules){
+    const s = meta.settings || {};
+    const points = s.pointsPerCorrectPick != null ? s.pointsPerCorrectPick : 1;
+    const fee = typeof s.entryFee === "number" ? s.entryFee : 0;
+    const bets = meta.customBets || [];
+    return points === rules.points && fee === rules.fee && rules.bets.every(b => bets.some(x => x.id === b.id));
   }
   function finishSetupPublish(round, result){
     clearRoundDraft(SETUP_DRAFT_KIND);
@@ -6872,7 +6927,7 @@
         </table>
         </div>
       </div>
-      <p class="muted" style="text-align:center;">${payTracked ? `✅ = pagó su cuota de $${esc(meta.settings.entryFee)} · ❌ = pendiente · ` : ``}▲▼ = movimiento desde la jornada pasada</p>
+      <p class="muted" style="text-align:center;">${payTracked ? (typeof fee === "number" && fee > 0 ? `✅ = pagó su cuota de $${esc(fee)} · ❌ = pendiente · ` : `✅ = pagó · ❌ = pendiente · `) : ``}▲▼ = movimiento desde la jornada pasada</p>
       `}
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Evolución de posiciones</span></div>
@@ -8725,7 +8780,7 @@
         meta.customBets.push({ id: uid("cb"), label, scope, points: newPoints, closesAtRound: closes });
       }
       saveForm.disabled = true;
-      const result = await setMetaWithError(meta);
+      const result = await setMetaWithError(meta, { betsEdited: true });
       saveForm.disabled = false;
       if(!result.ok){
         if(!result.reconciled) meta.customBets = snapshot;
