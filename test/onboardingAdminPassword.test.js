@@ -56,14 +56,14 @@ test("CB-4: the four publish points stop before anything changes, and a server 4
   // MS2: the first publish is the setup's «Revisa y publica» (one write for
   // the round and the rules). The gate comes after the summary's own checks
   // and before anything in meta changes.
-  const click = fn("async function setupPublishClick(btn)");
+  const click = fn("async function setupPublishClickNow(btn)");
   const setupGateAt = click.indexOf('const passed = await gateFirstPublish(null, "before");');
   const publishAt = click.indexOf("await setupPublish(btn, problem, number, rules);");
   assert.ok(click.indexOf("const problem = setupRoundProblem();") < setupGateAt, "after the form's own checks");
   assert.ok(setupGateAt !== -1 && setupGateAt < publishAt, "before anything changes");
   assert.ok(!/reconcilePenaltyLedger|\.published = true|meta\.rounds\.push|setMetaWithError/.test(click.slice(0, publishAt)), "nothing is written or mutated before the publish itself");
   const pub = fn("async function setupPublish(btn, problem, number, rules)");
-  assert.ok(/result\.error === "admin_password_required"\)\{[\s\S]{0,200}meta\.ownerPasswordSet = false;[\s\S]{0,300}await setupPublishClick\(again\);/.test(pub), "a server 409 brings the same question back");
+  assert.ok(/result\.error === "admin_password_required"\)\{[\s\S]{0,200}meta\.ownerPasswordSet = false;[\s\S]{0,400}await setupPublishClickNow\(again\);/.test(pub), "a server 409 brings the same question back");
 
   const rondas = fn("async function renderAdminRondas(body)");
   const imported = rondas.slice(rondas.indexOf('body.querySelectorAll("[data-publish-round]")'));

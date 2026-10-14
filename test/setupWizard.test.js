@@ -255,7 +255,7 @@ test("publicar · la regla del cierre se revisa al momento del clic, con el relo
   const problem = fn("function setupRoundProblem()");
   assert.ok(problem.includes("const problem = setupDeadlineProblem(rows.deadline, clean, serverNow());"));
   assert.ok(!/rows\.matches\s*=|rows\.deadline\s*=\s*""|\.published/.test(problem.replace("if(dl) rows.deadline = dl.value;", "")), "nada se limpia junto al error");
-  const click = fn("async function setupPublishClick(btn)");
+  const click = fn("async function setupPublishClickNow(btn)");
   assert.ok(click.indexOf("const problem = setupRoundProblem();") < click.indexOf("await setupPublish(btn, problem, number, rules);"));
 });
 
@@ -308,7 +308,7 @@ test("publicar · las reglas que escribe: preguntas de torneo ligadas a la jorna
 });
 
 test("contraseña · sin ella no se publica; guardarla vuelve al resumen sin publicar; con ella pero la pestaña bloqueada, se pide antes", () => {
-  const click = fn("async function setupPublishClick(btn)");
+  const click = fn("async function setupPublishClickNow(btn)");
   assert.ok(click.includes('const passed = await gateFirstPublish(null, "before");'));
   assert.ok(click.includes("✅ Contraseña guardada. Tu jornada todavía no está publicada"));
   assert.ok(click.includes("Sin contraseña no se puede publicar. Tu configuración sigue aquí."));
@@ -443,18 +443,25 @@ test("P2-1 · «Siguiente paso» sin jornada publicada no promete un borrador qu
 });
 
 test("P2-2 · sin la contraseña de administrador (co-admin) hay salida: se dice de quién es y se pueden dejar puntos y cuota como están", () => {
-  const click = fn("async function setupPublishClick(btn)");
+  const click = fn("async function setupPublishClickNow(btn)");
   assert.ok(click.includes('altLabel: keepLabel'));
   assert.ok(click.includes('const keepLabel = "Dejar puntos y cuota como están";'));
   assert.ok(click.includes('"Para guardar los puntos y la cuota hace falta la contraseña de administrador" + (creator ? ", que creó " + creator.name : "")'));
-  assert.ok(click.includes("if(attempt && attempt.alt){ setupKeepStoredRules(); return; }"));
+  assert.ok(click.includes("if(attempt && attempt.alt){ await setupKeepStoredRules(); return; }"));
   assert.ok(click.includes("Pídesela, o toca otra vez «Publicar jornada"));
   // Dejar como están no publica: cambia el borrador y vuelve al resumen.
-  const keep = fn("function setupKeepStoredRules()");
+  const keep = fn("async function setupKeepStoredRules()");
   assert.ok(!keep.includes("setupPublish("), "no publica por su cuenta");
   assert.ok(keep.includes("d.points = stored.points;"));
   assert.ok(keep.includes("d.payOn = false;") && keep.includes("d.fee = stored.fee;"));
   assert.ok(keep.includes("Todavía no se publicó nada"));
+  // Technical QA (ronda 2): «como están» es lo que tiene el SERVIDOR, también
+  // la penalización; no la copia de esta pestaña.
+  assert.ok(keep.indexOf("await refreshSetupMeta();") < keep.indexOf("const stored = storedRuleValues();"));
+  assert.ok(keep.includes("d.penOn = true;") && keep.includes("d.penPoints = penPoints;"));
+  // Y la contraseña se decide con lo guardado en el servidor.
+  assert.ok(click.indexOf("await refreshSetupMeta();") < click.indexOf("setupChangesProtectedRules(rules)"));
+  assert.ok(fn("async function setupPublishClick(btn)").includes("setupClickPending = true;"), "un doble toque no abre dos preguntas");
   assert.ok(fn("function setupChangesProtectedRules(rules)").includes("const stored = storedRuleValues();"));
 });
 
@@ -488,6 +495,11 @@ function calendarHarness(metaObj) {
     const humanizeError = (e) => String(e);
     const sportsDataFailureMessage = () => "falla";
     const console = { error(){} };
+    const toasts = [];
+    const toast = (msg) => toasts.push(msg);
+    ${fn("function nextRoundNumber()")}
+    ${fn("function setupReviewRound()")}
+    ${fn("function setupPublishNumber()")}
     // Cada carga pide dos cosas a la red: la sincronización y la meta.
     const fetch = () => { const d = later(); pending.push({ kind: "sync", d }); return d.p; };
     const getMeta = () => { const d = later(); pending.push({ kind: "meta", d }); return d.p; };
@@ -502,7 +514,7 @@ function calendarHarness(metaObj) {
     ${fn("function setSetupCal(cal)")}
     return {
       start(d){ setupFlow = { d, cal: null, rows: null, publishing: false, notice: null }; return setupFlow; },
-      flow: () => setupFlow, renders, loadSetupCalendar, setSetupCal,
+      flow: () => setupFlow, renders, toasts, loadSetupCalendar, setSetupCal,
     };
   `)(metaObj, pending, later, NOW);
   // Resuelve la n-ésima petición pendiente de ese tipo y deja correr las promesas.
@@ -542,8 +554,11 @@ test("calendario · elegir «a mano» mientras carga: la respuesta tardía no vu
     assert.deepEqual(flow.rows.matches, [{ id: "m1", teamA: "León", teamB: "Puebla" }]);
     assert.equal(flow.rows.deadline, "2026-10-20T19:00");
     // Las jornadas que el servidor sí importó llegan a la meta (son más nuevas),
-    // sin cambiar la decisión.
+    // sin cambiar la decisión; el número de la jornada a mano se mueve después
+    // de las del calendario, y se dice (Product QA, ronda 2).
     assert.equal(meta.roundsRevision, 1);
+    assert.equal(h.env.toasts.length, 1, how);
+    assert.match(h.env.toasts[0], /tu jornada a mano ahora es la Jornada 14, para no repetir el número de una jornada del calendario\. Tus partidos y tu cierre siguen igual\./);
   }
 });
 
@@ -609,4 +624,67 @@ test("horarios · cada hora dice qué es: «Inicio del partido», «Cierre de pr
     assert.ok(zone, at);
     assert.ok(t.fmtWhenTz(at).endsWith(zone), `${t.fmtWhenTz(at)} termina con ${zone}`);
   }
+});
+
+test("co-admin · «Dejar puntos y cuota como están» usa lo que tiene el servidor, no la copia vieja de la pestaña (penalización incluida)", async () => {
+  // La pestaña cargó puntos 1, sin cuota y sin penalización; la creadora cambió
+  // en otro dispositivo a 3 puntos, $200 y −2 por jornada (mismas jornadas).
+  const tab = { settings: { pointsPerCorrectPick: 1, entryFee: 0 }, participants: [], roundsRevision: 4, rounds: [] };
+  const server = { settings: { pointsPerCorrectPick: 3, entryFee: 200 }, participants: [], roundsRevision: 4, rounds: [],
+    paymentPenalty: { enabled: true, startsAtRound: 12, pointsPerRound: 2 } };
+  const said = [];
+  const env = new Function("meta", "server", "said", `
+    let setupFlow = null;
+    const setupPersist = () => {}, renderSetupFlow = () => {}, renderSetupAside = () => {};
+    const setupPublishNumber = () => 12;
+    const setupPublishMessage = (kind, html) => said.push(html);
+    const getMeta = async () => JSON.parse(JSON.stringify(server));
+    const adminOrOwnerCred = () => "x";
+    const console = { error(){} };
+    ${fn("function esc(s)")}
+    ${fn("function isPositiveInt(v)")}
+    ${fn("function adoptFreshMeta(target, fresh)")}
+    ${fn("function adoptSetupMeta(fresh, current)")}
+    ${fn("function storedRuleValues()")}
+    ${fn("async function refreshSetupMeta()")}
+    ${fn("async function setupKeepStoredRules()")}
+    return { start(d){ setupFlow = { d }; return setupFlow; }, setupKeepStoredRules };
+  `)(tab, server, said);
+  const flow = env.start({ points: 4, payOn: false, fee: null, penOn: false, penPoints: 1, penFrom: null });
+  await env.setupKeepStoredRules();
+  assert.deepEqual(
+    { points: flow.d.points, payOn: flow.d.payOn, fee: flow.d.fee, penOn: flow.d.penOn, penPoints: flow.d.penPoints, penFrom: flow.d.penFrom },
+    { points: 3, payOn: true, fee: 200, penOn: true, penPoints: 2, penFrom: null });
+  assert.match(said[0], /los puntos en 3 por acierto, la cuota en \$200 MXN, la penalización como está guardada \(−2 por jornada sin pagar, desde la Jornada 12, la que publicas\), como ya estaban guardados/);
+  // Guardada desde la Jornada 1 (antes de la que se publica): empieza con la que se publica, sin dejar el resumen bloqueado.
+  server.paymentPenalty.startsAtRound = 1;
+  const flow2 = env.start({ points: 3, payOn: true, fee: 200, penOn: false, penPoints: 1, penFrom: null });
+  await env.setupKeepStoredRules();
+  assert.deepEqual({ penOn: flow2.d.penOn, penFrom: flow2.d.penFrom }, { penOn: true, penFrom: null });
+  // Y desde una jornada posterior, se respeta.
+  server.paymentPenalty.startsAtRound = 14;
+  const flow3 = env.start({ points: 3, payOn: true, fee: 200, penOn: false, penPoints: 1, penFrom: null });
+  await env.setupKeepStoredRules();
+  assert.equal(flow3.d.penFrom, 14);
+  assert.equal(tab.settings.entryFee, 200, "la pestaña se queda con la copia del servidor");
+});
+
+test("numeración · una jornada a mano con el calendario ya importado explica su número y cómo jugar la del calendario", () => {
+  const meta = { settings: { sportsdbLeagueId: "4350" }, rounds: [round(11, -1, [-2]), round(12, 48, [50]), round(17, 800, [802])] };
+  const note = new Function("meta", "serverNowMs", `
+    const serverNow = () => serverNowMs;
+    ${fn("function setupLeagueId()")}
+    ${fn("function isRoundUsableForSetup(round, nowMs)")}
+    ${fn("function startedMatchesOf(round, nowMs)")}
+    ${fn("function pickPlayableRound(rounds, nowMs)")}
+    ${fn("function setupManualNumberNote(number, where)")}
+    return setupManualNumberNote;
+  `)(meta, NOW);
+  assert.equal(note(18, "jornada"), "El calendario de tu liga ya tiene las jornadas 11 a 17. Para no repetir sus números, tu jornada a mano será la Jornada 18. Si prefieres jugar la Jornada 12 del calendario, toca «Probar de nuevo con el calendario»: ahí también puedes cambiar sus partidos.");
+  assert.match(note(18, "resumen"), /toca «Editar» en este bloque y luego «Probar de nuevo con el calendario»/);
+  // Sin calendario importado, o sin liga, no hay nada que explicar.
+  assert.equal(new Function("meta", "serverNowMs", `const serverNow = () => serverNowMs; ${fn("function setupLeagueId()")} ${fn("function isRoundUsableForSetup(round, nowMs)")} ${fn("function startedMatchesOf(round, nowMs)")} ${fn("function pickPlayableRound(rounds, nowMs)")} ${fn("function setupManualNumberNote(number, where)")} return setupManualNumberNote;`)({ settings: {}, rounds: [] }, NOW)(1, "jornada"), "");
+  // Se pinta, escapada, en el paso 3 a mano y en el resumen.
+  assert.ok(fn("function renderSetupRoundForm(main)").includes('<p class="qz-wz-note" id="qz-wz-number-note">${esc(manualNote)}</p>'));
+  assert.ok(fn("function renderSetupResumen(main)").includes('<p class="qz-wz-note">${esc(setupManualNumberNote(number, "resumen"))}</p>'));
 });

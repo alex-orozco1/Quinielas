@@ -4716,10 +4716,35 @@
     const have = Number.isFinite(meta.roundsRevision) ? meta.roundsRevision : -1;
     const got = Number.isFinite(fresh.roundsRevision) ? fresh.roundsRevision : -1;
     if(current ? got < have : got <= have) return;
+    const manual = !current && !!setupFlow && !!setupFlow.cal && setupFlow.cal.state === "manual";
+    const numberBefore = manual ? setupPublishNumber() : null;
     adoptFreshMeta(meta, fresh);
     if(current || !setupFlow) return;
-    if(setupFlow.cal && setupFlow.cal.state === "manual" && (setupFlow.d.step === "jornada" || setupFlow.d.step === "resumen")) renderSetupFlow();
+    if(manual && (setupFlow.d.step === "jornada" || setupFlow.d.step === "resumen")) renderSetupFlow();
     else renderSetupAside();
+    // The calendar arrived after «a mano»: the number moves past the
+    // calendar's rounds. Said, never silently.
+    const numberAfter = manual ? setupPublishNumber() : null;
+    if(manual && numberAfter !== numberBefore){
+      toast("Llegó el calendario de tu liga: tu jornada a mano ahora es la Jornada " + numberAfter + ", para no repetir el número de una jornada del calendario. Tus partidos y tu cierre siguen igual.", 8000);
+    }
+  }
+  // MS2 · A round prepared by hand in a quiniela whose league calendar is
+  // already imported takes the number after the last one (the calendar keeps
+  // its own numbers; the same rule as Admin → Jornadas). Said before
+  // publishing, with the way to play the calendar's round instead.
+  // Plain text; "" when there is nothing to explain.
+  function setupManualNumberNote(number, where){
+    const prepared = meta.rounds.filter(r => r && r.published === false).map(r => r.number);
+    if(!setupLeagueId() || !prepared.length || !number) return "";
+    const lo = Math.min(...prepared), hi = Math.max(...prepared);
+    const { round } = pickPlayableRound(meta.rounds, serverNow());
+    const how = where === "resumen"
+      ? "toca «Editar» en este bloque y luego «Probar de nuevo con el calendario»"
+      : "toca «Probar de nuevo con el calendario»";
+    return "El calendario de tu liga ya tiene " + (lo === hi ? "la Jornada " + lo : "las jornadas " + lo + " a " + hi)
+      + ". Para no repetir sus números, tu jornada a mano será la Jornada " + number + "."
+      + (round ? " Si prefieres jugar la Jornada " + round.number + " del calendario, " + how + ": ahí también puedes cambiar sus partidos." : "");
   }
   // Runs the lookup and applies its answer, unless something newer decided in
   // the meantime: a later lookup, or setSetupCal.
@@ -5483,6 +5508,7 @@
     if(!rows){ setSetupCal(null); renderSetupFlow(); return; }
     const imported = cal.state === "review";
     const number = imported ? rows.round.number : nextRoundNumber();
+    const manualNote = imported ? "" : setupManualNumberNote(number, "jornada");
     const leagueLabel = setupLeagueLabel(setupLeagueId());
     const tournamentQs = d.extrasOn ? d.questions.filter(q => q.scope === "temporada") : [];
     const minDeadline = toLocalInputValue(new Date(serverNow()).toISOString());
@@ -5499,6 +5525,7 @@
         <p class="muted qz-tight">${imported
           ? `Es la primera que vas a publicar. Las demás jornadas del calendario de ${esc(leagueLabel || "tu liga")} quedan preparadas; las publicas cuando quieras.`
           : "Será tu primera jornada publicada."}</p>
+        ${!imported && manualNote ? `<p class="qz-wz-note" id="qz-wz-number-note">${esc(manualNote)}</p>` : ``}
         <p class="qz-wz-count muted" id="qz-wz-count"></p>
         <div id="qz-wz-rows">${matchRowsHtml}</div>
         ${imported ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(tzShortName(rows.round.deadline))}).</p>` : ``}
@@ -5507,7 +5534,7 @@
         ${!imported && setupLeagueId() ? `<p><button class="qz-linkbtn" id="qz-wz-try-cal">Probar de nuevo con el calendario de ${esc(leagueLabel || "tu liga")}</button></p>` : ``}
       </section>
       <section class="card qz-wz-card" aria-labelledby="qz-wz-deadline-l">
-        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos para todos los partidos (${esc(tzShortName(rows.deadline ? new Date(rows.deadline).toISOString() : null))})</label>
+        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos para todos los partidos (${esc(tzShortName(rows.deadline || null))})</label>
           <input type="datetime-local" id="qz-wz-deadline" value="${esc(rows.deadline)}" min="${esc(minDeadline)}"></div>
         <p class="muted qz-tight">Hasta esta hora tus amigos pueden elegir y cambiar sus pronósticos. Todos los partidos de la Jornada ${esc(number)} comparten este cierre.</p>
         <p class="muted qz-tight" id="qz-wz-first"></p>
@@ -5632,6 +5659,7 @@
           <section class="card qz-wz-card qz-sum-section" aria-labelledby="qz-sum-3">
             <div class="qz-sum-head"><h2 class="qz-wz-h2" id="qz-sum-3">Jornada ${esc(number)}</h2>${editBtn("jornada")}</div>
             <p class="muted">Jornada ${esc(number)}${leagueId && imported ? ` · ${esc(leagueLabel)}` : " · partidos a mano"} · ${esc(clean.length)} ${clean.length === 1 ? "partido" : "partidos"}</p>
+            ${imported ? `` : `${esc(setupManualNumberNote(number, "resumen")) ? `<p class="qz-wz-note">${esc(setupManualNumberNote(number, "resumen"))}</p>` : ``}`}
             ${kickZone ? `<div class="qz-sum-matches-head" aria-hidden="true"><span>Partido</span><span>Inicio del partido</span></div>` : ``}
             <ul class="qz-sum-matches">${clean.map(m => `<li><span>${esc(m.teamA)} vs ${esc(m.teamB)}</span>${m.kickoffAt ? `<span class="muted"><span class="qz-sr">Inicio del partido: </span>${esc(fmtKickoff(m.kickoffAt))}</span>` : ``}</li>`).join("")}</ul>
             ${kickZone ? `<p class="muted qz-tight">Horarios en la zona de este dispositivo (${esc(kickZone)}).</p>` : ``}
@@ -5704,40 +5732,79 @@
     const stored = storedRuleValues();
     return stored.points !== rules.points || stored.fee !== rules.fee;
   }
+  // The quiniela as the server has it right now: the rules may have changed
+  // on another device since this tab loaded them. Adopted when it is not
+  // older than this tab's copy (adoptSetupMeta); offline, this tab's copy.
+  async function refreshSetupMeta(){
+    let fresh = null;
+    try{ fresh = await getMeta({ owner: adminOrOwnerCred() }); }catch(e){ console.error("setup meta refresh failed", e); }
+    adoptSetupMeta(fresh, true);
+  }
   // Without the admin password (a co-admin, or a creator who doesn't have it
-  // at hand): the draft takes the stored points and fee back. Nothing is
-  // published here; the summary shows the change and publishing is one more
-  // tap, as always.
-  function setupKeepStoredRules(){
-    const d = setupFlow.d;
+  // at hand): the draft takes the points and the payments (fee and penalty)
+  // back as the SERVER has them now. Nothing is published here; the summary
+  // shows the change and publishing is one more tap, as always.
+  async function setupKeepStoredRules(){
+    const flow = setupFlow;
+    await refreshSetupMeta();
+    if(setupFlow !== flow) return;
+    const d = flow.d;
     const stored = storedRuleValues();
+    const pen = meta.paymentPenalty && meta.paymentPenalty.enabled ? meta.paymentPenalty : null;
     const changed = [];
     if(d.points !== stored.points){
       d.points = stored.points;
       changed.push(`los puntos en ${esc(stored.points)} por acierto`);
     }
-    if((d.payOn ? d.fee : 0) !== stored.fee){
-      if(stored.fee > 0){
+    if(stored.fee > 0){
+      if(!d.payOn || d.fee !== stored.fee){
         d.payOn = true;
         d.fee = stored.fee;
         changed.push(`la cuota en $${esc(stored.fee)} MXN`);
-      } else {
-        d.payOn = false;
-        changed.push("la quiniela sin cuota (así no se registran pagos ni se restan puntos)");
       }
+      // The penalty goes with the payments as they are stored. One stored
+      // from a round before the one being published starts with this one:
+      // the rounds before it are not published, and only published rounds
+      // ever count (isRoundEligibleForPenalty).
+      const number = setupPublishNumber();
+      const penPoints = pen && isPositiveInt(pen.pointsPerRound) ? pen.pointsPerRound : null;
+      const penFrom = pen && isPositiveInt(pen.startsAtRound) ? pen.startsAtRound : null;
+      const fromNow = penFrom == null || (number && penFrom <= number) ? null : penFrom;
+      if(pen && penPoints && (!d.penOn || d.penPoints !== penPoints || d.penFrom !== fromNow)){
+        d.penOn = true;
+        d.penPoints = penPoints;
+        d.penFrom = fromNow;
+        changed.push(`la penalización como está guardada (−${esc(penPoints)} por jornada sin pagar${fromNow == null && number ? `, desde la Jornada ${esc(number)}, la que publicas` : ``})`);
+      } else if(!pen && d.penOn){
+        d.penOn = false;
+        changed.push("sin penalización, como está guardado");
+      }
+    } else if(d.payOn){
+      d.payOn = false;
+      changed.push(`la quiniela sin cuota (así no se registran pagos ni se restan puntos${pen ? "; la penalización guardada se apaga al publicar" : ""})`);
     }
     setupPersist();
     renderSetupFlow();
-    setupPublishMessage("ok", `${changed.length ? `Listo: dejamos ${changed.join(" y ")}, como ya estaban guardados.` : `Los puntos y la cuota ya son los guardados.`} Todavía no se publicó nada: revisa el resumen y toca «Publicar jornada ${esc(setupPublishNumber())}».`);
+    setupPublishMessage("ok", `${changed.length ? `Listo: dejamos ${changed.join(", ")}, como ya estaban guardados.` : `Tu resumen ya tiene los puntos y la cuota guardados.`} Todavía no se publicó nada: revisa el resumen y toca «Publicar jornada ${esc(setupPublishNumber())}».`);
   }
   let setupPublishInFlight = false;
+  let setupClickPending = false;
   async function setupPublishClick(btn){
-    if(!setupFlow || setupPublishInFlight) return;
+    if(!setupFlow || setupPublishInFlight || setupClickPending) return;
+    setupClickPending = true;
+    try{ await setupPublishClickNow(btn); }
+    finally{ setupClickPending = false; }
+  }
+  async function setupPublishClickNow(btn){
     const flow = setupFlow;
     flow.notice = null;
     setupPublishMessage(null, "");
     const problem = setupRoundProblem();
     if(problem.field){ renderSetupFlow(); return; }
+    // What is stored decides whether the password is needed (points and fee,
+    // and whether the password exists): asked to the server, not this tab.
+    await refreshSetupMeta();
+    if(setupFlow !== flow) return;
     // Onboarding B: without an admin password nothing is published. The
     // modal saves it and comes back here; publishing takes one more tap.
     if(needsAdminPasswordToPublish()){
@@ -5775,7 +5842,7 @@
         { title: mine ? "Confirma tu contraseña" : "Contraseña de administrador", confirmLabel: "Confirmar y publicar", secret: true, altLabel: keepLabel },
         "owner", (pw) => verifyOwnerPasswordResult(pw));
       if(setupFlow !== flow) return;
-      if(attempt && attempt.alt){ setupKeepStoredRules(); return; }
+      if(attempt && attempt.alt){ await setupKeepStoredRules(); return; }
       if(attempt === null){
         setupPublishMessage("alert", mine
           ? `No se publicó nada. Sin la contraseña de administrador no se pueden guardar los puntos ni la cuota; tu configuración sigue aquí. Si prefieres no cambiarlos, toca otra vez «Publicar jornada ${esc(number)}» y elige «${keepLabel}».`
@@ -5892,7 +5959,8 @@
       meta.ownerPasswordSet = false;
       renderSetupFlow();
       const again = document.getElementById("qz-setup-next");
-      if(again) await setupPublishClick(again);
+      // Still inside the same click (setupClickPending): the inner step.
+      if(again) await setupPublishClickNow(again);
       return;
     }
     if(result.error === "network_error"){
