@@ -1994,6 +1994,27 @@
     Object.keys(target).forEach(k => { if(!(k in fresh)) delete target[k]; });
     Object.assign(target, fresh, { participants });
   }
+  // MS2: el servidor rechazó una pregunta del torneo sin un cierre válido que
+  // esta pestaña no acaba de crear ni editar (la borraron en otra pestaña, o
+  // esta pestaña está atrasada). Sólo la publicación del asistente y el
+  // formulario de preguntas pasan `betsEdited`: ellos reciben el error para
+  // corregirlo. Para lo demás, igual que un conflicto: se trae el estado bueno,
+  // se repinta y se dice en una línea, en vez de que cada guardado siguiente
+  // falle por algo que la persona no tocó.
+  function isStaleBetRefusal(result, opts){
+    return !!result && !result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited);
+  }
+  async function adoptAfterStaleBet(meta, result){
+    let adopted = false;
+    try{
+      const fresh = await getMeta({ owner: adminOrOwnerCred() });
+      if(fresh) adoptFreshMeta(meta, fresh);
+      adopted = !!fresh;
+    }catch(e){ console.error("refresh tras bet_close falló", e); }
+    try{ await render(); }catch(e){ console.error("render tras bet_close falló", e); }
+    notice("Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
+    return { ...result, reconciled: adopted };
+  }
   async function setMetaWithError(meta, opts){
     try{
       const ownerCred = (opts && opts.owner) || adminOrOwnerCred();
@@ -2028,22 +2049,7 @@
         // es lo correcto.
         return { ...result, reconciled: adopted };
       }
-      // MS2: el servidor rechazó una pregunta del torneo sin un cierre válido
-      // que esta pestaña no acaba de crear ni editar (la borraron en otra
-      // pestaña, o esta pestaña está atrasada). Igual que un conflicto: se trae
-      // el estado bueno, se repinta y se dice en una línea, en vez de que cada
-      // guardado siguiente falle por algo que la persona no tocó.
-      if(!result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited)){
-        let adopted = false;
-        try{
-          const fresh = await getMeta({ owner: adminOrOwnerCred() });
-          if(fresh) adoptFreshMeta(meta, fresh);
-          adopted = !!fresh;
-        }catch(e){ console.error("refresh tras bet_close falló", e); }
-        try{ await render(); }catch(e){ console.error("render tras bet_close falló", e); }
-        notice("Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
-        return { ...result, reconciled: adopted };
-      }
+      if(isStaleBetRefusal(result, opts)) return await adoptAfterStaleBet(meta, result); // MS2
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
         // HOTFIX-001: sin esto, la siguiente escritura de ESTA pestaña se

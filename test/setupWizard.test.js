@@ -370,9 +370,10 @@ test("publicar · una respuesta perdida: antes de decir algo se pregunta al serv
 
 test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó no bloquea cada guardado: se trae el estado bueno", () => {
   const save = fn("async function setMetaWithError(meta, opts)");
-  const block = save.slice(save.indexOf('if(!result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited)){'));
-  assert.ok(block.length > 0);
-  assert.ok(block.indexOf("adoptFreshMeta(meta, fresh);") < block.indexOf("return { ...result, reconciled: adopted };"));
+  assert.ok(save.includes("if(isStaleBetRefusal(result, opts)) return await adoptAfterStaleBet(meta, result);"));
+  assert.ok(fn("function isStaleBetRefusal(result, opts)").includes('(result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited)'));
+  const adopt = fn("async function adoptAfterStaleBet(meta, result)");
+  assert.ok(adopt.indexOf("adoptFreshMeta(meta, fresh);") < adopt.indexOf("return { ...result, reconciled: adopted };"));
   // Quien sí crea o edita preguntas recibe el error para corregirlo.
   assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes("await setMetaWithError(meta, { betsEdited: true });"));
   assert.ok(indexSrc.includes("const result = await setMetaWithError(meta, { betsEdited: true });\n      saveForm.disabled = false;"));
