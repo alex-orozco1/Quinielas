@@ -177,8 +177,11 @@ async function teardown() {
   if (pg && dbName) await adminQuery(`DROP DATABASE IF EXISTS ${dbName}`).catch(() => {});
 }
 const serverOutput = () => serverLog;
+// This file's throwaway database, for code that opens its own pool (the bet
+// closes migration runs outside the server).
+const databaseUrl = () => dbUrl;
 
 module.exports = {
-  SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, withRowLocked, serverOutput,
+  SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, withRowLocked, serverOutput, databaseUrl,
   freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom,
 };

@@ -67,4 +67,4 @@ function validateBetClosures(newValue, oldValue, nowMs) {
   return { ok: true };
 }
 
-module.exports = { validateBetClosures };
+module.exports = { validateBetClosures, legacyScorerBetId };

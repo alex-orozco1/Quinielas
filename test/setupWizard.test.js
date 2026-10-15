@@ -383,7 +383,7 @@ test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó n
   const save = fn("async function setMetaWithError(meta, opts)");
   assert.ok(save.includes("if(isStaleBetRefusal(result, opts)) return await adoptAfterStaleBet(meta, result);"));
   assert.ok(fn("function isStaleBetRefusal(result, opts)").includes('(result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited)'));
-  const adopt = fn("async function adoptAfterStaleBet(meta, result)");
+  const adopt = fn("async function adoptAfterStaleBet(meta, result, message)");
   assert.ok(adopt.indexOf("adoptFreshMeta(meta, fresh);") < adopt.indexOf("return { ...result, reconciled: adopted };"));
   // Quien sí crea o edita preguntas recibe el error para corregirlo.
   assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes("await setMetaWithError(meta, { betsEdited: true });"));
@@ -405,6 +405,8 @@ const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
   ${fn("function scopeHelp(scope)")}
   ${fn("function fmtWhenTz(iso)")}
   ${fn("function isRoundLocked(round)")}
+  ${fn("function betCloseInfo(bet)")}
+  ${fn("function sameInstantMs(a, b)")}
   ${fn("function customBetsLocked(bet)")}
   ${fn("function betAnswerCount(bet)")}
   ${fn("function closableRounds()")}
@@ -423,7 +425,7 @@ test("P1-1 · editar una pregunta del torneo que ya cerró no ofrece otro cierre
   assert.ok(html.includes("Cierra con la Jornada 12") && html.includes("Ya cerró."));
   // Al guardar, el cierre que se escribe es el que ya tenía.
   const save = indexSrc.slice(indexSrc.indexOf('const saveForm = document.getElementById("qz-rb-save");'));
-  assert.ok(save.includes(": betCloseFixed(editingBet) ? editingBet.closesAtRound"));
+  assert.ok(save.includes('if(betCloseFixed(editingBet) || (f.closes === "keep" && info)) closes = editingBet.closesAtRound;'));
   // Y si cerró con el formulario abierto, no se guarda otro cierre.
   assert.ok(save.includes('toast("Esta pregunta acaba de cerrar: su cierre ya no se cambia. No se guardó nada.");'));
 });
@@ -820,6 +822,9 @@ const keptEnv = (metaObj) => new Function("meta", `
   ${fn("function scopeLabel(scope)")}
   ${fn("function fmtWhenTz(iso)")}
   const serverNow = () => Date.now();
+  ${fn("function isRoundLocked(round)")}
+  ${fn("function betCloseInfo(bet)")}
+  ${fn("function sameInstantMs(a, b)")}
   ${fn("function betCloseLine(bet)")}
   ${constLine("EXTRA_TEMPLATES")}
   ${fn("function extraTemplate(key)")}

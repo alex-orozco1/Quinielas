@@ -22,10 +22,14 @@ const answer = (q, who, betId, guess) => call("POST", "/api/submit-bet-answer", 
   headers: { "X-Qracks-Auth": who.pin, "X-Qracks-Participant": who.id },
   body: { metaKey: q.metaKey, participantId: who.id, betId, guess },
 });
-// Cambia, directo en la base, la fecha de cierre de una jornada guardada.
+// Hace pasar el tiempo, directo en la base: la jornada y las preguntas que
+// nacieron con su cierre (MS2 · D4: cada una guarda el suyo, `closesAt`) llegan
+// a esa hora. Editar la jornada por la API ya no movería el de las preguntas.
 async function setDeadline(q, number, iso) {
   const v = await stored(q);
-  v.rounds.find((r) => r.number === number).deadline = iso;
+  const r = v.rounds.find((x) => x.number === number);
+  r.deadline = iso;
+  (v.customBets || []).forEach((b) => { if (b.closesRoundId === r.id) b.closesAt = iso; });
   await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(v)]);
 }
 

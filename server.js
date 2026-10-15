@@ -45,7 +45,9 @@ const tournamentScope = require("./tournamentScope");
 const { validateMetaIds } = require("./metaIds");
 const { validateMetaNumbers } = require("./metaNumbers");
 const { validateMetaShape } = require("./metaShape");
-const { validateBetClosures } = require("./metaBets");
+const { validateBetClosures, legacyScorerBetId } = require("./metaBets");
+// MS2 · D4: cada pregunta de torneo con su propio cierre, puesto por el servidor.
+const { betCloseState, withStoredBetFields, resolveBetCloses, archiveBetsForClose } = require("./betCloses");
 const { planCompetitionSync, identityKey } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
@@ -985,6 +987,29 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
       }
     });
   }
+  // MS2 · D4: the same rule for the answers archived with a past tournament.
+  if (!isAdminOrOwner && Array.isArray(clone.pastTournaments)) {
+    const maskAll = (byPerson) => {
+      if (!byPerson || typeof byPerson !== "object") return byPerson;
+      const out = {};
+      Object.keys(byPerson).forEach((pid) => {
+        const answers = byPerson[pid] || {};
+        if (pid === selfParticipantId) { out[pid] = answers; return; }
+        const masked = {};
+        Object.keys(answers).forEach((betId) => {
+          const ans = answers[betId] || {};
+          masked[betId] = { correct: ans.correct === true ? true : (ans.correct === false ? false : null) };
+        });
+        out[pid] = masked;
+      });
+      return out;
+    };
+    clone.pastTournaments.forEach((t) => {
+      if (!t || typeof t !== "object") return;
+      if (t.betAnswers) t.betAnswers = maskAll(t.betAnswers);
+      if (t.legacyScorerBet && t.legacyScorerBet.answers) t.legacyScorerBet.answers = maskAll(t.legacyScorerBet.answers);
+    });
+  }
   if (!isAdminOrOwner && Array.isArray(clone.rounds)) {
     // Draft/pending-correction results are for the admin's eyes only, until
     // they're actually published — same rule whether it's a brand-new round
@@ -1237,6 +1262,26 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   }
   merged.tournamentEpoch = storedEpoch;
 
+  // MS2 · D4. Los ids de preguntas retirados y la marca de la migración de
+  // cierres los escribe sólo el servidor; la fila guardada gana.
+  delete merged.retiredBetIds;
+  delete merged.betCloseMigration;
+  if (oldValue && oldValue.betCloseMigration) merged.betCloseMigration = JSON.parse(JSON.stringify(oldValue.betCloseMigration));
+  // El cierre de cada pregunta, con el tablero ya resuelto (betCloses.js). Si
+  // el guardado intenta reabrir una cerrada, no se escribe nada.
+  const betCloses = resolveBetCloses({
+    stored: oldValue, merged, nowMs: Date.now(),
+    legacyId: legacyScorerBetId(merged, oldValue || {}),
+  });
+  // A refusal is reported by the caller after the shape checks (a malformed
+  // document is a 400 before it is anything else); nothing is written then.
+  if (betCloses.ok) {
+    if (Array.isArray(merged.customBets)) merged.customBets = betCloses.customBets;
+    if (betCloses.retiredBetIds.length) merged.retiredBetIds = betCloses.retiredBetIds;
+  } else if (Array.isArray(oldValue && oldValue.retiredBetIds)) {
+    merged.retiredBetIds = oldValue.retiredBetIds;
+  }
+
   const oldSettings = (oldValue && oldValue.settings) || null;
   if (!merged.settings) merged.settings = {};
 
@@ -1392,6 +1437,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
     participantsRestored: participantMerge.restored,
     participantsRefreshed: participantMerge.refreshed,
     roundsRestored: roundsAreStale,
+    betClosesRefused: betCloses.ok ? null : betCloses,
     adminRoleChangesRefused,
     // Before the password exists, naming admins belongs to the creator alone;
     // after, to the password, as always.
@@ -1759,18 +1805,15 @@ app.post("/api/submit-bet-answer", async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(404).json({ error: "bet_not_found" });
       }
-      // Same lock rule the UI already shows (bet closes when its linked round's
-      // deadline passes) — enforced here too, not just hidden in the frontend.
-      // Judged by Postgres's clock inside this transaction, with the row
-      // locked, exactly like picks: an answer that arrives after the deadline
-      // is refused even if it was sent a moment before.
-      if (bet.closesAtRound) {
-        const closingRound = (value.rounds || []).find((r) => r.number === bet.closesAtRound);
-        const dbNowMs = closingRound ? (await client.query("SELECT NOW() as now")).rows[0].now.getTime() : null;
-        if (closingRound && dbNowMs > new Date(closingRound.deadline).getTime()) {
-          await client.query("ROLLBACK");
-          return res.status(403).json({ error: "bet_locked" });
-        }
+      // MS2 · D4: the question's OWN close (betCloses.js), never a round looked
+      // up by number. Judged by Postgres's clock inside this transaction, with
+      // the row locked, exactly like picks: an answer that arrives after the
+      // close is refused even if it was sent a moment before. A question saved
+      // before D4 and not migrated yet keeps the old rule (by number).
+      const dbNowMs = (await client.query("SELECT NOW() as now")).rows[0].now.getTime();
+      if (betCloseState(bet, value.rounds, dbNowMs).closed) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "bet_locked" });
       }
       // Same reason as set-pin: this changes one participant's fields, so it
       // has to advance that participant's revision.
@@ -1990,7 +2033,11 @@ app.post("/api/kv/:key", async (req, res) => {
         // MS2: the questions follow the board's rule. A write that changes
         // them must show it saw the ones it replaces; otherwise 409 and
         // nothing is written, so another admin's question is never lost.
-        const betsWrite = resolveBetsWrite({ stored: oldValue, incoming: value });
+        // MS2 · D4: omitir los campos de cierre que pone el servidor no es
+        // borrarlos (un cliente anterior no los conoce); se rellenan con lo
+        // guardado antes de comparar y de resolver.
+        const betsValue = withStoredBetFields(oldValue, value);
+        const betsWrite = resolveBetsWrite({ stored: oldValue, incoming: betsValue });
         if (betsWrite.outcome === "conflict") {
           await client.query("ROLLBACK");
           console.log("meta write refused: stale questions", {
@@ -2002,7 +2049,7 @@ app.post("/api/kv/:key", async (req, res) => {
             roundsRevision: roundsWrite.storedRevision,
           });
         }
-        const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier, roundsWrite, {
+        const metaMerge = mergeProtectedMetaFields(oldValue, betsValue, authTier, roundsWrite, {
           requesterIsCreator: authTier === "admin-pin" && requestIsCreator(req, info.slug, oldValue),
           betsWrite,
         });
@@ -2028,6 +2075,7 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: "admin_password_too_short", minLength: ADMIN_PASSWORD_MIN_LENGTH });
         }
+
         const mergedValue = metaMerge.value;
         // Onboarding B. With a creator, nothing is published until the admin
         // password exists — whoever writes, through any client. Preparing,
@@ -2085,6 +2133,16 @@ app.post("/api/kv/:key", async (req, res) => {
         // Una pregunta de torneo nueva (o a la que se le cambia el cierre)
         // cierra con una jornada que existe y todavía no cerró (metaBets.js):
         // sin eso, sus respuestas se podrían cambiar para siempre.
+        // MS2 · D4: una pregunta cerrada no se reabre (409 bet_close_locked), un
+        // id retirado no vuelve (409 bet_retired), una nueva nace con el cierre
+        // de una jornada abierta (400 bet_close_required/_past) y el de una
+        // abierta sólo se mueve a la hora de su propia jornada (400
+        // bet_close_invalid). betCloses.js.
+        if (metaMerge.betClosesRefused) {
+          await client.query("ROLLBACK");
+          const refused = metaMerge.betClosesRefused;
+          return res.status(refused.status).json({ error: refused.error, betId: refused.betId });
+        }
         const betsCheck = validateBetClosures(mergedValue, oldValue);
         if (!betsCheck.ok) {
           await client.query("ROLLBACK");
@@ -3400,12 +3458,19 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // actually played, so it is not history. published===undefined (legacy) is
     // still treated as published, the same rule as everywhere else in QRACKS.
     const archived = (Array.isArray(meta.rounds) ? meta.rounds : []).filter((r) => r && r.published !== false);
+    // MS2 · D4. Las preguntas que siguen abiertas se cierran ahora y todas (de
+    // torneo y de jornada) se archivan con sus respuestas y aciertos; el torneo
+    // nuevo empieza sin ellas, así que lo que sumaban no pasa a él (betCloses.js).
+    const archivedBets = archiveBetsForClose(meta, now, Date.parse(now));
     meta.pastTournaments = Array.isArray(meta.pastTournaments) ? meta.pastTournaments : [];
     meta.pastTournaments.push({
       closedAt: now,
       champion: summary.champion,
       standings: summary.standings,
       rounds: archived,
+      customBets: archivedBets.customBets,
+      betAnswers: archivedBets.betAnswers,
+      ...(archivedBets.legacyScorer ? { legacyScorerBet: archivedBets.legacyScorer } : {}),
       // Which cycle this archive belongs to, and which intention produced it.
       // Both are written by the server; they make a duplicated archive
       // detectable after the fact instead of being an indistinguishable
