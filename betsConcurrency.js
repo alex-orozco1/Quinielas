@@ -64,9 +64,15 @@ function resolveBetsWrite({ stored, incoming } = {}) {
   return { ...base, outcome: "conflict", ok: false };
 }
 
+// Never goes back. `doc` keeps the stored revision on every server-side write
+// that starts from the stored row (an answer, a PIN, a registration…); the
+// meta save removes the client's claim before stamping. Taking the larger of
+// the two means a "before" copy that left the questions out can at worst move
+// the revision forward (a tab is asked to reload), never back (a stale tab
+// would pass as current and delete what it never saw).
 function stampBetsRevision(doc, oldValue) {
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
-  const previous = storedBetsRevision(oldValue);
+  const previous = Math.max(storedBetsRevision(oldValue), hasStoredBetsRevision(doc) ? storedBetsRevision(doc) : 0);
   const changed = !sameBets(oldValue && oldValue.customBets, doc.customBets);
   return { ...doc, betsRevision: changed ? previous + 1 : previous };
 }

@@ -2878,11 +2878,17 @@ app.post("/api/self-register", async (req, res) => {
     // stored board revision by comparing against what it is given, so a
     // snapshot that omitted the board would look like "the board changed" and
     // reset a revision every open Admin tab is being judged against.
+    // MS2 (Technical QA, ronda 4): the same for the questions. Without them
+    // here, registering looked like "the questions changed" and renumbered
+    // betsRevision from 0, so an Admin tab that had missed another admin's
+    // question passed as current and deleted it.
     const beforeRegistration = {
       participants: value.participants,
       participantsRevision: readParticipantsRevision(value),
       rounds: value.rounds,
       roundsRevision: storedRoundsRevision(value),
+      customBets: value.customBets,
+      betsRevision: storedBetsRevision(value),
     };
     value.participants = value.participants.concat([newParticipant]);
     if (entry) {

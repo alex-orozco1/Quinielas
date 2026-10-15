@@ -8,7 +8,7 @@
 // Sin QRACKS_TEST_DATABASE_URL, cada test sale como SKIPPED, con el motivo.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { itest, setup, teardown, dbQuery, call, kvPath, quiniela } = require("./helpers/realServer");
+const { itest, setup, teardown, dbQuery, call, kvPath, quiniela, freshIp } = require("./helpers/realServer");
 
 const read = async (q) => (await call("GET", kvPath(q.slug), { headers: { "X-Qracks-Auth": q.owner } })).body.value;
 const write = (q, value) => call("POST", kvPath(q.slug), { headers: { "X-Qracks-Auth": q.owner }, body: { value } });
@@ -39,6 +39,27 @@ test.describe("preguntas: nadie pisa las de otro (servidor real)", () => {
     const ok = await write(q, fresh);
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.deepEqual((await stored(q)).customBets.map((x) => x.id), ["cb_bruno", "cb_ana"]);
+  });
+
+  itest("un participante que se registra entre dos guardados de admin no le devuelve la revisión a la pestaña atrasada: la pregunta del otro admin sigue (Technical QA, ronda 4)", async () => {
+    const q = await quiniela("bets-reg");
+    const base = await read(q);                       // la quiniela ya tiene una pregunta
+    base.customBets = [pregunta("cb_campeon", "¿Quién será campeón?")];
+    assert.equal((await write(q, base)).status, 200);
+    const ana = await read(q);                        // Ana abre Tus reglas
+    const bruno = await read(q);
+    bruno.customBets = [...(bruno.customBets || []), pregunta("cb_bruno", "Pregunta de Bruno")];
+    assert.equal((await write(q, bruno)).status, 200);
+    const revTrasBruno = (await stored(q)).betsRevision;
+    const reg = await call("POST", "/api/self-register", { ip: freshIp(), body: { metaKey: q.metaKey, name: "Carla", pin: "5791", slug: q.slug } });
+    assert.equal(reg.status, 200, JSON.stringify(reg.body));
+    assert.ok((await stored(q)).betsRevision >= revTrasBruno, "registrarse no regresa la revisión");
+    ana.settings.entryFee = 80;                       // Ana guarda la cuota con su copia vieja
+    const ra = await write(q, ana);
+    assert.deepEqual([ra.status, ra.body.error], [409, "bets_conflict"]);
+    const s = await stored(q);
+    assert.ok(s.customBets.some((x) => x.id === "cb_bruno"), "la pregunta de Bruno sigue");
+    assert.ok(s.participants.some((p) => p.name === "Carla"), "y Carla también");
   });
 
   itest("la misma pestaña encadena guardados con la revisión que le devuelve el servidor; un reintento idéntico no es conflicto", async () => {

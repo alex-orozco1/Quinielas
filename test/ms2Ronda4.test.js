@@ -425,3 +425,17 @@ test("TQA P3 · «Cambiar usuario» se lleva los borradores de respuestas de qui
   const handler = body.slice(0, body.indexOf("render();"));
   assert.ok(handler.indexOf("window.sessionStorage.removeItem(answerDraftKey());") < handler.indexOf("currentUser = null;"), "con la clave de quien sale, antes de soltarlo");
 });
+
+test("TQA P3 · si la relectura de un intento sin confirmar también falla, se sigue sin saber: se dice otra vez con «Reintentar» y no se juzga con los datos de la pestaña", () => {
+  const click = fn("async function setupPublishClickNow(btn)");
+  const block = click.slice(click.indexOf("if(flow.unconfirmed && flow.rows){"), click.indexOf("if(problem.field){ renderSetupFlow(); return; }"));
+  assert.ok(block.includes("const answered = await refreshSetupMeta();"));
+  assert.ok(block.indexOf("if(!answered){") < block.indexOf("flow.unconfirmed = false;"), "la marca sólo se apaga si el servidor respondió");
+  assert.ok(block.includes('setupPublishMessage("alert", "No pudimos confirmar si se publicó. Revisa tu conexión y toca «Reintentar». Si ya estaba publicada, no se publica dos veces.", true);'));
+  assert.ok(fn("async function refreshSetupMeta()").includes("return !!fresh;"));
+});
+
+test("TQA · un guardado que choca (preguntas o tablero) dice qué pasó, no «No se pudo completar la acción»", () => {
+  assert.ok(indexSrc.includes('bets_conflict: "Alguien cambió las preguntas de esta quiniela desde otra pestaña o dispositivo. Ya ves lo más reciente: revisa y vuelve a guardar. No se guardó nada.",'));
+  assert.ok(indexSrc.includes('rounds_conflict: "Hubo cambios en esta quiniela desde otra pestaña o dispositivo. Ya ves lo más reciente: revisa y vuelve a guardar. No se guardó nada.",'));
+});

@@ -1747,6 +1747,9 @@
     incomplete_results: "Faltan resultados por capturar antes de poder publicar.",
     round_not_closed: "Todavía no puedes publicar resultados oficiales de esta jornada — el plazo para votar no ha cerrado.",
     round_deadline_passed: "El cierre de esa jornada ya pasó. Elige un cierre nuevo antes de publicarla.",
+    // The tab already reloaded what the server has (setMetaWithError): nothing was saved.
+    rounds_conflict: "Hubo cambios en esta quiniela desde otra pestaña o dispositivo. Ya ves lo más reciente: revisa y vuelve a guardar. No se guardó nada.",
+    bets_conflict: "Alguien cambió las preguntas de esta quiniela desde otra pestaña o dispositivo. Ya ves lo más reciente: revisa y vuelve a guardar. No se guardó nada.",
     unpublished_round_results: "Esta jornada todavía no está publicada para los participantes. Publícala primero en Admin → Jornadas.",
     bet_locked: "Esta pregunta ya cerró.",
     // MS2: a tournament question closes with an existing round that has not closed yet.
@@ -5941,10 +5944,12 @@
   // The quiniela as the server has it right now: the rules may have changed
   // on another device since this tab loaded them. Adopted when it is not
   // older than this tab's copy (adoptSetupMeta); offline, this tab's copy.
+  // true when the server answered.
   async function refreshSetupMeta(){
     let fresh = null;
     try{ fresh = await getMeta({ owner: adminOrOwnerCred() }); }catch(e){ console.error("setup meta refresh failed", e); }
     adoptSetupMeta(fresh, true);
+    return !!fresh;
   }
   // The rounds changed on the server since this summary was painted (another
   // tab or device imported or published one): the round or its number may not
@@ -6030,8 +6035,13 @@
     // the connection was down): otherwise the admin would pick a new deadline
     // for a round that is already published with the old one.
     if(flow.unconfirmed && flow.rows){
-      await refreshSetupMeta();
+      const answered = await refreshSetupMeta();
       if(setupFlow !== flow) return;
+      // Still no answer: still unknown. Said again, with «Reintentar».
+      if(!answered){
+        setupPublishMessage("alert", "No pudimos confirmar si se publicó. Revisa tu conexión y toca «Reintentar». Si ya estaba publicada, no se publica dos veces.", true);
+        return;
+      }
       flow.unconfirmed = false;
       const already = setupAlreadyPublished(flow.rows, roundRowsCheck(flow.rows.matches).clean);
       if(already){
