@@ -11,7 +11,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { itest, setup, teardown, dbQuery, call, kvPath, quiniela } = require("./helpers/realServer");
+const { itest, setup, teardown, dbQuery, call, kvPath, quiniela, Browser, freshIp } = require("./helpers/realServer");
 
 const read = async (q, auth) => (await call("GET", kvPath(q.slug), { headers: { "X-Qracks-Auth": auth || q.owner } })).body.value;
 const write = (q, value) => call("POST", kvPath(q.slug), { headers: { "X-Qracks-Auth": q.owner }, body: { value } });
@@ -311,6 +311,66 @@ test.describe("D4 · una pregunta cerrada no se reabre (servidor real)", () => {
     assert.deepEqual(asBeto.pastTournaments.at(-1).betAnswers[q.beto.id][BET], { guess: "América", correct: true });
     const asAna = (await call("GET", kvPath(q.slug), { ip: q.anaPhone.ip, headers: { "X-Qracks-Auth": q.ana.pin, "X-Qracks-Participant": q.ana.id } })).body.value;
     assert.ok(asAna.pastTournaments, "Ana ve el historial");
+  });
+
+  itest("antigua sin migrar y abierta: borrar o renumerar su jornada no le cambia el cierre en silencio (409); fijarlo es explícito", async () => {
+    const q = await quiniela("d4legab");
+    const v = await stored(q);
+    v.rounds = [jornada("la", 1, enHoras(24)), jornada("la", 2, enHoras(72))];
+    v.customBets = [campeon(1)];
+    await putStored(q, v);
+    const del = await read(q);
+    del.rounds = del.rounds.filter((r) => r.number !== 1);
+    assert.deepEqual([(await write(q, del)).status, (await write(q, del)).body], [409, { error: "bet_close_legacy", betId: BET }]);
+    const ren = await read(q);
+    ren.rounds.find((r) => r.number === 1).number = 20;
+    ren.rounds.find((r) => r.number === 2).number = 1;
+    assert.equal((await write(q, ren)).body.error, "bet_close_legacy", "otra jornada no toma su número");
+    assert.deepEqual((await stored(q)).rounds.map((r) => r.number), [1, 2], "nada se escribió");
+    // Borrarla fijando el cierre que tiene hoy (lo que hace la pantalla): se guarda y lo conserva.
+    const keep = await read(q);
+    const deadline = keep.rounds[0].deadline;
+    keep.rounds = keep.rounds.filter((r) => r.number !== 1);
+    keep.customBets[0].closesAt = deadline;
+    assert.equal((await write(q, keep)).status, 200);
+    const b = (await stored(q)).customBets[0];
+    assert.deepEqual([b.closesAt, b.closesRoundId, b.closeSource], [new Date(deadline).toISOString(), "r_d4la1", "round"]);
+    assert.equal((await answer(q, BET, "Toluca")).status, 200, "sigue abierta hasta su cierre de siempre");
+  });
+
+  itest("el «goleador» de antes: su respuesta sólo la ven su autor y el admin, también archivada (Technical QA, heredado)", async () => {
+    const q = await quiniela("d4gol");
+    const v = await stored(q);
+    v.golScorerBet = { enabled: true, bonusPoints: 3, closesAtRound: null };
+    v.customBetsMigrated = false;
+    const beto = v.participants.find((p) => p.id === q.beto.id);
+    beto.golScorerGuess = "Henry Martín (secreto)";
+    beto.golScorerCorrect = true;
+    await putStored(q, v);
+    // Caro, otra participante (Ana es la creadora: admin, la ve como debe).
+    const caroPhone = Browser(freshIp());
+    const reg = caroPhone.take(await call("POST", "/api/self-register", { ip: caroPhone.ip, body: { metaKey: q.metaKey, name: "Caro", pin: "1357", slug: q.slug } }));
+    assert.equal(reg.status, 200, JSON.stringify(reg.body));
+    const caro = reg.body.participant.id;
+    const asAna = () => call("GET", kvPath(q.slug), { ip: caroPhone.ip, headers: { "X-Qracks-Auth": "1357", "X-Qracks-Participant": caro } });
+    const asBeto = () => call("GET", kvPath(q.slug), { ip: q.betoPhone.ip, headers: { "X-Qracks-Auth": q.beto.pin, "X-Qracks-Participant": q.beto.id } });
+    const anon = () => call("GET", kvPath(q.slug));
+    const betoIn = (r) => r.body.value.participants.find((p) => p.id === q.beto.id);
+    for (const r of [await asAna(), await anon()]) {
+      assert.equal(r.status, 200);
+      assert.equal(betoIn(r).golScorerGuess, undefined, "otros no la ven");
+      assert.equal(betoIn(r).golScorerCorrect, true, "el acierto sí, como `.correct`");
+    }
+    assert.equal(betoIn(await asBeto()).golScorerGuess, "Henry Martín (secreto)");
+    assert.equal((await read(q)).participants.find((p) => p.id === q.beto.id).golScorerGuess, "Henry Martín (secreto)", "el admin la ve");
+    // Al cerrar el torneo pasa al archivo, sale del participante y se enmascara con su forma.
+    assert.equal((await closeTournament(q)).status, 200);
+    const s = await stored(q);
+    assert.equal(s.participants.find((p) => p.id === q.beto.id).golScorerGuess, undefined);
+    assert.deepEqual(s.pastTournaments.at(-1).legacyScorerBet.answers[q.beto.id], { guess: "Henry Martín (secreto)", correct: true });
+    assert.deepEqual((await asAna()).body.value.pastTournaments.at(-1).legacyScorerBet.answers[q.beto.id], { correct: true }, "Caro");
+    assert.deepEqual((await anon()).body.value.pastTournaments.at(-1).legacyScorerBet.answers[q.beto.id], { correct: true });
+    assert.deepEqual((await asBeto()).body.value.pastTournaments.at(-1).legacyScorerBet.answers[q.beto.id], { guess: "Henry Martín (secreto)", correct: true });
   });
 
   itest("la respuesta se juzga con el cierre propio y el reloj de la base, no con la jornada", async () => {

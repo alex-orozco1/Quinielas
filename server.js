@@ -977,6 +977,11 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
       // needs to see it to grade it). `.correct` always stays, though — every
       // participant's standings total depends on knowing whether everyone
       // else's answer was right, not on seeing what they guessed.
+      // MS2 · D4 (Technical QA, heredado de main): la respuesta del «goleador»
+      // de antes (golScorerGuess) es la misma clase de predicción y nunca se
+      // enmascaraba. Sólo la ve su autor o un admin; el acierto
+      // (golScorerCorrect) se queda, como `.correct`.
+      if (!isAdminOrOwner && p.id !== selfParticipantId && "golScorerGuess" in p) delete p.golScorerGuess;
       if (!isAdminOrOwner && p.id !== selfParticipantId && p.customBetAnswers) {
         const masked = {};
         Object.keys(p.customBetAnswers).forEach((betId) => {
@@ -989,25 +994,31 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
   }
   // MS2 · D4: the same rule for the answers archived with a past tournament.
   if (!isAdminOrOwner && Array.isArray(clone.pastTournaments)) {
-    const maskAll = (byPerson) => {
+    const maskAnswer = (ans) => ({ correct: ans && ans.correct === true ? true : (ans && ans.correct === false ? false : null) });
+    // { participantId: { betId: { guess, correct } } }
+    const maskByBet = (byPerson) => {
       if (!byPerson || typeof byPerson !== "object") return byPerson;
       const out = {};
       Object.keys(byPerson).forEach((pid) => {
         const answers = byPerson[pid] || {};
         if (pid === selfParticipantId) { out[pid] = answers; return; }
         const masked = {};
-        Object.keys(answers).forEach((betId) => {
-          const ans = answers[betId] || {};
-          masked[betId] = { correct: ans.correct === true ? true : (ans.correct === false ? false : null) };
-        });
+        Object.keys(answers).forEach((betId) => { masked[betId] = maskAnswer(answers[betId]); });
         out[pid] = masked;
       });
       return out;
     };
+    // { participantId: { guess, correct } } (el «goleador» de antes)
+    const maskFlat = (byPerson) => {
+      if (!byPerson || typeof byPerson !== "object") return byPerson;
+      const out = {};
+      Object.keys(byPerson).forEach((pid) => { out[pid] = pid === selfParticipantId ? byPerson[pid] : maskAnswer(byPerson[pid]); });
+      return out;
+    };
     clone.pastTournaments.forEach((t) => {
       if (!t || typeof t !== "object") return;
-      if (t.betAnswers) t.betAnswers = maskAll(t.betAnswers);
-      if (t.legacyScorerBet && t.legacyScorerBet.answers) t.legacyScorerBet.answers = maskAll(t.legacyScorerBet.answers);
+      if (t.betAnswers) t.betAnswers = maskByBet(t.betAnswers);
+      if (t.legacyScorerBet && t.legacyScorerBet.answers) t.legacyScorerBet.answers = maskFlat(t.legacyScorerBet.answers);
     });
   }
   if (!isAdminOrOwner && Array.isArray(clone.rounds)) {

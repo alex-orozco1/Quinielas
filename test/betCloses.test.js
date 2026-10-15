@@ -144,3 +144,23 @@ test("el «goleador» antiguo que se muda tarde a una quiniela ya migrada recibe
   const noMig = resolveBetCloses({ stored: { ...prev, betCloseMigration: undefined }, merged: { rounds: [R1], customBets: [legacy] }, nowMs: NOW, legacyId: "cb_g" });
   assert.equal(noMig.customBets[0].closesAt, undefined, "sin migración, como antes");
 });
+
+test("antigua sin migrar y abierta (Technical QA): su cierre no cambia en silencio al borrar, renumerar o mover su jornada; sí de forma explícita", () => {
+  const legacy = { id: "cb_l", scope: "temporada", closesAtRound: 1, points: 2, label: "L" };
+  const stored = { rounds: [R1, R2], customBets: [legacy] };
+  for (const rounds of [[R2], [{ ...R1, number: 20 }, R2], [{ ...R1, deadline: at(48) }, R2], [round("r_otra", 1, 30), R2]]) {
+    assert.deepEqual(resolve(stored, { rounds, customBets: [legacy] }), { ok: false, status: 409, error: "bet_close_legacy", betId: "cb_l" }, JSON.stringify(rounds.map((r) => [r.id, r.number])));
+  }
+  // Fijar el cierre que tiene hoy (aunque la jornada se borre en el mismo guardado): pasa a ser suyo.
+  const frozen = resolve(stored, { rounds: [R2], customBets: [{ ...legacy, closesAt: at(24) }] }).customBets[0];
+  assert.deepEqual([frozen.closesAt, frozen.closesRoundId, frozen.closeSource], [at(24), "r_1", "round"]);
+  assert.equal(resolve(stored, { rounds: [R2], customBets: [{ ...legacy, closesAt: at(30) }] }).error, "bet_close_invalid", "sólo la hora que tiene hoy");
+  // Ligarla por id a su jornada movida: toma la hora nueva.
+  const moved = { ...R1, deadline: at(48) };
+  const relinked = resolve(stored, { rounds: [moved, R2], customBets: [{ ...legacy, closesRoundId: "r_1" }] }).customBets[0];
+  assert.deepEqual([relinked.closesAt, relinked.closesRoundId], [at(48), "r_1"]);
+  // Sin cambios en su jornada, se guarda como siempre (otros cambios de la pregunta incluidos).
+  assert.equal(resolve(stored, { rounds: [R1, round("r_3", 3, 90)], customBets: [{ ...legacy, label: "L2" }] }).ok, true);
+  // La que ya perdió su jornada sigue como antes de D4 hasta la migración.
+  assert.equal(resolve({ rounds: [R2], customBets: [{ ...legacy, closesAtRound: 9 }] }, { rounds: [R2, round("r_9", 9, 30)], customBets: [{ ...legacy, closesAtRound: 9 }] }).ok, true);
+});

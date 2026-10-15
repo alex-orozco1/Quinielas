@@ -27,11 +27,15 @@
 //
 // LO ANTIGUO
 // ----------
-// Las preguntas guardadas antes de D4 no tienen `closesAt`. Sin migrar, se
-// comportan como siempre (por número); la migración (betCloseMigration.js) les
-// da su estado con evidencia, y sin evidencia las cierra por protección. Las
-// que nunca tuvieron cierre siguen «Sin cierre» en el torneo activo
-// (`closeSource: "none"`) y se cierran y archivan al terminarlo.
+// Las preguntas guardadas antes de D4 no tienen `closesAt`. Sin migrar, su
+// cierre se sigue leyendo por número, pero ninguna escritura lo cambia sin
+// pedirlo: una cerrada no se reabre (409 bet_close_locked) y una abierta no
+// cambia de cierre porque se borre, renumere o mueva su jornada (409
+// bet_close_legacy); para eso se liga por id o se fija el cierre que tiene hoy.
+// La migración (betCloseMigration.js) les da su estado con evidencia, y sin
+// evidencia las cierra por protección. Las que nunca tuvieron cierre siguen
+// «Sin cierre» en el torneo activo (`closeSource: "none"`) y se cierran y
+// archivan al terminarlo.
 
 const { readTournamentEpoch } = require("./metaParticipants");
 
@@ -251,6 +255,30 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       out.push(bet);
       continue;
     }
+    if (was.kind === "legacy") {
+      // Antigua sin migrar y abierta: su cierre es el de la jornada con su
+      // número. Que cambie sin pedirlo (borrar, renumerar o mover esa jornada,
+      // u otra que tome su número) sería cambiarlo en silencio: 409. Lo
+      // explícito se acepta: ligarla por id (arriba) o fijar el cierre que
+      // tiene hoy, que pasa a ser suyo (`closesAt` = la hora guardada de esa
+      // jornada, ligada a ella por id).
+      const sr = roundByNumber(storedRounds, before.closesAtRound);
+      if (atChanged) {
+        if (!sr || !sameInstant(claimedAt, String(sr.deadline)) || instantMs(String(sr.deadline)) <= now) return fail(400, "bet_close_invalid", bet.id);
+        bet.closesAt = new Date(instantMs(String(sr.deadline))).toISOString();
+        bet.closesRoundId = sr.id;
+        bet.closeSource = "round";
+        delete bet.closeFlag;
+        out.push(bet);
+        continue;
+      }
+      if (sr) {
+        const nr = roundByNumber(rounds, before.closesAtRound);
+        if (!nr || nr.id !== sr.id || !sameInstant(String(nr.deadline), String(sr.deadline))) return fail(409, "bet_close_legacy", bet.id);
+      }
+      out.push(bet);
+      continue;
+    }
     if (atChanged) {
       // Mover el cierre de una pregunta abierta: sólo a la hora actual de SU
       // jornada (la que se acaba de editar o reabrir), nunca a otra hora.
@@ -316,6 +344,8 @@ function archiveBetsForClose(meta, nowIso, nowMs) {
     const answers = {};
     for (const p of list(m.participants)) {
       if (isBet(p) && p.golScorerGuess) answers[p.id] = { guess: p.golScorerGuess, correct: p.golScorerCorrect === true };
+      // La respuesta pasa al archivo; ya no vive en el participante.
+      if (isBet(p)) delete p.golScorerGuess;
     }
     legacyScorer = { definition: JSON.parse(JSON.stringify(gsb)), answers, closedAt: nowIso };
   }

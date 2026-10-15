@@ -52,9 +52,10 @@ const env = (meta, extra = "") => new Function("meta", "serverNowMs", "currentUs
   ${fn("async function blockedByClosedLegacyBets(round, what)")}
   ${fn("function linkedBetsNote(round, what)")}
   ${fn("async function chooseLinkedBetsClose(round, nextIso, intro)")}
+  ${fn("function applyLinkedChoice(choice, round, nextIso)")}
   ${fn("function archivedBetsHtml(t)")}
   ${extra}
-  return { betCloseInfo, customBetsLocked, betCloseLine, betFormCloses, tournamentBetClose, tournamentBetStatus, betsClosingWith, linkedBetsNote, chooseLinkedBetsClose, archivedBetsHtml, fmtWhenTz };
+  return { betCloseInfo, customBetsLocked, betCloseLine, betFormCloses, tournamentBetClose, tournamentBetStatus, betsClosingWith, linkedBetsNote, chooseLinkedBetsClose, applyLinkedChoice, archivedBetsHtml, fmtWhenTz };
 `);
 const make = (meta, user = { id: "p_b", customBetAnswers: {} }) => { const dialogs = []; const e = env(meta)(meta, NOW, user, dialogs); e.dialogs = dialogs; return e; };
 
@@ -106,16 +107,41 @@ test("D4 · mover el cierre de una jornada: las cerradas siguen cerradas y las a
   assert.ok(ask.msg.includes("Esta pregunta del torneo ya cerró y sigue cerrada: «Goleador». No se vuelven a abrir."));
   assert.ok(ask.msg.includes("Esta pregunta del torneo cierra con esta jornada: «Campeón»"));
   assert.deepEqual(ask.opts.options.map((o) => o.value), ["move", "keep"], "las dos, sin una preseleccionada");
+  const nothing = { move: [], relink: [], freeze: [], keepAt: r1.deadline };
   e = make(meta); e.dialogs.choice = "keep";
-  assert.deepEqual(await e.chooseLinkedBetsClose(r1, at(30)), { move: [] });
+  assert.deepEqual(await e.chooseLinkedBetsClose(r1, at(30)), nothing);
   e = make(meta); e.dialogs.choice = "move";
   assert.deepEqual((await e.chooseLinkedBetsClose(r1, at(30))).move.map((b) => b.id), ["cb_x"], "nunca la cerrada");
   // Misma hora, o sin preguntas ligadas: nada que decidir.
-  assert.deepEqual(await make(meta).chooseLinkedBetsClose(r1, r1.deadline), { move: [] });
+  assert.deepEqual(await make(meta).chooseLinkedBetsClose(r1, r1.deadline), nothing);
   // Sólo cerradas: se confirma, sin elección.
   e = make({ rounds: [r1], customBets: [shut] });
-  assert.deepEqual(await e.chooseLinkedBetsClose(r1, at(30)), { move: [] });
+  assert.deepEqual(await e.chooseLinkedBetsClose(r1, at(30)), nothing);
   assert.equal(e.dialogs.at(-1).kind, "confirm");
+});
+
+test("D4 · una antigua sin migrar y abierta entra en la misma elección: moverla la liga por id; dejarla fija el cierre que tiene hoy (Technical QA)", async () => {
+  const r1 = round("r_1", 1, 24);
+  const legacy = { id: "cb_l", label: "Antigua", scope: "temporada", points: 2, closesAtRound: 1 };
+  const meta = { rounds: [r1], customBets: [legacy, own()] };
+  let e = make(meta); e.dialogs.choice = "move";
+  let c = await e.chooseLinkedBetsClose(r1, at(30));
+  assert.ok(e.dialogs.at(-1).msg.includes("«Antigua» (hoy, " + e.fmtWhenTz(at(24)) + ")"));
+  assert.deepEqual([c.move.map((b) => b.id), c.relink.map((b) => b.id), c.freeze], [["cb_x"], ["cb_l"], []]);
+  const m1 = JSON.parse(JSON.stringify(meta));
+  e.applyLinkedChoice({ ...c, move: [m1.customBets[1]], relink: [m1.customBets[0]] }, r1, at(30));
+  assert.deepEqual([m1.customBets[0].closesRoundId, m1.customBets[1].closesAt], ["r_1", at(30)]);
+  e = make(meta); e.dialogs.choice = "keep";
+  c = await e.chooseLinkedBetsClose(r1, at(30));
+  assert.deepEqual([c.move, c.relink, c.freeze.map((b) => b.id)], [[], [], ["cb_l"]]);
+  const m2 = JSON.parse(JSON.stringify(meta));
+  e.applyLinkedChoice({ ...c, freeze: [m2.customBets[0]] }, r1, at(30));
+  assert.equal(m2.customBets[0].closesAt, at(24), "conserva su cierre de hoy, ahora propio");
+  // Borrar su jornada fija ese mismo cierre en el mismo guardado (y lo deshace si falla).
+  const del = fn("async function deleteRoundWithRollback(btn, roundId)");
+  assert.ok(del.includes('.filter(b => betCloseInfo(b).kind === "legacy" && !customBetsLocked(b))'));
+  assert.ok(del.indexOf("b.closesAt = new Date(roundToDelete.deadline).toISOString();") < del.indexOf("const result = await setMetaWithError(meta);"));
+  assert.ok(del.includes("meta.customBets = betsSnapshot;"));
 });
 
 test("D4 · una antigua sin migrar ya cerrada por su jornada: mover, reabrir o borrar esa jornada se explica antes y no se intenta", async () => {
@@ -139,13 +165,13 @@ test("D4 · borrar una jornada: las abiertas conservan su cierre y se dice cuál
 
 test("D4 · editar y reabrir una jornada aplican la elección en el mismo guardado y la deshacen si falla", () => {
   const rondas = indexSrc.slice(indexSrc.indexOf("const linkedChoice = editingRound ? await chooseLinkedBetsClose("), indexSrc.indexOf("// Onboarding B: only a NEW round publishes; editing never does."));
-  assert.ok(rondas.includes("if(!linkedChoice) return;"));
-  assert.ok(rondas.indexOf("linkedChoice.move.forEach(b => { b.closesAt = editingRound.deadline; });") < rondas.indexOf("const result = await setMetaWithError(meta);"));
+  assert.ok(rondas.includes("if(editingRound && !linkedChoice) return;"));
+  assert.ok(rondas.indexOf("applyLinkedChoice(linkedChoice, editingRound, editingRound.deadline);") < rondas.indexOf("const result = await setMetaWithError(meta);"));
   assert.ok(rondas.includes("meta.customBets = betsSnapshot; }"));
   const reopen = fn("async function renderAdminResultados(body)");
   const r = reopen.slice(reopen.indexOf('const reopenBtn = document.getElementById("qz-reopen-round");'));
   assert.ok(r.indexOf("if(newDeadlineIso === null) return;") < r.indexOf("const linkedChoice = await chooseLinkedBetsClose(round, newDeadlineIso"));
-  assert.ok(r.indexOf("linkedChoice.move.forEach(b => { b.closesAt = newDeadlineIso; });") < r.indexOf("const result = await setMetaWithError(meta);"));
+  assert.ok(r.indexOf("applyLinkedChoice(linkedChoice, round, newDeadlineIso);") < r.indexOf("const result = await setMetaWithError(meta);"));
   assert.ok(r.includes("meta.customBets = betsSnapshot;"));
 });
 
@@ -160,8 +186,8 @@ test("D4 · Tus reglas: otra jornada se liga por id; la misma jornada no cambia 
 
 test("D4 · un rechazo por reabrir o por reusar un id: la pestaña trae lo del servidor y lo dice", () => {
   const save = fn("async function setMetaWithError(meta, opts)");
-  assert.ok(save.includes('if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired")) return await adoptAfterStaleBet(meta, result, ERROR_MESSAGES[result.error]);'));
-  for (const k of ["bet_close_locked", "bet_close_invalid", "bet_retired"]) assert.ok(new RegExp(`\\n    ${k}: "`).test(indexSrc), k);
+  assert.ok(save.includes('if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, ERROR_MESSAGES[result.error]);'));
+  for (const k of ["bet_close_locked", "bet_close_invalid", "bet_retired", "bet_close_legacy"]) assert.ok(new RegExp(`\\n    ${k}: "`).test(indexSrc), k);
 });
 
 test("D4 · el diálogo de elección no trae nada marcado y no se confirma sin elegir", () => {
@@ -196,4 +222,12 @@ test("D4 · el historial muestra las preguntas archivadas: cierre, respuestas, a
   assert.ok(html.includes("cerró con su jornada, antes del fin del torneo"));
   assert.ok(html.includes("&lt;b&gt;Vieja&lt;/b&gt;") && !html.includes("<b>Vieja</b>"), "escapado");
   assert.equal(e.archivedBetsHtml({ customBets: [] }), "");
+});
+
+test("D4 · el «goleador» de antes se muda, no se copia: su respuesta sale del participante (Technical QA, heredado)", () => {
+  const ensure = fn("function ensureCustomBets()");
+  const meta = { participants: [{ id: "p1", golScorerGuess: "X", golScorerCorrect: true }, { id: "p2" }], golScorerBet: { enabled: true, bonusPoints: 4, closesAtRound: null } };
+  const run = new Function("meta", `let n = 0; const uid = () => "cb_mudado"; ${ensure}\nreturn ensureCustomBets();`);
+  assert.equal(run(meta), true);
+  assert.deepEqual(meta.participants[0], { id: "p1", golScorerCorrect: true, customBetAnswers: { cb_mudado: { guess: "X", correct: true } } });
 });
