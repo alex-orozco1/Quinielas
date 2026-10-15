@@ -98,6 +98,22 @@ test.describe("D4 · una pregunta cerrada no se reabre (servidor real)", () => {
       assert.deepEqual([(await answer(q, BET, "Cruz Azul")).status], [403]);
     });
 
+    if (!own) itest("antigua sin migrar · A con su cierre guardado de forma explícita (lo que hace la pantalla): se borra la jornada y sigue cerrada", async () => {
+      const q = await make("ak");
+      const v = await read(q);
+      const deadline = v.rounds.find((r) => r.number === 1).deadline;
+      v.rounds = v.rounds.filter((r) => r.number !== 1);
+      v.customBets[0].closesAt = deadline;
+      const w = await write(q, v);
+      assert.equal(w.status, 200, JSON.stringify(w.body));
+      const b = (await stored(q)).customBets[0];
+      assert.deepEqual([b.closesAt, b.closesRoundId], [new Date(deadline).toISOString(), "r_d4ak1"]);
+      assert.equal((await answer(q, BET, "Cruz Azul")).status, 403);
+      const x = await read(q);
+      x.customBets[0].closesAt = enHoras(48);
+      assert.equal((await write(q, x)).body.error, "bet_close_locked", "nunca otra hora");
+    });
+
     itest(`${kind} · B: renumerar su jornada ${own ? "no la toca (va por id)" : "se rechaza"}`, async () => {
       const q = await make(own ? "bn" : "ba");
       const v = await read(q);

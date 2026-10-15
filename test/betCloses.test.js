@@ -72,7 +72,13 @@ test("antigua sin migrar y ya cerrada (por número): ningún cambio del tablero 
   const stored = { rounds: [R1past, R2], customBets: [legacy] };
   for (const rounds of [[R2], [{ ...R1past, number: 20 }, R2], [{ ...R1past, deadline: at(48) }, R2]]) {
     assert.deepEqual(resolve(stored, { rounds, customBets: [legacy] }).error, "bet_close_locked");
+    // Guardando, de forma explícita, el cierre que ya tiene: el tablero cambia y ella sigue cerrada.
+    const kept = resolve(stored, { rounds, customBets: [{ ...legacy, closesAt: R1past.deadline }] });
+    assert.equal(kept.ok, true);
+    assert.deepEqual([kept.customBets[0].closesAt, kept.customBets[0].closesRoundId], [R1past.deadline, "r_1"]);
+    assert.equal(betCloseState(kept.customBets[0], rounds, NOW).closed, true);
   }
+  assert.equal(resolve(stored, { rounds: [R1past, R2], customBets: [{ ...legacy, closesAt: at(48) }] }).error, "bet_close_locked", "nunca otra hora");
   assert.equal(resolve(stored, { rounds: [R1past, R2], customBets: [{ ...legacy, label: "L2" }] }).ok, true);
 });
 

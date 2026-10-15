@@ -3032,7 +3032,8 @@
     const single = !!opts.single;
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
-      overlay.className = "qz-modal-overlay";
+      // MS2 · D4 (UX): a long message scrolls, with its buttons always in view.
+      overlay.className = "qz-modal-overlay qz-modal-scroll";
       const messageHtml = String(message).split("\n\n").map(para =>
         `<p>${para.split("\n").map(esc).join("<br>")}</p>`
       ).join("");
@@ -3077,7 +3078,7 @@
     const options = Array.isArray(opts.options) ? opts.options : [];
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
-      overlay.className = "qz-modal-overlay";
+      overlay.className = "qz-modal-overlay qz-modal-scroll";
       const messageHtml = String(message).split("\n\n").map(para =>
         `<p>${para.split("\n").map(esc).join("<br>")}</p>`
       ).join("");
@@ -7318,7 +7319,7 @@
     return `
       <details class="card qz-bets-card" id="qz-bets-card" ${open ? "open" : ""}>
         <summary><span class="qz-bets-title">🎯 Preguntas del torneo</span> <span class="muted">· ${esc(answered)} de ${esc(bets.length)} respondidas${esc(closedNote)}</span></summary>
-        <p class="muted qz-tight">Lo que escribes no se guarda solo: toca «Guardar respuesta» en cada pregunta. Tus puntos se suman cuando el admin marca quién acertó.</p>
+        <p class="muted qz-tight">${bets.some(b => !customBetsLocked(b)) ? "Lo que escribes no se guarda solo: toca «Guardar respuesta» en cada pregunta. " : ""}Tus puntos se suman cuando el admin marca quién acertó.</p>
         ${bets.map(tournamentBetRowHtml).join("")}
       </details>`;
   }
@@ -7968,14 +7969,15 @@
       if(b.scope !== "temporada"){
         let hits = 0;
         rounds.forEach(r => { const res = r && r.customBetResults && r.customBetResults[b.id]; if(res) Object.keys(res).forEach(pid => { if(res[pid] === true) hits++; }); });
-        return `cada jornada · ${hits} ${hits === 1 ? "acierto" : "aciertos"}`;
+        return `${scopeLabel(b.scope)} · ${hits} ${hits === 1 ? "acierto" : "aciertos"}`;
       }
       const people = Object.keys(answers).filter(pid => answers[pid] && answers[pid][b.id]);
       const hits = people.filter(pid => answers[pid][b.id].correct === true).length;
+      const graded = people.filter(pid => answers[pid][b.id].correct === true || answers[pid][b.id].correct === false).length;
       const closed = b.closeFlag === "closed_by_round" ? "cerró con su jornada, antes del fin del torneo"
         : typeof b.closesAt === "string" && Number.isFinite(Date.parse(b.closesAt)) ? `cerró el ${fmtWhenTz(b.closesAt)}` : "cerrada";
       const mine = me && answers[me] && answers[me][b.id];
-      return `una vez por torneo · ${closed} · ${people.length} ${people.length === 1 ? "respuesta" : "respuestas"} · ${hits} ${hits === 1 ? "acierto" : "aciertos"}`
+      return `${scopeLabel(b.scope)} · ${closed} · ${people.length} ${people.length === 1 ? "respuesta" : "respuestas"} · ${people.length && !graded ? "sin calificar" : `${hits} ${hits === 1 ? "acierto" : "aciertos"}`}`
         + (mine && mine.guess ? ` · tu respuesta: «${mine.guess}»${mine.correct === true ? " ✅" : ""}` : "");
     };
     return `
@@ -9210,7 +9212,7 @@
       const when = fmtWhenTz(new Date(c.at).toISOString());
       const r = c.round;
       if(c.closed){
-        if(bet.closeSource === "migration_cutoff") return `Cerró el ${when}, por protección: ${bet.closeFlag === "ambiguous" ? "no se pudo comprobar a qué jornada de qué torneo pertenecía su cierre" : "su jornada de cierre ya no existía"}`;
+        if(bet.closeSource === "migration_cutoff") return `Cerró el ${when}, por protección: ${bet.closeFlag === "ambiguous" ? "no se pudo confirmar con qué jornada cerraba" : "su jornada de cierre ya no existía"}`;
         if(bet.closeSource === "tournament_end") return `Cerró el ${when}, al terminar el torneo`;
         return r && sameInstantMs(r.deadline, c.at) ? `Cerró con la Jornada ${r.number}: ${when}` : `Cerró el ${when}`;
       }
@@ -9220,6 +9222,7 @@
     }
     const r = c.round;
     if(!r) return `Cierra con la Jornada ${bet.closesAtRound} (esa jornada ya no existe)`;
+    if(c.closed) return `Cerró con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}`;
     return `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}${r.published === false ? " (todavía sin publicar)" : ""}`;
   }
   // What the «Cierra con» select starts on when editing: its own round when the
@@ -9243,7 +9246,7 @@
         <div class="qz-qcard-text">${esc(bet.label)}</div>
         <div class="qz-qcard-meta">+${esc(bet.points)} ${esc(pointsWord(bet.points))} · ${esc(scopeLabel(bet.scope))}</div>
         ${noClose
-          ? `<p class="qz-wz-warn qz-tight"><span class="qz-chip qz-chip-warn">Sin cierre</span> Es de antes de que las preguntas tuvieran cierre: sigue abierta hasta que termines el torneo, y entonces se cierra y se archiva. Si quieres que cierre antes, elige con qué jornada.</p>`
+          ? `<p class="qz-wz-warn qz-tight"><span class="qz-chip qz-chip-warn">Sin cierre</span> Esta pregunta no tiene fecha de cierre: sigue abierta hasta que termines el torneo, y entonces se cierra y se guarda en el historial. Si quieres que cierre antes, elige con qué jornada.</p>`
           : `<div class="qz-qcard-close">${esc(betCloseLine(bet))}</div>`}
         <div class="qz-qcard-chips">
           <span class="qz-chip">${answers ? `${esc(answers)} ${answers === 1 ? "respuesta" : "respuestas"}` : "Sin respuestas todavía"}</span>
@@ -10010,15 +10013,13 @@
     });
   }
   const quotedLabels = (bets) => bets.map(b => "«" + b.label + "»").join(", ");
-  // An old question (not migrated yet) still closes by round number: moving,
-  // reopening or deleting that round would reopen it once it closed, so the
-  // server refuses it (bet_close_locked). Said before trying, not after.
-  async function blockedByClosedLegacyBets(round, what){
-    const legacy = betsClosingWith(round).filter(b => betCloseInfo(b).kind === "legacy" && customBetsLocked(b));
-    if(!legacy.length) return false;
-    await qzAlert(`La Jornada ${round.number} es el cierre de ${legacy.length === 1 ? "una pregunta del torneo que ya cerró" : "preguntas del torneo que ya cerraron"}: ${quotedLabels(legacy)}. ${legacy.length === 1 ? "Es una pregunta antigua que todavía se guía por esta jornada" : "Son preguntas antiguas que todavía se guían por esta jornada"}, así que ${what} ${legacy.length === 1 ? "la" : "las"} reabriría. Para que eso no pase, todavía no se puede.`,
-      { title: "No se puede cambiar esta jornada" });
-    return true;
+  // An old question (not migrated yet) still closes by round number. Before
+  // that round moves or goes, it records the close it has today as its own,
+  // in the same save: an open one only if the admin chooses so (or when the
+  // round is deleted); a closed one always, so it never reopens. The server
+  // accepts only that exact time (betCloses.js).
+  function closedLegacyBets(round){
+    return betsClosingWith(round).filter(b => betCloseInfo(b).kind === "legacy" && customBetsLocked(b));
   }
   function linkedBetsNote(round, what){
     const bets = betsClosingWith(round);
@@ -10045,7 +10046,7 @@
     const none = { move: [], relink: [], freeze: [], keepAt: round.deadline };
     const linked = betsClosingWith(round);
     if(!linked.length || nextMs === new Date(round.deadline).getTime()) return none;
-    if(await blockedByClosedLegacyBets(round, "cambiar su cierre")) return null;
+    none.freeze = closedLegacyBets(round);
     const closed = linked.filter(b => customBetsLocked(b));
     const own = linked.filter(b => !customBetsLocked(b) && (betCloseInfo(b).kind === "own" || betCloseInfo(b).kind === "legacy"));
     const newWhen = fmtWhenTz(new Date(nextMs).toISOString());
@@ -10055,13 +10056,13 @@
       const ok = await qzConfirm(msg, { title: `¿Cambiar el cierre de la Jornada ${round.number}?`, confirmLabel: "Guardar cambios", cancelLabel: "Volver", destructive: false });
       return ok ? none : null;
     }
-    msg += `\n\n${own.length === 1 ? "Esta pregunta del torneo cierra con esta jornada" : "Estas preguntas del torneo cierran con esta jornada"}: ${own.map(b => "«" + b.label + "» (hoy, " + fmtWhenTz(new Date(betCloseInfo(b).at).toISOString()) + ")").join(", ")}.`;
+    msg += `\n\n${own.length === 1 ? "Esta pregunta del torneo cierra con esta jornada" : "Estas preguntas del torneo cierran con esta jornada"}: ${own.map(b => "«" + b.label + "» (cierre actual: " + fmtWhenTz(new Date(betCloseInfo(b).at).toISOString()) + ")").join(", ")}.`;
     const choice = await qzChoose(msg, {
       title: `¿Cambiar el cierre de la Jornada ${round.number}?`,
       legend: own.length === 1 ? "¿Y el cierre de esa pregunta?" : "¿Y el cierre de esas preguntas?",
       options: [
         { value: "move", label: `Moverlo también: ${own.length === 1 ? "cierra" : "cierran"} el ${newWhen}` },
-        { value: "keep", label: `Dejarlo como está: ${own.length === 1 ? "conserva su" : "conservan su"} cierre de hoy` },
+        { value: "keep", label: `Dejarlo como está: ${own.length === 1 ? "conserva su" : "conservan su"} cierre actual` },
       ],
       confirmLabel: "Guardar cambios", cancelLabel: "Volver",
     });
@@ -10069,7 +10070,7 @@
     const isOwn = (b) => betCloseInfo(b).kind === "own";
     return choice === "move"
       ? { ...none, move: own.filter(isOwn), relink: own.filter(b => !isOwn(b)) }
-      : { ...none, freeze: own.filter(b => !isOwn(b)) };
+      : { ...none, freeze: none.freeze.concat(own.filter(b => !isOwn(b))) };
   }
   // Writes that choice onto the questions, next to the round's new close.
   function applyLinkedChoice(choice, round, nextIso){
@@ -10079,7 +10080,6 @@
   }
   async function deleteRoundWithRollback(btn, roundId){
     const roundToDelete = meta.rounds.find(r => r.id === roundId);
-    if(roundToDelete && await blockedByClosedLegacyBets(roundToDelete, "eliminarla")) return;
     const linkedNote = roundToDelete ? linkedBetsNote(roundToDelete, "delete") : "";
     if(!(await qzConfirm(`Se van a borrar los partidos y cualquier resultado capturado en esta jornada. Esta acción no se puede deshacer.${linkedNote}`, { title: "¿Eliminar esta jornada?", confirmLabel: "Eliminar" }))) return;
     const snapshot = meta.rounds.slice();
@@ -10087,7 +10087,7 @@
     // keeps that close, now as its own; without it the server refuses the
     // delete (bet_close_legacy) instead of leaving it without a close.
     const betsSnapshot = JSON.parse(JSON.stringify(meta.customBets || []));
-    if(roundToDelete) betsClosingWith(roundToDelete).filter(b => betCloseInfo(b).kind === "legacy" && !customBetsLocked(b))
+    if(roundToDelete) betsClosingWith(roundToDelete).filter(b => betCloseInfo(b).kind === "legacy")
       .forEach(b => { b.closesAt = new Date(roundToDelete.deadline).toISOString(); });
     // Payment-penalty persistence (P1, QA-corrected): deleting a round must
     // not silently erase a penalty it already caused -- reconcile

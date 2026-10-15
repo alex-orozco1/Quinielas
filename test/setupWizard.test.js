@@ -422,7 +422,7 @@ test("P1-1 · editar una pregunta del torneo que ya cerró no ofrece otro cierre
   const meta = { rounds: [round(12, -2, [-1], true), round(13, 48, [50]), round(14, 120, [122])], customBets: [bet], participants: [] };
   const html = reglasForm(meta)(editForm(bet));
   assert.ok(!html.includes('id="qz-rb-closes"'), "sin selector: el navegador no puede preseleccionar la Jornada 13");
-  assert.ok(html.includes("Cierra con la Jornada 12") && html.includes("Ya cerró."));
+  assert.ok(html.includes("Cerró con la Jornada 12") && html.includes("Ya cerró."));
   // Al guardar, el cierre que se escribe es el que ya tenía.
   const save = indexSrc.slice(indexSrc.indexOf('const saveForm = document.getElementById("qz-rb-save");'));
   assert.ok(save.includes('if(betCloseFixed(editingBet) || (f.closes === "keep" && info)) closes = editingBet.closesAtRound;'));

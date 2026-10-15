@@ -230,6 +230,20 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
     const relinkById = claimedRoundId !== undefined && claimedRoundId !== (has(before, "closesRoundId") ? before.closesRoundId : undefined);
 
     if (was.closed) {
+      // Antigua sin migrar ya cerrada por su jornada: puede guardar, de forma
+      // explícita, el cierre que ya tiene (la hora guardada de esa jornada,
+      // la que el servidor le aplica hoy); así su jornada se puede editar o
+      // borrar sin reabrirla. Nunca otra hora.
+      if (was.kind === "legacy" && atChanged && !scopeChanged && !roundChanged && !relinkById) {
+        const sr = roundByNumber(storedRounds, before.closesAtRound);
+        if (!sr || !sameInstant(claimedAt, String(sr.deadline))) return fail(409, "bet_close_locked", bet.id);
+        bet.closesAt = new Date(instantMs(String(sr.deadline))).toISOString();
+        bet.closesRoundId = sr.id;
+        bet.closeSource = "round";
+        delete bet.closeFlag;
+        out.push(bet);
+        continue;
+      }
       // Cerrada: nada de lo que decide si se puede responder cambia. Y ningún
       // cambio del tablero la deja abierta: eso sólo le puede pasar a una
       // pregunta antigua sin migrar, que todavía se lee por número (borrar,

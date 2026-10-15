@@ -49,10 +49,11 @@ const env = (meta, extra = "") => new Function("meta", "serverNowMs", "currentUs
   ${fn("function tournamentBetStatus(bet)")}
   ${fn("function betsClosingWith(round)")}
   const quotedLabels = (bets) => bets.map(b => "«" + b.label + "»").join(", ");
-  ${fn("async function blockedByClosedLegacyBets(round, what)")}
+  ${fn("function closedLegacyBets(round)")}
   ${fn("function linkedBetsNote(round, what)")}
   ${fn("async function chooseLinkedBetsClose(round, nextIso, intro)")}
   ${fn("function applyLinkedChoice(choice, round, nextIso)")}
+  ${fn("function scopeLabel(scope)")}
   ${fn("function archivedBetsHtml(t)")}
   ${extra}
   return { betCloseInfo, customBetsLocked, betCloseLine, betFormCloses, tournamentBetClose, tournamentBetStatus, betsClosingWith, linkedBetsNote, chooseLinkedBetsClose, applyLinkedChoice, archivedBetsHtml, fmtWhenTz };
@@ -77,9 +78,9 @@ test("D4 · Tus reglas dice cada estado: con su jornada, con hora propia, jornad
   assert.equal(e.betCloseLine(own({ closesRoundId: "r_borrada" })), `Cierra el ${w(24)} (su jornada ya no existe)`);
   assert.equal(e.betCloseLine(own({ closesAt: at(-3) })), `Cerró el ${w(-3)}`);
   assert.equal(e.betCloseLine(own({ closesAt: at(-3), closeSource: "migration_cutoff", closeFlag: "lost_link" })), `Cerró el ${w(-3)}, por protección: su jornada de cierre ya no existía`);
-  assert.equal(e.betCloseLine(own({ closesAt: at(-3), closeSource: "migration_cutoff", closeFlag: "ambiguous" })), `Cerró el ${w(-3)}, por protección: no se pudo comprobar a qué jornada de qué torneo pertenecía su cierre`);
+  assert.equal(e.betCloseLine(own({ closesAt: at(-3), closeSource: "migration_cutoff", closeFlag: "ambiguous" })), `Cerró el ${w(-3)}, por protección: no se pudo confirmar con qué jornada cerraba`);
   assert.equal(e.betCloseLine({ scope: "temporada", closeSource: "none" }), "", "«Sin cierre» va en su aviso");
-  assert.ok(indexSrc.includes("sigue abierta hasta que termines el torneo, y entonces se cierra y se archiva"));
+  assert.ok(indexSrc.includes("sigue abierta hasta que termines el torneo, y entonces se cierra y se guarda en el historial"));
   // El selector empieza en lo que hay: su jornada si cierra exactamente con ella, si no «su cierre actual».
   assert.deepEqual([e.betFormCloses(own()), e.betFormCloses(own({ closesAt: at(20) })), e.betFormCloses(own({ closesRoundId: "r_x" })), e.betFormCloses({ scope: "temporada", closesAtRound: 2 })], ["1", "keep", "keep", "2"]);
 });
@@ -126,7 +127,7 @@ test("D4 · una antigua sin migrar y abierta entra en la misma elección: moverl
   const meta = { rounds: [r1], customBets: [legacy, own()] };
   let e = make(meta); e.dialogs.choice = "move";
   let c = await e.chooseLinkedBetsClose(r1, at(30));
-  assert.ok(e.dialogs.at(-1).msg.includes("«Antigua» (hoy, " + e.fmtWhenTz(at(24)) + ")"));
+  assert.ok(e.dialogs.at(-1).msg.includes("«Antigua» (cierre actual: " + e.fmtWhenTz(at(24)) + ")"));
   assert.deepEqual([c.move.map((b) => b.id), c.relink.map((b) => b.id), c.freeze], [["cb_x"], ["cb_l"], []]);
   const m1 = JSON.parse(JSON.stringify(meta));
   e.applyLinkedChoice({ ...c, move: [m1.customBets[1]], relink: [m1.customBets[0]] }, r1, at(30));
@@ -139,20 +140,24 @@ test("D4 · una antigua sin migrar y abierta entra en la misma elección: moverl
   assert.equal(m2.customBets[0].closesAt, at(24), "conserva su cierre de hoy, ahora propio");
   // Borrar su jornada fija ese mismo cierre en el mismo guardado (y lo deshace si falla).
   const del = fn("async function deleteRoundWithRollback(btn, roundId)");
-  assert.ok(del.includes('.filter(b => betCloseInfo(b).kind === "legacy" && !customBetsLocked(b))'));
+  assert.ok(del.includes('.filter(b => betCloseInfo(b).kind === "legacy")'));
   assert.ok(del.indexOf("b.closesAt = new Date(roundToDelete.deadline).toISOString();") < del.indexOf("const result = await setMetaWithError(meta);"));
   assert.ok(del.includes("meta.customBets = betsSnapshot;"));
 });
 
-test("D4 · una antigua sin migrar ya cerrada por su jornada: mover, reabrir o borrar esa jornada se explica antes y no se intenta", async () => {
+test("D4 · una antigua sin migrar ya cerrada por su jornada: al mover o borrar esa jornada guarda el cierre que ya tenía y sigue cerrada; sin callejón (UX)", async () => {
   const r1 = round("r_1", 1, -1);
   const legacy = { id: "cb_l", label: "Antigua", scope: "temporada", points: 2, closesAtRound: 1 };
   const e = make({ rounds: [r1], customBets: [legacy] });
-  assert.equal(await e.chooseLinkedBetsClose(r1, at(30)), null);
-  assert.equal(e.dialogs.at(-1).kind, "alert");
-  assert.ok(e.dialogs.at(-1).msg.includes("así que cambiar su cierre la reabriría"));
-  const del = fn("async function deleteRoundWithRollback(btn, roundId)");
-  assert.ok(del.indexOf('await blockedByClosedLegacyBets(roundToDelete, "eliminarla")') < del.indexOf("await qzConfirm("));
+  const c = await e.chooseLinkedBetsClose(r1, at(30));
+  assert.deepEqual([c.freeze.map((b) => b.id), c.keepAt], [["cb_l"], r1.deadline]);
+  assert.equal(e.dialogs.at(-1).kind, "confirm");
+  assert.ok(e.dialogs.at(-1).msg.includes("Esta pregunta del torneo ya cerró y sigue cerrada: «Antigua». No se vuelven a abrir."));
+  const m = JSON.parse(JSON.stringify({ customBets: [legacy] }));
+  e.applyLinkedChoice({ ...c, freeze: [m.customBets[0]] }, r1, at(30));
+  assert.equal(m.customBets[0].closesAt, r1.deadline);
+  assert.equal(e.betCloseLine(legacy), `Cerró con la Jornada 1: ${e.fmtWhenTz(at(-1))}`, "en pasado");
+  assert.ok(!indexSrc.includes("blockedByClosedLegacyBets"), "ya no hay aviso sin salida");
 });
 
 test("D4 · borrar una jornada: las abiertas conservan su cierre y se dice cuál", () => {
@@ -217,8 +222,11 @@ test("D4 · el historial muestra las preguntas archivadas: cierre, respuestas, a
     rounds: [{ customBetResults: { cb_j: { p_b: true, p_c: true } } }],
   });
   assert.ok(html.includes("Preguntas extra (3)"));
-  assert.ok(html.includes(`una vez por torneo · cerró el ${e.fmtWhenTz(at(-5))} · 2 respuestas · 1 acierto · tu respuesta: «León» ✅`));
-  assert.ok(html.includes("cada jornada · 2 aciertos"));
+  assert.ok(html.includes(`Una vez por torneo · cerró el ${e.fmtWhenTz(at(-5))} · 2 respuestas · 1 acierto · tu respuesta: «León» ✅`));
+  assert.ok(html.includes("Cada jornada · 2 aciertos"));
+  // Sin calificar no es «0 aciertos» (UX).
+  const ungraded = e.archivedBetsHtml({ customBets: [own({ closesAt: at(-5) })], betAnswers: { p_b: { cb_x: { guess: "León", correct: null } } }, rounds: [] });
+  assert.ok(ungraded.includes("1 respuesta · sin calificar · tu respuesta: «León»") && !ungraded.includes("0 aciertos"));
   assert.ok(html.includes("cerró con su jornada, antes del fin del torneo"));
   assert.ok(html.includes("&lt;b&gt;Vieja&lt;/b&gt;") && !html.includes("<b>Vieja</b>"), "escapado");
   assert.equal(e.archivedBetsHtml({ customBets: [] }), "");
