@@ -454,3 +454,30 @@ test("Product QA · P3: Cancelar «Apagar» deja el interruptor como está guard
   assert.ok(tabla.indexOf("if(!main.isConnected) return;") > tabla.indexOf("await ensureAllPicksLoaded();"));
   assert.ok(tabla.indexOf("if(!main.isConnected) return;") < tabla.indexOf('document.getElementById("qz-export")'));
 });
+
+// ---- R5b (revisión de 7143b4d) ----------------------------------------------
+
+test("R5b · la hoja de invitación, los diálogos y el aviso cuelgan de <body>: el ajuste de texto largo no depende de #quiniela-root", () => {
+  const css = indexSrc.slice(0, indexSrc.indexOf("</style>"));
+  // Los tres contenedores se montan en <body>, fuera de #quiniela-root.
+  const sheet = fn("function openInviteSheet(opts)");
+  assert.ok(sheet.includes('overlay.id = "qz-invite-sheet";') && sheet.includes("document.body.appendChild(overlay);"));
+  assert.ok(sheet.includes('<div class="qz-sheet-note" role="status">'));
+  assert.ok(fn("function qzConfirm(message, opts)").includes("document.body.appendChild(overlay);"));
+  assert.ok(fn("function notice(msg)").includes("document.body.appendChild(n);"));
+  // Por eso la regla va sin #quiniela-root delante.
+  assert.ok(css.includes("\n  .qz-modal-card, .qz-sheet, .qz-notice{ overflow-wrap:anywhere; min-width:0; }"));
+  assert.ok(css.includes("\n  .qz-sheet .qz-sheet-note, .qz-sheet .qz-sheet-note ul, .qz-modal-message{ max-width:100%; min-width:0; }"));
+  // El aviso toma el ancho de su texto hasta el borde, como el toast; no se queda en media pantalla.
+  const noticeRule = css.slice(css.indexOf("  .qz-notice{"), css.indexOf("}", css.indexOf("  .qz-notice{")));
+  assert.ok(noticeRule.includes("width:max-content; max-width:min(520px, calc(100vw - 28px));"));
+  // El texto no se esconde: ni la hoja, ni su nota, ni los diálogos recortan.
+  for (const sel of [".qz-sheet{", ".qz-sheet-note{", ".qz-sheet .qz-sheet-note ul{", ".qz-modal-card{", ".qz-modal-message{", ".qz-notice{"]) {
+    let at = css.indexOf(sel);
+    while (at !== -1) {
+      const body = css.slice(at, css.indexOf("}", at));
+      assert.ok(!/overflow(-x)?:\s*hidden|text-overflow:\s*ellipsis|white-space:\s*nowrap/.test(body), `${sel} no oculta texto`);
+      at = css.indexOf(sel, at + 1);
+    }
+  }
+});
