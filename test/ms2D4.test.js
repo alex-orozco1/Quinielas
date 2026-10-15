@@ -239,3 +239,27 @@ test("D4 · el «goleador» de antes se muda, no se copia: su respuesta sale del
   assert.equal(run(meta), true);
   assert.deepEqual(meta.participants[0], { id: "p1", golScorerCorrect: true, customBetAnswers: { cb_mudado: { guess: "X", correct: true } } });
 });
+
+test("D4 · tras guardar, la pestaña toma las preguntas como quedaron en el servidor (Product QA): el siguiente guardado no manda un cierre viejo", () => {
+  const save = fn("async function setMetaWithError(meta, opts)");
+  assert.ok(save.includes("if(Array.isArray(result.customBets)) adoptStoredBets(meta, result.customBets);"));
+  const adopt = new Function(`${fn("function adoptStoredBets(target, stored)")}\nreturn adoptStoredBets;`)();
+  const editing = { id: "cb_g", label: "Goleador", scope: "temporada", points: 3, closesAtRound: 3, closesRoundId: "r_3", closesAt: "2026-10-16T00:00:00.000Z", closeSource: "round" };
+  const meta = { customBets: [editing, { id: "cb_none", scope: "temporada", closeSource: "none", closesAtRound: 1 }] };
+  const arr = meta.customBets;
+  adopt(meta, [{ ...editing, closesAt: "2026-10-20T00:00:00.000Z" }, { id: "cb_none", scope: "temporada", closesAtRound: 1, closesAt: "2026-10-18T00:00:00.000Z", closesRoundId: "r_1", closeSource: "round" }, { id: "cb_nueva", scope: "jornada", epoch: 0 }]);
+  assert.equal(meta.customBets, arr, "el mismo arreglo");
+  assert.equal(meta.customBets[0], editing, "el mismo objeto");
+  assert.equal(editing.closesAt, "2026-10-20T00:00:00.000Z", "con el cierre del servidor");
+  assert.equal(meta.customBets[1].closeSource, "round", "«Sin cierre» ligada ya no se pinta como «Sin cierre»");
+  assert.equal(meta.customBets.length, 3);
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert.ok(server.includes("customBets: Array.isArray(mergedValue.customBets) ? mergedValue.customBets : undefined,"));
+});
+
+test("D4 · una cerrada por protección no le dice al participante la hora del corte como si fuera su cierre (Product QA)", () => {
+  const e = make({ rounds: [], customBets: [] }, { id: "p_b", customBetAnswers: { cb_x: { guess: "León" } } });
+  const cut = own({ closesAt: at(-1), closeSource: "migration_cutoff", closeFlag: "lost_link", closesRoundId: null });
+  assert.equal(e.tournamentBetStatus(cut), "Ya está cerrada. Tu respuesta: «León».");
+  assert.equal(e.tournamentBetStatus({ ...cut, id: "cb_otra" }), "Ya está cerrada y no respondiste. Aun así puedes jugar las jornadas abiertas.");
+});

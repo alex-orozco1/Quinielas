@@ -202,6 +202,7 @@ const PERMITIDAS = [
   { expr: "r.number", en: "text: `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}.`", por: "texto de tournamentBetClose, que se pinta con esc()" },
   { expr: "fmtWhenTz(r.deadline)", en: "text: `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}.`", por: "texto de tournamentBetClose, que se pinta con esc()" },
   { expr: "guess", en: "? `Cerró el ${when}. Tu respuesta: «${guess}».`", por: "texto de tournamentBetStatus, que se pinta con esc()" },
+  { expr: "guess", en: "return guess ? `Ya está cerrada. Tu respuesta: «${guess}».`", por: "texto de tournamentBetStatus, que se pinta con esc()" },
   { expr: "guess", en: "if(guess) return when ? `✅ Guardada: «${guess}».", por: "texto de tournamentBetStatus, que se pinta con esc()" },
   { expr: "savedBetGuess(betId)", en: "` Tu respuesta anterior («${savedBetGuess(betId)}») se conserva.`", por: "aviso que se pinta con textContent" },
   // MS2 · «Siguiente paso», «Tus reglas» y los avisos D3/D4: textos planos que

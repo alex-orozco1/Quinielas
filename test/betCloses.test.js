@@ -143,10 +143,14 @@ test("cerrar el torneo: las abiertas se cierran a esa hora; todas se archivan co
 });
 
 test("el «goleador» antiguo que se muda tarde a una quiniela ya migrada recibe la regla de la migración", () => {
-  const legacy = { id: "cb_g", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound: 9 };
-  const prev = { rounds: [R1], customBets: [], golScorerBet: { enabled: true }, betCloseMigration: { version: 1 } };
-  const r = resolveBetCloses({ stored: prev, merged: { rounds: [R1], customBets: [legacy], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
+  const legacy = { id: "cb_g", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound: 2 };
+  const R3 = round("r_3", 3, 90);
+  const prev = { rounds: [R1, R3], customBets: [], golScorerBet: { enabled: true }, betCloseMigration: { version: 1 } };
+  const r = resolveBetCloses({ stored: prev, merged: { rounds: [R1, R3], customBets: [legacy], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
   assert.deepEqual([r.customBets[0].closeSource, r.customBets[0].closeFlag, r.customBets[0].closesAt], ["migration_cutoff", "lost_link", new Date(NOW).toISOString()]);
+  // Ligado a una jornada que todavía no se crea: como en la migración, sin tocar.
+  const fut = resolveBetCloses({ stored: prev, merged: { rounds: [R1, R3], customBets: [{ ...legacy, closesAtRound: 9 }], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
+  assert.equal(fut.customBets[0].closesAt, undefined);
   const noMig = resolveBetCloses({ stored: { ...prev, betCloseMigration: undefined }, merged: { rounds: [R1], customBets: [legacy] }, nowMs: NOW, legacyId: "cb_g" });
   assert.equal(noMig.customBets[0].closesAt, undefined, "sin migración, como antes");
 });

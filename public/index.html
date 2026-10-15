@@ -2038,6 +2038,19 @@
     const result = await setMetaWithError(meta, opts);
     return result.ok;
   }
+  // MS2 · D4: takes the questions the server stored, keeping each question's
+  // object (screens hold them in handlers) and the array itself.
+  function adoptStoredBets(target, stored){
+    if(!Array.isArray(target.customBets)) target.customBets = [];
+    const current = new Map(target.customBets.filter(b => b && typeof b === "object").map(b => [b.id, b]));
+    const next = stored.map(sb => {
+      const cur = sb && typeof sb === "object" ? current.get(sb.id) : null;
+      if(!cur) return sb;
+      Object.keys(cur).forEach(k => { if(!(k in sb)) delete cur[k]; });
+      return Object.assign(cur, sb);
+    });
+    target.customBets.splice(0, target.customBets.length, ...next);
+  }
   // Brings `target` (the live meta every screen holds) up to `fresh` IN PLACE,
   // participants included: an existing participant keeps its object and has
   // its fields replaced. Rows already on screen hold those objects in their
@@ -2127,6 +2140,9 @@
         // crear — es decir, entraría en conflicto consigo misma.
         if(Number.isFinite(result.roundsRevision)) meta.roundsRevision = result.roundsRevision;
         if(Number.isFinite(result.betsRevision)) meta.betsRevision = result.betsRevision;
+        // MS2 · D4 (Product QA): the questions as the server stored them —
+        // their close is the server's, so the next save carries it, not ours.
+        if(Array.isArray(result.customBets)) adoptStoredBets(meta, result.customBets);
         adoptParticipantRevs(result.participantRevs);
         // Any successful meta write can move the plan numbers (a participant
         // added or removed, a round published), so the cached plan is dropped
@@ -7259,6 +7275,11 @@
     const close = tournamentBetClose(bet);
     const when = close.at != null ? fmtWhenTz(new Date(close.at).toISOString()) : "";
     if(locked){
+      // Closed for protection by the migration: that time is the cutoff, not
+      // when the question was meant to close, so it is not said as such.
+      if(bet.closeSource === "migration_cutoff"){
+        return guess ? `Ya está cerrada. Tu respuesta: «${guess}».` : "Ya está cerrada y no respondiste. Aun así puedes jugar las jornadas abiertas.";
+      }
       return guess
         ? `Cerró el ${when}. Tu respuesta: «${guess}».`
         : `Cerró el ${when} y no respondiste. Aun así puedes jugar las jornadas abiertas.`;

@@ -2363,6 +2363,11 @@ app.post("/api/kv/:key", async (req, res) => {
           // MS2: the same for the questions, so this tab's next save is judged
           // against what it just stored.
           betsRevision: storedBetsRevision(mergedValue),
+          // MS2 · D4: the questions as stored, with the close fields only the
+          // server writes (closesAt, closesRoundId, closeSource…), so the tab
+          // keeps them instead of echoing stale ones on its next save. Only
+          // admins write meta; the questions hold no hidden answers.
+          customBets: Array.isArray(mergedValue.customBets) ? mergedValue.customBets : undefined,
           // True when this write said nothing about the board at all (no
           // `rounds` array, or `rounds: null`). The stored board was kept.
           // Said out loud rather than absorbed, so a client that meant to send
