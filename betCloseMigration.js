@@ -16,6 +16,11 @@
 //     renumeró o se archivó). Se cierra por protección: closesAt = el corte de
 //     la migración (la hora en que se aplica en esa quiniela), nunca una fecha
 //     histórica; closeSource "migration_cutoff", closeFlag "lost_link".
+//   - pending_round: en una quiniela de un solo ciclo, su número es mayor que
+//     el de cualquier jornada actual: la ligaron a una jornada que todavía no
+//     se crea (o se borró la última; no se distingue). Hoy sigue abierta y
+//     cerrará con esa jornada cuando exista. Se reporta y no se toca: cerrarla
+//     por protección le quitaría a la gente una pregunta legítimamente abierta.
 //   - ambiguous: hay una jornada con ese número pero no hay evidencia de que
 //     sea la suya (la quiniela ya cerró algún torneo, o el número se repite).
 //     Por defecto, el mismo cierre de protección (closeFlag "ambiguous"); se
@@ -70,6 +75,8 @@ function classifyLegacyBet(bet, meta) {
   const singleCycle = epoch === 0 && archives === 0;
   if (!matches.length) {
     const inArchive = list(m.pastTournaments).some((t) => list(obj(t).rounds).some((r) => r && r.number === b.closesAtRound));
+    const maxNumber = Math.max(0, ...list(m.rounds).filter((r) => r && Number.isInteger(r.number)).map((r) => r.number));
+    if (singleCycle && b.closesAtRound > maxNumber) return { category: "pending_round", evidence: { epoch, archives, maxRoundNumber: maxNumber } };
     return { category: "lost_link", evidence: { epoch, archives, numberInArchive: inArchive } };
   }
   const round = matches[0];
@@ -108,6 +115,8 @@ function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {} } = {}) 
     if (c.category === "no_close") {
       out.closeSource = "none";
       item.action = "sin_cierre";
+    } else if (c.category === "pending_round") {
+      item.action = "sin_cambio_pendiente";
     } else if (c.category === "linked" || (c.category === "ambiguous" && overrides[bet.id] === "link")) {
       const ms = instantMs(String(c.round.deadline));
       out.closesAt = new Date(ms).toISOString();

@@ -215,7 +215,7 @@ const PERMITIDAS = [
   { expr: "r.number", en: "personas no han completado la Jornada ${r.number}. Cierra el", por: "texto de nextStepInfo, que se pinta con esc()" },
   { expr: "fmtWhenTz(r.deadline)", en: "personas no han completado la Jornada ${r.number}. Cierra el ${fmtWhenTz(r.deadline)}.`", por: "texto de nextStepInfo, que se pinta con esc()" },
   { expr: "prepared.number", en: "label: prepared ? `Publicar jornada ${prepared.number}`", por: "etiqueta que nextStepCardHtml pinta con esc()" },
-  { expr: "bet.closesAtRound", en: "return `Cierra con la Jornada ${bet.closesAtRound} (esa jornada ya no existe)`", por: "texto de betCloseLine, que se pinta con esc()" },
+  { expr: "bet.closesAtRound", en: "return `Cierra con la Jornada ${bet.closesAtRound} (por ahora no hay una Jornada ${bet.closesAtRound})`", por: "texto de betCloseLine, que se pinta con esc()" },
   { expr: "r.number", en: "return `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}${r.published === false", por: "texto de betCloseLine, que se pinta con esc()" },
   { expr: "fmtWhenTz(r.deadline)", en: "return `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}${r.published === false", por: "texto de betCloseLine, que se pinta con esc()" },
   { expr: "editingBet.points", en: "la tabla se recalcula (${editingBet.points} → ${newPoints} puntos cada uno)", por: "mensaje de qzConfirm" },

@@ -32,9 +32,10 @@ const entryOf = (result, q) => result.quinielas.find((x) => x.slug === q.slug);
 async function unCiclo(tag) {
   const q = await quiniela(tag);
   const v = await stored(q);
-  v.rounds = [jornada("r_" + tag + "1", 1, enHoras(-2)), jornada("r_" + tag + "2", 2, enHoras(48))];
-  v.customBets = [t("cb_" + tag + "cerr", 1), t("cb_" + tag + "abie", 2), t("cb_" + tag + "perd", 9), t("cb_" + tag + "sinc", null),
-    { id: "cb_" + tag + "jorn", label: "¿Penal?", scope: "jornada", points: 1 }];
+  // J3 se borró (su número quedó libre); J9 todavía no se crea.
+  v.rounds = [jornada("r_" + tag + "1", 1, enHoras(-2)), jornada("r_" + tag + "2", 2, enHoras(48)), jornada("r_" + tag + "4", 4, enHoras(96))];
+  v.customBets = [t("cb_" + tag + "cerr", 1), t("cb_" + tag + "abie", 2), t("cb_" + tag + "perd", 3), t("cb_" + tag + "sinc", null),
+    { id: "cb_" + tag + "jorn", label: "¿Penal?", scope: "jornada", points: 1 }, t("cb_" + tag + "pend", 9)];
   const beto = v.participants.find((p) => p.id === q.beto.id);
   beto.customBetAnswers = { ["cb_" + tag + "cerr"]: { guess: "América", correct: true }, ["cb_" + tag + "perd"]: { guess: "Toluca", correct: null } };
   await putStored(q, v);
@@ -70,7 +71,7 @@ test.describe("D4 · migración de cierres (PostgreSQL + servidor real)", () => 
     const a = entryOf(report, A), b = entryOf(report, B);
     assert.deepEqual(a.questions.map((i) => [i.betId, i.category, i.action]), [
       ["cb_mgacerr", "linked_closed", "ligada"], ["cb_mgaabie", "linked_open", "ligada"], ["cb_mgaperd", "lost_link", "cerrada_por_proteccion"],
-      ["cb_mgasinc", "no_close", "sin_cierre"], ["cb_mgajorn", "round_question", "sin_cambio"]]);
+      ["cb_mgasinc", "no_close", "sin_cierre"], ["cb_mgajorn", "round_question", "sin_cambio"], ["cb_mgapend", "pending_round", "sin_cambio_pendiente"]]);
     assert.deepEqual(b.questions.map((i) => [i.betId, i.category, !!i.pointsUnattributed]), [["cb_mgbamb", "ambiguous", true], ["cb_mgbarch", "lost_link", false]]);
     assert.equal(JSON.stringify(report).includes("Pregunta cb_"), false, "sin textos de preguntas");
     assert.equal(JSON.stringify(report).includes("América"), false, "sin respuestas");
@@ -94,6 +95,7 @@ test.describe("D4 · migración de cierres (PostgreSQL + servidor real)", () => 
     assert.deepEqual([by.cb_mgaabie.closesRoundId, by.cb_mgaabie.closeSource], ["r_mga2", "migration_round"]);
     assert.deepEqual([by.cb_mgaperd.closesAt, by.cb_mgaperd.closeFlag], [cut, "lost_link"]);
     assert.deepEqual([by.cb_mgasinc.closesAt, by.cb_mgasinc.closeSource], [undefined, "none"]);
+    assert.deepEqual([by.cb_mgapend.closesAt, by.cb_mgapend.closeSource, by.cb_mgapend.closesAtRound], [undefined, undefined, 9], "pendiente de su jornada: sin tocar");
     const bb = Object.fromEntries(b.customBets.map((x) => [x.id, x]));
     assert.deepEqual([bb.cb_mgbamb.closeFlag, bb.cb_mgbamb.closesRoundId], ["ambiguous", undefined], "la J1 actual no es la archivada: no se liga");
     assert.deepEqual([JSON.stringify(a.participants), JSON.stringify(b.participants)], answersBefore, "ni una respuesta ni un acierto cambia");

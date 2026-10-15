@@ -439,7 +439,7 @@ test("P1-1 · una pregunta abierta conserva su jornada elegida; una ligada a una
   assert.match(a, /<option value="14" selected>Jornada 14/);
   assert.doesNotMatch(a, /<option value="13" selected>/);
   const b = form(editForm(gone));
-  assert.match(b, /<option value="9" selected>Jornada 9 · ya no existe<\/option>/, "guardar sin tocarla no cambia nada");
+  assert.match(b, /<option value="9" selected>Jornada 9 · por ahora no existe<\/option>/, "guardar sin tocarla no cambia nada");
   assert.doesNotMatch(b, /<option value="13" selected>/);
   // Sin cierre (pregunta antigua): se pide elegir, no se elige solo.
   const legacy = { id: "cb_l", label: "Antigua", scope: "temporada", points: 1, closesAtRound: null };

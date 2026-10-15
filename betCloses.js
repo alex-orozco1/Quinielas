@@ -189,6 +189,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
         if (obj(prev.betCloseMigration).version >= 1) {
           const { classifyLegacyBet } = require("./betCloseMigration");
           const c = classifyLegacyBet(bet, { ...prev, rounds });
+          // pending_round: se queda por número, como en la migración.
           if (c.category === "no_close") bet.closeSource = "none";
           else if (c.category === "linked") {
             bet.closesAt = new Date(instantMs(String(c.round.deadline))).toISOString();

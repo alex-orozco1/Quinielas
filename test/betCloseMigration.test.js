@@ -43,6 +43,19 @@ test("sin evidencia no se recupera nada: el número de una jornada actual o arch
   assert.deepEqual([linked.closesRoundId, linked.closesAt, linked.closeSource], ["r_new1", at(48), "migration_round"]);
 });
 
+test("ligada a una jornada que todavía no se crea (un solo ciclo, número mayor que todas): se reporta y sigue abierta, no se cierra por protección", () => {
+  const meta = { rounds: [round("r_1", 1, -5), round("r_2", 2, 20)], customBets: [t("fut", 7)] };
+  const plan = planBetCloseMigration({ ...meta, customBets: [t("fut", 7)] }, { nowMs: NOW, cutoffIso: CUT });
+  assert.deepEqual(plan.next.customBets[0], t("fut", 7), "sin tocar");
+  assert.deepEqual([plan.items[0].category, plan.items[0].action, plan.items[0].evidence.maxRoundNumber], ["pending_round", "sin_cambio_pendiente", 2]);
+  // Con un torneo ya cerrado, el mismo número puede ser de aquel torneo: no basta.
+  const withArchive = { ...meta, tournamentEpoch: 1, pastTournaments: [{ rounds: [round("r_o7", 7, -900)] }], customBets: [t("fut", 7)] };
+  assert.equal(planBetCloseMigration(withArchive, { nowMs: NOW, cutoffIso: CUT }).items[0].category, "lost_link");
+  // Un número menor que el de alguna jornada actual sí es un vínculo perdido.
+  const lower = { rounds: [round("r_1", 1, -5), round("r_3", 3, 20)], customBets: [t("x", 2)] };
+  assert.equal(planBetCloseMigration(lower, { nowMs: NOW, cutoffIso: CUT }).items[0].category, "lost_link");
+});
+
 test("un número repetido también es ambiguo, aunque nunca se haya cerrado un torneo", () => {
   const meta = { rounds: [round("r_a", 4, 10), round("r_b", 4, 20)], customBets: [t("x", 4)] };
   assert.equal(classifyLegacyBet(meta.customBets[0], meta).category, "ambiguous");

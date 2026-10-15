@@ -9221,7 +9221,7 @@
       return `Cierra con la Jornada ${r.number}: ${when}${r.published === false ? " (todavía sin publicar)" : ""}`;
     }
     const r = c.round;
-    if(!r) return `Cierra con la Jornada ${bet.closesAtRound} (esa jornada ya no existe)`;
+    if(!r) return `Cierra con la Jornada ${bet.closesAtRound} (por ahora no hay una Jornada ${bet.closesAtRound})`;
     if(c.closed) return `Cerró con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}`;
     return `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}${r.published === false ? " (todavía sin publicar)" : ""}`;
   }
@@ -9276,7 +9276,7 @@
     const keepClose = info && info.kind === "own" && !info.closed && !(info.round && sameInstantMs(info.round.deadline, info.at));
     const goneClose = info && info.kind === "legacy" && !info.round ? bet.closesAtRound : null;
     const roundOptions = (keepClose ? `<option value="keep" ${f.closes === "keep" ? "selected" : ""}>Su cierre actual: ${esc(fmtWhenTz(new Date(info.at).toISOString()))}${info.round ? "" : " · su jornada ya no existe"}</option>` : ``)
-      + (goneClose != null ? `<option value="${esc(goneClose)}" ${Number(f.closes) === goneClose ? "selected" : ""}>Jornada ${esc(goneClose)} · ya no existe</option>` : ``)
+      + (goneClose != null ? `<option value="${esc(goneClose)}" ${Number(f.closes) === goneClose ? "selected" : ""}>Jornada ${esc(goneClose)} · por ahora no existe</option>` : ``)
       + rounds.map(r => `<option value="${esc(r.number)}" ${Number(f.closes) === r.number ? "selected" : ""}>Jornada ${esc(r.number)} · ${esc(fmtWhenTz(r.deadline))}${r.published === false ? " · sin publicar" : ""}</option>`).join("");
     return `
       <div class="qz-qform" id="qz-rb-form">
