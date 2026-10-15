@@ -524,6 +524,10 @@
     padding:12px 14px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; background:var(--paper);
   }
   #quiniela-root .history-item:hover{ border-color:var(--pitch-light); }
+  /* R5 (Product QA): at 320 px «Publicar jornada · Editar · Eliminar» did not
+     fit next to the round; the row and its buttons wrap instead of overflowing. */
+  #quiniela-root .history-item{ flex-wrap:wrap; gap:8px; }
+  #quiniela-root .history-item > div:last-child{ flex-wrap:wrap; }
 
   #quiniela-root .section-title{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
   #quiniela-root .section-title .display{ font-size:24px; }

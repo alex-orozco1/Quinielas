@@ -439,3 +439,9 @@ test("TQA · un guardado que choca (preguntas o tablero) dice qué pasó, no «N
   assert.ok(indexSrc.includes('bets_conflict: "Alguien cambió las preguntas de esta quiniela desde otra pestaña o dispositivo. Ya ves lo más reciente: revisa y vuelve a guardar. No se guardó nada.",'));
   assert.ok(indexSrc.includes('rounds_conflict: "Hubo cambios en esta quiniela desde otra pestaña o dispositivo. Ya ves lo más reciente: revisa y vuelve a guardar. No se guardó nada.",'));
 });
+
+test("R5 · Admin → Jornadas: la fila de cada jornada y sus botones bajan de línea a 320 px en vez de desbordar (Product QA)", () => {
+  const css = indexSrc.slice(0, indexSrc.indexOf("</style>"));
+  assert.ok(css.includes("#quiniela-root .history-item{ flex-wrap:wrap; gap:8px; }"));
+  assert.ok(css.includes("#quiniela-root .history-item > div:last-child{ flex-wrap:wrap; }"));
+});
