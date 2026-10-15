@@ -309,7 +309,7 @@ test("R2 · «Reintentar» tras perder la respuesta y la relectura: si la jornad
   assert.ok(refresh !== -1 && done > refresh && elsewhere > done, "después de leer el servidor y antes de «cambió en otra pestaña»");
   const block = click.slice(done, elsewhere);
   assert.ok(block.includes("clearRoundDraft(flow.rows.kind);"));
-  assert.ok(block.includes("finishSetupPublish(done, setupRulesDiff(setupTargetRules(done.number)));"));
+  assert.ok(block.includes("finishSetupPublish(done, setupRulesDiff(setupTargetRules(done.number)), wanted);"));
   assert.ok(!/setMetaWithError|setupPublish\(/.test(block), "nada se escribe");
 });
 
@@ -349,4 +349,79 @@ test("P3 · bloque 1: «Prefiero armar los partidos a mano» y «Mejor usar el c
   const liga = fn("function renderSetupLiga(main)");
   assert.ok(liga.includes('renderSetupFlow(); focusFirst("qz-wz-use-cal", "qz-wz-pick-league", "qz-wz-title"); });'));
   assert.ok(liga.includes('renderSetupFlow(); focusFirst("qz-wz-manual", "qz-wz-title"); });'));
+});
+
+// ---- Hallazgos de la revisión de UX de esta ronda ------------------------------
+
+test("UX · Admin → Jornadas: al señalar la fila a medias, la lista de equipos (que se abre con el foco) se cierra y no tapa el error", () => {
+  const f = fn("function showRowError(rowEl, errId, missingRole, message)");
+  assert.ok(f.indexOf("setupFieldError(errId, message, inp);") < f.indexOf("if(openTeamComboCloser) openTeamComboCloser();"));
+});
+
+test("UX · la hoja de invitación con reglas pendientes ofrece «Revisar mis reglas» antes de invitar y lleva a Admin → Tus reglas", () => {
+  const sheet = fn("function openInviteSheet(opts)");
+  assert.ok(sheet.includes('<button class="btn ${roundNotes.length ? "btn-ghost" : "btn-primary"}" id="qz-invite-rules">Revisar mis reglas</button>'));
+  assert.ok(sheet.includes('<button class="btn ${pendingLines.length ? "btn-ghost" : "btn-primary"}" id="qz-invite-wa">'), "con pendientes, WhatsApp deja de ser la acción principal");
+  assert.ok(sheet.includes('if(then === "reglas"){ activeTab = "admin"; adminSubTab = "reglas"; renderApp(); }'));
+  assert.ok(sheet.includes('if(rulesBtn) rulesBtn.addEventListener("click", () => close("reglas"));'));
+  const close = sheet.slice(sheet.indexOf("const close = async (then) => {"), sheet.indexOf("const onKey"));
+  assert.ok(close.indexOf("await markLeftInviteScreen();") < close.indexOf('if(then === "reglas")'), "también registra que salió de la hoja");
+});
+
+test("UX · «ya estaba en tu quiniela» (no «ya guardada», que se leía como publicada) y quién suma los puntos", () => {
+  assert.ok(!indexSrc.includes("· ya guardada"));
+  assert.ok(fn("function keptQuestionsListHtml(kept)").includes(" · ya estaba en tu quiniela</span>"));
+  assert.ok(fn("function renderSetupResumen(main)").includes("<li>Cuando termine la jornada, tú capturas los resultados en Admin → Resultados: al publicarlos se suman los puntos de los partidos. Las preguntas extra suman cuando marcas quién acertó.</li>"));
+});
+
+// ---- Hallazgos de Technical QA de esta ronda ----------------------------------
+
+test("TQA P1 · el cliente trata bets_conflict como un conflicto del tablero y guarda la revisión de las preguntas tras cada escritura", () => {
+  const save = fn("async function setMetaWithError(meta, opts)");
+  assert.ok(save.includes('if(!result.ok && (result.error === "rounds_conflict" || result.error === "bets_conflict")){'));
+  assert.ok(save.includes("if(Number.isFinite(result.betsRevision)) meta.betsRevision = result.betsRevision;"));
+  const pub = fn("async function setupPublish(btn, problem, number, rules)");
+  const branch = pub.slice(pub.indexOf('if(result.error === "bets_conflict"){'));
+  assert.ok(branch.startsWith('if(result.error === "bets_conflict"){\n      flow.notice = { kind: "alert", retry: false, html: "Cambiaron las preguntas guardadas en tu quiniela desde otra pestaña o dispositivo. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada." };\n      renderSetupFlow();\n      return;'));
+});
+
+test("TQA P2 · un intento sin confirmar se pregunta al servidor antes que cualquier revisión local (también si el cierre ya pasó)", () => {
+  const click = fn("async function setupPublishClickNow(btn)");
+  const unconfirmed = click.indexOf("if(flow.unconfirmed && flow.rows){");
+  assert.ok(unconfirmed !== -1 && unconfirmed < click.indexOf("if(problem.field){ renderSetupFlow(); return; }"));
+  const block = click.slice(unconfirmed, click.indexOf("if(problem.field){ renderSetupFlow(); return; }"));
+  assert.ok(block.includes("await refreshSetupMeta();") && block.includes("setupAlreadyPublished(flow.rows, roundRowsCheck(flow.rows.matches).clean)"));
+  assert.ok(block.includes("finishSetupPublish(already, setupRulesDiff(setupTargetRules(already.number)), wanted);"));
+  assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes('if(result.error === "network_error"){\n      // The next tap asks the server first, even if this round no longer\n      // passes the checks here (its deadline passed meanwhile).\n      flow.unconfirmed = true;'));
+});
+
+test("TQA P2 · la jornada publicada se compara con la preparada: cierre ya pasado, otro cierre u otros partidos se dicen, no se celebran", () => {
+  const lines = new Function("serverNowMs", `
+    const serverNow = () => serverNowMs;
+    const fmtWhenTz = (iso) => "F(" + iso + ")";
+    ${fn("function setupRoundStateLines(round, wanted)")}
+    return setupRoundStateLines;`)(Date.parse("2026-10-14T22:47:00Z"));
+  const round = { number: 18, deadline: "2026-10-14T22:45:00.000Z", matches: [{ id: "m1" }] };
+  assert.deepEqual(lines(round, { deadlineMs: Date.parse("2026-10-15T22:00:00Z"), count: 1 }),
+    ["La Jornada 18 quedó publicada con el cierre del F(2026-10-14T22:45:00.000Z), que ya pasó: nadie puede pronosticar hasta que le pongas un cierre nuevo."]);
+  const open = { number: 18, deadline: "2026-10-16T22:00:00.000Z", matches: [{ id: "m1" }, { id: "m2" }] };
+  assert.deepEqual(lines(open, { deadlineMs: Date.parse("2026-10-17T22:00:00Z"), count: 1 }), [
+    "La Jornada 18 quedó con el cierre del F(2026-10-16T22:00:00.000Z); tú elegiste el F(2026-10-17T22:00:00.000Z).",
+    "La Jornada 18 quedó con 2 partidos; tú preparaste 1.",
+  ]);
+  assert.deepEqual(lines(open, { deadlineMs: Date.parse("2026-10-16T22:00:00Z"), count: 2 }), [], "la misma jornada: nada que decir");
+  const finish = fn("function finishSetupPublish(round, pending, wanted)");
+  assert.ok(finish.indexOf("const roundLines = setupRoundStateLines(round, wanted);") < finish.indexOf("setupFlow = null;"), "se calcula antes de soltar el flujo");
+  assert.ok(finish.includes("openInviteSheet({ first: true, round, pending: lines, roundNotes: roundLines });"));
+  const sheet = fn("function openInviteSheet(opts)");
+  assert.ok(sheet.includes('${roundNotes.length && round ? `<button class="btn btn-primary" id="qz-invite-round">Revisar la Jornada ${esc(round.number)}</button>` : ``}'));
+  assert.ok(sheet.includes('renderAdminRondas._editingId = round.id; renderAdminRondas._draft = null;'), "abre la edición de esa jornada");
+  assert.ok(sheet.includes('if(roundBtn) roundBtn.addEventListener("click", () => close("jornada-editar"));'));
+  assert.ok(finish.includes("if(lines.length) storeSetupPending(round, lines); else clearSetupPending();"), "en Tus reglas sólo quedan las reglas");
+});
+
+test("TQA P3 · «Cambiar usuario» se lleva los borradores de respuestas de quien sale", () => {
+  const body = indexSrc.slice(indexSrc.indexOf('document.getElementById("qz-switch-user").addEventListener("click"'));
+  const handler = body.slice(0, body.indexOf("render();"));
+  assert.ok(handler.indexOf("window.sessionStorage.removeItem(answerDraftKey());") < handler.indexOf("currentUser = null;"), "con la clave de quien sale, antes de soltarlo");
 });

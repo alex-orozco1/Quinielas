@@ -36,6 +36,11 @@ const {
 const {
   storedRoundsRevision, resolveRoundsWrite, stampRoundsRevision,
 } = require("./roundsConcurrency");
+// MS2 · the same protection for meta.customBets (the questions): a stale save
+// can no longer delete or revert a question another admin just saved.
+const {
+  storedBetsRevision, resolveBetsWrite, stampBetsRevision,
+} = require("./betsConcurrency");
 const tournamentScope = require("./tournamentScope");
 const { validateMetaIds } = require("./metaIds");
 const { validateMetaNumbers } = require("./metaNumbers");
@@ -713,6 +718,14 @@ async function ensureTable() {
        AND jsonb_typeof(value) = 'object'
        AND NOT (value ? 'roundsRevision')
   `);
+  // MS2: the questions' revision, backfilled the same way (betsConcurrency.js).
+  await pool.query(`
+    UPDATE kv
+       SET value = jsonb_set(value, '{betsRevision}', '0'::jsonb, true)
+     WHERE (key = 'quiniela_meta_v1' OR key LIKE 'quiniela:%:meta')
+       AND jsonb_typeof(value) = 'object'
+       AND NOT (value ? 'betsRevision')
+  `);
 
   // Growth Loop funnel events — a plain table (not the kv blob store) since
   // this grows by appending rows, and needs to stay simply queryable
@@ -997,6 +1010,7 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
     // judged as "did not say which board it saw" — refused if it proposes a
     // different board, which is precisely what a filtered echo would be.
     delete clone.roundsRevision;
+    delete clone.betsRevision;
   }
   return clone;
 }
@@ -1158,7 +1172,7 @@ const META_RESERVED_COMMERCIAL_FIELDS = Object.freeze([
 // here — enforced by a structural test, because the failure mode of forgetting
 // one is silent data loss, which is exactly what this ticket is about.
 function stampMetaWrite(doc, oldValue) {
-  return stampRoundsRevision(stampMetaRevisions(doc, oldValue), oldValue);
+  return stampBetsRevision(stampRoundsRevision(stampMetaRevisions(doc, oldValue), oldValue), oldValue);
 }
 
 // HOTFIX-001. `roundsWrite` is the verdict resolveRoundsWrite() reached against
@@ -1184,6 +1198,12 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   // spent by resolveRoundsWrite(). It must never survive into the stored row —
   // stampMetaWrite() below computes the value that does.
   delete merged.roundsRevision;
+  // MS2: likewise for the questions' revision (betsConcurrency.js). A save
+  // that says nothing about the questions keeps the stored ones.
+  delete merged.betsRevision;
+  if (opts && opts.betsWrite && opts.betsWrite.outcome === "no_statement" && Array.isArray(oldValue && oldValue.customBets)) {
+    merged.customBets = JSON.parse(JSON.stringify(oldValue.customBets));
+  }
   merged.rounds = roundsWrite
     ? JSON.parse(JSON.stringify(roundsWrite.rounds))
     : (Array.isArray(oldValue && oldValue.rounds) ? oldValue.rounds : []);
@@ -1967,8 +1987,24 @@ app.post("/api/kv/:key", async (req, res) => {
           });
         }
 
+        // MS2: the questions follow the board's rule. A write that changes
+        // them must show it saw the ones it replaces; otherwise 409 and
+        // nothing is written, so another admin's question is never lost.
+        const betsWrite = resolveBetsWrite({ stored: oldValue, incoming: value });
+        if (betsWrite.outcome === "conflict") {
+          await client.query("ROLLBACK");
+          console.log("meta write refused: stale questions", {
+            slug: info.slug, claimed: betsWrite.claimedRevision, stored: betsWrite.storedRevision,
+          });
+          return res.status(409).json({
+            error: "bets_conflict",
+            betsRevision: betsWrite.storedRevision,
+            roundsRevision: roundsWrite.storedRevision,
+          });
+        }
         const metaMerge = mergeProtectedMetaFields(oldValue, value, authTier, roundsWrite, {
           requesterIsCreator: authTier === "admin-pin" && requestIsCreator(req, info.slug, oldValue),
+          betsWrite,
         });
         if (metaMerge.creatorChangesRefused > 0) {
           // Onboarding B: removing, demoting or resetting the creator takes
@@ -2038,6 +2074,12 @@ app.post("/api/kv/:key", async (req, res) => {
         const lateRound = lateNewlyPublishedRound(oldValue, mergedValue, Date.now());
         if (lateRound) {
           await client.query("ROLLBACK");
+          // No deadline at all is not «already passed»: it is a malformed round.
+          // (new Date(null) is the epoch, so the type is checked too.)
+          const dl = lateRound.deadline;
+          if (typeof dl !== "string" || !Number.isFinite(Date.parse(dl))) {
+            return res.status(400).json({ error: "invalid_value", field: "rounds.deadline", roundNumber: lateRound.number });
+          }
           return res.status(409).json({ error: "round_deadline_passed", roundNumber: lateRound.number });
         }
         // Una pregunta de torneo nueva (o a la que se le cambia el cierre)
@@ -2249,6 +2291,9 @@ app.post("/api/kv/:key", async (req, res) => {
           // one it had loaded. Without it a tab would conflict with itself
           // after every successful write.
           roundsRevision: storedRoundsRevision(mergedValue),
+          // MS2: the same for the questions, so this tab's next save is judged
+          // against what it just stored.
+          betsRevision: storedBetsRevision(mergedValue),
           // True when this write said nothing about the board at all (no
           // `rounds` array, or `rounds: null`). The stored board was kept.
           // Said out loud rather than absorbed, so a client that meant to send

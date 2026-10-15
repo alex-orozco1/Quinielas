@@ -288,12 +288,12 @@ test("publicar · una sola escritura: lo cambiado se repone si falla, y el reint
 test("publicar · el éxito y la invitación sólo después de que el servidor confirme; el borrador se borra entonces", () => {
   const pub = fn("async function setupPublish(btn, problem, number, rules)");
   const ok = pub.slice(pub.indexOf("if(result.ok){"), pub.indexOf("if(!result.reconciled)"));
-  assert.ok(ok.includes("clearRoundDraft(rows.kind);") && ok.includes("finishSetupPublish(round, pending);"));
+  assert.ok(ok.includes("clearRoundDraft(rows.kind);") && ok.includes("finishSetupPublish(round, pending, setupWantedRound());"));
   assert.ok(ok.includes("const pending = setupRulesDiff(rules);"), "lo guardado se compara regla por regla (R2)");
-  const finish = fn("function finishSetupPublish(round, pending)");
+  const finish = fn("function finishSetupPublish(round, pending, wanted)");
   assert.ok(finish.includes("clearRoundDraft(SETUP_DRAFT_KIND);"));
   assert.ok(finish.indexOf("setupContinuityResolved = true;") < finish.indexOf("renderApp();"), "sin esto, la continuidad volvería a abrir la invitación a pantalla completa");
-  assert.ok(finish.indexOf("renderApp();") < finish.indexOf("openInviteSheet({ first: true, round, pending: lines });"));
+  assert.ok(finish.indexOf("renderApp();") < finish.indexOf("openInviteSheet({ first: true, round, pending: lines, roundNotes: roundLines });"));
   assert.ok(ok.includes("if(result.ruleFieldsKept){"), "si el servidor conservó puntos o cuota, se compara con lo que tiene");
   // Founder (ronda 3): lo que se dice de lo publicado queda en la hoja, no en un toast sobre sus botones.
   assert.ok(!finish.includes("toast("));
@@ -338,7 +338,8 @@ test("invitación · popup con WhatsApp, copiar, añadir, ver y cerrar; copiar o
   }
   assert.ok(sheet.includes('window.open("https://wa.me/?text=" + encodeURIComponent(inviteWhatsAppText(round)), "_blank", "noopener")'));
   assert.ok(sheet.includes("No se pudo copiar. Mantén presionado el link para copiarlo:"), "un fallo al copiar no se presenta como copiado");
-  const close = sheet.slice(sheet.indexOf("const close = async (thenView) => {"), sheet.indexOf("const onKey"));
+  const close = sheet.slice(sheet.indexOf("const close = async (then) => {"), sheet.indexOf("const onKey"));
+  assert.ok(close.startsWith("const close = async (then) => {"));
   assert.ok(close.includes("if(first) await markLeftInviteScreen();"), "cerrarlo por cualquier vía lo registra; antes de eso, recargar lo vuelve a mostrar");
   assert.ok(close.indexOf("await markLeftInviteScreen();") < close.indexOf("renderApp();"));
   assert.ok(fn("async function addParticipantsByName()").includes("Todavía no han entrado: les toca abrir el link y crear su PIN."));
@@ -370,12 +371,12 @@ test("publicar · una respuesta perdida: antes de decir algo se pregunta al serv
   const conflictMsg = fail.indexOf("No se publicó nada.");
   assert.ok(recheck !== -1 && recheck < already && already < conflictMsg, "primero el servidor, después el aviso");
   assert.ok(fail.slice(recheck, already).includes("adoptFreshMeta(meta, fresh);"));
-  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, setupRulesDiff(rules));"));
+  assert.ok(fail.slice(already, conflictMsg).includes("finishSetupPublish(done, setupRulesDiff(rules), setupWantedRound());"));
   const found = fn("function setupAlreadyPublished(rows, clean)");
   assert.ok(found.includes("const r = meta.rounds.find(x => x.id === rows.round.id);"), "calendario: la misma jornada");
   assert.ok(found.includes("return meta.rounds.find(published) || null;"), "a mano: los mismos ids de partido");
   // El retorno temprano «a mano» (ya publicada con esos partidos) también compara las reglas.
-  assert.ok(pub.includes("finishSetupPublish(done, setupRulesDiff(rules));\n      return;\n    }\n    setupPublishInFlight = true;"));
+  assert.ok(pub.includes("finishSetupPublish(done, setupRulesDiff(rules), setupWantedRound());\n      return;\n    }\n    setupPublishInFlight = true;"));
 });
 
 test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó no bloquea cada guardado: se trae el estado bueno", () => {
@@ -806,7 +807,7 @@ test("R2 · se comparan todas las reglas (penalización y cada pregunta completa
 });
 
 test("R2 · lo que no quedó se dice en la hoja y queda en «Tus reglas» hasta revisarlo; no se aplica solo", () => {
-  const finish = fn("function finishSetupPublish(round, pending)");
+  const finish = fn("function finishSetupPublish(round, pending, wanted)");
   assert.ok(finish.includes("if(lines.length) storeSetupPending(round, lines); else clearSetupPending();"));
   const reglas = fn("async function renderAdminReglas(body, opts)");
   assert.ok(reglas.includes("const pending = loadSetupPending();"));
@@ -854,9 +855,9 @@ test("R3 · bloque 1, resumen y lateral muestran lo que se conserva; publicar se
   assert.ok(fn("function renderSetupLiga(main)").includes("${keptHtml}"));
   const sum = fn("function renderSetupResumen(main)");
   assert.ok(sum.includes("${qs.length || keptQs.length ? `") && sum.includes("${keptListHtml}"));
-  assert.ok(fn("function renderSetupAside()").includes("keptQs.map(q => `<li>${esc(q.text)} <span class=\"muted\">· ya guardada</span></li>`)"));
+  assert.ok(fn("function renderSetupAside()").includes("keptQs.map(q => `<li>${esc(q.text)} <span class=\"muted\">· ya estaba en tu quiniela</span></li>`)"));
   const click = fn("async function setupPublishClickNow(btn)");
-  assert.ok(click.indexOf("const keptBefore = setupKeptSignature();") < click.indexOf("await refreshSetupMeta();"));
+  assert.ok(click.indexOf("const keptBefore = setupKeptSignature();") < click.indexOf("await refreshSetupMeta();", click.indexOf("const revBefore")));
   assert.ok(click.includes("if(dup || setupKeptSignature() !== keptBefore){"));
   // Nada de esto quita preguntas: publicar sólo añade las nuevas.
   assert.ok(fn("async function setupPublish(btn, problem, number, rules)").includes("rules.bets.forEach(b => { if(!meta.customBets.some(x => x.id === b.id)) meta.customBets.push(b); });"));

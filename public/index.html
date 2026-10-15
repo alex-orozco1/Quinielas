@@ -2067,7 +2067,9 @@
       // se guardó nada de aquí — así que lo único correcto es traer el estado
       // bueno, repintar y decirlo en una línea. El usuario no tiene por qué
       // saber qué es una revisión.
-      if(!result.ok && result.error === "rounds_conflict"){
+      // MS2: the questions follow the same rule (bets_conflict): another tab
+      // or admin changed them since this one loaded.
+      if(!result.ok && (result.error === "rounds_conflict" || result.error === "bets_conflict")){
         let adopted = false;
         try{
           const fresh = await getMeta({ owner: adminOrOwnerCred() });
@@ -2097,6 +2099,7 @@
         // juzgaría contra el tablero que cargó, no contra el que acaba de
         // crear — es decir, entraría en conflicto consigo misma.
         if(Number.isFinite(result.roundsRevision)) meta.roundsRevision = result.roundsRevision;
+        if(Number.isFinite(result.betsRevision)) meta.betsRevision = result.betsRevision;
         adoptParticipantRevs(result.participantRevs);
         // Any successful meta write can move the plan numbers (a participant
         // added or removed, a round published), so the cached plan is dropped
@@ -5006,7 +5009,7 @@
         <dl class="qz-sum-dl">
           <dt>Liga</dt><dd>${leagueId ? `${esc(setupLeagueLabel(leagueId) || "Guardada")}${d.manual ? " · esta jornada a mano" : ""}` : d.manual ? "Partidos a mano" : `${pending}`}</dd>
           <dt>Puntos por acierto</dt><dd>${esc(d.points)} ${esc(pointsWord(d.points))}</dd>
-          <dt>Preguntas extra</dt><dd>${qs.length || keptQs.length ? `${esc(qs.length + keptQs.length)} ${qs.length + keptQs.length === 1 ? "pregunta" : "preguntas"}<ul class="qz-sum-list">${keptQs.map(q => `<li>${esc(q.text)} <span class="muted">· ya guardada</span></li>`).join("")}${qs.map(q => `<li>${esc(q.text)} <span class="muted">· +${esc(q.points)} · ${esc(scopeLabel(q.scope))}${q.scope === "temporada" ? ` · ${esc(extraCloseShort("temporada", closeRound))}` : ""}</span></li>`).join("")}</ul>` : (d.extrasOn ? `${pending}` : "Ninguna")}</dd>
+          <dt>Preguntas extra</dt><dd>${qs.length || keptQs.length ? `${esc(qs.length + keptQs.length)} ${qs.length + keptQs.length === 1 ? "pregunta" : "preguntas"}<ul class="qz-sum-list">${keptQs.map(q => `<li>${esc(q.text)} <span class="muted">· ya estaba en tu quiniela</span></li>`).join("")}${qs.map(q => `<li>${esc(q.text)} <span class="muted">· +${esc(q.points)} · ${esc(scopeLabel(q.scope))}${q.scope === "temporada" ? ` · ${esc(extraCloseShort("temporada", closeRound))}` : ""}</span></li>`).join("")}</ul>` : (d.extrasOn ? `${pending}` : "Ninguna")}</dd>
           <dt>Pagos</dt><dd>${SETUP_STEPS.indexOf(d.step) < 1 ? pending : d.payOn ? `Cuota $${esc(d.fee != null ? d.fee : "—")} MXN${d.penOn ? ` · −${esc(d.penPoints)} por jornada sin pagar` : ""}` : "Sin registro de pagos"}</dd>
           <dt>Jornada</dt><dd>${publishNumber ? `Jornada ${esc(publishNumber)}${closeRound && closeRound.deadline ? ` · cierre de pronósticos: ${esc(fmtWhenTz(closeRound.deadline))}` : ""}` : pending}</dd>
         </dl>
@@ -5123,7 +5126,7 @@
     return "+" + q.points + " " + pointsWord(q.points) + " · " + scopeLabel(q.scope) + " · " + close;
   }
   function keptQuestionsListHtml(kept){
-    return `<ul class="qz-sum-qs qz-kept-qs">${kept.map(q => `<li><strong>${esc(q.text)}</strong><span class="muted"> · ${esc(keptQuestionDetail(q))} · ya guardada</span></li>`).join("")}</ul>`;
+    return `<ul class="qz-sum-qs qz-kept-qs">${kept.map(q => `<li><strong>${esc(q.text)}</strong><span class="muted"> · ${esc(keptQuestionDetail(q))} · ya estaba en tu quiniela</span></li>`).join("")}</ul>`;
   }
   // What identifies the kept set, to notice it changed under this tab.
   function setupKeptSignature(){
@@ -5593,6 +5596,9 @@
     if(!rowEl) return false;
     const inp = rowEl.querySelector(`input[data-role="${missingRole}"]`);
     setupFieldError(errId, message, inp);
+    // Focusing a team field opens its suggestions (Admin → Jornadas), which
+    // would cover the error just below: closed until the admin types.
+    if(openTeamComboCloser) openTeamComboCloser();
     return true;
   }
   function clearRowError(rowEl, errId){
@@ -5867,6 +5873,7 @@
               <li>La Jornada ${esc(number)} se abre y tus amigos pueden pronosticar hasta ${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "el cierre que elijas"}.</li>
               <li>${imported ? "Las demás jornadas del calendario siguen preparadas; las publicas tú, cuando quieras." : "Después podrás crear más jornadas en Admin → Jornadas."}</li>
               <li>Tus reglas (puntos, preguntas, cuota y penalización) quedan guardadas desde ahora. Las cambias en Admin → Tus reglas.</li>
+              <li>Cuando termine la jornada, tú capturas los resultados en Admin → Resultados: al publicarlos se suman los puntos de los partidos. Las preguntas extra suman cuando marcas quién acertó.</li>
             </ul>
           </section>
           ${needsPassword ? `<p class="qz-wz-note" id="qz-wz-pw-line">Para publicar necesitas una contraseña de administrador. Se crea en el siguiente paso y no publica nada por sí sola.</p>` : ``}
@@ -6017,6 +6024,23 @@
     if(oldNotice) oldNotice.remove();
     setupPublishMessage(null, "");
     const problem = setupRoundProblem();
+    // Technical QA, ronda 4: a try whose answer never came back may have
+    // published. That is asked to the server before anything else, also when
+    // the round no longer passes the checks here (its deadline passed while
+    // the connection was down): otherwise the admin would pick a new deadline
+    // for a round that is already published with the old one.
+    if(flow.unconfirmed && flow.rows){
+      await refreshSetupMeta();
+      if(setupFlow !== flow) return;
+      flow.unconfirmed = false;
+      const already = setupAlreadyPublished(flow.rows, roundRowsCheck(flow.rows.matches).clean);
+      if(already){
+        const wanted = setupWantedRound();
+        clearRoundDraft(flow.rows.kind);
+        finishSetupPublish(already, setupRulesDiff(setupTargetRules(already.number)), wanted);
+        return;
+      }
+    }
     if(problem.field){ renderSetupFlow(); return; }
     // What is stored decides whether the password is needed (points and fee,
     // and whether the password exists): asked to the server, not this tab.
@@ -6032,8 +6056,9 @@
     // one with what the server has (R2), never celebrated.
     const done = flow.rows ? setupAlreadyPublished(flow.rows, problem.clean) : null;
     if(done){
+      const wanted = setupWantedRound();
       clearRoundDraft(flow.rows.kind);
-      finishSetupPublish(done, setupRulesDiff(setupTargetRules(done.number)));
+      finishSetupPublish(done, setupRulesDiff(setupTargetRules(done.number)), wanted);
       return;
     }
     if(meta.roundsRevision !== revBefore){ setupRoundsChangedElsewhere(flow); return; }
@@ -6130,7 +6155,7 @@
       clearRoundDraft("new");
       const done = meta.rounds.find(r => (r.matches || []).some(m => problem.clean.some(c => c.id === m.id)));
       // meta is the server's copy (refreshed at the tap): its rules are compared too.
-      finishSetupPublish(done, setupRulesDiff(rules));
+      finishSetupPublish(done, setupRulesDiff(rules), setupWantedRound());
       return;
     }
     setupPublishInFlight = true;
@@ -6187,7 +6212,7 @@
       }
       const pending = setupRulesDiff(rules);
       if(unread) pending.unshift("Puntos y cuota: no se guardaron; hace falta la contraseña de administrador.");
-      finishSetupPublish(round, pending);
+      finishSetupPublish(round, pending, setupWantedRound());
       return;
     }
     if(!result.reconciled) adoptFreshMeta(meta, snapshot);
@@ -6207,9 +6232,17 @@
         clearRoundDraft(rows.kind);
         // The round is there; the rules may not be (someone else published
         // it first, or this write never arrived): compared one by one.
-        finishSetupPublish(done, setupRulesDiff(rules));
+        finishSetupPublish(done, setupRulesDiff(rules), setupWantedRound());
         return;
       }
+    }
+    // Technical QA, ronda 4: another admin saved questions while this tab
+    // waited (the password, say). Nothing was written; the summary now shows
+    // what the quiniela has, and the next tap publishes on top of it.
+    if(result.error === "bets_conflict"){
+      flow.notice = { kind: "alert", retry: false, html: "Cambiaron las preguntas guardadas en tu quiniela desde otra pestaña o dispositivo. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada." };
+      renderSetupFlow();
+      return;
     }
     // A conflict repainted the app (setMetaWithError): back to this summary,
     // with the calendar looked up again from what the server has now.
@@ -6236,6 +6269,9 @@
       return;
     }
     if(result.error === "network_error"){
+      // The next tap asks the server first, even if this round no longer
+      // passes the checks here (its deadline passed meanwhile).
+      flow.unconfirmed = true;
       setupPublishMessage("alert", "No pudimos confirmar si se publicó. Revisa tu conexión y toca «Reintentar». Si ya estaba publicada, no se publica dos veces.", true);
       return;
     }
@@ -6306,7 +6342,33 @@
   // pending: setupRulesDiff lines (rules that did not stay as configured),
   // shown inside the invitation sheet and kept for «Tus reglas»; never a
   // toast over its buttons, never a celebration of rules that were not stored.
-  function finishSetupPublish(round, pending){
+  // What this setup wanted to publish (read before the flow goes away).
+  function setupWantedRound(){
+    const rows = setupFlow && setupFlow.rows;
+    if(!rows) return null;
+    const t = rows.deadline ? new Date(rows.deadline).getTime() : NaN;
+    return { deadlineMs: Number.isFinite(t) ? t : null, count: roundRowsCheck(rows.matches).clean.length };
+  }
+  // Technical QA, ronda 4: plain-text lines when the round that is published
+  // is not the one prepared here (another tab published it first, or an
+  // earlier try did and its deadline passed meanwhile). Never celebrated.
+  function setupRoundStateLines(round, wanted){
+    const lines = [];
+    const t = new Date(round && round.deadline).getTime();
+    if(!round) return lines;
+    if(Number.isFinite(t) && t <= serverNow()){
+      lines.push("La Jornada " + round.number + " quedó publicada con el cierre del " + fmtWhenTz(round.deadline) + ", que ya pasó: nadie puede pronosticar hasta que le pongas un cierre nuevo.");
+    } else if(wanted && wanted.deadlineMs != null && Number.isFinite(t) && Math.abs(t - wanted.deadlineMs) >= 60000){
+      lines.push("La Jornada " + round.number + " quedó con el cierre del " + fmtWhenTz(round.deadline) + "; tú elegiste el " + fmtWhenTz(new Date(wanted.deadlineMs).toISOString()) + ".");
+    }
+    const n = (round.matches || []).length;
+    if(wanted && wanted.count && n !== wanted.count){
+      lines.push("La Jornada " + round.number + " quedó con " + n + " " + (n === 1 ? "partido" : "partidos") + "; tú preparaste " + wanted.count + ".");
+    }
+    return lines;
+  }
+  function finishSetupPublish(round, pending, wanted){
+    const roundLines = setupRoundStateLines(round, wanted);
     clearRoundDraft(SETUP_DRAFT_KIND);
     trackOnceConfirmed("first_round_" + SLUG, () => hasTrackedFirstRound(SLUG), () => markFirstRoundTracked(SLUG), "first_round_published", { source: "admin_setup" });
     setupFlow = null;
@@ -6316,7 +6378,7 @@
     if(setupBarObserver){ setupBarObserver.disconnect(); setupBarObserver = null; }
     const lines = Array.isArray(pending) ? pending : [];
     if(lines.length) storeSetupPending(round, lines); else clearSetupPending();
-    openInviteSheet({ first: true, round, pending: lines });
+    openInviteSheet({ first: true, round, pending: lines, roundNotes: roundLines });
   }
 
   // ---- invitar ------------------------------------------------------------------
@@ -6367,12 +6429,19 @@
     const first = !!(opts && opts.first);
     const round = inviteRound(opts && opts.round);
     const link = inviteLink();
-    const pendingLines = opts && Array.isArray(opts.pending) ? opts.pending : [];
+    // Rules that did not stay (R2) and, apart, how the published round differs
+    // from the one prepared (its deadline passed, another deadline or other
+    // matches): each with the place to fix it.
+    const ruleLines = opts && Array.isArray(opts.pending) ? opts.pending : [];
+    const roundNotes = opts && Array.isArray(opts.roundNotes) ? opts.roundNotes : [];
+    const pendingLines = roundNotes.concat(ruleLines);
     const pendingHtml = pendingLines.length ? `
         <div class="qz-sheet-note" role="status">
-          <p><strong>Algunas reglas no quedaron como las configuraste:</strong></p>
+          <p><strong>Algunas cosas no quedaron como las configuraste:</strong></p>
           <ul>${pendingLines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
-          <p>No cambiamos lo que guardó otra persona. Revísalas en Admin → Tus reglas.</p>
+          ${roundNotes.length && round ? `<button class="btn btn-primary" id="qz-invite-round">Revisar la Jornada ${esc(round.number)}</button>` : ``}
+          ${ruleLines.length ? `<p>No cambiamos lo que guardó otra persona. Revísalas antes de invitar.</p>
+          <button class="btn ${roundNotes.length ? "btn-ghost" : "btn-primary"}" id="qz-invite-rules">Revisar mis reglas</button>` : ``}
         </div>` : ``;
     const overlay = document.createElement("div");
     overlay.className = "qz-modal-overlay qz-modal-scroll qz-sheet-overlay";
@@ -6385,7 +6454,7 @@
         <p>Invita a tus amigos para que entren y hagan sus pronósticos antes del cierre.</p>
         ${round && !isRoundLocked(round) ? `<p class="muted">Cierre de la Jornada ${esc(round.number)}: <strong>${esc(fmtWhenTz(round.deadline))}</strong>.</p>` : ``}
         <div class="qz-sheet-actions">
-          <button class="btn btn-primary" id="qz-invite-wa">🔗 Invitar por WhatsApp</button>
+          <button class="btn ${pendingLines.length ? "btn-ghost" : "btn-primary"}" id="qz-invite-wa">🔗 Invitar por WhatsApp</button>
           <button class="btn btn-ghost" id="qz-invite-copy">Copiar link</button>
           <button class="btn btn-ghost" id="qz-invite-add">Añadir participantes</button>
           <button class="btn btn-ghost" id="qz-invite-view">Ver mi jornada</button>
@@ -6402,14 +6471,22 @@
     // short screen where it sits below the fold.
     const showFeedback = () => { try{ feedback.scrollIntoView({ block: "nearest" }); }catch(e){} };
     let closed = false;
-    const close = async (thenView) => {
+    // then: true → the round; "reglas" → Admin → Tus reglas; else stay.
+    const close = async (then) => {
       if(closed) return;
       closed = true;
       document.removeEventListener("keydown", onKey);
       trap.release();
       overlay.remove();
       if(first) await markLeftInviteScreen();
-      if(thenView){ activeTab = "jornada"; renderApp(); }
+      if(then === "reglas"){ activeTab = "admin"; adminSubTab = "reglas"; renderApp(); }
+      else if(then === "jornada-editar" && round){
+        // Straight into editing that round in Admin → Jornadas.
+        activeTab = "admin"; adminSubTab = "rondas";
+        renderAdminRondas._editingId = round.id; renderAdminRondas._draft = null;
+        renderApp();
+      }
+      else if(then){ activeTab = "jornada"; renderApp(); }
       else if(first) renderApp();
     };
     const onKey = (e) => { if(e.key === "Escape"){ e.preventDefault(); close(false); } };
@@ -6417,6 +6494,10 @@
     overlay.querySelector("#qz-invite-x").addEventListener("click", () => close(false));
     overlay.querySelector("#qz-invite-close").addEventListener("click", () => close(false));
     overlay.querySelector("#qz-invite-view").addEventListener("click", () => close(true));
+    const rulesBtn = overlay.querySelector("#qz-invite-rules");
+    if(rulesBtn) rulesBtn.addEventListener("click", () => close("reglas"));
+    const roundBtn = overlay.querySelector("#qz-invite-round");
+    if(roundBtn) roundBtn.addEventListener("click", () => close("jornada-editar"));
     overlay.querySelector("#qz-invite-wa").addEventListener("click", () => {
       const w = window.open("https://wa.me/?text=" + encodeURIComponent(inviteWhatsAppText(round)), "_blank", "noopener");
       markSharedInvite(SLUG);
@@ -6705,6 +6786,9 @@
     if(menuCopyBtn) menuCopyBtn.addEventListener("click", copyAccessLink);
     document.getElementById("qz-switch-user").addEventListener("click", async () => {
       await clearSessionCookie();
+      // Unsaved answers are predictions: they do not stay behind on a shared
+      // device for the next person (Technical QA, ronda 4).
+      try{ window.sessionStorage.removeItem(answerDraftKey()); }catch(e){}
       currentUser = null;
       ownerUnlocked = false;
       ownerPasswordCache = null;
