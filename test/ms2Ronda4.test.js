@@ -35,7 +35,7 @@ test("R4 · apagar calcula lo que la penalización resta hoy (registro + jornada
   const off = save.slice(save.indexOf("} else {"), save.indexOf("next = { ...penalty, enabled: false };"));
   assert.ok(off.includes("const effective = meta.participants.map(p => penaltyPointsFor(p)).filter(x => x > 0);"),
     "el mismo cálculo que usa la tabla, sin escribir nada");
-  assert.ok(/if\(effective\.length\)\{[\s\S]*await qzConfirm\("Hoy la penalización le resta "[\s\S]*if\(!ok\) return;/.test(off));
+  assert.ok(/if\(effective\.length\)\{[\s\S]*await qzConfirm\("Hoy la penalización le resta "[\s\S]*if\(!ok\)\{ st\.pen\.enabled = true; repaint\(\); return; \}/.test(off));
   assert.ok(off.includes('title: "¿Apagar la penalización?", confirmLabel: "Apagar", cancelLabel: "Cancelar"'));
   // Nada se toca antes de la confirmación: ni el registro, ni la regla, ni el botón.
   const confirmAt = save.indexOf("await qzConfirm(");
@@ -50,7 +50,7 @@ test("R4 · apagar calcula lo que la penalización resta hoy (registro + jornada
 test("R4 · el texto se arma con los números reales: total, personas y singular/plural", () => {
   const reglas = fn("async function renderAdminReglas(body, opts)");
   const at = reglas.indexOf("const effective = meta.participants.map(p => penaltyPointsFor(p))");
-  const block = reglas.slice(at, reglas.indexOf("if(!ok) return;", at));
+  const block = reglas.slice(at, reglas.indexOf("if(!ok){", at));
   const msgExpr = block.slice(block.indexOf("qzConfirm(") + "qzConfirm(".length, block.indexOf(",\n", block.indexOf("qzConfirm(")));
   const pointsWord = fn("function pointsWord(n)");
   const build = new Function("effective", `${pointsWord}\nconst total = effective.reduce((a, b) => a + b, 0);\nreturn ${msgExpr};`);
@@ -444,4 +444,13 @@ test("R5 · Admin → Jornadas: la fila de cada jornada y sus botones bajan de l
   const css = indexSrc.slice(0, indexSrc.indexOf("</style>"));
   assert.ok(css.includes("#quiniela-root .history-item{ flex-wrap:wrap; gap:8px; }"));
   assert.ok(css.includes("#quiniela-root .history-item > div:last-child{ flex-wrap:wrap; }"));
+});
+
+test("Product QA · P3: Cancelar «Apagar» deja el interruptor como está guardado; la hoja no dice «antes del cierre» si ya cerró; «1 partido»; la Tabla no cablea un panel que ya no está", () => {
+  assert.ok(indexSrc.includes("if(!ok){ st.pen.enabled = true; repaint(); return; }"));
+  assert.ok(fn("function openInviteSheet(opts)").includes('${round && isRoundLocked(round) ? "Tus amigos podrán pronosticar cuando la jornada tenga un cierre nuevo." : "Invita a tus amigos para que entren y hagan sus pronósticos antes del cierre."}'));
+  assert.ok(indexSrc.includes('${esc(r.matches.length)} ${r.matches.length === 1 ? "partido" : "partidos"} · ${statusLabel}'));
+  const tabla = fn("async function renderTabla(main)");
+  assert.ok(tabla.indexOf("if(!main.isConnected) return;") > tabla.indexOf("await ensureAllPicksLoaded();"));
+  assert.ok(tabla.indexOf("if(!main.isConnected) return;") < tabla.indexOf('document.getElementById("qz-export")'));
 });

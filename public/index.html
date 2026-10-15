@@ -6465,7 +6465,7 @@
         <button class="qz-sheet-x" id="qz-invite-x" aria-label="Cerrar">✕</button>
         <h2 class="qz-sheet-title" id="qz-invite-title">${first && round ? (pendingLines.length ? `La Jornada ${esc(round.number)} ya está publicada` : `🎉 ¡Tu quiniela y la Jornada ${esc(round.number)} ya están listas!`) : "Invita a tus amigos"}</h2>
         ${pendingHtml}
-        <p>Invita a tus amigos para que entren y hagan sus pronósticos antes del cierre.</p>
+        <p>${round && isRoundLocked(round) ? "Tus amigos podrán pronosticar cuando la jornada tenga un cierre nuevo." : "Invita a tus amigos para que entren y hagan sus pronósticos antes del cierre."}</p>
         ${round && !isRoundLocked(round) ? `<p class="muted">Cierre de la Jornada ${esc(round.number)}: <strong>${esc(fmtWhenTz(round.deadline))}</strong>.</p>` : ``}
         <div class="qz-sheet-actions">
           <button class="btn ${pendingLines.length ? "btn-ghost" : "btn-primary"}" id="qz-invite-wa">🔗 Invitar por WhatsApp</button>
@@ -7543,6 +7543,8 @@
       trackEvent("standings_viewed", { source: currentUser && currentUser.isAdmin ? "organizer" : "participant" });
     }
     await ensureAllPicksLoaded();
+    // The participant moved to another tab meanwhile: this panel is gone.
+    if(!main.isConnected) return;
     const list = standingsList();
     const ranks = computeDenseRanks(list);
     const prevRanks = previousRanks();
@@ -9406,7 +9408,8 @@
           const total = effective.reduce((a, b) => a + b, 0);
           const ok = await qzConfirm("Hoy la penalización le resta " + total + " " + pointsWord(total) + " en total a " + effective.length + " " + (effective.length === 1 ? "persona" : "personas") + ". Si la apagas, dejas de restar puntos y esos descuentos dejan de contar en la tabla mientras esté apagada; quedan guardados y regresan si la vuelves a activar.",
             { title: "¿Apagar la penalización?", confirmLabel: "Apagar", cancelLabel: "Cancelar" });
-          if(!ok) return;
+          // Cancelled: nothing saved, and the switch shows what is stored again.
+          if(!ok){ st.pen.enabled = true; repaint(); return; }
         }
         next = { ...penalty, enabled: false };
       }
@@ -10001,7 +10004,7 @@
           const faseTxt = r.phaseLabel ? ` · ${esc(r.phaseLabel)}` : "";
           return `
           <div class="history-item">
-            <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
+            <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} ${r.matches.length === 1 ? "partido" : "partidos"} · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
             <div style="display:flex;gap:6px;">
               ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${esc(r.id)}">Publicar jornada</button>` : ``}
               <button class="btn btn-ghost btn-sm" data-edit-round="${esc(r.id)}">Editar</button>
