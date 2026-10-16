@@ -114,7 +114,7 @@ test("Payment Penalty audit: reconcilePenaltyLedger(meta) is still called before
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
   const body = indexSrc.slice(idx, idx + 4300);
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
-  const deadlineMutationIdx = body.indexOf("editingRound.deadline = new Date(draft.deadline).toISOString();");
+  const deadlineMutationIdx = body.indexOf("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);");
   assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx);
 });
 

@@ -6262,6 +6262,20 @@
   }
   async function setupPublish(btn, problem, number, rules){
     const flow = setupFlow;
+    // MS2 · D4-02: a prepared round keeps its exact close unless the admin
+    // edited it; if edited, the questions that close with it get the same
+    // explicit choice as in Admin → Jornadas. It is the last wait: the round
+    // is checked again below, after it, right before writing (R1).
+    let linkedChoice = null;
+    const rows0 = flow && flow.rows;
+    if(rows0 && rows0.kind !== "new" && rows0.round){
+      const p0 = setupRoundProblem();
+      const target = meta.rounds.find(r => r.id === rows0.round.id);
+      if(!p0.field && target && deadlineIsoFromInput(p0.deadline, target.deadline) !== target.deadline){
+        linkedChoice = await chooseLinkedBetsClose(target, deadlineIsoFromInput(p0.deadline, target.deadline));
+        if(!linkedChoice) return; // went back: nothing is published
+      }
+    }
     // Checked again here, after every wait and right before writing, with
     // the server's clock (serverNow): what was valid when «Publicar» was
     // tapped may not be now.
@@ -6311,7 +6325,8 @@
         return;
       }
       round.matches = problem.clean;
-      round.deadline = new Date(problem.deadline).toISOString();
+      round.deadline = deadlineIsoFromInput(problem.deadline, round.deadline);
+      if(linkedChoice) applyLinkedChoice(linkedChoice, round, round.deadline);
       round.published = true;
     } else {
       round = { id: uid("r"), number, matches: problem.clean, deadline: new Date(problem.deadline).toISOString(), results: {}, resultsPublished: false, published: true };
@@ -10005,6 +10020,14 @@
     const pad = n => String(n).padStart(2,'0');
     return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
+  // MS2 · D4-02: the close a deadline field means. The field holds minutes and
+  // a stored close may carry seconds; if the field still shows the stored one
+  // (nobody edited it, also after going back or reloading), the stored ISO is
+  // kept exactly — rounding it would change a question's close nobody touched.
+  function deadlineIsoFromInput(value, originalIso){
+    if(typeof originalIso === "string" && Number.isFinite(Date.parse(originalIso)) && value === toLocalInputValue(originalIso)) return originalIso;
+    return new Date(value).toISOString();
+  }
 
   // UX fix: when the admin taps "Editar" on a round far down the list, the
   // editor re-renders at the TOP of `body`, but the viewport itself never
@@ -10464,7 +10487,7 @@
       deadlineErrorEl.style.display = "none";
 
       // MS2 · D3/D4: an explicit choice for the questions that close with it.
-      const linkedChoice = editingRound ? await chooseLinkedBetsClose(editingRound, new Date(draft.deadline).toISOString()) : null;
+      const linkedChoice = editingRound ? await chooseLinkedBetsClose(editingRound, deadlineIsoFromInput(draft.deadline, editingRound.deadline)) : null;
       if(editingRound && !linkedChoice) return;
       if(editingRound){
         const saveBtn = document.getElementById("qz-publish-round");
@@ -10490,7 +10513,7 @@
         // already-caused penalty -- reconcile BEFORE the deadline moves.
         reconcilePenaltyLedger(meta);
         editingRound.matches = clean;
-        editingRound.deadline = new Date(draft.deadline).toISOString();
+        editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);
         applyLinkedChoice(linkedChoice, editingRound, editingRound.deadline);
         const result = await setMetaWithError(meta);
         if(result.ok){

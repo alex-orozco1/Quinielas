@@ -264,7 +264,7 @@ test("publicar · una sola escritura: lo cambiado se repone si falla, y el reint
   const snap = pub.indexOf("const snapshot = JSON.parse(JSON.stringify(meta));");
   const reconcile = pub.indexOf("reconcilePenaltyLedger(meta);");
   const relocate = pub.indexOf("round = meta.rounds.find(r => r.id === rows.round.id);");
-  const deadline = pub.indexOf("round.deadline = new Date(problem.deadline).toISOString();");
+  const deadline = pub.indexOf("round.deadline = deadlineIsoFromInput(problem.deadline, round.deadline);");
   const write = pub.indexOf("const result = await setMetaWithError(meta, { betsEdited: true });");
   assert.ok(snap !== -1 && snap < reconcile && reconcile < deadline && deadline < write, "copia antes de tocar nada; la penalización se asienta antes de mover el cierre");
   assert.ok(relocate !== -1 && relocate < deadline, "busca la jornada por id en cada intento, nunca una referencia vieja");

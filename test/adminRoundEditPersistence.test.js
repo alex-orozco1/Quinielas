@@ -40,7 +40,7 @@ test("CASE G: also deep-snapshots meta.participants BEFORE reconcilePenaltyLedge
 
 test("reconcilePenaltyLedger is still called before the deadline actually moves (payment-penalty atomicity preserved)", () => {
   const reconcileIdx = editHandler.indexOf("reconcilePenaltyLedger(meta);");
-  const deadlineMutationIdx = editHandler.indexOf("editingRound.deadline = new Date(draft.deadline).toISOString();");
+  const deadlineMutationIdx = editHandler.indexOf("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);");
   assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx, "reconciliation must still run before the deadline mutation, exactly as the payment-penalty fix requires");
 });
 

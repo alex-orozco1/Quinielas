@@ -263,3 +263,24 @@ test("D4 · una cerrada por protección no le dice al participante la hora del c
   assert.equal(e.tournamentBetStatus(cut), "Ya está cerrada. Tu respuesta: «León».");
   assert.equal(e.tournamentBetStatus({ ...cut, id: "cb_otra" }), "Ya está cerrada y no respondiste. Aun así puedes jugar las jornadas abiertas.");
 });
+
+test("D4-02 · un cierre que nadie editó se conserva exacto (con segundos), también al volver o recargar; editado, toma el campo", () => {
+  const f = new Function(`${fn("function toLocalInputValue(iso)")}\n${fn("function deadlineIsoFromInput(value, originalIso)")}\nreturn { toLocalInputValue, deadlineIsoFromInput };`)();
+  const orig = "2026-10-18T22:50:08.086Z";
+  const shown = f.toLocalInputValue(orig);              // lo que muestra el campo (minutos)
+  assert.equal(f.deadlineIsoFromInput(shown, orig), orig, "sin editar: el mismo ISO, sin perder 8086 ms");
+  const edited = shown.slice(0, -2) + String((Number(shown.slice(-2)) + 1) % 60).padStart(2, "0");
+  assert.equal(f.deadlineIsoFromInput(edited, orig), new Date(edited).toISOString(), "editado: la hora del campo");
+  assert.equal(f.deadlineIsoFromInput(shown, "no-es-fecha"), new Date(shown).toISOString());
+  assert.equal(f.deadlineIsoFromInput(shown, undefined), new Date(shown).toISOString(), "una jornada nueva no tiene original");
+  // El asistente y Admin → Jornadas lo usan; si se editó, la elección explícita.
+  const pub = fn("async function setupPublish(btn, problem, number, rules)");
+  assert.ok(pub.includes("round.deadline = deadlineIsoFromInput(problem.deadline, round.deadline);"));
+  // La elección es la última espera: va antes de la revisión final del cierre (R1), no entre ella y la escritura.
+  assert.ok(pub.indexOf("linkedChoice = await chooseLinkedBetsClose(target, deadlineIsoFromInput(p0.deadline, target.deadline));") < pub.indexOf("const fresh = setupRoundProblem();"));
+  assert.ok(pub.includes("if(!linkedChoice) return; // went back: nothing is published"));
+  assert.ok(pub.includes("if(linkedChoice) applyLinkedChoice(linkedChoice, round, round.deadline);"));
+  assert.ok(!pub.includes("round.deadline = new Date(problem.deadline).toISOString();"), "ya no se reconstruye al minuto");
+  assert.ok(indexSrc.includes("chooseLinkedBetsClose(editingRound, deadlineIsoFromInput(draft.deadline, editingRound.deadline))"));
+  assert.ok(indexSrc.includes("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);"));
+});

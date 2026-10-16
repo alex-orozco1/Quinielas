@@ -504,7 +504,7 @@ test("reconcilePenaltyLedger is called before the reopen-round deadline mutation
 test("reconcilePenaltyLedger is called before the manual round-editor deadline mutation", () => {
   const body = extractFunctionBody(indexSrc, "if(editingRound){");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
-  const deadlineMutationIdx = body.indexOf("editingRound.deadline = new Date(draft.deadline).toISOString();");
+  const deadlineMutationIdx = body.indexOf("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);");
   assert.ok(reconcileIdx !== -1 && reconcileIdx < deadlineMutationIdx);
 });
 
