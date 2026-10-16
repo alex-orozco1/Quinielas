@@ -1289,6 +1289,9 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   if (betCloses.ok) {
     if (Array.isArray(merged.customBets)) merged.customBets = betCloses.customBets;
     if (betCloses.retiredBetIds.length) merged.retiredBetIds = betCloses.retiredBetIds;
+    // D4-01: el «goleador» de antes es el guardado (resolveLegacyScorer).
+    if (betCloses.legacyScorer.keep) merged.golScorerBet = JSON.parse(JSON.stringify(betCloses.legacyScorer.value));
+    else delete merged.golScorerBet;
   } else if (Array.isArray(oldValue && oldValue.retiredBetIds)) {
     merged.retiredBetIds = oldValue.retiredBetIds;
   }

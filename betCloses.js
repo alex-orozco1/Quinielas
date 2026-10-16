@@ -38,6 +38,7 @@
 // archivan al terminarlo.
 
 const { readTournamentEpoch } = require("./metaParticipants");
+const { canonical } = require("./roundsConcurrency");
 
 const list = (v) => (Array.isArray(v) ? v : []);
 const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
@@ -149,6 +150,28 @@ function linkTarget(rounds, raw, wantedId, now) {
   return { round: r };
 }
 
+// El número de jornada del «goleador» de antes, normalizado como lo muda el
+// cliente (ensureCustomBets): número, texto numérico o nada.
+function legacyRoundNumber(v) {
+  const n = typeof v === "number" && Number.isFinite(v) ? v
+    : (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
+  return n || null;
+}
+
+// MS2 · D4-01. El «goleador» de antes (golScorerBet) es un dato antiguo del
+// servidor: su cierre y su estado son los guardados. Ninguna escritura lo
+// cambia, lo enciende, lo apaga ni lo crea (omitirlo conserva el guardado), así
+// que no se le puede mover el cierre antes de mudarlo. Devuelve el que debe
+// guardarse, o el rechazo.
+function resolveLegacyScorer(prev, next) {
+  const has0 = has(prev, "golScorerBet");
+  if (!has(next, "golScorerBet")) return { ok: true, keep: has0, value: prev.golScorerBet };
+  if (canonical(next.golScorerBet === undefined ? null : next.golScorerBet) !== canonical(has0 ? prev.golScorerBet : null)) {
+    return fail(409, "bet_close_locked", "golScorerBet");
+  }
+  return { ok: true, keep: has0, value: prev.golScorerBet };
+}
+
 function fail(status, error, betId) {
   return { ok: false, status, error, betId };
 }
@@ -163,8 +186,10 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
   const prev = obj(stored);
   const next = obj(merged);
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const scorer = resolveLegacyScorer(prev, next);
+  if (!scorer.ok) return scorer;
   if (!Array.isArray(next.customBets)) {
-    return { ok: true, customBets: next.customBets, retiredBetIds: list(prev.retiredBetIds).slice() };
+    return { ok: true, customBets: next.customBets, retiredBetIds: list(prev.retiredBetIds).slice(), legacyScorer: scorer };
   }
   const storedBets = new Map();
   for (const b of list(prev.customBets)) if (isBet(b) && !storedBets.has(b.id)) storedBets.set(b.id, b);
@@ -186,6 +211,22 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
         // torneo pertenecen. Sin migración, se quedan como estaban (por número).
         // En una quiniela ya migrada, llegan tarde a ella y reciben su misma
         // regla, con el corte en este momento (betCloseMigration.js).
+        // D4-01: se muda con el cierre que guarda el servidor, nunca con el que
+        // proponga la petición; y la mudanza no puede dejar abierta una que
+        // estaba cerrada ni mover en silencio el cierre de una abierta.
+        const trusted = legacyRoundNumber(obj(prev.golScorerBet).closesAtRound);
+        if (legacyRoundNumber(bet.closesAtRound) !== trusted) return fail(409, "bet_close_locked", bet.id);
+        const pseudo = { scope: "temporada", closesAtRound: trusted };
+        const was = betCloseState(pseudo, storedRounds, now);
+        if (was.kind === "legacy") {
+          // La mudanza no viene junto con un cambio de su propia jornada.
+          const sr = roundByNumber(storedRounds, trusted);
+          const nr = roundByNumber(rounds, trusted);
+          if (sr && (!nr || nr.id !== sr.id || !sameInstant(String(nr.deadline), String(sr.deadline)))) {
+            return fail(409, was.closed ? "bet_close_locked" : "bet_close_legacy", bet.id);
+          }
+        }
+        bet.closesAtRound = trusted;
         if (obj(prev.betCloseMigration).version >= 1) {
           const { classifyLegacyBet } = require("./betCloseMigration");
           const c = classifyLegacyBet(bet, { ...prev, rounds });
@@ -201,6 +242,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
             bet.closeFlag = c.category;
           }
         }
+        if (was.closed && !betCloseState(bet, rounds, now).closed) return fail(409, "bet_close_locked", bet.id);
         out.push(bet);
         continue;
       }
@@ -311,7 +353,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
   let retiredList = list(prev.retiredBetIds).filter((x) => typeof x === "string" || typeof x === "number");
   for (const id of removed) if (!retiredList.includes(id)) retiredList.push(id);
   if (retiredList.length > MAX_RETIRED_BET_IDS) retiredList = retiredList.slice(-MAX_RETIRED_BET_IDS);
-  return { ok: true, customBets: out, retiredBetIds: retiredList };
+  return { ok: true, customBets: out, retiredBetIds: retiredList, legacyScorer: scorer };
 }
 
 // Pure. Al cerrar el torneo: las preguntas de torneo que siguen abiertas se
@@ -378,5 +420,6 @@ module.exports = {
   retiredBetIds,
   withStoredBetFields,
   resolveBetCloses,
+  resolveLegacyScorer,
   archiveBetsForClose,
 };

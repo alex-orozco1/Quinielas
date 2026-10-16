@@ -145,11 +145,11 @@ test("cerrar el torneo: las abiertas se cierran a esa hora; todas se archivan co
 test("el «goleador» antiguo que se muda tarde a una quiniela ya migrada recibe la regla de la migración", () => {
   const legacy = { id: "cb_g", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound: 2 };
   const R3 = round("r_3", 3, 90);
-  const prev = { rounds: [R1, R3], customBets: [], golScorerBet: { enabled: true }, betCloseMigration: { version: 1 } };
+  const prev = { rounds: [R1, R3], customBets: [], golScorerBet: { enabled: true, closesAtRound: 2 }, betCloseMigration: { version: 1 } };
   const r = resolveBetCloses({ stored: prev, merged: { rounds: [R1, R3], customBets: [legacy], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
   assert.deepEqual([r.customBets[0].closeSource, r.customBets[0].closeFlag, r.customBets[0].closesAt], ["migration_cutoff", "lost_link", new Date(NOW).toISOString()]);
   // Ligado a una jornada que todavía no se crea: como en la migración, sin tocar.
-  const fut = resolveBetCloses({ stored: prev, merged: { rounds: [R1, R3], customBets: [{ ...legacy, closesAtRound: 9 }], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
+  const fut = resolveBetCloses({ stored: { ...prev, golScorerBet: { enabled: true, closesAtRound: 9 } }, merged: { rounds: [R1, R3], customBets: [{ ...legacy, closesAtRound: 9 }], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
   assert.equal(fut.customBets[0].closesAt, undefined);
   const noMig = resolveBetCloses({ stored: { ...prev, betCloseMigration: undefined }, merged: { rounds: [R1], customBets: [legacy] }, nowMs: NOW, legacyId: "cb_g" });
   assert.equal(noMig.customBets[0].closesAt, undefined, "sin migración, como antes");
@@ -173,4 +173,32 @@ test("antigua sin migrar y abierta (Technical QA): su cierre no cambia en silenc
   assert.equal(resolve(stored, { rounds: [R1, round("r_3", 3, 90)], customBets: [{ ...legacy, label: "L2" }] }).ok, true);
   // La que ya perdió su jornada sigue como antes de D4 hasta la migración.
   assert.equal(resolve({ rounds: [R2], customBets: [{ ...legacy, closesAtRound: 9 }] }, { rounds: [R2, round("r_9", 9, 30)], customBets: [{ ...legacy, closesAtRound: 9 }] }).ok, true);
+});
+
+test("D4-01 · el «goleador» de antes: no se edita ni se crea por la API, y se muda sólo con el cierre que guarda el servidor", () => {
+  const { resolveLegacyScorer } = require("../betCloses");
+  const gsb = { enabled: true, bonusPoints: 3, closesAtRound: 1 };
+  assert.equal(resolveLegacyScorer({ golScorerBet: gsb }, { golScorerBet: { ...gsb } }).ok, true, "el mismo: se acepta");
+  assert.deepEqual(resolveLegacyScorer({ golScorerBet: gsb }, {}), { ok: true, keep: true, value: gsb }, "omitido: se conserva");
+  for (const change of [{ ...gsb, closesAtRound: 2 }, { ...gsb, enabled: false }, { ...gsb, bonusPoints: 9 }, null]) {
+    assert.equal(resolveLegacyScorer({ golScorerBet: gsb }, { golScorerBet: change }).error, "bet_close_locked", JSON.stringify(change));
+  }
+  assert.equal(resolveLegacyScorer({}, { golScorerBet: gsb }).error, "bet_close_locked", "no se crea");
+  // La mudanza: cerrada con la J1 → sólo con la J1, y sigue cerrada.
+  const prev = { rounds: [R1past, R2], customBets: [], golScorerBet: gsb, customBetsMigrated: false };
+  const moved = (closesAtRound, rounds = [R1past, R2]) => resolveBetCloses({ stored: prev, merged: { rounds, customBets: [{ id: "cb_g", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound }], customBetsMigrated: true, golScorerBet: gsb }, nowMs: NOW, legacyId: "cb_g" });
+  assert.deepEqual([moved(2).ok, moved(2).error], [false, "bet_close_locked"]);
+  assert.equal(moved(null).error, "bet_close_locked");
+  assert.equal(moved(1).ok, true);
+  assert.equal(betCloseState(moved(1).customBets[0], [R1past, R2], NOW).closed, true);
+  assert.equal(moved(1, [R2]).error, "bet_close_locked", "ni junto con borrar su jornada");
+  assert.equal(moved(1, [{ ...R1past, deadline: at(30) }, R2]).error, "bet_close_locked", "ni moviéndola");
+  // Abierta: tampoco cambia de jornada al mudarse ni junto con un cambio de su jornada.
+  const open = { ...prev, rounds: [R1, R2] };
+  const movedOpen = (closesAtRound, rounds = [R1, R2]) => resolveBetCloses({ stored: open, merged: { rounds, customBets: [{ id: "cb_g", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound }], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" });
+  assert.equal(movedOpen(1).ok, true);
+  assert.equal(movedOpen(2).error, "bet_close_locked");
+  assert.equal(movedOpen(1, [R2]).error, "bet_close_legacy");
+  // Un número guardado como texto se compara como lo muda el cliente.
+  assert.equal(resolveBetCloses({ stored: { ...open, golScorerBet: { ...gsb, closesAtRound: "1" } }, merged: { rounds: [R1, R2], customBets: [{ id: "cb_g", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound: 1 }], customBetsMigrated: true }, nowMs: NOW, legacyId: "cb_g" }).ok, true);
 });
