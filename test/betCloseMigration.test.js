@@ -38,9 +38,14 @@ test("sin evidencia no se recupera nada: el número de una jornada actual o arch
   assert.equal(items.lost.evidence.numberInArchive, true, "se reporta, no se usa como prueba");
   assert.equal(items.amb.pointsUnattributed, true, "sus aciertos cuentan hoy y no se sabe de qué torneo son: se reporta");
   assert.deepEqual(plan.next.participants, meta.participants, "ninguna respuesta ni acierto cambia");
-  // Con una decisión explícita, una ambigua se liga a esa jornada.
-  const linked = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT, overrides: { amb: "link" } }).next.customBets[0];
+  // Con una decisión explícita (por id de jornada, con lo del reporte), una ambigua se liga a esa jornada.
+  assert.deepEqual(items.amb.candidates, [{ roundId: "r_new1", number: 1, deadline: at(48), published: true }]);
+  const decision = { action: "link", roundId: "r_new1", roundNumber: 1, roundDeadline: at(48) };
+  const linked = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT, overrides: { amb: decision } }).next.customBets[0];
   assert.deepEqual([linked.closesRoundId, linked.closesAt, linked.closeSource], ["r_new1", at(48), "migration_round"]);
+  // «link» a secas (la forma anterior) ya no decide nada: no se escribe esa quiniela.
+  const old = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT, overrides: { amb: "link" } });
+  assert.deepEqual([old.next, old.needsReview], [null, [{ betId: "amb", reason: "override_needs_round_id" }]]);
 });
 
 test("ligada a una jornada que todavía no se crea (un solo ciclo, número mayor que todas): se reporta y sigue abierta, no se cierra por protección", () => {
@@ -95,4 +100,44 @@ test("los scripts: el reporte no escribe (READ ONLY) y aplicar exige --apply y e
   assert.ok(report.includes("runBetCloseMigration(pool, { apply: false })") && !report.includes("apply: true"));
   const migrate = fs.readFileSync(path.join(__dirname, "..", "scripts", "bet-closes-migrate.js"), "utf8");
   assert.ok(migrate.includes('if (arg("database") !== db)'));
+});
+
+test("D4-03 · una decisión sobre una jornada con fecha inválida se rechaza: no se escribe nada (nada de 1970)", () => {
+  const meta = { tournamentEpoch: 1, pastTournaments: [{ rounds: [round("r_old1", 1, -900)] }], rounds: [{ id: "r_a", number: 1, deadline: "no-es-una-fecha", matches: [] }], customBets: [t("x", 1)] };
+  const plan = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT, overrides: { x: { action: "link", roundId: "r_a", roundNumber: 1, roundDeadline: "no-es-una-fecha" } } });
+  assert.deepEqual([plan.next, plan.needsReview], [null, [{ betId: "x", reason: "override_round_invalid_deadline" }]]);
+  assert.ok(!JSON.stringify(plan).includes("1970"));
+  // Sin decisión: cierre por protección con el corte (no una fecha inventada).
+  const def = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT }).next.customBets[0];
+  assert.deepEqual([def.closesAt, def.closeSource, def.closeFlag], [CUT, "migration_cutoff", "ambiguous"]);
+});
+
+test("D4-04 · la decisión liga a la jornada por su id; el orden del arreglo no cambia el resultado; lo que no cuadra pide revisión", () => {
+  const a = round("r_a", 1, 30), b = round("r_b", 1, 50);
+  const meta = (rounds) => ({ rounds, customBets: [t("x", 1)] });
+  const dec = { action: "link", roundId: "r_b", roundNumber: 1, roundDeadline: b.deadline };
+  for (const rounds of [[a, b], [b, a]]) {
+    const out = planBetCloseMigration(meta(rounds), { nowMs: NOW, cutoffIso: CUT, overrides: { x: dec } }).next.customBets[0];
+    assert.deepEqual([out.closesRoundId, out.closesAt], ["r_b", b.deadline]);
+  }
+  const review = (o, m = meta([a, b])) => planBetCloseMigration(m, { nowMs: NOW, cutoffIso: CUT, overrides: o }).needsReview;
+  assert.deepEqual(review({ x: "link" }), [{ betId: "x", reason: "override_needs_round_id" }]);
+  assert.deepEqual(review({ x: { ...dec, roundId: "r_zz" } }), [{ betId: "x", reason: "override_round_not_candidate" }]);
+  assert.deepEqual(review({ x: { ...dec, roundDeadline: at(51) } }), [{ betId: "x", reason: "override_stale" }]);
+  assert.deepEqual(review({ x: { ...dec, roundNumber: 2 } }), [{ betId: "x", reason: "override_stale" }]);
+  assert.deepEqual(review({ x: { action: "cutoff" } }), [{ betId: "x", reason: "override_invalid" }]);
+  assert.deepEqual(review({ nadie: dec }), [{ betId: "nadie", reason: "override_unknown_bet" }]);
+  // Una que no es ambigua (ligada con evidencia) no admite decisión.
+  assert.deepEqual(review({ x: dec }, { rounds: [b], customBets: [t("x", 1)] }), [{ betId: "x", reason: "override_not_applicable" }]);
+  // Ya migrada: la decisión no se aplica y se dice.
+  assert.deepEqual(review({ x: dec }, { ...meta([a, b]), betCloseMigration: { version: 1 } }), [{ betId: "x", reason: "already_migrated" }]);
+});
+
+test("pendientes de su jornada: el reporte separa con y sin rastro de una jornada borrada; ninguna se toca", () => {
+  const meta = { rounds: [round("r_1", 1, -5), round("r_2", 2, 20)], customBets: [t("p", 4)] };
+  const sin = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT, traces: { orphanRoundIds: 0 } });
+  const con = planBetCloseMigration(meta, { nowMs: NOW, cutoffIso: CUT, traces: { orphanRoundIds: 2 } });
+  assert.deepEqual([sin.items[0].subcategory, sin.items[0].evidence.deletedRoundTraces, sin.items[0].evidence.gapFromMax], ["sin_rastro_de_jornada_borrada", 0, 2]);
+  assert.deepEqual([con.items[0].subcategory, con.items[0].evidence.deletedRoundTraces], ["con_rastro_de_jornada_borrada", 2]);
+  assert.deepEqual([sin.next.customBets[0], con.next.customBets[0]], [t("p", 4), t("p", 4)]);
 });

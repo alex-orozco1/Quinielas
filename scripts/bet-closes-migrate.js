@@ -5,8 +5,14 @@
 //   Para escribir hacen falta las dos cosas:
 //     --apply --database=<nombre>   (el nombre de la base a la que apunta
 //                                    DATABASE_URL: una confirmación deliberada)
-//   Opcional: --overrides=<archivo.json>  { "<slug>": { "<betId>": "link" } }
-//             para ligar, por decisión explícita, preguntas marcadas ambiguous.
+//   Opcional: --overrides=<archivo.json> con las decisiones explícitas para
+//             preguntas marcadas ambiguous, por pregunta y por id de jornada,
+//             copiando del reporte el candidato elegido:
+//             { "<slug>": { "<betId>": { "action": "link", "roundId": "…",
+//                                        "roundNumber": N, "roundDeadline": "…" } } }
+//             Se revalidan bajo candado al aplicar; si una no cuadra (fecha
+//             inválida, otra jornada, algo cambió desde el reporte), esa
+//             quiniela no se escribe, sale en needsReview y el código es 3.
 //
 // Cada quiniela se migra en su transacción, con su fila bloqueada, y queda
 // marcada; volver a correrlo (o correrlo dos veces a la vez) no cambia nada más.
@@ -40,6 +46,10 @@ const arg = (name) => {
     }
     const result = await runBetCloseMigration(pool, { apply, overrides });
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    if (result.totals.needsReview > 0) {
+      console.error(`${result.totals.needsReview} decisión(es) piden revisión: esas quinielas no se escribieron (needsReview).`);
+      process.exitCode = 3;
+    }
   } catch (err) {
     console.error("La migración falló:", err && err.message ? err.message : "error");
     process.exitCode = 1;

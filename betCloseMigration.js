@@ -18,14 +18,23 @@
 //     histórica; closeSource "migration_cutoff", closeFlag "lost_link".
 //   - pending_round: en una quiniela de un solo ciclo, su número es mayor que
 //     el de cualquier jornada actual: la ligaron a una jornada que todavía no
-//     se crea (o se borró la última; no se distingue). Hoy sigue abierta y
-//     cerrará con esa jornada cuando exista. Se reporta y no se toca: cerrarla
-//     por protección le quitaría a la gente una pregunta legítimamente abierta.
+//     se crea, o se borró la última. Hoy sigue abierta y cerrará con esa
+//     jornada cuando exista. No se toca. El reporte separa las que tienen
+//     rastro de una jornada borrada (pronósticos o penalizaciones de una
+//     jornada que ya no está) de las que no; decidir cerrar alguna es una
+//     operación explícita aparte, que no existe todavía.
 //   - ambiguous: hay una jornada con ese número pero no hay evidencia de que
 //     sea la suya (la quiniela ya cerró algún torneo, o el número se repite).
 //     Por defecto, el mismo cierre de protección (closeFlag "ambiguous"); se
-//     puede ligar a esa jornada sólo con una decisión explícita por pregunta
-//     (overrides), después de revisar el reporte.
+//     puede ligar a una jornada sólo con una decisión explícita por pregunta
+//     Y por id de jornada, con lo que se revisó en el reporte (D4-03/04):
+//       { "<slug>": { "<betId>": { "action": "link", "roundId": "…",
+//                                  "roundNumber": N, "roundDeadline": "…" } } }
+//     Al aplicar, bajo el candado de la fila, se revalida: que la pregunta siga
+//     siendo ambigua, que esa jornada sea una de sus candidatas, que su fecha
+//     sea válida y que número y cierre sigan siendo los del reporte. Si algo no
+//     cuadra, esa quiniela no se escribe y se pide revisión (needsReview). El
+//     orden del arreglo nunca decide.
 //   - no_close: nunca tuvo cierre. Sigue «Sin cierre» en el torneo activo
 //     (closeSource "none", sin fecha) y se cierra y archiva al terminarlo.
 //   - own_close: ya tiene su cierre propio (creada con D4). No se toca.
@@ -43,7 +52,7 @@ const { stampMetaRevisions } = require("./metaParticipants");
 const { stampRoundsRevision } = require("./roundsConcurrency");
 const { stampBetsRevision } = require("./betsConcurrency");
 const { readTournamentEpoch } = require("./metaParticipants");
-const { instantMs } = require("./betCloses");
+const { instantMs, sameInstant } = require("./betCloses");
 
 const MIGRATION_VERSION = 1;
 const list = (v) => (Array.isArray(v) ? v : []);
@@ -81,25 +90,56 @@ function classifyLegacyBet(bet, meta) {
   }
   const round = matches[0];
   if (!singleCycle || matches.length > 1 || instantMs(String(round.deadline)) === null) {
-    return { category: "ambiguous", round, evidence: { epoch, archives, roundsWithNumber: matches.length } };
+    return { category: "ambiguous", candidates: matches, evidence: { epoch, archives, roundsWithNumber: matches.length } };
   }
   return { category: "linked", round, evidence: { epoch: 0, archives: 0, roundsWithNumber: 1 } };
 }
 
+const candidateOf = (r) => ({ roundId: r.id, number: r.number, deadline: typeof r.deadline === "string" ? r.deadline : null, published: r.published !== false });
+
+// Pure. Las decisiones explícitas de una quiniela, revalidadas contra la meta
+// leída bajo candado. Devuelve { decisions: Map(betId → jornada), review: [] }.
+function checkOverrides(m, overrides) {
+  const decisions = new Map();
+  const review = [];
+  const bets = new Map(list(m.customBets).filter(isBet).map((b) => [b.id, b]));
+  for (const [betId, o] of Object.entries(obj(overrides))) {
+    const bet = bets.get(betId);
+    if (!bet) { review.push({ betId, reason: "override_unknown_bet" }); continue; }
+    const c = classifyLegacyBet(bet, m);
+    if (c.category !== "ambiguous") { review.push({ betId, reason: "override_not_applicable" }); continue; }
+    if (typeof o === "string") { review.push({ betId, reason: "override_needs_round_id" }); continue; }
+    if (!isBet(o) || o.action !== "link" || typeof o.roundId !== "string") { review.push({ betId, reason: "override_invalid" }); continue; }
+    const cand = c.candidates.find((r) => r && r.id === o.roundId);
+    if (!cand) { review.push({ betId, reason: "override_round_not_candidate" }); continue; }
+    if (instantMs(String(cand.deadline)) === null) { review.push({ betId, reason: "override_round_invalid_deadline" }); continue; }
+    if (o.roundNumber !== cand.number || typeof o.roundDeadline !== "string" || !sameInstant(o.roundDeadline, String(cand.deadline))) {
+      review.push({ betId, reason: "override_stale" }); continue;
+    }
+    decisions.set(betId, cand);
+  }
+  return { decisions, review };
+}
+
 // Pure. El plan para una quiniela. `nowMs` y `cutoffIso` salen del reloj de la
-// base, dentro de la transacción. `overrides`: { [betId]: "link" | "cutoff" },
-// sólo para las ambiguas.
-//   Devuelve { migrated, items, next } — `next` es la meta a guardar (o null si
-//   ya estaba migrada).
-function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {} } = {}) {
+// base, dentro de la transacción. `overrides`: las decisiones explícitas de
+// esta quiniela (ver arriba). `traces`: rastros de jornadas borradas
+// ({ orphanRoundIds }), para separar las pendientes.
+//   Devuelve { migrated, items, next, needsReview } — `next` es la meta a
+//   guardar, o null si ya estaba migrada o si alguna decisión pide revisión
+//   (entonces no se escribe nada de esta quiniela).
+function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {}, traces = {} } = {}) {
   const m = obj(meta);
   const epoch = readTournamentEpoch(m);
   const archives = list(m.pastTournaments).length;
   const items = [];
   const pendingScorer = !m.customBetsMigrated && obj(m.golScorerBet).enabled === true;
   if (alreadyMigrated(m)) {
-    return { migrated: true, items, next: null, epoch, archives, pendingScorer };
+    const needsReview = Object.keys(obj(overrides)).map((betId) => ({ betId, reason: "already_migrated" }));
+    return { migrated: true, items, next: null, epoch, archives, pendingScorer, needsReview };
   }
+  const { decisions, review } = checkOverrides(m, overrides);
+  const orphans = Number.isInteger(obj(traces).orphanRoundIds) ? traces.orphanRoundIds : 0;
   const next = JSON.parse(JSON.stringify(m));
   next.customBets = list(next.customBets).map((bet) => {
     if (!isBet(bet)) return bet;
@@ -107,7 +147,13 @@ function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {} } = {}) 
     const hits = list(m.participants).filter((p) => isBet(p) && isBet(p.customBetAnswers) && isBet(p.customBetAnswers[bet.id]) && p.customBetAnswers[bet.id].correct === true).length;
     const answers = list(m.participants).filter((p) => isBet(p) && isBet(p.customBetAnswers) && isBet(p.customBetAnswers[bet.id])).length;
     const item = { betId: bet.id, category: c.category, closesAtRound: bet.closesAtRound ?? null, answers, hits };
-    if (c.evidence) item.evidence = c.evidence;
+    if (c.evidence) item.evidence = { ...c.evidence };
+    if (c.category === "ambiguous") item.candidates = c.candidates.map(candidateOf);
+    if (c.category === "pending_round") {
+      item.evidence.deletedRoundTraces = orphans;
+      item.evidence.gapFromMax = bet.closesAtRound - c.evidence.maxRoundNumber;
+      item.subcategory = orphans ? "con_rastro_de_jornada_borrada" : "sin_rastro_de_jornada_borrada";
+    }
     // Lo que una quiniela con torneos cerrados cuenta hoy de una pregunta
     // antigua sin pertenencia probada: se reporta, no se decide.
     if (bet.scope === "temporada" && hits > 0 && (epoch > 0 || archives > 0) && c.category !== "own_close") item.pointsUnattributed = true;
@@ -117,15 +163,18 @@ function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {} } = {}) 
       item.action = "sin_cierre";
     } else if (c.category === "pending_round") {
       item.action = "sin_cambio_pendiente";
-    } else if (c.category === "linked" || (c.category === "ambiguous" && overrides[bet.id] === "link")) {
-      const ms = instantMs(String(c.round.deadline));
+    } else if (c.category === "linked" || (c.category === "ambiguous" && decisions.has(bet.id))) {
+      // Ligada con evidencia, o por decisión explícita ya revalidada (fecha
+      // válida, la jornada del reporte, sin cambios). Nunca otra.
+      const round = c.category === "linked" ? c.round : decisions.get(bet.id);
+      const ms = instantMs(String(round.deadline));
       out.closesAt = new Date(ms).toISOString();
-      out.closesRoundId = c.round.id;
+      out.closesRoundId = round.id;
       out.closeSource = "migration_round";
       delete out.closeFlag;
       item.category = c.category === "linked" ? (ms <= nowMs ? "linked_closed" : "linked_open") : "ambiguous";
       item.action = c.category === "linked" ? "ligada" : "ligada_por_decision";
-      item.roundId = c.round.id;
+      item.roundId = round.id;
       item.closesAt = out.closesAt;
     } else if (c.category === "lost_link" || c.category === "ambiguous") {
       out.closesAt = cutoffIso;
@@ -133,7 +182,6 @@ function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {} } = {}) 
       out.closeFlag = c.category;
       item.action = "cerrada_por_proteccion";
       item.closesAt = cutoffIso;
-      if (c.round) item.roundId = c.round.id;
     } else {
       item.action = "sin_cambio";
     }
@@ -141,7 +189,22 @@ function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {} } = {}) 
     return out;
   });
   next.betCloseMigration = { version: MIGRATION_VERSION, cutoff: cutoffIso, appliedAt: cutoffIso };
-  return { migrated: false, items, next, epoch, archives, pendingScorer };
+  if (review.length) return { migrated: false, items, next: null, epoch, archives, pendingScorer, needsReview: review };
+  return { migrated: false, items, next, epoch, archives, pendingScorer, needsReview: [] };
+}
+
+// Rastros de jornadas que existieron y ya no están: ids de jornada en los
+// pronósticos de los participantes o en su registro de penalizaciones que no
+// son de ninguna jornada actual. Sólo se cuentan; no se lee ningún pronóstico.
+async function deletedRoundTraces(client, key, meta) {
+  const m = obj(meta);
+  const current = new Set(list(m.rounds).filter((r) => r && r.id != null).map((r) => r.id));
+  const seen = new Set();
+  for (const p of list(m.participants)) for (const id of Object.keys(obj(obj(p).penalizedRounds))) if (!current.has(id)) seen.add(id);
+  const pattern = key === "quiniela_meta_v1" ? "quiniela\\_picks\\_%\\_v1" : key.slice(0, -":meta".length) + ":picks:%";
+  const rows = (await client.query("SELECT value FROM kv WHERE key LIKE $1 AND jsonb_typeof(value) = 'object'", [pattern])).rows;
+  for (const r of rows) for (const id of Object.keys(obj(r.value))) if (!id.startsWith("__") && !current.has(id)) seen.add(id);
+  return { orphanRoundIds: seen.size };
 }
 
 const META_KEYS_SQL = "SELECT key FROM kv WHERE (key = 'quiniela_meta_v1' OR key LIKE 'quiniela:%:meta') AND jsonb_typeof(value) = 'object' ORDER BY key";
@@ -168,8 +231,10 @@ async function runBetCloseMigration(pool, { apply = false, overrides = {} } = {}
         const value = row.rows[0].value;
         const nowDate = row.rows[0].now;
         at = nowDate.toISOString();
-        const plan = planBetCloseMigration(value, { nowMs: nowDate.getTime(), cutoffIso: nowDate.toISOString(), overrides: obj(overrides[slug || key]) });
+        const traces = await deletedRoundTraces(client, key, value);
+        const plan = planBetCloseMigration(value, { nowMs: nowDate.getTime(), cutoffIso: nowDate.toISOString(), overrides: obj(overrides[slug || key]), traces });
         const entry = { slug, key, epoch: plan.epoch, archives: plan.archives, alreadyMigrated: plan.migrated, pendingLegacyScorer: plan.pendingScorer, questions: plan.items };
+        if (plan.needsReview.length) entry.needsReview = plan.needsReview;
         if (apply && plan.next) {
           await client.query("UPDATE kv SET value = $2, updated_at = now() WHERE key = $1", [key, JSON.stringify(stampMetaWrite(plan.next, value))]);
           entry.applied = true;
@@ -193,13 +258,15 @@ async function runBetCloseMigration(pool, { apply = false, overrides = {} } = {}
 }
 
 function totalsOf(quinielas) {
-  const t = { quinielas: quinielas.length, alreadyMigrated: 0, withTournamentQuestions: 0, pendingLegacyScorer: 0, pointsUnattributed: 0, byCategory: {} };
+  const t = { quinielas: quinielas.length, alreadyMigrated: 0, withTournamentQuestions: 0, pendingLegacyScorer: 0, pointsUnattributed: 0, needsReview: 0, byCategory: {}, pendingBySubcategory: {} };
   for (const q of quinielas) {
     if (q.alreadyMigrated) t.alreadyMigrated++;
+    if (q.needsReview) t.needsReview += q.needsReview.length;
     if (q.pendingLegacyScorer) t.pendingLegacyScorer++;
     if (q.questions.some((i) => i.category !== "round_question")) t.withTournamentQuestions++;
     for (const i of q.questions) {
       t.byCategory[i.category] = (t.byCategory[i.category] || 0) + 1;
+      if (i.subcategory) t.pendingBySubcategory[i.subcategory] = (t.pendingBySubcategory[i.subcategory] || 0) + 1;
       if (i.pointsUnattributed) t.pointsUnattributed++;
     }
   }

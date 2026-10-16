@@ -174,7 +174,9 @@ test.describe("D4 · migración de cierres (PostgreSQL + servidor real)", () => 
 
   itest("una ambigua se liga sólo con una decisión explícita por pregunta (overrides)", async () => {
     const E = await conArchivo("mge");
-    await run({ apply: true, overrides: { [E.slug]: { cb_mgeamb: "link" } } });
+    // La decisión se copia del candidato que da el reporte (D4-04: por id de jornada).
+    const cand = entryOf(await run({ apply: false }), E).questions.find((i) => i.betId === "cb_mgeamb").candidates[0];
+    await run({ apply: true, overrides: { [E.slug]: { cb_mgeamb: { action: "link", roundId: cand.roundId, roundNumber: cand.number, roundDeadline: cand.deadline } } } });
     const e = (await stored(E)).customBets;
     assert.deepEqual([e[0].closesRoundId, e[0].closeSource], ["r_mgenew1", "migration_round"]);
     assert.equal(e[1].closeFlag, "lost_link", "la otra, sin decisión, por protección");
