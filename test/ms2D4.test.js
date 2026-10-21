@@ -191,7 +191,7 @@ test("D4 · Tus reglas: otra jornada se liga por id; la misma jornada no cambia 
 
 test("D4 · un rechazo por reabrir o por reusar un id: la pestaña trae lo del servidor y lo dice", () => {
   const save = fn("async function setMetaWithError(meta, opts)");
-  assert.ok(save.includes('if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, ERROR_MESSAGES[result.error]);'));
+  assert.ok(save.includes('if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, opts && opts.autoMove ? AUTO_MOVE_REFUSED : ERROR_MESSAGES[result.error]);'));
   for (const k of ["bet_close_locked", "bet_close_invalid", "bet_retired", "bet_close_legacy"]) assert.ok(new RegExp(`\\n    ${k}: "`).test(indexSrc), k);
 });
 
@@ -283,4 +283,40 @@ test("D4-02 · un cierre que nadie editó se conserva exacto (con segundos), tam
   assert.ok(!pub.includes("round.deadline = new Date(problem.deadline).toISOString();"), "ya no se reconstruye al minuto");
   assert.ok(indexSrc.includes("chooseLinkedBetsClose(editingRound, deadlineIsoFromInput(draft.deadline, editingRound.deadline))"));
   assert.ok(indexSrc.includes("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);"));
+});
+
+test("D4-01 (UX) · si se rechaza la mudanza automática del «goleador», no se le dice a la persona que su cambio reabriría una pregunta: no hizo ninguno", async () => {
+  const line = indexSrc.split("\n").find((l) => l.trim().startsWith("const AUTO_MOVE_REFUSED = "));
+  assert.ok(line, "el mensaje existe");
+  const run = async (opts) => {
+    const notices = [];
+    const meta = { customBetsMigrated: true, customBets: [{ id: "cb_g", scope: "temporada", closesAtRound: 12 }], participants: [] };
+    const f = new Function("notices", "meta", "opts", `
+      const ERROR_MESSAGES = { bet_close_locked: "Ese cambio reabriría una pregunta del torneo que ya cerró, y una pregunta cerrada no se reabre. No se guardó nada.", bet_close_legacy: "legacy", bet_retired: "retired" };
+      const kvSetWithError = async () => ({ ok: false, error: "bet_close_locked" });
+      const getMeta = async () => ({ customBetsMigrated: false, customBets: [], participants: [], golScorerBet: { enabled: true, closesAtRound: 13 } });
+      const adminOrOwnerCred = () => "pw"; const currentMetaKey = () => "k"; const platformPasswordCache = null;
+      const render = async () => {}; const invalidatePlan = () => {}; const adoptParticipantRevs = () => {}; const toast = () => {};
+      const notice = (m) => notices.push(m);
+      ${line}
+      ${fn("function adoptStoredBets(target, stored)")}
+      ${fn("function adoptFreshMeta(target, fresh)")}
+      ${fn("function isStaleBetRefusal(result, opts)")}
+      ${fn("async function adoptAfterStaleBet(meta, result, message)")}
+      ${fn("async function setMetaWithError(meta, opts)")}
+      return setMetaWithError(meta, opts).then((r) => ({ r, meta }));`);
+    const { r, meta: m } = await f(notices, meta, opts);
+    return { r, m, notices };
+  };
+  const auto = await run({ autoMove: true });
+  assert.deepEqual(auto.notices, ["Otra persona cambió una pregunta del torneo mientras abrías esta pantalla. Ya ves lo más reciente."]);
+  assert.equal(auto.r.reconciled, true);
+  assert.equal(auto.m.customBetsMigrated, false, "la pestaña toma lo guardado: la siguiente pantalla vuelve a mudarlo con su cierre real");
+  assert.equal(auto.m.golScorerBet.closesAtRound, 13);
+  // Un cambio que sí hizo la persona sigue diciendo lo que protege el servidor.
+  const manual = await run(undefined);
+  assert.match(manual.notices[0], /^Ese cambio reabriría una pregunta del torneo/);
+  // Las dos mudanzas automáticas (pantalla Jornada y Admin → Tus reglas) lo marcan.
+  assert.ok(indexSrc.includes("const migratedBets = ensureCustomBets();\n    if(migratedBets) await setMeta(meta, { autoMove: true });"));
+  assert.ok(indexSrc.includes("const migrated = ensureCustomBets();\n      if(migrated) await setMeta(meta, { autoMove: true });"));
 });

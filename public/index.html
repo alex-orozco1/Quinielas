@@ -2079,6 +2079,7 @@
   // corregirlo. Para lo demás, igual que un conflicto: se trae el estado bueno,
   // se repinta y se dice en una línea, en vez de que cada guardado siguiente
   // falle por algo que la persona no tocó.
+  const AUTO_MOVE_REFUSED = "Otra persona cambió una pregunta del torneo mientras abrías esta pantalla. Ya ves lo más reciente.";
   function isStaleBetRefusal(result, opts){
     return !!result && !result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited);
   }
@@ -2132,7 +2133,10 @@
       if(isStaleBetRefusal(result, opts)) return await adoptAfterStaleBet(meta, result); // MS2
       // MS2 · D4: refused because it would reopen a closed question or reuse a
       // removed one: this tab was behind on it. It takes what the server has.
-      if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, ERROR_MESSAGES[result.error]);
+      // The automatic move of the old «goleador» (opts.autoMove) is not a
+      // change the person made: if it is refused, the stored data moved under
+      // this tab, so it says that, not «ese cambio…». The next screen retries it.
+      if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, opts && opts.autoMove ? AUTO_MOVE_REFUSED : ERROR_MESSAGES[result.error]);
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
         // HOTFIX-001: sin esto, la siguiente escritura de ESTA pestaña se
@@ -7044,7 +7048,7 @@
 
     const pending = pendingPicksInfo();
     const migratedBets = ensureCustomBets();
-    if(migratedBets) await setMeta(meta);
+    if(migratedBets) await setMeta(meta, { autoMove: true });
     const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
     // HTML from its own function (MS2: one card for all the tournament questions).
     const tournamentBetsHtml = temporadaBets.length ? tournamentBetsCardHtml(temporadaBets) : "";
@@ -9365,7 +9369,7 @@
     if(!(opts && opts.quick)){
       body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;
       const migrated = ensureCustomBets();
-      if(migrated) await setMeta(meta);
+      if(migrated) await setMeta(meta, { autoMove: true });
       try{ await ensureAllPicksLoaded(); }catch(e){ console.error("reglas picks load failed", e); }
       if(!body.isConnected) return;
     }
