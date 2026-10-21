@@ -817,11 +817,11 @@ test("R2 · lo que no quedó se dice en la hoja y queda en «Tus reglas» hasta 
   assert.ok(reglas.includes('if(pendingDone) pendingDone.addEventListener("click", () => { clearSetupPending(); repaint(); });'));
 });
 
-const keptEnv = (metaObj) => new Function("meta", `
+const keptEnv = (metaObj) => new Function("meta", "nowMs", `
   ${fn("function pointsWord(n)")}
   ${fn("function scopeLabel(scope)")}
   ${fn("function fmtWhenTz(iso)")}
-  const serverNow = () => Date.now();
+  const serverNow = () => nowMs;
   ${fn("function isRoundLocked(round)")}
   ${fn("function betCloseInfo(bet)")}
   ${fn("function sameInstantMs(a, b)")}
@@ -836,7 +836,7 @@ const keptEnv = (metaObj) => new Function("meta", `
   let setupFlow = null;
   ${fn("function setupDuplicateOfKept()")}
   return { setupKeptQuestions, keptQuestionDetail, extraQuestionProblem, setupDuplicateOfKept, setFlow: (f) => { setupFlow = f; } };
-`)(metaObj);
+`)(metaObj, NOW);
 
 test("R3 · las preguntas que la quiniela ya tiene se muestran (también el goleador antiguo), se conservan y cuentan para duplicados", () => {
   const m = { customBetsMigrated: true, rounds: [round(12, 48, [50])],
