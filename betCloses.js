@@ -82,6 +82,13 @@ function roundByNumber(rounds, n) {
 // Pure. El estado de cierre de una pregunta a la hora `nowMs`.
 //   kind: "jornada" (sin reloj propio), "own" (con closesAt), "none" (antigua,
 //   sin cierre) o "legacy" (antigua, sin migrar: por número, como antes).
+// La jornada no cambió de cierre: el mismo instante, o el mismo valor guardado
+// tal cual aunque no sea una fecha (null, «pendiente»). Sin lo segundo, una
+// jornada con un cierre ilegible contaba como «cambiada» en cada guardado,
+// aunque nadie la tocara (Technical QA sobre d4af509).
+function sameStoredDeadline(a, b) {
+  return a === b || sameInstant(String(a), String(b));
+}
 function betCloseState(bet, rounds, nowMs) {
   const b = obj(bet);
   if (b.scope !== "temporada") return { kind: "jornada", closed: false };
@@ -222,7 +229,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
           // La mudanza no viene junto con un cambio de su propia jornada.
           const sr = roundByNumber(storedRounds, trusted);
           const nr = roundByNumber(rounds, trusted);
-          if (sr && (!nr || nr.id !== sr.id || !sameInstant(String(nr.deadline), String(sr.deadline)))) {
+          if (sr && (!nr || nr.id !== sr.id || !sameStoredDeadline(nr.deadline, sr.deadline))) {
             return fail(409, was.closed ? "bet_close_locked" : "bet_close_legacy", bet.id);
           }
         }
@@ -331,7 +338,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       }
       if (sr) {
         const nr = roundByNumber(rounds, before.closesAtRound);
-        if (!nr || nr.id !== sr.id || !sameInstant(String(nr.deadline), String(sr.deadline))) return fail(409, "bet_close_legacy", bet.id);
+        if (!nr || nr.id !== sr.id || !sameStoredDeadline(nr.deadline, sr.deadline)) return fail(409, "bet_close_legacy", bet.id);
       }
       out.push(bet);
       continue;
@@ -416,6 +423,7 @@ module.exports = {
   MAX_RETIRED_BET_IDS,
   instantMs,
   sameInstant,
+  sameStoredDeadline,
   betCloseState,
   retiredBetIds,
   withStoredBetFields,

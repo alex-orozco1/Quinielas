@@ -52,6 +52,7 @@ const env = (meta, extra = "") => new Function("meta", "serverNowMs", "currentUs
   ${fn("function closedLegacyBets(round)")}
   ${fn("function linkedBetsNote(round, what)")}
   ${fn("async function chooseLinkedBetsClose(round, nextIso, intro)")}
+  ${fn("function validInstantIso(v)")}
   ${fn("function applyLinkedChoice(choice, round, nextIso)")}
   ${fn("function scopeLabel(scope)")}
   ${fn("function archivedBetsHtml(t)")}
@@ -191,7 +192,7 @@ test("D4 · Tus reglas: otra jornada se liga por id; la misma jornada no cambia 
 
 test("D4 · un rechazo por reabrir o por reusar un id: la pestaña trae lo del servidor y lo dice", () => {
   const save = fn("async function setMetaWithError(meta, opts)");
-  assert.ok(save.includes('if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, opts && opts.autoMove ? AUTO_MOVE_REFUSED : ERROR_MESSAGES[result.error]);'));
+  assert.ok(save.includes('if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, opts && opts.autoMove ? () => (autoMoveAllowed() ? AUTO_MOVE_REFUSED : AUTO_MOVE_GAVE_UP) : ERROR_MESSAGES[result.error]);'));
   for (const k of ["bet_close_locked", "bet_close_invalid", "bet_retired", "bet_close_legacy"]) assert.ok(new RegExp(`\\n    ${k}: "`).test(indexSrc), k);
 });
 
@@ -285,9 +286,16 @@ test("D4-02 · un cierre que nadie editó se conserva exacto (con segundos), tam
   assert.ok(indexSrc.includes("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);"));
 });
 
+// Las constantes y el contador de la mudanza automática, tal cual.
+function autoMoveBlock() {
+  const a = indexSrc.indexOf("  const AUTO_MOVE_REFUSED = ");
+  const b = indexSrc.indexOf("function autoMoveAllowed(){");
+  assert.ok(a !== -1 && b > a, "el bloque existe");
+  return indexSrc.slice(a, indexSrc.indexOf("\n", b));
+}
+
 test("D4-01 (UX) · si se rechaza la mudanza automática del «goleador», no se le dice a la persona que su cambio reabriría una pregunta: no hizo ninguno", async () => {
-  const line = indexSrc.split("\n").find((l) => l.trim().startsWith("const AUTO_MOVE_REFUSED = "));
-  assert.ok(line, "el mensaje existe");
+  const line = autoMoveBlock();
   const run = async (opts) => {
     const notices = [];
     const meta = { customBetsMigrated: true, customBets: [{ id: "cb_g", scope: "temporada", closesAtRound: 12 }], participants: [] };
@@ -317,6 +325,66 @@ test("D4-01 (UX) · si se rechaza la mudanza automática del «goleador», no se
   const manual = await run(undefined);
   assert.match(manual.notices[0], /^Ese cambio reabriría una pregunta del torneo/);
   // Las dos mudanzas automáticas (pantalla Jornada y Admin → Tus reglas) lo marcan.
-  assert.ok(indexSrc.includes("const migratedBets = ensureCustomBets();\n    if(migratedBets) await setMeta(meta, { autoMove: true });"));
-  assert.ok(indexSrc.includes("const migrated = ensureCustomBets();\n      if(migrated) await setMeta(meta, { autoMove: true });"));
+  assert.ok(indexSrc.includes("const migratedBets = autoMoveAllowed() && ensureCustomBets();\n    if(migratedBets) await setMeta(meta, { autoMove: true });"));
+  assert.ok(indexSrc.includes("const migrated = autoMoveAllowed() && ensureCustomBets();\n      if(migrated) await setMeta(meta, { autoMove: true });"));
+});
+
+test("D4-01 (Technical QA) · un rechazo de la mudanza automática que no se va no se reintenta sin fin: dos intentos por carga y lo dice", async () => {
+  const block = autoMoveBlock();
+  const f = new Function("indexFns", `
+    const notices = []; let posts = 0, renders = 0;
+    const ERROR_MESSAGES = { bet_close_locked: "locked" };
+    const kvSetWithError = async () => { posts++; return { ok: false, error: "bet_close_locked" }; };
+    const getMeta = async () => ({ customBetsMigrated: false, customBets: [], participants: [], golScorerBet: { enabled: true, closesAtRound: 1 } });
+    const adminOrOwnerCred = () => "pw"; const currentMetaKey = () => "k"; const platformPasswordCache = null;
+    const invalidatePlan = () => {}; const adoptParticipantRevs = () => {}; const toast = () => {};
+    const notice = (m) => notices.push(m);
+    const uid = () => "cb_n";
+    const meta = { customBetsMigrated: false, customBets: [], participants: [], golScorerBet: { enabled: true, closesAtRound: 1 } };
+    ${block}
+    ${fn("function adoptStoredBets(target, stored)")}
+    ${fn("function adoptFreshMeta(target, fresh)")}
+    ${fn("function isStaleBetRefusal(result, opts)")}
+    ${fn("async function adoptAfterStaleBet(meta, result, message)")}
+    ${fn("async function setMetaWithError(meta, opts)")}
+    ${fn("async function setMeta(meta, opts)")}
+    ${fn("function ensureCustomBets()")}
+    // La pantalla Jornada: cada repintado intenta la mudanza (el tope de 20 sólo corta la prueba).
+    async function render(){
+      if(++renders > 20) return;
+      const migratedBets = autoMoveAllowed() && ensureCustomBets();
+      if(migratedBets) await setMeta(meta, { autoMove: true });
+    }
+    return render().then(() => ({ posts, renders, notices, meta }));`);
+  const r = await f();
+  assert.equal(r.posts, 2, "dos intentos, no un bucle");
+  assert.ok(r.renders <= 3);
+  // El aviso se reemplaza (notice): el último es el que queda, y dice que se dejó de intentar.
+  assert.equal(r.notices[r.notices.length - 1], "No pudimos pasar el «goleador» de antes a las preguntas nuevas. Sigue como estaba; no se cambió nada.");
+  assert.ok(r.notices.every((m) => m.startsWith("No pudimos pasar")), "ninguno dice «otra persona» cuando ya no se va a reintentar");
+  assert.equal(r.meta.customBetsMigrated, false, "la pestaña queda con lo del servidor: sin mudar");
+});
+
+test("D4 (Technical QA) · una pregunta antigua cuya jornada no tiene un cierre legible no ofrece «conservar» un cierre que no existe ni inventa 1970", async () => {
+  const bad = { ...round("r_1", 1, 0), deadline: "pendiente" };
+  const meta = { rounds: [bad, round("r_2", 2, 72)], customBets: [{ id: "cb_old", label: "Antigua", scope: "temporada", points: 1, closesAtRound: 1 }] };
+  const e = make(meta);
+  const c = await e.chooseLinkedBetsClose(bad, at(30));
+  assert.equal(e.dialogs.length, 1);
+  assert.equal(e.dialogs[0].kind, "confirm", "sin opción de conservar");
+  assert.match(e.dialogs[0].msg, /no tenía una hora de cierre válida y cerrará con esta jornada/);
+  assert.ok(!/1970|31 de dic/.test(e.dialogs[0].msg));
+  assert.deepEqual(c.relink.map((b) => b.id), ["cb_old"]);
+  e.applyLinkedChoice(c, bad, at(30));
+  assert.equal(meta.customBets[0].closesRoundId, "r_1");
+  assert.equal(meta.customBets[0].closesAt, undefined, "el servidor pone el cierre de la jornada");
+  // Con null (cuenta como cerrada, como en el servidor): conservar no escribe una fecha inventada.
+  const nul = { ...round("r_3", 3, 0), deadline: null };
+  const m2 = { rounds: [nul], customBets: [{ id: "cb_n", label: "Nula", scope: "temporada", points: 1, closesAtRound: 3 }] };
+  const e2 = make(m2);
+  const c2 = await e2.chooseLinkedBetsClose(nul, at(30));
+  e2.applyLinkedChoice(c2, nul, at(30));
+  assert.equal(m2.customBets[0].closesAt, undefined, "sin 1970");
+  // El borrado de la jornada tampoco la inventa.
+  assert.ok(fn("async function deleteRoundWithRollback(btn, roundId)").includes("if(roundToDelete && validInstantIso(roundToDelete.deadline)) betsClosingWith(roundToDelete)"));
 });

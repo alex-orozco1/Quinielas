@@ -2080,6 +2080,15 @@
   // se repinta y se dice en una línea, en vez de que cada guardado siguiente
   // falle por algo que la persona no tocó.
   const AUTO_MOVE_REFUSED = "Otra persona cambió una pregunta del torneo mientras abrías esta pantalla. Ya ves lo más reciente.";
+  // A refused automatic move reloads and repaints, and the repaint tries the
+  // move again: once is right (the stored data moved under this tab), but a
+  // refusal that does not go away would loop (Technical QA on d4af509). So the
+  // move is tried at most twice per page load; after that the old «goleador»
+  // stays as it is on the server.
+  const AUTO_MOVE_MAX_TRIES = 2;
+  const AUTO_MOVE_GAVE_UP = "No pudimos pasar el «goleador» de antes a las preguntas nuevas. Sigue como estaba; no se cambió nada.";
+  let autoMoveFailures = 0;
+  function autoMoveAllowed(){ return autoMoveFailures < AUTO_MOVE_MAX_TRIES; }
   function isStaleBetRefusal(result, opts){
     return !!result && !result.ok && (result.error === "bet_close_required" || result.error === "bet_close_past") && !(opts && opts.betsEdited);
   }
@@ -2091,6 +2100,8 @@
       adopted = !!fresh;
     }catch(e){ console.error("refresh tras bet_close falló", e); }
     try{ await render(); }catch(e){ console.error("render tras bet_close falló", e); }
+    // A function is read after the repaint: the repaint may have tried again.
+    if(typeof message === "function") message = message();
     notice(message || "Hubo cambios en esta quiniela desde otra pestaña. Actualizamos la información para no perderlos — revisa y vuelve a aplicar tu cambio.");
     return { ...result, reconciled: adopted };
   }
@@ -2099,6 +2110,7 @@
       const ownerCred = (opts && opts.owner) || adminOrOwnerCred();
       const creds = { owner: ownerCred, platform: platformPasswordCache };
       const result = await kvSetWithError(currentMetaKey(), meta, creds);
+      if(opts && opts.autoMove && !result.ok) autoMoveFailures++;
       // HOTFIX-001. El servidor rechazó reemplazar el tablero porque esta
       // pestaña ya no estaba viendo el actual: otra pestaña, un import o un
       // cierre publicaron algo entremedio. No se perdió nada del servidor y no
@@ -2136,7 +2148,7 @@
       // The automatic move of the old «goleador» (opts.autoMove) is not a
       // change the person made: if it is refused, the stored data moved under
       // this tab, so it says that, not «ese cambio…». The next screen retries it.
-      if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, opts && opts.autoMove ? AUTO_MOVE_REFUSED : ERROR_MESSAGES[result.error]);
+      if(!result.ok && (result.error === "bet_close_locked" || result.error === "bet_retired" || result.error === "bet_close_legacy")) return await adoptAfterStaleBet(meta, result, opts && opts.autoMove ? () => (autoMoveAllowed() ? AUTO_MOVE_REFUSED : AUTO_MOVE_GAVE_UP) : ERROR_MESSAGES[result.error]);
       if(result.ok){
         if(Number.isFinite(result.participantsRevision)) meta.participantsRevision = result.participantsRevision;
         // HOTFIX-001: sin esto, la siguiente escritura de ESTA pestaña se
@@ -7047,7 +7059,7 @@
     ];
 
     const pending = pendingPicksInfo();
-    const migratedBets = ensureCustomBets();
+    const migratedBets = autoMoveAllowed() && ensureCustomBets();
     if(migratedBets) await setMeta(meta, { autoMove: true });
     const temporadaBets = (meta.customBets || []).filter(b => b.scope === "temporada");
     // HTML from its own function (MS2: one card for all the tournament questions).
@@ -9368,7 +9380,7 @@
   async function renderAdminReglas(body, opts){
     if(!(opts && opts.quick)){
       body.innerHTML = `<div class="card"><p class="muted" role="status">Cargando…</p></div>`;
-      const migrated = ensureCustomBets();
+      const migrated = autoMoveAllowed() && ensureCustomBets();
       if(migrated) await setMeta(meta, { autoMove: true });
       try{ await ensureAllPicksLoaded(); }catch(e){ console.error("reglas picks load failed", e); }
       if(!body.isConnected) return;
@@ -10096,13 +10108,19 @@
     if(!linked.length || nextMs === new Date(round.deadline).getTime()) return none;
     none.freeze = closedLegacyBets(round);
     const closed = linked.filter(b => customBetsLocked(b));
-    const own = linked.filter(b => !customBetsLocked(b) && (betCloseInfo(b).kind === "own" || betCloseInfo(b).kind === "legacy"));
+    const open = linked.filter(b => !customBetsLocked(b) && (betCloseInfo(b).kind === "own" || betCloseInfo(b).kind === "legacy"));
+    // An old question whose round has no readable close (null, «pendiente»)
+    // has no current close to keep: it can only close with this round, from
+    // its first real close. Nothing is invented for it (no 1970).
+    const unknown = open.filter(b => betCloseInfo(b).kind === "legacy" && !Number.isFinite(betCloseInfo(b).at));
+    const own = open.filter(b => !unknown.includes(b));
     const newWhen = fmtWhenTz(new Date(nextMs).toISOString());
     let msg = intro || `El nuevo cierre de la Jornada ${round.number} será ${newWhen}.`;
     if(closed.length) msg += `\n\n${closed.length === 1 ? "Esta pregunta del torneo ya cerró y sigue cerrada" : "Estas preguntas del torneo ya cerraron y siguen cerradas"}: ${quotedLabels(closed)}. No se vuelven a abrir.`;
+    if(unknown.length) msg += `\n\n${unknown.length === 1 ? "Esta pregunta del torneo no tenía una hora de cierre válida y cerrará" : "Estas preguntas del torneo no tenían una hora de cierre válida y cerrarán"} con esta jornada, el ${newWhen}: ${quotedLabels(unknown)}.`;
     if(!own.length){
       const ok = await qzConfirm(msg, { title: `¿Cambiar el cierre de la Jornada ${round.number}?`, confirmLabel: "Guardar cambios", cancelLabel: "Volver", destructive: false });
-      return ok ? none : null;
+      return ok ? { ...none, relink: unknown } : null;
     }
     msg += `\n\n${own.length === 1 ? "Esta pregunta del torneo cierra con esta jornada" : "Estas preguntas del torneo cierran con esta jornada"}: ${own.map(b => "«" + b.label + "» (cierre actual: " + fmtWhenTz(new Date(betCloseInfo(b).at).toISOString()) + ")").join(", ")}.`;
     const choice = await qzChoose(msg, {
@@ -10117,14 +10135,17 @@
     if(choice === null) return null;
     const isOwn = (b) => betCloseInfo(b).kind === "own";
     return choice === "move"
-      ? { ...none, move: own.filter(isOwn), relink: own.filter(b => !isOwn(b)) }
-      : { ...none, freeze: none.freeze.concat(own.filter(b => !isOwn(b))) };
+      ? { ...none, move: own.filter(isOwn), relink: own.filter(b => !isOwn(b)).concat(unknown) }
+      : { ...none, relink: unknown, freeze: none.freeze.concat(own.filter(b => !isOwn(b))) };
   }
   // Writes that choice onto the questions, next to the round's new close.
+  function validInstantIso(v){ return typeof v === "string" && Number.isFinite(Date.parse(v)); }
   function applyLinkedChoice(choice, round, nextIso){
     choice.move.forEach(b => { b.closesAt = nextIso; });
     choice.relink.forEach(b => { b.closesRoundId = round.id; });
-    choice.freeze.forEach(b => { b.closesAt = new Date(choice.keepAt).toISOString(); });
+    // Only a readable close is kept; without one nothing is written and the
+    // server says what it protects (new Date(null) would be 1970).
+    if(validInstantIso(choice.keepAt)) choice.freeze.forEach(b => { b.closesAt = new Date(choice.keepAt).toISOString(); });
   }
   async function deleteRoundWithRollback(btn, roundId){
     const roundToDelete = meta.rounds.find(r => r.id === roundId);
@@ -10135,7 +10156,7 @@
     // keeps that close, now as its own; without it the server refuses the
     // delete (bet_close_legacy) instead of leaving it without a close.
     const betsSnapshot = JSON.parse(JSON.stringify(meta.customBets || []));
-    if(roundToDelete) betsClosingWith(roundToDelete).filter(b => betCloseInfo(b).kind === "legacy")
+    if(roundToDelete && validInstantIso(roundToDelete.deadline)) betsClosingWith(roundToDelete).filter(b => betCloseInfo(b).kind === "legacy")
       .forEach(b => { b.closesAt = new Date(roundToDelete.deadline).toISOString(); });
     // Payment-penalty persistence (P1, QA-corrected): deleting a round must
     // not silently erase a penalty it already caused -- reconcile
