@@ -99,9 +99,13 @@ function realDeadlineMs(d) {
 // jornada con un cierre ilegible contaba como «cambiada» en cada guardado,
 // aunque nadie la tocara (Technical QA sobre d4af509).
 function sameStoredDeadline(a, b) {
-  // Sólo dos textos de fecha pueden ser «el mismo» sin ser idénticos: pasar de
-  // un texto a otra forma (un número, un arreglo) cuenta como un cambio.
-  return a === b || (typeof a === "string" && typeof b === "string" && sameInstant(a, b));
+  // El mismo valor guardado, de cualquier forma (dos arreglos u objetos iguales
+  // leídos del JSON no son ===), es «sin cambios»; y dos textos de fecha del
+  // mismo instante, también. Pasar de un texto a otra forma (un número, un
+  // arreglo) cuenta como un cambio.
+  if (a === b) return true;
+  if (typeof a === "string" && typeof b === "string") return sameInstant(a, b);
+  return typeof a === typeof b && JSON.stringify(a) === JSON.stringify(b);
 }
 function betCloseState(bet, rounds, nowMs) {
   const b = obj(bet);

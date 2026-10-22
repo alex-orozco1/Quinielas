@@ -197,3 +197,30 @@ test.describe("D4 · un cierre en otra forma (arreglo) es real, y cambiar de for
     assert.deepEqual([w.status, w.body.error], [409, "bet_close_legacy"]);
   });
 });
+
+// Technical QA sobre 905e13b: dos arreglos u objetos iguales leídos del JSON no
+// son ===; el mismo valor guardado, de cualquier forma, no bloquea guardados.
+test.describe("D4 · un cierre en arreglo u objeto que nadie toca no bloquea nada (servidor real)", () => {
+  test.before(setup);
+  test.after(teardown);
+  for (const [nombre, dl] of [["arreglo", [enHoras(30)]], ["objeto", {}]]) {
+    itest(`${nombre}: guardar la cuota con una antigua ligada → 200; y la mudanza del goleador entra`, async () => {
+      const q = await quiniela("bdo" + nombre.slice(0, 3));
+      const v = await stored(q);
+      v.rounds = [jornada("r_bdo" + nombre.slice(0, 3) + "1", 1, dl), jornada("r_bdo" + nombre.slice(0, 3) + "3", 3, enHoras(48), true)];
+      v.customBets = [{ id: "cb_old", label: "Antigua", scope: "temporada", points: 1, closesAtRound: 1 }];
+      v.customBetsMigrated = false;
+      v.golScorerBet = { enabled: true, bonusPoints: 3, closesAtRound: 1 };
+      await putStored(q, v);
+      let x = await read(q);
+      x.settings.entryFee = 10;
+      const w = await write(q, x);
+      assert.equal(w.status, 200, JSON.stringify(w.body));
+      x = await read(q);
+      x.customBetsMigrated = true;
+      x.customBets.push({ id: "cb_gol", label: "Goleador de la liga", scope: "temporada", points: 3, closesAtRound: 1 });
+      const w2 = await write(q, x);
+      assert.equal(w2.status, 200, JSON.stringify(w2.body));
+    });
+  }
+});
