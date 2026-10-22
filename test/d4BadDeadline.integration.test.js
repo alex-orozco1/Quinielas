@@ -170,3 +170,30 @@ test.describe("D4 · una jornada con cierre numérico es un cierre real (servido
     assert.equal((await answer(q, "cb_old", "Otro")).status, 403);
   });
 });
+
+// Technical QA sobre e9c1f5b: un cierre guardado en otra forma que new Date()
+// lee (un arreglo) también es un cierre real, y pasar de un texto a otra forma
+// no cuenta como «sin cambios».
+test.describe("D4 · un cierre en otra forma (arreglo) es real, y cambiar de forma es un cambio (servidor real)", () => {
+  test.before(setup);
+  test.after(teardown);
+  itest("borrar la jornada con cierre en arreglo es 409; pasar su texto a un arreglo, también", async () => {
+    const iso = enHoras(30);
+    const q = await quiniela("bdr");
+    const v = await stored(q);
+    v.rounds = [jornada("r_bdr1", 1, [iso]), jornada("r_bdr3", 3, enHoras(48), true)];
+    v.customBets = [{ id: "cb_old", label: "Antigua", scope: "temporada", points: 1, closesAtRound: 1 }];
+    v.customBetsMigrated = true;
+    await putStored(q, v);
+    let x = await read(q);
+    x.rounds = x.rounds.filter((r) => r.number !== 1);
+    assert.equal((await write(q, x)).status, 409);
+    const v2 = await stored(q);
+    v2.rounds[0].deadline = iso;
+    await putStored(q, v2);
+    x = await read(q);
+    x.rounds[0].deadline = [iso];
+    const w = await write(q, x);
+    assert.deepEqual([w.status, w.body.error], [409, "bet_close_legacy"]);
+  });
+});

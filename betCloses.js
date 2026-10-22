@@ -85,19 +85,23 @@ function roundByNumber(rounds, n) {
 // Pure. El estado de cierre de una pregunta a la hora `nowMs`.
 //   kind: "jornada" (sin reloj propio), "own" (con closesAt), "none" (antigua,
 //   sin cierre) o "legacy" (antigua, sin migrar: por número, como antes).
-// El cierre real de una jornada, en ms, como lo lee betCloseState (y como lo
-// leía main): un texto de fecha o un número. null, true u otro valor no son un
-// cierre aunque new Date() les dé un instante (new Date(null) es 1970).
+// El cierre real de una jornada, en ms: lo que betCloseState (y main) leen con
+// new Date() — un texto de fecha, un número o cualquier otro valor que dé una
+// fecha válida. null, undefined y true/false no son un cierre aunque new Date()
+// les dé un instante (new Date(null) es 1970): esos cuentan como ilegibles.
 function realDeadlineMs(d) {
-  if (typeof d === "number") return Number.isFinite(d) && Number.isFinite(new Date(d).getTime()) ? d : null;
-  return instantMs(d);
+  if (d === null || d === undefined || typeof d === "boolean") return null;
+  const ms = new Date(d).getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
 // La jornada no cambió de cierre: el mismo instante, o el mismo valor guardado
 // tal cual aunque no sea una fecha (null, «pendiente»). Sin lo segundo, una
 // jornada con un cierre ilegible contaba como «cambiada» en cada guardado,
 // aunque nadie la tocara (Technical QA sobre d4af509).
 function sameStoredDeadline(a, b) {
-  return a === b || sameInstant(String(a), String(b));
+  // Sólo dos textos de fecha pueden ser «el mismo» sin ser idénticos: pasar de
+  // un texto a otra forma (un número, un arreglo) cuenta como un cambio.
+  return a === b || (typeof a === "string" && typeof b === "string" && sameInstant(a, b));
 }
 function betCloseState(bet, rounds, nowMs) {
   const b = obj(bet);

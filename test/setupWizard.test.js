@@ -405,6 +405,7 @@ const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
   ${fn("function scopeHelp(scope)")}
   ${fn("function fmtWhenTz(iso)")}
   ${fn("function isRoundLocked(round)")}
+  ${fn("function realCloseValue(v)")}
   ${fn("function betCloseInfo(bet)")}
   ${fn("function sameInstantMs(a, b)")}
   ${fn("function customBetsLocked(bet)")}
@@ -823,6 +824,7 @@ const keptEnv = (metaObj) => new Function("meta", "nowMs", `
   ${fn("function fmtWhenTz(iso)")}
   const serverNow = () => nowMs;
   ${fn("function isRoundLocked(round)")}
+  ${fn("function realCloseValue(v)")}
   ${fn("function betCloseInfo(bet)")}
   ${fn("function sameInstantMs(a, b)")}
   ${fn("function betCloseLine(bet)")}

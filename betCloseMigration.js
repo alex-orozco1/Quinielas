@@ -52,7 +52,7 @@ const { stampMetaRevisions } = require("./metaParticipants");
 const { stampRoundsRevision } = require("./roundsConcurrency");
 const { stampBetsRevision } = require("./betsConcurrency");
 const { readTournamentEpoch } = require("./metaParticipants");
-const { instantMs, sameInstant } = require("./betCloses");
+const { instantMs, realDeadlineMs } = require("./betCloses");
 
 const MIGRATION_VERSION = 1;
 const list = (v) => (Array.isArray(v) ? v : []);
@@ -89,13 +89,17 @@ function classifyLegacyBet(bet, meta) {
     return { category: "lost_link", evidence: { epoch, archives, numberInArchive: inArchive } };
   }
   const round = matches[0];
-  if (!singleCycle || matches.length > 1 || instantMs(String(round.deadline)) === null) {
+  if (!singleCycle || matches.length > 1 || realDeadlineMs(round.deadline) === null) {
     return { category: "ambiguous", candidates: matches, evidence: { epoch, archives, roundsWithNumber: matches.length } };
   }
   return { category: "linked", round, evidence: { epoch: 0, archives: 0, roundsWithNumber: 1 } };
 }
 
-const candidateOf = (r) => ({ roundId: r.id, number: r.number, deadline: typeof r.deadline === "string" ? r.deadline : null, published: r.published !== false });
+// El cierre del candidato, como fecha ISO si es un cierre real (texto o número).
+const candidateOf = (r) => {
+  const ms = realDeadlineMs(r.deadline);
+  return { roundId: r.id, number: r.number, deadline: ms === null ? null : new Date(ms).toISOString(), published: r.published !== false };
+};
 
 // Pure. Las decisiones explícitas de una quiniela, revalidadas contra la meta
 // leída bajo candado. Devuelve { decisions: Map(betId → jornada), review: [] }.
@@ -112,8 +116,8 @@ function checkOverrides(m, overrides) {
     if (!isBet(o) || o.action !== "link" || typeof o.roundId !== "string") { review.push({ betId, reason: "override_invalid" }); continue; }
     const cand = c.candidates.find((r) => r && r.id === o.roundId);
     if (!cand) { review.push({ betId, reason: "override_round_not_candidate" }); continue; }
-    if (instantMs(String(cand.deadline)) === null) { review.push({ betId, reason: "override_round_invalid_deadline" }); continue; }
-    if (o.roundNumber !== cand.number || typeof o.roundDeadline !== "string" || !sameInstant(o.roundDeadline, String(cand.deadline))) {
+    if (realDeadlineMs(cand.deadline) === null) { review.push({ betId, reason: "override_round_invalid_deadline" }); continue; }
+    if (o.roundNumber !== cand.number || typeof o.roundDeadline !== "string" || instantMs(o.roundDeadline) !== realDeadlineMs(cand.deadline)) {
       review.push({ betId, reason: "override_stale" }); continue;
     }
     decisions.set(betId, cand);
@@ -167,7 +171,7 @@ function planBetCloseMigration(meta, { nowMs, cutoffIso, overrides = {}, traces 
       // Ligada con evidencia, o por decisión explícita ya revalidada (fecha
       // válida, la jornada del reporte, sin cambios). Nunca otra.
       const round = c.category === "linked" ? c.round : decisions.get(bet.id);
-      const ms = instantMs(String(round.deadline));
+      const ms = realDeadlineMs(round.deadline);
       out.closesAt = new Date(ms).toISOString();
       out.closesRoundId = round.id;
       out.closeSource = "migration_round";

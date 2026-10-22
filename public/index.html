@@ -3781,7 +3781,7 @@
     const round = meta.rounds.find(r => r.number === bet.closesAtRound) || null;
     // Only a readable close is a time (null would be 1970); whether it counts
     // as closed is the same reading as always (isRoundLocked).
-    const t = round && (typeof round.deadline === "string" || typeof round.deadline === "number") ? new Date(round.deadline).getTime() : NaN;
+    const t = round && realCloseValue(round.deadline) ? new Date(round.deadline).getTime() : NaN;
     return { kind: "legacy", closed: round ? isRoundLocked(round) : false, at: Number.isFinite(t) ? t : null, round };
   }
   function sameInstantMs(a, b){
@@ -10036,9 +10036,12 @@
 
   function blankMatch(){ return {id: uid("m"), teamA:"", teamB:""}; }
 
+  // null, undefined and true/false are never a close, even if new Date() gives
+  // them an instant (new Date(null) is 1970) — the same rule as the server.
+  function realCloseValue(v){ return v !== null && v !== undefined && typeof v !== "boolean"; }
   function toLocalInputValue(iso){
     // No readable close (null, «pendiente»): the field starts empty, not 1970.
-    if(!(typeof iso === "string" || typeof iso === "number") || !Number.isFinite(new Date(iso).getTime())) return "";
+    if(!realCloseValue(iso) || !Number.isFinite(new Date(iso).getTime())) return "";
     const d = new Date(iso);
     const pad = n => String(n).padStart(2,'0');
     return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
@@ -10048,7 +10051,7 @@
   // (nobody edited it, also after going back or reloading), the stored ISO is
   // kept exactly — rounding it would change a question's close nobody touched.
   function deadlineIsoFromInput(value, originalIso){
-    if((typeof originalIso === "string" || typeof originalIso === "number") && Number.isFinite(new Date(originalIso).getTime()) && value === toLocalInputValue(originalIso)) return originalIso;
+    if(realCloseValue(originalIso) && Number.isFinite(new Date(originalIso).getTime()) && value === toLocalInputValue(originalIso)) return originalIso;
     return new Date(value).toISOString();
   }
 
@@ -10150,8 +10153,8 @@
       : { ...none, relink: unknown, freeze: none.freeze.concat(own.filter(b => !isOwn(b))) };
   }
   // Writes that choice onto the questions, next to the round's new close.
-  // A real close: a date string or a number (ms), as the server reads it.
-  function validInstantIso(v){ return (typeof v === "string" || typeof v === "number") && Number.isFinite(new Date(v).getTime()); }
+  // A real close, as the server reads it (realDeadlineMs in betCloses.js).
+  function validInstantIso(v){ return realCloseValue(v) && Number.isFinite(new Date(v).getTime()); }
   // An old question (not migrated) whose round has no readable close.
   function noReadableClose(b){ const c = betCloseInfo(b); return c.kind === "legacy" && c.at == null && !!c.round; }
   function applyLinkedChoice(choice, round, nextIso){

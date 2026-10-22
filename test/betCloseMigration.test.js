@@ -141,3 +141,26 @@ test("pendientes de su jornada: el reporte separa con y sin rastro de una jornad
   assert.deepEqual([con.items[0].subcategory, con.items[0].evidence.deletedRoundTraces], ["con_rastro_de_jornada_borrada", 2]);
   assert.deepEqual([sin.next.customBets[0], con.next.customBets[0]], [t("p", 4), t("p", 4)]);
 });
+
+test("Technical QA · un cierre guardado como número es un cierre real también para la migración: se liga, se reporta con fecha y se puede decidir", () => {
+  const ms = NOW + 48 * 3600e3;
+  const one = { tournamentEpoch: 0, rounds: [{ id: "r_n", number: 1, deadline: ms, matches: [] }], customBets: [t("o", 1)] };
+  const plan = planBetCloseMigration(one, { nowMs: NOW, cutoffIso: CUT });
+  const o = plan.next.customBets[0];
+  assert.deepEqual([o.closesAt, o.closesRoundId, o.closeSource], [new Date(ms).toISOString(), "r_n", "migration_round"], "sigue abierta hasta su hora real");
+  assert.equal(plan.items[0].category, "linked_open");
+  // Ambigua (ya cerró un torneo): el candidato sale con su fecha y la decisión del reporte liga.
+  const amb = { ...one, tournamentEpoch: 1, pastTournaments: [{ closedAt: at(-500), rounds: [], cycle: 1 }] };
+  const rep = planBetCloseMigration(amb, { nowMs: NOW, cutoffIso: CUT });
+  const cand = rep.items[0].candidates[0];
+  assert.deepEqual([cand.roundId, cand.deadline], ["r_n", new Date(ms).toISOString()]);
+  const dec = planBetCloseMigration(amb, { nowMs: NOW, cutoffIso: CUT, overrides: { o: { action: "link", roundId: "r_n", roundNumber: 1, roundDeadline: cand.deadline } } });
+  assert.deepEqual(dec.needsReview, []);
+  assert.deepEqual([dec.next.customBets[0].closesAt, dec.next.customBets[0].closeSource], [new Date(ms).toISOString(), "migration_round"]);
+  // null y true siguen sin ser un cierre: ambigua, cierre por protección.
+  for (const bad of [null, true]) {
+    const m = { tournamentEpoch: 0, rounds: [{ id: "r_b", number: 1, deadline: bad, matches: [] }], customBets: [t("b", 1)] };
+    const p = planBetCloseMigration(m, { nowMs: NOW, cutoffIso: CUT });
+    assert.deepEqual([p.next.customBets[0].closeSource, p.next.customBets[0].closesAt], ["migration_cutoff", CUT], String(bad));
+  }
+});

@@ -33,7 +33,7 @@ function extractFunctionBody(source, signature) {
 const helpersSrc = indexSrc.slice(
   indexSrc.indexOf('  const ROUND_DRAFT_PREFIX = "qracks_round_draft:";'),
   indexSrc.indexOf("  // Persists the exit signal above."));
-const toLocalInputValueSrc = extractFunctionBody(indexSrc, "function toLocalInputValue(iso)");
+const toLocalInputValueSrc = extractFunctionBody(indexSrc, "function realCloseValue(v)") + "\n" + extractFunctionBody(indexSrc, "function toLocalInputValue(iso)");
 
 function memStorage({ failing = false, full = false } = {}) {
   const m = new Map();

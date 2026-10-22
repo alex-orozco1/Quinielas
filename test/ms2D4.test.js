@@ -39,6 +39,7 @@ const env = (meta, extra = "") => new Function("meta", "serverNowMs", "currentUs
   ${fn("function pointsWord(n)")}
   ${fn("function fmtWhenTz(iso)")}
   ${fn("function isRoundLocked(round)")}
+  ${fn("function realCloseValue(v)")}
   ${fn("function betCloseInfo(bet)")}
   ${fn("function sameInstantMs(a, b)")}
   ${fn("function customBetsLocked(bet)")}
@@ -267,7 +268,7 @@ test("D4 · una cerrada por protección no le dice al participante la hora del c
 });
 
 test("D4-02 · un cierre que nadie editó se conserva exacto (con segundos), también al volver o recargar; editado, toma el campo", () => {
-  const f = new Function(`${fn("function toLocalInputValue(iso)")}\n${fn("function deadlineIsoFromInput(value, originalIso)")}\nreturn { toLocalInputValue, deadlineIsoFromInput };`)();
+  const f = new Function(`${fn("function realCloseValue(v)")}\n${fn("function toLocalInputValue(iso)")}\n${fn("function deadlineIsoFromInput(value, originalIso)")}\nreturn { toLocalInputValue, deadlineIsoFromInput };`)();
   const orig = "2026-10-18T22:50:08.086Z";
   const shown = f.toLocalInputValue(orig);              // lo que muestra el campo (minutos)
   assert.equal(f.deadlineIsoFromInput(shown, orig), orig, "sin editar: el mismo ISO, sin perder 8086 ms");
@@ -417,7 +418,7 @@ test("D4 (Product QA y UX) · una jornada con cierre null o ilegible: nada dice 
   assert.equal(e.betCloseLine(prot), "Cerrada por protección: su jornada no tenía una hora de cierre válida");
   assert.match(e.tournamentBetStatus(prot), /^Ya está cerrada/);
   // El campo de la hora no arranca en 1970 ni en «NaN».
-  const f = new Function(`${fn("function toLocalInputValue(iso)")}\nreturn toLocalInputValue;`)();
+  const f = new Function(`${fn("function realCloseValue(v)")}\n${fn("function toLocalInputValue(iso)")}\nreturn toLocalInputValue;`)();
   assert.deepEqual([f(null), f("pendiente"), f(undefined)], ["", "", ""]);
   assert.match(f("2026-10-18T22:50:08.086Z"), /^2026-10-1[89]T\d\d:50$/);
 });
@@ -437,7 +438,7 @@ test("D4 (Technical QA) · un cierre guardado como número es un cierre real en 
   e.applyLinkedChoice(c, num, at(50));
   assert.equal(b.closesAt, new Date(ms).toISOString());
   // Sin editar, el campo conserva el número; editado, la hora del campo.
-  const f = new Function(`${fn("function toLocalInputValue(iso)")}\n${fn("function deadlineIsoFromInput(value, originalIso)")}\nreturn { toLocalInputValue, deadlineIsoFromInput };`)();
+  const f = new Function(`${fn("function realCloseValue(v)")}\n${fn("function toLocalInputValue(iso)")}\n${fn("function deadlineIsoFromInput(value, originalIso)")}\nreturn { toLocalInputValue, deadlineIsoFromInput };`)();
   const shown = f.toLocalInputValue(ms);
   assert.notEqual(shown, "");
   assert.equal(f.deadlineIsoFromInput(shown, ms), ms);
