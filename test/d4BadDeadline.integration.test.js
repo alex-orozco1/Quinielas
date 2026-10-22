@@ -72,9 +72,17 @@ for (const [nombre, dl] of [["null", null], ["«pendiente»", "pendiente"]]) {
       let x = await read(q);
       x.rounds.find((r) => r.number === 1).deadline = nuevo;
       const w = await write(q, x);
-      assert.equal(w.status, 409);
-      assert.equal(w.body.error, dl === null ? "bet_close_locked" : "bet_close_legacy", "con null ya contaba como cerrada: no se reabre");
-      if (dl === null) return;
+      if (dl === null) {
+        // Con null ya contaba como cerrada (como antes de D4): ponerle cierre a
+        // su jornada no la reabre; queda cerrada por protección desde ahora.
+        assert.equal(w.status, 200, JSON.stringify(w.body));
+        const bet = (await stored(q)).customBets[0];
+        assert.deepEqual([bet.closeSource, bet.closeFlag], ["protective", "no_valid_close"]);
+        assert.ok(Math.abs(Date.parse(bet.closesAt) - Date.now()) < 120e3, "a esta hora, no 1970 ni la fecha nueva");
+        assert.equal((await answer(q, "cb_old", "Otro")).status, 403);
+        return;
+      }
+      assert.deepEqual([w.status, w.body.error], [409, "bet_close_legacy"], "mover el cierre de una abierta sin elegir, no");
       x = await read(q);
       x.rounds.find((r) => r.number === 1).deadline = nuevo;
       x.customBets[0].closesRoundId = "r_bdc" + tag + "1";
@@ -82,6 +90,27 @@ for (const [nombre, dl] of [["null", null], ["«pendiente»", "pendiente"]]) {
       assert.equal(w2.status, 200, JSON.stringify(w2.body));
       const bet = (await stored(q)).customBets[0];
       assert.deepEqual([bet.closesAt, bet.closesRoundId, bet.closeSource], [new Date(nuevo).toISOString(), "r_bdc" + tag + "1", "round"]);
+    });
+
+    itest("borrar esa jornada: con null la pregunta sigue cerrada (por protección); con un texto, sigue abierta, sin cierre todavía", async () => {
+      const q = await quiniela("bdd" + tag);
+      const v = await stored(q);
+      v.rounds = [jornada("r_bdd" + tag + "1", 1, dl), jornada("r_bdd" + tag + "3", 3, enHoras(48), true)];
+      v.customBets = [{ id: "cb_old", label: "Antigua", scope: "temporada", points: 1, closesAtRound: 1 }];
+      v.customBetsMigrated = true;
+      await putStored(q, v);
+      const x = await read(q);
+      x.rounds = x.rounds.filter((r) => r.number !== 1);
+      const w = await write(q, x);
+      assert.equal(w.status, 200, JSON.stringify(w.body));
+      const bet = (await stored(q)).customBets[0];
+      if (dl === null) {
+        assert.equal(bet.closeSource, "protective");
+        assert.equal((await answer(q, "cb_old", "Otro")).status, 403);
+      } else {
+        assert.deepEqual([bet.closesAt, bet.closeSource, bet.closesAtRound], [undefined, undefined, 1], "sin tocar");
+        assert.equal((await answer(q, "cb_old", "Otro")).status, 200);
+      }
     });
   });
 }

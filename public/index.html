@@ -3779,7 +3779,9 @@
       return { kind: "none", closed: false, at: null, round: null };
     }
     const round = meta.rounds.find(r => r.number === bet.closesAtRound) || null;
-    const t = round ? new Date(round.deadline).getTime() : NaN;
+    // Only a readable close is a time (null would be 1970); whether it counts
+    // as closed is the same reading as always (isRoundLocked).
+    const t = round && typeof round.deadline === "string" ? Date.parse(round.deadline) : NaN;
     return { kind: "legacy", closed: round ? isRoundLocked(round) : false, at: Number.isFinite(t) ? t : null, round };
   }
   function sameInstantMs(a, b){
@@ -7293,7 +7295,7 @@
     }
     if(c.kind === "none") return { at: null, round: null, text: "No tiene fecha de cierre: se cierra cuando termine el torneo." };
     const r = c.round;
-    if(!r || r.published === false) return { at: null, round: null, text: `Cierra con la Jornada ${bet.closesAtRound} (fecha por confirmar).` };
+    if(!r || r.published === false || c.at == null) return { at: null, round: null, text: `Cierra con la Jornada ${bet.closesAtRound} (fecha por confirmar).` };
     return { at: c.at, round: r, text: `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}.` };
   }
   function savedBetGuess(betId){
@@ -7308,7 +7310,7 @@
     if(locked){
       // Closed for protection by the migration: that time is the cutoff, not
       // when the question was meant to close, so it is not said as such.
-      if(bet.closeSource === "migration_cutoff"){
+      if(bet.closeSource === "migration_cutoff" || bet.closeSource === "protective" || !when){
         return guess ? `Ya está cerrada. Tu respuesta: «${guess}».` : "Ya está cerrada y no respondiste. Aun así puedes jugar las jornadas abiertas.";
       }
       return guess
@@ -8027,6 +8029,7 @@
       const hits = people.filter(pid => answers[pid][b.id].correct === true).length;
       const graded = people.filter(pid => answers[pid][b.id].correct === true || answers[pid][b.id].correct === false).length;
       const closed = b.closeFlag === "closed_by_round" ? "cerró con su jornada, antes del fin del torneo"
+        : b.closeSource === "protective" ? "cerrada por protección"
         : typeof b.closesAt === "string" && Number.isFinite(Date.parse(b.closesAt)) ? `cerró el ${fmtWhenTz(b.closesAt)}` : "cerrada";
       const mine = me && answers[me] && answers[me][b.id];
       return `${scopeLabel(b.scope)} · ${closed} · ${people.length} ${people.length === 1 ? "respuesta" : "respuestas"} · ${people.length && !graded ? "sin calificar" : `${hits} ${hits === 1 ? "acierto" : "aciertos"}`}`
@@ -9265,6 +9268,7 @@
       const r = c.round;
       if(c.closed){
         if(bet.closeSource === "migration_cutoff") return `Cerró el ${when}, por protección: ${bet.closeFlag === "ambiguous" ? "no se pudo confirmar con qué jornada cerraba" : "su jornada de cierre ya no existía"}`;
+        if(bet.closeSource === "protective") return "Cerrada por protección: su jornada no tenía una hora de cierre válida";
         if(bet.closeSource === "tournament_end") return `Cerró el ${when}, al terminar el torneo`;
         return r && sameInstantMs(r.deadline, c.at) ? `Cerró con la Jornada ${r.number}: ${when}` : `Cerró el ${when}`;
       }
@@ -9274,6 +9278,7 @@
     }
     const r = c.round;
     if(!r) return `Cierra con la Jornada ${bet.closesAtRound} (por ahora no hay una Jornada ${bet.closesAtRound})`;
+    if(c.at == null) return c.closed ? `Cerrada: la Jornada ${r.number} no tiene una hora de cierre válida` : `Cierra con la Jornada ${r.number} (todavía sin hora de cierre)`;
     if(c.closed) return `Cerró con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}`;
     return `Cierra con la Jornada ${r.number}: ${fmtWhenTz(r.deadline)}${r.published === false ? " (todavía sin publicar)" : ""}`;
   }
@@ -10032,6 +10037,8 @@
   function blankMatch(){ return {id: uid("m"), teamA:"", teamB:""}; }
 
   function toLocalInputValue(iso){
+    // No readable close (null, «pendiente»): the field starts empty, not 1970.
+    if(typeof iso !== "string" || !Number.isFinite(Date.parse(iso))) return "";
     const d = new Date(iso);
     const pad = n => String(n).padStart(2,'0');
     return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
@@ -10088,8 +10095,12 @@
     const open = bets.filter(b => !customBetsLocked(b));
     let note = "";
     if(closed.length) note += `\n\n${closed.length === 1 ? "Esta pregunta del torneo ya cerró y sigue cerrada" : "Estas preguntas del torneo ya cerraron y siguen cerradas"}: ${quotedLabels(closed)}.`;
-    if(open.length && what === "delete"){
-      note += `\n\n${open.length === 1 ? "Esta pregunta del torneo conserva su cierre" : "Estas preguntas del torneo conservan su cierre"}: ${open.map(b => "«" + b.label + "» (" + fmtWhenTz(new Date(betCloseInfo(b).at).toISOString()) + ")").join(", ")}. Si quieres otro, elígelo en Admin → Tus reglas.`;
+    const timed = open.filter(b => !noReadableClose(b)), untimed = open.filter(noReadableClose);
+    if(timed.length && what === "delete"){
+      note += `\n\n${timed.length === 1 ? "Esta pregunta del torneo conserva su cierre" : "Estas preguntas del torneo conservan su cierre"}: ${timed.map(b => "«" + b.label + "» (" + fmtWhenTz(new Date(betCloseInfo(b).at).toISOString()) + ")").join(", ")}. Si quieres otro, elígelo en Admin → Tus reglas.`;
+    }
+    if(untimed.length && what === "delete"){
+      note += `\n\n${untimed.length === 1 ? "Esta pregunta del torneo no tiene una hora de cierre válida y sigue abierta" : "Estas preguntas del torneo no tienen una hora de cierre válida y siguen abiertas"}: ${quotedLabels(untimed)}. Elige su cierre en Admin → Tus reglas.`;
     }
     return note;
   }
@@ -10112,11 +10123,11 @@
     // An old question whose round has no readable close (null, «pendiente»)
     // has no current close to keep: it can only close with this round, from
     // its first real close. Nothing is invented for it (no 1970).
-    const unknown = open.filter(b => betCloseInfo(b).kind === "legacy" && !Number.isFinite(betCloseInfo(b).at));
+    const unknown = open.filter(noReadableClose);
     const own = open.filter(b => !unknown.includes(b));
     const newWhen = fmtWhenTz(new Date(nextMs).toISOString());
     let msg = intro || `El nuevo cierre de la Jornada ${round.number} será ${newWhen}.`;
-    if(closed.length) msg += `\n\n${closed.length === 1 ? "Esta pregunta del torneo ya cerró y sigue cerrada" : "Estas preguntas del torneo ya cerraron y siguen cerradas"}: ${quotedLabels(closed)}. No se vuelven a abrir.`;
+    if(closed.length) msg += `\n\n${closed.length === 1 ? "Esta pregunta del torneo ya cerró y sigue cerrada" : "Estas preguntas del torneo ya cerraron y siguen cerradas"}: ${quotedLabels(closed)}. No se vuelven a abrir.${closed.some(noReadableClose) ? " Como su jornada no tenía una hora de cierre válida, queda cerrada desde ahora." : ""}`;
     if(unknown.length) msg += `\n\n${unknown.length === 1 ? "Esta pregunta del torneo no tenía una hora de cierre válida y cerrará" : "Estas preguntas del torneo no tenían una hora de cierre válida y cerrarán"} con esta jornada, el ${newWhen}: ${quotedLabels(unknown)}.`;
     if(!own.length){
       const ok = await qzConfirm(msg, { title: `¿Cambiar el cierre de la Jornada ${round.number}?`, confirmLabel: "Guardar cambios", cancelLabel: "Volver", destructive: false });
@@ -10140,6 +10151,8 @@
   }
   // Writes that choice onto the questions, next to the round's new close.
   function validInstantIso(v){ return typeof v === "string" && Number.isFinite(Date.parse(v)); }
+  // An old question (not migrated) whose round has no readable close.
+  function noReadableClose(b){ const c = betCloseInfo(b); return c.kind === "legacy" && c.at == null && !!c.round; }
   function applyLinkedChoice(choice, round, nextIso){
     choice.move.forEach(b => { b.closesAt = nextIso; });
     choice.relink.forEach(b => { b.closesRoundId = round.id; });

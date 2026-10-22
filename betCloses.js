@@ -51,7 +51,10 @@ const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 //   closeSource    de dónde salió su cierre: "round" (su jornada, al ligarla o al
 //                  moverlo de forma explícita), "tournament_end" (al cerrar el
 //                  torneo), "migration_round" (la migración lo recuperó con
-//                  evidencia), "migration_cutoff" (la migración la cerró por
+//                  evidencia), "protective" (antigua cerrada cuya jornada no
+//                  tenía un cierre legible: al cambiar o borrar esa jornada se
+//                  queda cerrada desde esa hora; closeFlag "no_valid_close"),
+//                  "migration_cutoff" (la migración la cerró por
 //                  protección; la fecha es el corte, no una fecha histórica),
 //                  "none" (antigua, nunca tuvo cierre: «Sin cierre»).
 //   closeFlag      con migration_cutoff: "lost_link" | "ambiguous". Con
@@ -294,6 +297,21 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
         out.push(bet);
         continue;
       }
+      // Antigua cerrada sin una hora de cierre legible: su jornada tiene un
+      // cierre que no es una fecha y que la lectura de siempre da por vencido
+      // (new Date(null) es 1970; así cerraba ya antes de D4). Si el admin
+      // cambia o borra esa jornada, sigue cerrada: el servidor le fija un
+      // cierre por protección, a esta hora. No se inventa una fecha histórica.
+      if (was.kind === "legacy" && !scopeChanged && !roundChanged && !relinkById && !atChanged) {
+        const sr = roundByNumber(storedRounds, before.closesAtRound);
+        if (sr && instantMs(String(sr.deadline)) === null && !betCloseState(bet, rounds, now).closed) {
+          bet.closesAt = new Date(now).toISOString();
+          bet.closeSource = "protective";
+          bet.closeFlag = "no_valid_close";
+          out.push(bet);
+          continue;
+        }
+      }
       // Cerrada: nada de lo que decide si se puede responder cambia. Y ningún
       // cambio del tablero la deja abierta: eso sólo le puede pasar a una
       // pregunta antigua sin migrar, que todavía se lee por número (borrar,
@@ -338,7 +356,11 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       }
       if (sr) {
         const nr = roundByNumber(rounds, before.closesAtRound);
-        if (!nr || nr.id !== sr.id || !sameStoredDeadline(nr.deadline, sr.deadline)) return fail(409, "bet_close_legacy", bet.id);
+        // Su jornada no tenía un cierre legible (abierta, «pendiente»): al
+        // borrarla, su cierre sigue sin conocerse, igual que antes. No es un
+        // cambio en silencio; sigue abierta y se le elige cierre en Tus reglas.
+        const unknownGone = !nr && instantMs(String(sr.deadline)) === null;
+        if (!unknownGone && (!nr || nr.id !== sr.id || !sameStoredDeadline(nr.deadline, sr.deadline))) return fail(409, "bet_close_legacy", bet.id);
       }
       out.push(bet);
       continue;

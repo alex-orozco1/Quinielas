@@ -53,6 +53,7 @@ const env = (meta, extra = "") => new Function("meta", "serverNowMs", "currentUs
   ${fn("function linkedBetsNote(round, what)")}
   ${fn("async function chooseLinkedBetsClose(round, nextIso, intro)")}
   ${fn("function validInstantIso(v)")}
+  ${fn("function noReadableClose(b)")}
   ${fn("function applyLinkedChoice(choice, round, nextIso)")}
   ${fn("function scopeLabel(scope)")}
   ${fn("function archivedBetsHtml(t)")}
@@ -387,4 +388,36 @@ test("D4 (Technical QA) · una pregunta antigua cuya jornada no tiene un cierre 
   assert.equal(m2.customBets[0].closesAt, undefined, "sin 1970");
   // El borrado de la jornada tampoco la inventa.
   assert.ok(fn("async function deleteRoundWithRollback(btn, roundId)").includes("if(roundToDelete && validInstantIso(roundToDelete.deadline)) betsClosingWith(roundToDelete)"));
+});
+
+test("D4 (Product QA y UX) · una jornada con cierre null o ilegible: nada dice 1970; el campo arranca vacío; borrar o mover lo dice como es", async () => {
+  const nul = { ...round("r_1", 1, 0), deadline: null };
+  const pend = { ...round("r_2", 2, 0), deadline: "pendiente" };
+  const meta = { rounds: [nul, pend], customBets: [
+    { id: "cb_n", label: "Nula", scope: "temporada", points: 1, closesAtRound: 1 },
+    { id: "cb_p", label: "Pendiente", scope: "temporada", points: 1, closesAtRound: 2 },
+  ] };
+  const e = make(meta);
+  const [n, p] = meta.customBets;
+  // Con null sigue cerrada, como siempre; con un texto, abierta. Ninguna tiene hora.
+  assert.deepEqual([e.customBetsLocked(n), e.customBetsLocked(p), e.betCloseInfo(n).at, e.betCloseInfo(p).at], [true, false, null, null]);
+  assert.equal(e.betCloseLine(n), "Cerrada: la Jornada 1 no tiene una hora de cierre válida");
+  assert.equal(e.betCloseLine(p), "Cierra con la Jornada 2 (todavía sin hora de cierre)");
+  assert.equal(e.tournamentBetStatus(n), "Ya está cerrada y no respondiste. Aun así puedes jugar las jornadas abiertas.");
+  assert.equal(e.tournamentBetClose(p).text, "Cierra con la Jornada 2 (fecha por confirmar).");
+  for (const t of [e.betCloseLine(n), e.betCloseLine(p), e.tournamentBetStatus(n), e.linkedBetsNote(nul, "delete"), e.linkedBetsNote(pend, "delete")]) assert.ok(!/1970|1 de ene/.test(t), t);
+  assert.match(e.linkedBetsNote(pend, "delete"), /no tiene una hora de cierre válida y sigue abierta: «Pendiente»\. Elige su cierre en Admin → Tus reglas\./);
+  // Ponerle cierre a la de null: sigue cerrada desde ahora (el servidor lo fija), sin «conservar» una hora que no existe.
+  const c = await e.chooseLinkedBetsClose(nul, at(30));
+  assert.match(e.dialogs[0].msg, /ya cerró y sigue cerrada: «Nula»\. No se vuelven a abrir\. Como su jornada no tenía una hora de cierre válida, queda cerrada desde ahora\./);
+  e.applyLinkedChoice(c, nul, at(30));
+  assert.equal(n.closesAt, undefined, "el cliente no escribe una fecha");
+  // Una cerrada por protección se dice así, sin la hora del cambio como si fuera su cierre.
+  const prot = { id: "cb_x", label: "X", scope: "temporada", points: 1, closesAtRound: 1, closesAt: at(-1), closeSource: "protective", closeFlag: "no_valid_close" };
+  assert.equal(e.betCloseLine(prot), "Cerrada por protección: su jornada no tenía una hora de cierre válida");
+  assert.match(e.tournamentBetStatus(prot), /^Ya está cerrada/);
+  // El campo de la hora no arranca en 1970 ni en «NaN».
+  const f = new Function(`${fn("function toLocalInputValue(iso)")}\nreturn toLocalInputValue;`)();
+  assert.deepEqual([f(null), f("pendiente"), f(undefined)], ["", "", ""]);
+  assert.match(f("2026-10-18T22:50:08.086Z"), /^2026-10-1[89]T\d\d:50$/);
 });
