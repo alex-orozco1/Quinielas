@@ -114,3 +114,59 @@ for (const [nombre, dl] of [["null", null], ["«pendiente»", "pendiente"]]) {
     });
   });
 }
+
+// Un cierre guardado como número (ms) sí es un cierre real: así lo lee
+// betCloseState y así lo leía main (new Date(número)). Borrar o renumerar su
+// jornada no le quita el cierre en silencio a una antigua abierta (Technical QA
+// sobre 7adcee5); conservarlo de forma explícita, sí; y una cerrada guarda su
+// hora real, no una por protección.
+test.describe("D4 · una jornada con cierre numérico es un cierre real (servidor real)", () => {
+  test.before(setup);
+  test.after(teardown);
+  const preparar = async (tag, ms) => {
+    const q = await quiniela("bdm" + tag);
+    const v = await stored(q);
+    v.rounds = [jornada("r_bdm" + tag + "1", 1, ms), jornada("r_bdm" + tag + "3", 3, enHoras(48), true)];
+    v.customBets = [{ id: "cb_old", label: "Antigua", scope: "temporada", points: 1, closesAtRound: 1 }];
+    v.customBetsMigrated = true;
+    await putStored(q, v);
+    return q;
+  };
+
+  itest("abierta: borrar o renumerar su jornada sin elegir es 409; conservar su cierre (la hora real) y borrarla, 200", async () => {
+    const ms = Date.now() + 30 * 3600e3;
+    const q = await preparar("a", ms);
+    let x = await read(q);
+    x.rounds = x.rounds.filter((r) => r.number !== 1);
+    assert.deepEqual([(await write(q, x)).status], [409]);
+    x = await read(q);
+    x.rounds.find((r) => r.number === 1).number = 7;
+    const w = await write(q, x);
+    assert.deepEqual([w.status, w.body.error], [409, "bet_close_legacy"]);
+    assert.equal((await stored(q)).customBets[0].closesAt, undefined, "nada cambió");
+    x = await read(q);
+    x.rounds = x.rounds.filter((r) => r.number !== 1);
+    x.customBets[0].closesAt = new Date(ms).toISOString();
+    const w2 = await write(q, x);
+    assert.equal(w2.status, 200, JSON.stringify(w2.body));
+    const bet = (await stored(q)).customBets[0];
+    assert.deepEqual([bet.closesAt, bet.closeSource], [new Date(ms).toISOString(), "round"]);
+    assert.equal((await answer(q, "cb_old", "Otro")).status, 200, "sigue abierta hasta su hora");
+  });
+
+  itest("cerrada: al editar su jornada guarda su hora real (no una por protección) y sigue cerrada", async () => {
+    const ms = Date.now() - 5 * 3600e3;
+    const q = await preparar("c", ms);
+    let x = await read(q);
+    x.rounds.find((r) => r.number === 1).deadline = enHoras(30);
+    assert.deepEqual([(await write(q, x)).status], [409], "sin conservar su cierre, no");
+    x = await read(q);
+    x.rounds.find((r) => r.number === 1).deadline = enHoras(30);
+    x.customBets[0].closesAt = new Date(ms).toISOString();
+    const w = await write(q, x);
+    assert.equal(w.status, 200, JSON.stringify(w.body));
+    const bet = (await stored(q)).customBets[0];
+    assert.deepEqual([bet.closesAt, bet.closeSource], [new Date(ms).toISOString(), "round"]);
+    assert.equal((await answer(q, "cb_old", "Otro")).status, 403);
+  });
+});

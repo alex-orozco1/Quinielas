@@ -421,3 +421,24 @@ test("D4 (Product QA y UX) · una jornada con cierre null o ilegible: nada dice 
   assert.deepEqual([f(null), f("pendiente"), f(undefined)], ["", "", ""]);
   assert.match(f("2026-10-18T22:50:08.086Z"), /^2026-10-1[89]T\d\d:50$/);
 });
+
+test("D4 (Technical QA) · un cierre guardado como número es un cierre real en la pantalla, como en el servidor", async () => {
+  const ms = NOW + 30 * 3600e3;
+  const num = { ...round("r_9", 9, 0), deadline: ms };
+  const meta = { rounds: [num], customBets: [{ id: "cb_9", label: "Numérica", scope: "temporada", points: 1, closesAtRound: 9 }] };
+  const e = make(meta);
+  const b = meta.customBets[0];
+  assert.deepEqual([e.betCloseInfo(b).at, e.customBetsLocked(b)], [ms, false]);
+  assert.match(e.betCloseLine(b), /^Cierra con la Jornada 9: /);
+  // Mover su jornada ofrece conservar su hora real, y conservarla la escribe tal cual.
+  e.dialogs.choice = "keep";
+  const c = await e.chooseLinkedBetsClose(num, at(50));
+  assert.equal(e.dialogs[0].kind, "choose");
+  e.applyLinkedChoice(c, num, at(50));
+  assert.equal(b.closesAt, new Date(ms).toISOString());
+  // Sin editar, el campo conserva el número; editado, la hora del campo.
+  const f = new Function(`${fn("function toLocalInputValue(iso)")}\n${fn("function deadlineIsoFromInput(value, originalIso)")}\nreturn { toLocalInputValue, deadlineIsoFromInput };`)();
+  const shown = f.toLocalInputValue(ms);
+  assert.notEqual(shown, "");
+  assert.equal(f.deadlineIsoFromInput(shown, ms), ms);
+});

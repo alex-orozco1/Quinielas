@@ -85,6 +85,13 @@ function roundByNumber(rounds, n) {
 // Pure. El estado de cierre de una pregunta a la hora `nowMs`.
 //   kind: "jornada" (sin reloj propio), "own" (con closesAt), "none" (antigua,
 //   sin cierre) o "legacy" (antigua, sin migrar: por número, como antes).
+// El cierre real de una jornada, en ms, como lo lee betCloseState (y como lo
+// leía main): un texto de fecha o un número. null, true u otro valor no son un
+// cierre aunque new Date() les dé un instante (new Date(null) es 1970).
+function realDeadlineMs(d) {
+  if (typeof d === "number") return Number.isFinite(d) && Number.isFinite(new Date(d).getTime()) ? d : null;
+  return instantMs(d);
+}
 // La jornada no cambió de cierre: el mismo instante, o el mismo valor guardado
 // tal cual aunque no sea una fecha (null, «pendiente»). Sin lo segundo, una
 // jornada con un cierre ilegible contaba como «cambiada» en cada guardado,
@@ -140,7 +147,7 @@ function withStoredBetFields(stored, incoming) {
 }
 
 function stampFromRound(bet, round) {
-  bet.closesAt = new Date(instantMs(String(round.deadline))).toISOString();
+  bet.closesAt = new Date(realDeadlineMs(round.deadline)).toISOString();
   bet.closesRoundId = round.id;
   bet.closesAtRound = round.number;
   bet.closeSource = "round";
@@ -155,7 +162,7 @@ function linkTarget(rounds, raw, wantedId, now) {
     ? list(rounds).find((x) => x && x.id === wantedId) || null
     : roundByNumber(rounds, raw.closesAtRound);
   if (!r) return { error: "bet_close_required" };
-  const ms = instantMs(String(r.deadline));
+  const ms = realDeadlineMs(r.deadline);
   if (ms === null || ms <= now) return { error: "bet_close_past" };
   return { round: r };
 }
@@ -243,7 +250,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
           // pending_round: se queda por número, como en la migración.
           if (c.category === "no_close") bet.closeSource = "none";
           else if (c.category === "linked") {
-            bet.closesAt = new Date(instantMs(String(c.round.deadline))).toISOString();
+            bet.closesAt = new Date(realDeadlineMs(c.round.deadline)).toISOString();
             bet.closesRoundId = c.round.id;
             bet.closeSource = "migration_round";
           } else if (c.category === "lost_link" || c.category === "ambiguous") {
@@ -289,8 +296,8 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       // borrar sin reabrirla. Nunca otra hora.
       if (was.kind === "legacy" && atChanged && !scopeChanged && !roundChanged && !relinkById) {
         const sr = roundByNumber(storedRounds, before.closesAtRound);
-        if (!sr || !sameInstant(claimedAt, String(sr.deadline))) return fail(409, "bet_close_locked", bet.id);
-        bet.closesAt = new Date(instantMs(String(sr.deadline))).toISOString();
+        if (!sr || realDeadlineMs(sr.deadline) === null || instantMs(claimedAt) !== realDeadlineMs(sr.deadline)) return fail(409, "bet_close_locked", bet.id);
+        bet.closesAt = new Date(realDeadlineMs(sr.deadline)).toISOString();
         bet.closesRoundId = sr.id;
         bet.closeSource = "round";
         delete bet.closeFlag;
@@ -304,7 +311,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       // cierre por protección, a esta hora. No se inventa una fecha histórica.
       if (was.kind === "legacy" && !scopeChanged && !roundChanged && !relinkById && !atChanged) {
         const sr = roundByNumber(storedRounds, before.closesAtRound);
-        if (sr && instantMs(String(sr.deadline)) === null && !betCloseState(bet, rounds, now).closed) {
+        if (sr && realDeadlineMs(sr.deadline) === null && !betCloseState(bet, rounds, now).closed) {
           bet.closesAt = new Date(now).toISOString();
           bet.closeSource = "protective";
           bet.closeFlag = "no_valid_close";
@@ -346,8 +353,9 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       // jornada, ligada a ella por id).
       const sr = roundByNumber(storedRounds, before.closesAtRound);
       if (atChanged) {
-        if (!sr || !sameInstant(claimedAt, String(sr.deadline)) || instantMs(String(sr.deadline)) <= now) return fail(400, "bet_close_invalid", bet.id);
-        bet.closesAt = new Date(instantMs(String(sr.deadline))).toISOString();
+        const srMs = sr ? realDeadlineMs(sr.deadline) : null;
+        if (srMs === null || instantMs(claimedAt) !== srMs || srMs <= now) return fail(400, "bet_close_invalid", bet.id);
+        bet.closesAt = new Date(srMs).toISOString();
         bet.closesRoundId = sr.id;
         bet.closeSource = "round";
         delete bet.closeFlag;
@@ -359,7 +367,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
         // Su jornada no tenía un cierre legible (abierta, «pendiente»): al
         // borrarla, su cierre sigue sin conocerse, igual que antes. No es un
         // cambio en silencio; sigue abierta y se le elige cierre en Tus reglas.
-        const unknownGone = !nr && instantMs(String(sr.deadline)) === null;
+        const unknownGone = !nr && realDeadlineMs(sr.deadline) === null;
         if (!unknownGone && (!nr || nr.id !== sr.id || !sameStoredDeadline(nr.deadline, sr.deadline))) return fail(409, "bet_close_legacy", bet.id);
       }
       out.push(bet);
@@ -369,7 +377,7 @@ function resolveBetCloses({ stored, merged, nowMs, legacyId = null } = {}) {
       // Mover el cierre de una pregunta abierta: sólo a la hora actual de SU
       // jornada (la que se acaba de editar o reabrir), nunca a otra hora.
       const r = before.closesRoundId != null ? rounds.find((x) => x && x.id === before.closesRoundId) : null;
-      if (!r || !sameInstant(claimedAt, String(r.deadline))) return fail(400, "bet_close_invalid", bet.id);
+      if (!r || realDeadlineMs(r.deadline) === null || instantMs(claimedAt) !== realDeadlineMs(r.deadline)) return fail(400, "bet_close_invalid", bet.id);
       stampFromRound(bet, r);
       out.push(bet);
       continue;
@@ -446,6 +454,7 @@ module.exports = {
   instantMs,
   sameInstant,
   sameStoredDeadline,
+  realDeadlineMs,
   betCloseState,
   retiredBetIds,
   withStoredBetFields,
