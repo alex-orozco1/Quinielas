@@ -38,7 +38,14 @@ const arg = (name) => {
   if (typeof arg("backup") !== "string") { console.error("Falta --backup=<respaldo tomado antes de aplicar>."); process.exit(2); }
   const applied = JSON.parse(fs.readFileSync(arg("applied"), "utf8"));
   if (applied.mode !== "apply" || typeof applied.database !== "string") { console.error("--applied tiene que ser la salida de bet-closes-migrate.js --apply (con su base)."); process.exit(2); }
-  const backupRows = new Map((JSON.parse(fs.readFileSync(arg("backup"), "utf8")).rows || []).map((r) => [r.key, r.text]));
+  const backup = JSON.parse(fs.readFileSync(arg("backup"), "utf8"));
+  // El respaldo tiene que ser el de ANTES de aplicar: una exportación tomada
+  // antes de la aplicación, de la misma base. Si no, nada.
+  if (backup.mode !== "export" || typeof backup.at !== "string" || typeof applied.at !== "string" || !(Date.parse(backup.at) <= Date.parse(applied.at)) || backup.database !== applied.database) {
+    console.error("--backup tiene que ser la exportación tomada ANTES de esa aplicación, de la misma base. No se escribió nada.");
+    process.exit(2);
+  }
+  const backupRows = new Map((backup.rows || []).map((r) => [r.key, r.text]));
   const apply = arg("apply") === true;
   const pool = new Pool({ connectionString: url, ssl: url.includes("localhost") ? false : { rejectUnauthorized: false }, max: 1 });
   const client = await pool.connect();

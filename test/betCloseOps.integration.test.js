@@ -169,6 +169,13 @@ test.describe("D4 · operación de la migración: inventario, respaldo, decision
     assert.equal(r.status, 3);
     assert.deepEqual(r.json.quinielas.find((x) => x.slug === q.slug).needsReview, ["cb_c: su_jornada_cambio_despues_de_aplicar"]);
     assert.equal((await stored(q)).customBets[0].closeSource, "migration_round", "sigue cerrada con su cierre de la migración");
+    // Con un «respaldo» exportado después (ya con la J1 reabierta): no se acepta, no se escribe nada.
+    const tarde = script("bet-closes-inventory.js", ["--export"]).json;
+    const before2 = await allRows();
+    const r2 = script("bet-closes-revert.js", ["--applied=" + file("ap-d.json", ap), "--backup=" + file("tarde-d.json", tarde), "--apply", "--database=" + (await dbName())]);
+    assert.equal(r2.status, 2);
+    assert.equal(await allRows(), before2);
+    assert.equal((await stored(q)).customBets[0].closeSource, "migration_round");
   });
 
   itest("volver atrás: sólo lo que la migración escribió y nadie cambió; lo cambiado después se deja y pide revisión", async () => {

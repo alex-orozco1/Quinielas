@@ -117,3 +117,25 @@ test("decisiones: la quiniela heredada (quiniela_meta_v1, sin slug) se decide po
   assert.deepEqual(ops.checkDecisions({ quiniela_meta_v1: { x: { action: "cutoff" } } }, dry).errors, []);
   assert.deepEqual(ops.checkDecisions({}, dry).errors.map((e) => [e.slug, e.reason]), [["quiniela_meta_v1", "ambigua_sin_decision"]]);
 });
+
+test("Technical QA · volver atrás con un respaldo equivocado: uno de después de aplicar no sirve, y una ligada nunca se reabre", () => {
+  // c: cerrada antes de migrar (J1 vencida); la migración la liga.
+  const before = { tournamentEpoch: 0, rounds: [round("r_1", 1, at(-5))], customBets: [t("c", 1)] };
+  const plan = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT });
+  const entry = { applied: true, cutoff: CUT, questions: plan.items };
+  // El admin reabre la J1 después de aplicar; y alguien usa como «respaldo» una copia de ese momento.
+  const now = JSON.parse(JSON.stringify(plan.next));
+  now.rounds[0].deadline = at(72);
+  assert.deepEqual(ops.planRevert(now, entry, now, NOW).reasons, ["el_respaldo_es_de_despues_de_aplicar"], "con la marca, no");
+  const sinMarca = JSON.parse(JSON.stringify(now)); delete sinMarca.betCloseMigration;
+  assert.deepEqual(ops.planRevert(now, entry, sinMarca, NOW).reasons, ["c: se_reabriria_y_no_la_cerro_la_proteccion"], "aun sin la marca, una ligada no se reabre");
+});
+
+test("Technical QA · comprobar después: una ambigua aplicada sin su decisión escrita es un problema", () => {
+  const before = { tournamentEpoch: 1, pastTournaments: [{ rounds: [] }], rounds: [round("r_a", 1, at(10))], customBets: [t("x", 1)] };
+  const plan = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT });
+  const row = (key, v) => ({ key, text: JSON.stringify(v) });
+  const applied = { mode: "apply", quinielas: [{ slug: "s", key: "quiniela:s:meta", applied: true, cutoff: CUT, questions: plan.items }] };
+  const v = ops.verifyApply({ rows: [row("quiniela:s:meta", before)] }, { rows: [row("quiniela:s:meta", plan.next)] }, applied, {});
+  assert.deepEqual(v.problems, [{ slug: "s", diffs: ["customBets.x: ambigua aplicada sin decisión escrita"] }]);
+});

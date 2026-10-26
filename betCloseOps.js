@@ -294,6 +294,15 @@ function verifyApply(backup, afterExport, applyResult, decisions) {
   if (obj(applyResult).mode !== "apply") problems.push({ slug: null, diffs: ["la_salida_no_es_de_apply"] });
   if (decisions) {
     const entries = new Map(list(obj(applyResult).quinielas).map((e) => [e.slug ?? e.key, e]));
+    // Toda ambigua aplicada (ligada o cerrada por protección) tiene su decisión escrita.
+    for (const [slug, e] of entries) {
+      if (!e.applied) continue;
+      for (const i of list(e.questions)) {
+        if (i.category === "ambiguous" && !Object.prototype.hasOwnProperty.call(obj(obj(decisions)[slug]), i.betId)) {
+          problems.push({ slug, diffs: [`customBets.${i.betId}: ambigua aplicada sin decisión escrita`] });
+        }
+      }
+    }
     for (const [slug, bets] of Object.entries(obj(decisions))) {
       const e = entries.get(slug);
       const items = new Map(list(e && e.questions).map((i) => [i.betId, i]));
@@ -336,6 +345,9 @@ function planRevert(meta, entry, before, nowMs) {
   const m = obj(meta);
   const reasons = [];
   if (!isObj(before)) return { next: null, reasons: ["falta_el_respaldo_de_antes_de_aplicar"] };
+  // Un respaldo de después de aplicar (ya con la marca) no sirve de referencia:
+  // compararía contra jornadas que pudieron cambiar después.
+  if (isObj(before.betCloseMigration)) return { next: null, reasons: ["el_respaldo_es_de_despues_de_aplicar"] };
   const mk = obj(m.betCloseMigration);
   if (mk.version !== MIGRATION_VERSION || mk.cutoff !== entry.cutoff) return { next: null, reasons: ["la_marca_no_es_la_de_esa_aplicacion"] };
   const next = JSON.parse(JSON.stringify(m));
@@ -354,7 +366,11 @@ function planRevert(meta, entry, before, nowMs) {
     const wasClosed = betCloseState(b, m.rounds, nowMs).closed;
     for (const f of CLOSE_FIELDS) delete b[f];
     if (legacyCloseSignature(b, next) !== legacyCloseSignature(p, before)) { reasons.push(`${i.betId}: su_jornada_cambio_despues_de_aplicar`); continue; }
-    touched.push({ betId: i.betId, wasClosed, closedAfter: betCloseState(b, next.rounds, nowMs).closed });
+    const closedAfter = betCloseState(b, next.rounds, nowMs).closed;
+    // Sólo una cerrada por protección puede volver a abrirse al deshacer (antes
+    // estaba abierta). Cualquier otra que se reabriría pide revisión.
+    if (wasClosed && !closedAfter && i.action !== "cerrada_por_proteccion") { reasons.push(`${i.betId}: se_reabriria_y_no_la_cerro_la_proteccion`); continue; }
+    touched.push({ betId: i.betId, wasClosed, closedAfter });
   }
   if (reasons.length) return { next: null, reasons };
   delete next.betCloseMigration;
