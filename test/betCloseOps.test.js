@@ -59,10 +59,61 @@ test("volver atrás: no toca una quiniela si cerraron el torneo o quitaron la pr
   const before = { rounds: [round("r_1", 1, at(10))], customBets: [t("y", 1), t("z", null)] };
   const plan = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT });
   const entry = { applied: true, cutoff: CUT, questions: plan.items };
-  const ok = ops.planRevert(plan.next, entry);
+  const ok = ops.planRevert(plan.next, entry, before, NOW);
   assert.deepEqual(ok.next.customBets, before.customBets, "sin closesAt, closesRoundId, closeSource ni closeFlag");
   assert.equal(ok.next.betCloseMigration, undefined);
+  assert.deepEqual(ok.reopens, []);
   const cerrado = { ...plan.next, customBets: [] };
-  assert.deepEqual(ops.planRevert(cerrado, entry).reasons, ["y: ya_no_existe", "z: ya_no_existe"]);
-  assert.deepEqual(ops.planRevert({ ...plan.next, betCloseMigration: { version: 1, cutoff: at(1) } }, entry).reasons, ["la_marca_no_es_la_de_esa_aplicacion"]);
+  assert.deepEqual(ops.planRevert(cerrado, entry, before, NOW).reasons, ["y: ya_no_existe", "z: ya_no_existe"]);
+  assert.deepEqual(ops.planRevert({ ...plan.next, betCloseMigration: { version: 1, cutoff: at(1) } }, entry, before, NOW).reasons, ["la_marca_no_es_la_de_esa_aplicacion"]);
+  assert.deepEqual(ops.planRevert(plan.next, entry, null, NOW).reasons, ["falta_el_respaldo_de_antes_de_aplicar"]);
+});
+
+test("Technical QA · volver atrás no reabre una cerrada ni cambia un cierre si su jornada cambió después de aplicar; las cerradas por protección se reabren y se dicen", () => {
+  // c: cerrada antes de migrar (J1 ya venció). o: abierta con la J2.
+  const before = { tournamentEpoch: 0, rounds: [round("r_1", 1, at(-5)), round("r_2", 2, at(30))], customBets: [t("c", 1), t("o", 2)] };
+  const plan = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT });
+  const entry = { applied: true, cutoff: CUT, questions: plan.items };
+  // Después de aplicar, el admin reabre la J1 (+72 h): deshacer reabriría «c».
+  const reabierta = JSON.parse(JSON.stringify(plan.next));
+  reabierta.rounds[0].deadline = at(72);
+  assert.deepEqual(ops.planRevert(reabierta, entry, before, NOW).reasons, ["c: su_jornada_cambio_despues_de_aplicar"]);
+  // Mueve la J2: «o» seguiría en silencio el cierre nuevo.
+  const movida = JSON.parse(JSON.stringify(plan.next));
+  movida.rounds[1].deadline = at(200);
+  assert.deepEqual(ops.planRevert(movida, entry, before, NOW).reasons, ["o: su_jornada_cambio_despues_de_aplicar"]);
+  // Una cerrada por protección (antes abierta por la lectura de siempre) se reabre al deshacer: se dice.
+  const b2 = { tournamentEpoch: 0, rounds: [round("r_1", 1, at(10))], customBets: [t("p", 2), t("l", 7)] };
+  b2.rounds.push(round("r_7a", 7, at(20)), round("r_7b", 7, at(40)));
+  const plan2 = planBetCloseMigration(b2, { nowMs: NOW, cutoffIso: CUT });
+  const r2 = ops.planRevert(plan2.next, { applied: true, cutoff: CUT, questions: plan2.items }, b2, NOW + 1000);
+  assert.deepEqual(r2.reasons, []);
+  assert.deepEqual(r2.reopens, ["p", "l"], "las dos cerradas por protección (p: vínculo perdido, l: ambigua) vuelven a abrirse; se dicen");
+});
+
+test("Technical QA · comprobar después: lo aplicado tiene que ser lo decidido, y una ligada con el cierre de su jornada en el respaldo", () => {
+  const before = { tournamentEpoch: 1, pastTournaments: [{ rounds: [] }], rounds: [round("r_a", 1, at(10)), round("r_b", 1, at(20))], customBets: [t("x", 1)] };
+  const cand = (id) => planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT }).items[0].candidates.find((c) => c.roundId === id);
+  const link = (id) => ({ action: "link", roundId: id, roundNumber: 1, roundDeadline: cand(id).deadline });
+  // Se aplicó con «ra» aunque se decidió «rb».
+  const plan = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT, overrides: { x: link("r_a") } });
+  const row = (key, v) => ({ key, text: JSON.stringify(v) });
+  const backup = { rows: [row("quiniela:s:meta", before)] }, after = { rows: [row("quiniela:s:meta", plan.next)] };
+  const applied = { mode: "apply", quinielas: [{ slug: "s", key: "quiniela:s:meta", applied: true, cutoff: CUT, questions: plan.items }] };
+  assert.equal(ops.verifyApply(backup, after, applied).ok, true, "sin las decisiones, lo de --apply cuadra consigo mismo");
+  const v = ops.verifyApply(backup, after, applied, { s: { x: link("r_b") } });
+  assert.deepEqual(v.problems, [{ slug: "s", diffs: ["customBets.x: no se aplicó lo decidido"] }]);
+  assert.equal(ops.verifyApply(backup, after, applied, { s: { x: link("r_a") } }).ok, true);
+  // Un closesAt de --apply que no es el de su jornada en el respaldo.
+  const malo = JSON.parse(JSON.stringify(applied));
+  malo.quinielas[0].questions[0].closesAt = at(11);
+  assert.ok(ops.verifyApply(backup, after, malo).problems[0].diffs.includes("customBets.x.closesAt (no es el cierre de su jornada en el respaldo)"));
+});
+
+test("decisiones: la quiniela heredada (quiniela_meta_v1, sin slug) se decide por su key", () => {
+  const m = { tournamentEpoch: 1, pastTournaments: [{ rounds: [] }], rounds: [round("r_a", 1, at(10))], customBets: [t("x", 1)] };
+  const plan = planBetCloseMigration(m, { nowMs: NOW, cutoffIso: CUT });
+  const dry = { mode: "report", totals: {}, quinielas: [{ slug: null, key: "quiniela_meta_v1", questions: plan.items }] };
+  assert.deepEqual(ops.checkDecisions({ quiniela_meta_v1: { x: { action: "cutoff" } } }, dry).errors, []);
+  assert.deepEqual(ops.checkDecisions({}, dry).errors.map((e) => [e.slug, e.reason]), [["quiniela_meta_v1", "ambigua_sin_decision"]]);
 });

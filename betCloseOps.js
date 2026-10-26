@@ -146,10 +146,13 @@ function checkDecisions(decisions, dryRun) {
   const run = obj(dryRun);
   if (run.mode !== "report") err(null, null, "el_ensayo_no_es_un_reporte");
   if (obj(run.totals).needsReview > 0) err(null, null, "el_ensayo_tiene_needsReview");
-  const bySlug = new Map(list(run.quinielas).map((q) => [q.slug, q]));
+  // Una quiniela se nombra por su slug; la heredada (quiniela_meta_v1, sin
+  // slug) por esa key, que es como la lee el script de migración.
+  const idOf = (q) => q.slug ?? q.key;
+  const bySlug = new Map(list(run.quinielas).map((q) => [idOf(q), q]));
   let decided = 0;
   for (const [slug, bets] of Object.entries(obj(decisions))) {
-    if (/^quiniela[:_]/.test(slug) || slug.endsWith(":meta")) { err(slug, null, "usa_el_slug_no_la_key"); continue; }
+    if (slug !== "quiniela_meta_v1" && (/^quiniela[:_]/.test(slug) || slug.endsWith(":meta"))) { err(slug, null, "usa_el_slug_no_la_key"); continue; }
     const q = bySlug.get(slug);
     if (!q) { err(slug, null, "slug_no_existe_en_el_ensayo"); continue; }
     if (q.alreadyMigrated) { err(slug, null, "quiniela_ya_migrada"); continue; }
@@ -176,9 +179,9 @@ function checkDecisions(decisions, dryRun) {
   const defaults = [];
   for (const q of list(run.quinielas)) {
     for (const i of list(q.questions)) {
-      if (i.category === "ambiguous" && !Object.prototype.hasOwnProperty.call(obj(obj(decisions)[q.slug]), i.betId)) {
-        defaults.push({ slug: q.slug, betId: i.betId });
-        err(q.slug, i.betId, "ambigua_sin_decision");
+      if (i.category === "ambiguous" && !Object.prototype.hasOwnProperty.call(obj(obj(decisions)[idOf(q)]), i.betId)) {
+        defaults.push({ slug: idOf(q), betId: i.betId });
+        err(idOf(q), i.betId, "ambigua_sin_decision");
       }
     }
   }
@@ -243,6 +246,11 @@ function verifyQuiniela(before, after, entry) {
     if (!y) continue;
     if (stable(sinCierre(x)) !== stable(sinCierre(y))) diffs.push(`customBets.${id} (texto, tipo, puntos o jornada)`);
     const i = items.get(id);
+    if (i && (i.action === "ligada" || i.action === "ligada_por_decision")) {
+      const r = list(b.rounds).find((rr) => rr && rr.id === i.roundId);
+      const ms = r ? realDeadlineMs(r.deadline) : null;
+      if (ms === null || instantMs(i.closesAt) !== ms) diffs.push(`customBets.${id}.closesAt (no es el cierre de su jornada en el respaldo)`);
+    }
     const expect = expectedClose(x, i, entry);
     for (const f of CLOSE_FIELDS) if (stable(y[f]) !== stable(expect[f])) diffs.push(`customBets.${id}.${f}`);
   }
@@ -267,9 +275,10 @@ function expectedClose(before, item, entry) {
   }
 }
 
-// Respaldo antes + exportación después + salida de --apply. Devuelve
-// { ok, checked, problems: [{ slug, diffs }], notApplied }.
-function verifyApply(backup, afterExport, applyResult) {
+// Respaldo antes + exportación después + salida de --apply (+ el archivo de
+// decisiones del dueño, si se da: lo aplicado tiene que ser lo decidido, no
+// sólo lo que dijo --apply). Devuelve { ok, checked, problems, notApplied }.
+function verifyApply(backup, afterExport, applyResult, decisions) {
   const parse = (rows) => new Map(list(rows).map((r) => [r.key, JSON.parse(r.text)]));
   const before = parse(obj(backup).rows), after = parse(obj(afterExport).rows);
   const problems = [];
@@ -283,22 +292,56 @@ function verifyApply(backup, afterExport, applyResult) {
     if (diffs.length) problems.push({ slug: entry.slug, diffs });
   }
   if (obj(applyResult).mode !== "apply") problems.push({ slug: null, diffs: ["la_salida_no_es_de_apply"] });
+  if (decisions) {
+    const entries = new Map(list(obj(applyResult).quinielas).map((e) => [e.slug ?? e.key, e]));
+    for (const [slug, bets] of Object.entries(obj(decisions))) {
+      const e = entries.get(slug);
+      const items = new Map(list(e && e.questions).map((i) => [i.betId, i]));
+      for (const [betId, d] of Object.entries(obj(bets))) {
+        const i = items.get(betId);
+        const ok = !!i && !!e.applied && (d && d.action === "link"
+          ? i.action === "ligada_por_decision" && i.roundId === d.roundId
+          : d && d.action === "cutoff" && i.action === "cerrada_por_proteccion");
+        if (!ok) problems.push({ slug, diffs: [`customBets.${betId}: no se aplicó lo decidido`] });
+      }
+    }
+  }
   return { ok: problems.length === 0 && notApplied.length === 0, checked, problems, notApplied };
 }
 
 // ---------- Vuelta atrás ----------
 
+// El cierre efectivo de una pregunta por la lectura de antes de migrar (por
+// número de jornada): qué jornada y a qué hora, o «sin cierre». Para comparar
+// antes de migrar y después de deshacer.
+function legacyCloseSignature(bet, meta) {
+  const b = obj(bet);
+  if (b.scope !== "temporada") return "jornada";
+  if (b.closeSource === "none" || !Number.isInteger(b.closesAtRound) || b.closesAtRound < 1) return "sin_cierre";
+  const ms = list(obj(meta).rounds).filter((r) => r && r.number === b.closesAtRound);
+  if (!ms.length) return "sin_jornada";
+  return ms.map((r) => `${r.id}@${realDeadlineMs(r.deadline) ?? stable(r.deadline)}`).join("|");
+}
+
 // Pure. Lo que se deshace en una quiniela migrada: sólo los campos que la
-// migración escribió (según su salida) y que siguen tal cual, y la marca. Si
-// algo cambió después (el admin movió un cierre, se cerró el torneo, se borró
+// migración escribió (según su salida) y que siguen tal cual, y la marca; y
+// sólo si, con las jornadas de ahora, cada pregunta vuelve EXACTAMENTE al
+// cierre que tenía antes de migrar (según el respaldo `before`). Si algo cambió
+// después (el admin movió un cierre o una jornada, se cerró el torneo, se quitó
 // una pregunta), no se toca esa quiniela: { next: null, reasons }.
-function planRevert(meta, entry) {
+// `reopens`: las preguntas que hoy están cerradas y quedarían abiertas al
+// deshacer (las que la migración cerró por protección y antes estaban
+// abiertas): se dicen para que se autoricen de forma explícita.
+function planRevert(meta, entry, before, nowMs) {
   const m = obj(meta);
   const reasons = [];
+  if (!isObj(before)) return { next: null, reasons: ["falta_el_respaldo_de_antes_de_aplicar"] };
   const mk = obj(m.betCloseMigration);
   if (mk.version !== MIGRATION_VERSION || mk.cutoff !== entry.cutoff) return { next: null, reasons: ["la_marca_no_es_la_de_esa_aplicacion"] };
   const next = JSON.parse(JSON.stringify(m));
   const bets = new Map(list(next.customBets).filter(isObj).map((b) => [b.id, b]));
+  const prev = new Map(list(before.customBets).filter(isObj).map((b) => [b.id, b]));
+  const touched = [];
   for (const i of list(entry.questions)) {
     if (!["ligada", "ligada_por_decision", "cerrada_por_proteccion", "sin_cierre"].includes(i.action)) continue;
     const b = bets.get(i.betId);
@@ -306,11 +349,16 @@ function planRevert(meta, entry) {
     const want = expectedClose({}, i, entry);
     const now = {}; for (const f of CLOSE_FIELDS) if (b[f] !== undefined) now[f] = b[f];
     if (stable(now) !== stable(want)) { reasons.push(`${i.betId}: cambio_despues_de_aplicar`); continue; }
+    const p = prev.get(i.betId);
+    if (!p) { reasons.push(`${i.betId}: no_esta_en_el_respaldo`); continue; }
+    const wasClosed = betCloseState(b, m.rounds, nowMs).closed;
     for (const f of CLOSE_FIELDS) delete b[f];
+    if (legacyCloseSignature(b, next) !== legacyCloseSignature(p, before)) { reasons.push(`${i.betId}: su_jornada_cambio_despues_de_aplicar`); continue; }
+    touched.push({ betId: i.betId, wasClosed, closedAfter: betCloseState(b, next.rounds, nowMs).closed });
   }
   if (reasons.length) return { next: null, reasons };
   delete next.betCloseMigration;
-  return { next, reasons: [] };
+  return { next, reasons: [], reopens: touched.filter((x) => x.wasClosed && !x.closedAfter).map((x) => x.betId) };
 }
 
 module.exports = {

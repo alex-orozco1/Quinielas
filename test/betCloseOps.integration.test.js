@@ -135,7 +135,7 @@ test.describe("D4 · operación de la migración: inventario, respaldo, decision
     assert.equal(r.status, 0, r.stderr);
     aplicado = r.json;
     const after = script("bet-closes-inventory.js", ["--export"]);
-    const v = script("bet-closes-check.js", ["verify", "--backup=" + file("respaldo.json", backup), "--after=" + file("despues.json", after.json), "--applied=" + file("aplicado.json", aplicado)]);
+    const v = script("bet-closes-check.js", ["verify", "--backup=" + file("respaldo.json", backup), "--after=" + file("despues.json", after.json), "--applied=" + file("aplicado.json", aplicado), "--decisions=" + file("decisiones.json", decisions)]);
     assert.equal(v.status, 0, JSON.stringify(v.json));
     assert.ok(v.json.checked >= 2);
     // Si una respuesta o un cierre no cuadran, se dice dónde (sin valores).
@@ -153,20 +153,40 @@ test.describe("D4 · operación de la migración: inventario, respaldo, decision
     assert.ok(!JSON.stringify(v2).includes("PRIVAD"));
   });
 
+  itest("Technical QA · volver atrás con una jornada reabierta después de aplicar: la cerrada no se reabre (pide revisión)", async () => {
+    const q = await quiniela("opsd");
+    const v = await stored(q);
+    v.rounds = [jornada("r_opsd1", 1, enHoras(-5)), jornada("r_opsd2", 2, enHoras(30))];
+    v.customBets = [t("cb_c", 1)];
+    v.customBetsMigrated = true;
+    await putStored(q, v);
+    const bk = script("bet-closes-inventory.js", ["--export"]).json;
+    const ap = script("bet-closes-migrate.js", ["--apply", "--database=" + (await dbName())]).json;
+    const after = await stored(q);
+    after.rounds[0].deadline = enHoras(72);   // el admin reabre la J1
+    await putStored(q, after);
+    const r = script("bet-closes-revert.js", ["--applied=" + file("ap-d.json", ap), "--backup=" + file("bk-d.json", bk), "--apply", "--database=" + (await dbName())]);
+    assert.equal(r.status, 3);
+    assert.deepEqual(r.json.quinielas.find((x) => x.slug === q.slug).needsReview, ["cb_c: su_jornada_cambio_despues_de_aplicar"]);
+    assert.equal((await stored(q)).customBets[0].closeSource, "migration_round", "sigue cerrada con su cierre de la migración");
+  });
+
   itest("volver atrás: sólo lo que la migración escribió y nadie cambió; lo cambiado después se deja y pide revisión", async () => {
     // Después de aplicar, el admin de qb movió el cierre de su pregunta.
     const vb = await stored(qb);
     vb.customBets[0].closesAt = enHoras(60);
     await putStored(qb, vb);
     const appliedFile = file("aplicado.json", aplicado);
+    const backupFile = file("respaldo.json", backup);
     const before = await allRows();
-    const dry = script("bet-closes-revert.js", ["--applied=" + appliedFile]);
+    const dry = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--backup=" + backupFile]);
     assert.equal(dry.status, 3);
     assert.equal(await allRows(), before, "sin --apply no escribe");
     const by = Object.fromEntries(dry.json.quinielas.map((q) => [q.slug, q]));
-    assert.equal(by[qa.slug].wouldRevert, true);
+    assert.equal(by[qa.slug].wouldRevert, true, JSON.stringify(by[qa.slug]));
+    assert.deepEqual(by[qa.slug].reopens, ["cb_pend"], "la de fecha ilegible abierta, cerrada por protección, se reabre: se dice");
     assert.deepEqual(by[qb.slug].needsReview, ["cb_amb: cambio_despues_de_aplicar"]);
-    const r = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--apply", "--database=" + (await dbName())]);
+    const r = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--backup=" + backupFile, "--apply", "--database=" + (await dbName())]);
     assert.equal(r.status, 3);
     // qa vuelve a lo del respaldo (salvo los sellos de revisión); qb no se tocó.
     const back = JSON.parse(backup.rows.find((x) => x.key === qa.metaKey).text);
@@ -177,10 +197,13 @@ test.describe("D4 · operación de la migración: inventario, respaldo, decision
     assert.ok(now.betsRevision > back.betsRevision || back.betsRevision === undefined, "avanzó la revisión");
     assert.equal((await stored(qb)).customBets[0].closesAt, vb.customBets[0].closesAt);
     // Otra vez: ya no hay nada que volver atrás en qa.
-    const again = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--apply", "--database=" + (await dbName())]);
+    const again = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--backup=" + backupFile, "--apply", "--database=" + (await dbName())]);
     assert.deepEqual(again.json.quinielas.find((q) => q.slug === qa.slug).needsReview, ["la_marca_no_es_la_de_esa_aplicacion"]);
     // Sin --database, nada.
-    const noDb = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--apply"]);
+    const noDb = script("bet-closes-revert.js", ["--applied=" + appliedFile, "--backup=" + backupFile, "--apply"]);
     assert.equal(noDb.status, 2);
+    assert.equal(script("bet-closes-revert.js", ["--applied=" + appliedFile]).status, 2, "sin el respaldo, nada");
+    const sinBase = { ...aplicado }; delete sinBase.database;
+    assert.equal(script("bet-closes-revert.js", ["--applied=" + file("sinbase.json", sinBase), "--backup=" + backupFile]).status, 2, "una salida sin su base, nada");
   });
 });

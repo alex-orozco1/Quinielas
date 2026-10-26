@@ -14,10 +14,11 @@
 //   node scripts/bet-closes-check.js backup --backup=respaldo-meta.json [--summary=resumen-meta.json]
 //       Cada fila del respaldo da su md5; con un resumen recién tomado de la
 //       base, también que no falte ni sobre ninguna fila.
-//   node scripts/bet-closes-check.js verify --backup=respaldo-meta.json --after=despues-meta.json --applied=aplicado.json
+//   node scripts/bet-closes-check.js verify --backup=respaldo-meta.json --after=despues-meta.json --applied=aplicado.json --decisions=decisiones.json
 //       Después de aplicar: preguntas, fechas, respuestas y aciertos, contra lo
 //       que la migración dijo haber escrito. Sólo cambian los campos de cierre
-//       esperados, la marca y los sellos de revisión.
+//       esperados, la marca y los sellos de revisión; una ligada, con el cierre
+//       de su jornada en el respaldo; y lo aplicado es lo decidido.
 //
 // La salida no lleva valores de las filas: sólo slugs, ids y razones.
 const fs = require("node:fs");
@@ -42,7 +43,7 @@ try {
   if (cmd === "overrides") process.stdout.write(JSON.stringify(ops.toOverrides(read("decisions")), null, 2) + "\n");
   else if (cmd === "decisions") done(ops.checkDecisions(read("decisions"), read("dry-run")));
   else if (cmd === "backup") done(ops.checkBackup(read("backup"), arg("summary") ? read("summary") : null));
-  else if (cmd === "verify") done(ops.verifyApply(read("backup"), read("after"), read("applied")));
+  else if (cmd === "verify") done(ops.verifyApply(read("backup"), read("after"), read("applied"), read("decisions")));
   else { console.error("Uso: bet-closes-check.js overrides|decisions|backup|verify …"); process.exitCode = 2; }
 } catch (err) {
   console.error("La comprobación falló:", err && err.message ? err.message : "error");
