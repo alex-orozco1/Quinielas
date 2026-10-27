@@ -139,3 +139,26 @@ test("Technical QA · comprobar después: una ambigua aplicada sin su decisión 
   const v = ops.verifyApply({ rows: [row("quiniela:s:meta", before)] }, { rows: [row("quiniela:s:meta", plan.next)] }, applied, {});
   assert.deepEqual(v.problems, [{ slug: "s", diffs: ["customBets.x: ambigua aplicada sin decisión escrita"] }]);
 });
+
+test("revisión de 33a9c66 · comprobar después: una decisión «link» se coteja por id, número y fecha aprobados (mismo instante en otro formato pasa)", () => {
+  const before = { tournamentEpoch: 1, pastTournaments: [{ rounds: [] }], rounds: [round("r_a", 1, at(10)), round("r_b", 1, at(20))], customBets: [t("x", 1)] };
+  const cand = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT }).items[0].candidates.find((c) => c.roundId === "r_b");
+  const exact = { action: "link", roundId: "r_b", roundNumber: 1, roundDeadline: cand.deadline };
+  const plan = planBetCloseMigration(before, { nowMs: NOW, cutoffIso: CUT, overrides: { x: exact } });
+  const row = (key, v) => ({ key, text: JSON.stringify(v) });
+  const backup = { rows: [row("quiniela:s:meta", before)] }, after = { rows: [row("quiniela:s:meta", plan.next)] };
+  const applied = { mode: "apply", quinielas: [{ slug: "s", key: "quiniela:s:meta", applied: true, cutoff: CUT, questions: plan.items }] };
+  const check = (d) => ops.verifyApply(backup, after, applied, { s: { x: d } });
+  assert.deepEqual(check(exact).problems, [], "la decisión exacta pasa");
+  const mismoInstante = { ...exact, roundDeadline: cand.deadline.replace("Z", "+00:00") };
+  assert.deepEqual(check(mismoInstante).problems, [], "el mismo instante en otro formato ISO pasa");
+  const otraFecha = { ...exact, roundDeadline: new Date(Date.parse(cand.deadline) + 864e5).toISOString() };
+  assert.deepEqual(check(otraFecha).problems, [{ slug: "s", diffs: [
+    "customBets.x: la fecha aprobada no es el cierre de esa jornada en el respaldo",
+    "customBets.x: la fecha aplicada no es la aprobada",
+    "customBets.x: el estado después no es el aprobado",
+  ] }]);
+  assert.deepEqual(check({ ...exact, roundNumber: 2 }).problems, [{ slug: "s", diffs: ["customBets.x: el número aprobado no es el de esa jornada en el respaldo"] }]);
+  assert.deepEqual(check({ ...exact, roundDeadline: "no-es-fecha" }).problems, [{ slug: "s", diffs: ["customBets.x: la decisión aprobada no tiene número o fecha válidos"] }]);
+  assert.deepEqual(check({ ...exact, roundId: "r_a" }).problems, [{ slug: "s", diffs: ["customBets.x: no se aplicó lo decidido"] }], "otro id, como antes");
+});

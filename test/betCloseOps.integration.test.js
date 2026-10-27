@@ -138,6 +138,24 @@ test.describe("D4 · operación de la migración: inventario, respaldo, decision
     const v = script("bet-closes-check.js", ["verify", "--backup=" + file("respaldo.json", backup), "--after=" + file("despues.json", after.json), "--applied=" + file("aplicado.json", aplicado), "--decisions=" + file("decisiones.json", decisions)]);
     assert.equal(v.status, 0, JSON.stringify(v.json));
     assert.ok(v.json.checked >= 2);
+    // Revisión de 33a9c66: el archivo aprobado con el mismo id pero otra fecha u
+    // otro número no pasa, aunque lo aplicado cuadre consigo mismo; el mismo
+    // instante en otro formato sí; y la comprobación no escribe ni lleva textos.
+    const linked = decisions[qb.slug].cb_amb;
+    const dayLater = new Date(Date.parse(linked.roundDeadline) + 864e5).toISOString();
+    const variants = [
+      ["otra fecha", { ...linked, roundDeadline: dayLater }, 3],
+      ["otro número", { ...linked, roundNumber: linked.roundNumber + 1 }, 3],
+      ["mismo instante, otro formato", { ...linked, roundDeadline: linked.roundDeadline.replace("Z", "+00:00") }, 0],
+    ];
+    const rowsBefore = await allRows();
+    for (const [name, d, code] of variants) {
+      const dec = { ...decisions, [qb.slug]: { cb_amb: d } };
+      const out = script("bet-closes-check.js", ["verify", "--backup=" + file("respaldo.json", backup), "--after=" + file("despues.json", after.json), "--applied=" + file("aplicado.json", aplicado), "--decisions=" + file("dec-var.json", dec)]);
+      assert.equal(out.status, code, name + ": " + JSON.stringify(out.json));
+      assert.ok(!JSON.stringify(out.json).includes("PRIVAD"), name);
+    }
+    assert.equal(await allRows(), rowsBefore, "verify no escribe");
     // Si una respuesta o un cierre no cuadran, se dice dónde (sin valores).
     const mal = JSON.parse(JSON.stringify(after.json));
     const row = mal.rows.find((x) => x.key === qa.metaKey);

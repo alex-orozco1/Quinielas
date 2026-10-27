@@ -275,6 +275,24 @@ function expectedClose(before, item, entry) {
   }
 }
 
+// Una decisión «link» aprobada por el dueño (id, número y fecha de la jornada)
+// contra lo que de verdad se usó: la jornada con ese id en el respaldo (su
+// número y su cierre), la fecha que dice la salida de --apply y el estado
+// después. Mismo instante = igual (dos ISO equivalentes pasan); otro número u
+// otro instante, no. Devuelve las diferencias, sin valores.
+function linkMatchesApproval(d, item, beforeMeta, afterMeta, betId) {
+  const diffs = [];
+  const approved = typeof d.roundDeadline === "string" ? instantMs(d.roundDeadline) : null;
+  if (approved === null || !Number.isInteger(d.roundNumber)) return [`customBets.${betId}: la decisión aprobada no tiene número o fecha válidos`];
+  const r = list(obj(beforeMeta).rounds).find((x) => x && x.id === d.roundId);
+  if (!r || r.number !== d.roundNumber) diffs.push(`customBets.${betId}: el número aprobado no es el de esa jornada en el respaldo`);
+  if (!r || realDeadlineMs(r.deadline) !== approved) diffs.push(`customBets.${betId}: la fecha aprobada no es el cierre de esa jornada en el respaldo`);
+  if (instantMs(item.closesAt) !== approved) diffs.push(`customBets.${betId}: la fecha aplicada no es la aprobada`);
+  const b = list(obj(afterMeta).customBets).find((x) => isObj(x) && x.id === betId);
+  if (!b || instantMs(b.closesAt) !== approved || b.closesRoundId !== d.roundId) diffs.push(`customBets.${betId}: el estado después no es el aprobado`);
+  return diffs;
+}
+
 // Respaldo antes + exportación después + salida de --apply (+ el archivo de
 // decisiones del dueño, si se da: lo aplicado tiene que ser lo decidido, no
 // sólo lo que dijo --apply). Devuelve { ok, checked, problems, notApplied }.
@@ -311,7 +329,11 @@ function verifyApply(backup, afterExport, applyResult, decisions) {
         const ok = !!i && !!e.applied && (d && d.action === "link"
           ? i.action === "ligada_por_decision" && i.roundId === d.roundId
           : d && d.action === "cutoff" && i.action === "cerrada_por_proteccion");
-        if (!ok) problems.push({ slug, diffs: [`customBets.${betId}: no se aplicó lo decidido`] });
+        if (!ok) { problems.push({ slug, diffs: [`customBets.${betId}: no se aplicó lo decidido`] }); continue; }
+        if (d.action === "link") {
+          const diffs = linkMatchesApproval(d, i, before.get(e.key), after.get(e.key), betId);
+          if (diffs.length) problems.push({ slug, diffs });
+        }
       }
     }
   }
