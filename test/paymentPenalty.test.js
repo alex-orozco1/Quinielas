@@ -383,28 +383,43 @@ test("CASE AC: J5 closes unpaid with pointsPerRound=1 -> -1. Multiple subsequent
 
 // ---- QA fix #3: reconcile is called before the settings-save handler applies new paymentPenalty config ----
 
-test("reconcilePenaltyLedger is called before qz-save-penalty applies the new enabled/startsAtRound/pointsPerRound values", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-save-penalty").addEventListener("click"');
-  const slice = indexSrc.slice(idx, idx + 1400);
+test("reconcilePenaltyLedger is called before «Tus reglas» applies the new enabled/startsAtRound/pointsPerRound values", () => {
+  // MS2: the penalty moved from «Adicionales» (qz-save-penalty) to «Tus reglas» (qz-r-pen-save).
+  const idx = indexSrc.indexOf('document.getElementById("qz-r-pen-save").addEventListener("click"');
+  const slice = indexSrc.slice(idx, idx + 3200);
   const reconcileIdx = slice.indexOf("reconcilePenaltyLedger(meta);");
-  const enabledMutationIdx = slice.indexOf('penalty.enabled = document.getElementById("qz-penalty-enabled").checked;');
-  assert.ok(reconcileIdx !== -1 && enabledMutationIdx !== -1 && reconcileIdx < enabledMutationIdx, "reconciliation must run BEFORE any of the three penalty config fields are overwritten");
+  const mutationIdx = slice.indexOf("meta.paymentPenalty = next;");
+  assert.ok(idx !== -1 && reconcileIdx !== -1 && mutationIdx !== -1 && reconcileIdx < mutationIdx, "reconciliation must run BEFORE any of the three penalty config fields are overwritten");
+  // Never configured before: the closed rounds are settled as exempt first, so
+  // turning it on never charges them backwards.
+  const defaultIdx = slice.indexOf("if(!meta.paymentPenalty) meta.paymentPenalty = { enabled: false, startsAtRound: null, pointsPerRound: 1 };");
+  assert.ok(defaultIdx !== -1 && defaultIdx < reconcileIdx);
 });
 
-test("qz-save-penalty rolls back all three config fields AND the participants array together on save failure", () => {
-  const idx = indexSrc.indexOf('document.getElementById("qz-save-penalty").addEventListener("click"');
-  const slice = indexSrc.slice(idx, idx + 1800);
-  assert.ok(slice.includes("const previousEnabled = penalty.enabled;"));
-  assert.ok(slice.includes("const previousStartsAtRound = penalty.startsAtRound;"));
-  assert.ok(slice.includes("const previousPointsPerRound = penalty.pointsPerRound;"));
+test("«Tus reglas» rolls back the whole penalty config AND the participants array together on save failure", () => {
+  const idx = indexSrc.indexOf('document.getElementById("qz-r-pen-save").addEventListener("click"');
+  const slice = indexSrc.slice(idx, idx + 3200);
+  assert.ok(slice.includes("const before = meta.paymentPenalty ? { ...meta.paymentPenalty } : undefined;"));
   assert.ok(slice.includes("const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));"));
   assert.ok(slice.includes("await setMetaWithError(meta);"), "must use the error-aware save, not the boolean-only setMeta");
-  const failIdx = slice.indexOf("}else{");
-  const failSlice = slice.slice(failIdx, failIdx + 450);
-  assert.ok(failSlice.includes("penalty.enabled = previousEnabled;"));
-  assert.ok(failSlice.includes("penalty.startsAtRound = previousStartsAtRound;"));
-  assert.ok(failSlice.includes("penalty.pointsPerRound = previousPointsPerRound;"));
+  const failIdx = slice.indexOf("if(!result.ok){");
+  const failSlice = slice.slice(failIdx, failIdx + 300);
+  assert.ok(failSlice.includes("if(before) meta.paymentPenalty = before; else delete meta.paymentPenalty;"));
   assert.ok(failSlice.includes("meta.participants = participantsSnapshot;"));
+});
+
+// ---- MS2: a prepared round that nobody could play never costs points ----
+
+test("MS2: a prepared (unpublished) round whose deadline passed is never penalized, live or reconciled", () => {
+  const prepared = { ...round("r13", 13, CLOSED), published: false };
+  const meta = { paymentPenalty: penalty({ startsAtRound: 12 }), rounds: [round("r12", 12, OPEN), prepared], participants: [{ id: "p1", paid: false }] };
+  assert.equal(runPenaltyPointsFor(meta, meta.participants[0], null, NOW), 0, "not counted live");
+  runReconcile(meta, NOW);
+  assert.ok(!("r13" in meta.participants[0].penalizedRounds), "not settled either: if it is published later, it is settled when it closes");
+  assert.equal(runPenaltyPointsFor(meta, meta.participants[0], null, NOW), 0);
+  // Published (later), it counts like any other.
+  prepared.published = true;
+  assert.equal(runPenaltyPointsFor(meta, meta.participants[0], null, NOW), 1);
 });
 
 // ---- Configuration respect ----
@@ -489,7 +504,7 @@ test("reconcilePenaltyLedger is called before the reopen-round deadline mutation
 test("reconcilePenaltyLedger is called before the manual round-editor deadline mutation", () => {
   const body = extractFunctionBody(indexSrc, "if(editingRound){");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
-  const deadlineMutationIdx = body.indexOf("editingRound.deadline = new Date(draft.deadline).toISOString();");
+  const deadlineMutationIdx = body.indexOf("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);");
   assert.ok(reconcileIdx !== -1 && reconcileIdx < deadlineMutationIdx);
 });
 

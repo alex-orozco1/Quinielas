@@ -150,6 +150,18 @@ async function dbQuery(sql, params) {
   await client.connect();
   try { return await client.query(sql, params); } finally { await client.end(); }
 }
+// Holds the kv row's lock (SELECT … FOR UPDATE in an open transaction) while
+// `whileLocked()` runs, then releases it: a request the server starts in the
+// meantime waits for the lock, so it is judged at the moment it really runs.
+async function withRowLocked(key, whileLocked) {
+  const client = new pg.Client({ connectionString: dbUrl });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT 1 FROM kv WHERE key = $1 FOR UPDATE", [key]);
+    try { return await whileLocked(); } finally { await client.query("COMMIT"); }
+  } finally { await client.end(); }
+}
 async function setup() {
   if (SKIP) return;
   pg = require("pg");
@@ -165,8 +177,11 @@ async function teardown() {
   if (pg && dbName) await adminQuery(`DROP DATABASE IF EXISTS ${dbName}`).catch(() => {});
 }
 const serverOutput = () => serverLog;
+// This file's throwaway database, for code that opens its own pool (the bet
+// closes migration runs outside the server).
+const databaseUrl = () => dbUrl;
 
 module.exports = {
-  SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, serverOutput,
+  SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, withRowLocked, serverOutput, databaseUrl,
   freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom,
 };

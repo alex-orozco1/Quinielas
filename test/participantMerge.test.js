@@ -383,8 +383,9 @@ test("REVISION: the browser adopts the server's values, so its own next save is 
   assert.ok(i !== -1);
   // HOTFIX-001 añadió la rama de reconciliación del tablero al principio de
   // esta misma función, así que la ventana se amplía: lo que se comprueba es
-  // idéntico, sólo está más abajo.
-  const body = indexSrc.slice(i, i + 4200);
+  // idéntico, sólo está más abajo. MS2 · D4 añadió dos ramas más (cierres de
+  // preguntas): otra vez más abajo.
+  const body = indexSrc.slice(i, i + 5600);
   assert.ok(body.includes("meta.participantsRevision = result.participantsRevision"),
     "without this, a tab's own successful save would leave it holding the previous revision");
   assert.ok(body.includes("adoptParticipantRevs(result.participantRevs)"),
