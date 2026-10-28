@@ -16,6 +16,10 @@
   🌐 <strong>Live Demo:</strong> <a href="https://qracks.net">https://qracks.net</a>
 </p>
 
+<p align="center">
+  📚 <strong>Documentation (Spanish):</strong> <a href="docs/README.md">docs/README.md</a>: architecture, flows and business rules, development and QA, operations.
+</p>
+
 ---
 
 ## About
@@ -236,7 +240,7 @@ The cycle identity is **assigned by the server**, never parsed from a provider l
 
 QRACKS separates **what a competition is** from **where the data came from**.
 
-Above the boundary, the product speaks one vocabulary: competitions, tournament instances, stages, events, competitors. Below it, each provider speaks its own, and an adapter translates. No provider field name appears in product code, every identifier is namespaced by provider, and unknown values stay `null` instead of being guessed.
+Above the boundary, the product speaks one vocabulary: competitions, tournament instances, stages, events, competitors. Below it, each provider speaks its own, and an adapter translates. No provider field name appears in server-side product code, every identifier is namespaced by provider, and unknown values stay `null` instead of being guessed. One exception: to suggest team names, the browser queries TheSportsDB's public v1 API directly.
 
 Providers **declare what they can do** rather than having it inferred — whether they model stages, two-legged ties, aggregates, an explicit finished signal, or several tournaments inside one season. Product code asks; it never assumes.
 
@@ -284,10 +288,10 @@ Prediction pools only work when participants trust the system.
 - Draft results remain private
 - Incomplete results cannot be published
 - Results cannot be published while a matchday is still open
-- Reopening a matchday requires a new valid deadline
+- Reopening a matchday requires a new valid deadline (checked in the browser; the server enforces the deadline on predictions)
 - PIN resets invalidate previous sessions
 - Concurrent administrator edits are detected rather than silently overwritten
-- A database hardening script (`docs/security/`) denies direct table access to non-service roles, applied as an operational step
+- A database hardening script (`docs/security/`) defines policies that deny direct table access to non-service roles, applied as an operational step. It does not enable row level security by itself; see [`docs/OPERATIONS.md`](docs/OPERATIONS.md) §6
 - Legacy pools remain compatible with the current lifecycle
 - QRACKS never holds or distributes prize money
 
@@ -367,7 +371,7 @@ Manual administration remains available as a fallback whenever external data is 
 | Database | PostgreSQL |
 | Sports Data | Provider abstraction — TheSportsDB (default), Sportmonks (opt-in) |
 | Deployment | Render |
-| Testing | Node Test Runner + browser/E2E validation |
+| Testing | Node Test Runner (unit, structural and PostgreSQL integration tests). Browser checks for each PR run with Playwright outside the repository; CI only runs the secret check |
 
 ---
 
@@ -375,7 +379,8 @@ Manual administration remains available as a fallback whenever external data is 
 
 ```text
 .
-├── docs/
+├── docs/                # documentation index: docs/README.md
+├── payments/            # Stripe boundary and payment domain
 ├── providers/           # one adapter per sports data provider
 ├── public/
 ├── scripts/
@@ -542,7 +547,7 @@ deliberate shutdown. While Stripe is `READY`, the Plus screen never tells an org
 
 Production: 🌐 **https://qracks.net**
 
-Operational runbook: [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+Operational runbook: [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Full documentation index: [`docs/README.md`](docs/README.md).
 
 ---
 
@@ -604,7 +609,7 @@ Where the product stands today. New ideas are prioritized against these stages r
 
 In order, and without dates:
 
-1. **Payments, in production** — the checkout is built and verified; what remains is turning it on for real traffic and watching the first purchases closely.
+1. **Payments, in production**: the Plus checkout is live (MON-003). What remains is watching the first purchases closely.
 2. **Help** — today's per-screen tips become one help system, written once and used across the landing page, participant and administrator views.
 3. **Product iteration** — watch real pools, measure where people actually get stuck, and fix what the evidence shows rather than what seems likely.
 4. **Sports-data rollout** — turn the provider capabilities already built into a safe organizer experience, including choosing and migrating providers. The architecture is ready; the product experience is not.

@@ -1,87 +1,135 @@
-# Operación — QRACKS en Render
+# Operación de QRACKS en Render
 
-Guía corta para diagnosticar y responder si algo falla en producción. No sustituye monitoreo dedicado — es lo mínimo para operar con los primeros organizadores.
+Guía corta para operar y diagnosticar. No sustituye un monitoreo dedicado.
+
+Revisada el 2026-10-06 contra `main` (`4e5cbec`) y contra la configuración real de Render, leída con su API. Se corrigieron afirmaciones viejas:
+- `/api/health` no consulta la base;
+- el servicio de producción se llama `quinielas`;
+- sin las variables obligatorias, el proceso no arranca.
+
+## 0. Entornos
+
+| | Producción | Sandbox |
+|---|---|---|
+| Servicio de Render | `quinielas` (`srv-d9amu2ucjfls73d67be0`) | `qracks-mon003-sandbox` (`srv-daq4rurtqb8s73ec3rng`) |
+| Rama que despliega | `main` | `mon001a-plan-limits-enforcement` |
+| Cuándo despliega | Automático con cada commit nuevo en esa rama | Igual |
+| Plan e instancias | `free`, 1 instancia, región Virginia | `free`, 1 instancia, región Virginia |
+| Dominio | `qracks.net`, detrás de Cloudflare | `qracks-mon003-sandbox.onrender.com` |
+| Base de datos | PostgreSQL de producción (Supabase) | Una base distinta de la de producción. Lo confirmó el Founder; desde el repositorio no se puede verificar. |
+| Pagos | Modo `live`, según su log de arranque | Modo `test`, según su log de arranque |
+
+- **Comandos:** `npm install` para construir y `node server.js` para arrancar.
+- **Sin health check ni previews:** Render no tiene configurado ningún health check, y las previews de PR están apagadas.
+- **`render.yaml` no describe estos servicios:** declara un servicio llamado `quiniela-liga-mx`, sin rama, y no incluye las variables de los proveedores deportivos. La fuente de verdad es el dashboard de Render.
+- **Desplegar en el sandbox** es subir un commit a `mon001a-plan-limits-enforcement`. Hasta ahora, cada validación se subió como un commit con el árbol del PR a probar encima de la punta de esa rama, sin forzar. **Desplegar en el sandbox también requiere autorización explícita.**
+- **Producción despliega al fusionar a `main`.** Merge y deploy requieren autorización explícita del Founder (ver `CLAUDE.md` en la rama del equipo).
+- **Arranque en frío:** con el plan `free`, el servicio se duerme tras unos minutos sin tráfico. La primera visita lo despierta y puede tardar de 30 a 60 s. En el log aparece un `Running 'node server.js'` sin deploy previo; **no es un fallo**.
 
 ## 1. Verificar que el servicio está vivo
 
 ```
-GET https://<tu-dominio-render>/api/health
+GET https://qracks.net/api/health
 ```
 
-Respuesta esperada:
-```json
-{"ok": true, "time": "2026-08-14T..."}
-```
+Respuesta esperada: `{"ok": true, "time": "…"}`.
 
-- **Responde con `ok:true`** → el servidor está arriba y conectado a la base de datos (el endpoint no depende de la DB directamente, así que si el servidor responde pero las páginas fallan, ver paso 2 — puede ser un problema de conexión a Postgres).
-- **No responde / timeout / 502** → el servicio está caído o Render no pudo levantarlo. Ir a Render.
-- **Responde pero las páginas normales fallan** → revisar logs (paso 2), probable problema de `DATABASE_URL` o conexión a Supabase.
+- **`ok:true`:** el proceso está arriba. **No dice nada de la base**: este endpoint no la consulta. Si las páginas fallan, revisa los logs (paso 2).
+- **No responde, timeout o 502:** el servicio está caído o despertando. Espera un minuto y, si sigue igual, ve a Render.
+
+**Al arrancar, el log debe mostrar, en este orden:**
+1. `client_ip_source {"source":"render",…}`
+2. `credential_attempts_loaded {"rows":N,…}`
+3. `Quiniela server listening on port 10000`
+4. `payments_readiness {"when":"startup","state":…}`
+
+Si falta alguna línea o hay errores antes de `listening`, el arranque falló.
 
 ## 2. Dónde revisar logs en Render
 
-1. Entra a [dashboard.render.com](https://dashboard.render.com) → selecciona el servicio `quiniela-liga-mx`.
-2. Pestaña **"Logs"** (menú lateral) — muestra el output en vivo del proceso (`console.log`/`console.error` de `server.js`).
-3. Filtra por fecha/hora si buscas un evento específico (ej. el momento en que alguien reportó un error).
-4. Errores de conexión a base de datos suelen verse como `ECONNREFUSED`, `password authentication failed`, o timeouts de Postgres — casi siempre apuntan a que `DATABASE_URL` cambió, expiró, o Supabase está teniendo un problema por su lado.
-5. Pestaña **"Events"** — muestra el historial de deploys (cuándo se desplegó qué commit, y si el build/deploy falló).
+1. Entra a [dashboard.render.com](https://dashboard.render.com) y abre el servicio `quinielas`, o `qracks-mon003-sandbox` para el sandbox.
+2. **Logs** muestra la salida del proceso (`console.log` y `console.error` de `server.js`). Filtra por fecha y hora si buscas un evento concreto.
+3. Los errores de base de datos suelen verse como `ECONNREFUSED`, `password authentication failed` o timeouts de Postgres. Casi siempre significan que `DATABASE_URL` cambió o expiró, o que Supabase tiene un problema por su lado.
+4. **Events** muestra los deploys: qué commit se desplegó y si el build o el deploy fallaron.
 
-## 3. Procedimiento básico de rollback
+## 3. Rollback
 
-Render conserva los deploys anteriores — no hace falta revertir código a mano:
+Render conserva los deploys anteriores:
+1. Dashboard → servicio → **Events** o **Deploys**.
+2. Elige el último deploy que funcionaba.
+3. **Rollback to this deploy**, o **Redeploy** sobre ese commit.
+4. Verifica con `/api/health` y una revisión rápida: login y Jornada.
 
-1. Dashboard → servicio → pestaña **"Events"** (o **"Deploys"**).
-2. Busca el último deploy que sabías que funcionaba bien.
-3. Botón **"Rollback to this deploy"** (o **"Redeploy"** sobre ese commit específico, según la versión de la interfaz de Render).
-4. Confirma. Render vuelve a desplegar ese commit — toma unos minutos, igual que un deploy normal.
-5. Verifica con `/api/health` y una revisión visual rápida (login, Jornada) de que todo responde bien otra vez.
+**El rollback es del código, no de la base:**
+- Las migraciones al arrancar (`ensureTable`) crean tablas, índices y semillas si faltan. También completan datos en filas existentes: `roundsRevision`, y el plan y el ciclo de las quinielas que no los tenían. Un rollback no las deshace, y **no está probado** que un código anterior las tolere siempre.
+- Un problema causado por un cambio de datos requiere una acción aparte en Supabase. Eso es un cambio de datos de producción y requiere autorización explícita.
 
-**Nota:** el rollback es sobre el código/deploy, no sobre la base de datos. Si el problema fue causado por un cambio de datos (no de código), el rollback de Render no lo revierte — eso requeriría una acción aparte sobre Supabase.
+## 4. Si un deploy falla
 
-## 4. Qué revisar si un deploy falla
+1. **Events** → el deploy fallido → su log de build.
+2. Causas comunes:
+   - **`npm install` falla:** revisar los cambios en `package.json` o `package-lock.json`.
+   - **El proceso arranca y muere enseguida:** el log del primer minuto lo dice.
+     - Si faltan `DATABASE_URL` o `PLATFORM_PASSWORD`, el proceso termina con «Missing required environment variable(s)».
+     - Si la base no responde, reintenta 5 veces cada 3 s y termina.
+   - **Build correcto pero `/api/health` no responde:** puede ser el arranque en frío. Espera un minuto.
+3. Si no se resuelve, haz rollback (paso 3) mientras se investiga.
 
-1. **Events → el deploy fallido** → abre el log de build de ese intento específico.
-2. Errores más comunes:
-   - **`npm install` falla** → revisar si `package.json`/`package-lock.json` cambiaron de forma incompatible.
-   - **El proceso arranca y muere enseguida** → revisar los logs (paso 2) del primer minuto tras el arranque — casi siempre `DATABASE_URL` o `PLATFORM_PASSWORD` faltante o mal configurado en el servicio.
-   - **Build exitoso pero `/api/health` no responde** → puede ser que el servicio tarde en levantar (Render free tier duerme instancias inactivas — el primer request tras inactividad puede tardar ~30-60s, no es necesariamente un fallo).
-3. Si nada de lo anterior resuelve: rollback (paso 3) al último deploy funcional mientras se investiga con más calma — no hay necesidad de diagnosticar bajo presión con el servicio caído.
+## 5. Variables de entorno (Render → Environment)
 
-## Variables de entorno requeridas (Render → Environment)
+Los **valores** viven sólo en Render. Nunca en el repositorio, en un issue, en un log ni en un chat.
 
-| Variable | Qué es |
-|---|---|
-| `DATABASE_URL` | Cadena de conexión a Postgres (Supabase) |
-| `PLATFORM_PASSWORD` | Contraseña del panel de plataforma (`/api/platform-*`) |
+| Variable | Obligatoria | Para qué |
+|---|---|---|
+| `DATABASE_URL` | Sí | Conexión a PostgreSQL. Si contiene `localhost`, se desactivan SSL y las cookies `Secure` (modo local). Si no, la conexión usa SSL **sin verificar el certificado** del servidor de base de datos (`rejectUnauthorized: false`). |
+| `PLATFORM_PASSWORD` | Sí | Contraseña **inicial** del panel de plataforma. En cuanto se cambia desde el panel, manda la guardada en la base. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL` | Las tres o ninguna | Pagos. Ninguna: pagos apagados. Algunas: `MISCONFIGURED`, que falla cerrado. Ver §7. |
+| `THESPORTSDB_API_KEY` | Para importar y para resultados automáticos | Sin ella, la importación de jornadas y los resultados automáticos fallan. Lo manual sigue funcionando. |
+| `SPORTMONKS_API_TOKEN` | Sólo si alguna quiniela usa Sportmonks | Proveedor alternativo, opcional. |
+| `PG_POOL_MAX` | No (10) | Tamaño del pool de conexiones. |
+| `PORT` | No | Render la pone. |
+| `RENDER` | No | Render la pone. Con `true`, la IP del cliente se toma de Cloudflare. |
+| `QRACKS_CLIENT_IP_SOURCE` | No | Fuerza la fuente de la IP (`render`, `socket` o `xff:N`). Ver [SECURITY_CREDENTIAL_LIMITS.md](SECURITY_CREDENTIAL_LIMITS.md) §3. |
 
-Si alguna falta o es incorrecta, el servicio puede levantar pero fallar en cualquier operación que toque la base de datos.
+Cambiar cualquier variable en Render requiere autorización explícita del Founder.
 
----
+## 6. Seguridad de la base
 
-## Pagos (MON-003) — poner Stripe en marcha
+- `docs/security/sec-002-hardening.sql` crea políticas que niegan a los roles de la API de Supabase (`anon` y `authenticated`) el acceso a `kv` y `analytics_events`. Se aplica a mano.
+- **Ese script no activa RLS.** No ejecuta `ENABLE ROW LEVEL SECURITY`. Sin RLS activo, las políticas no tienen efecto.
+- **Que RLS esté activo en producción es UNKNOWN / NOT PROVEN:** no se puede comprobar desde el repositorio.
+- **Cómo comprobarlo** (todo de sólo lectura, en el editor SQL de Supabase):
+  1. RLS en las dos tablas, que debe dar `true`:
+     `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relname in ('kv', 'analytics_events');`
+  2. Permisos de los roles de la API de Supabase:
+     `select has_table_privilege('anon', 'public.kv', 'select'), has_table_privilege('authenticated', 'public.kv', 'select');`
+     Haz lo mismo con `analytics_events`. Sin permisos, un RLS apagado no abre nada; con permisos y RLS apagado, el acceso queda abierto.
+  3. Dueño de las tablas frente al rol que usa el servidor:
+     `select tablename, tableowner from pg_tables where schemaname = 'public' and tablename in ('kv', 'analytics_events');`
+     frente a `select current_user, rolbypassrls from pg_roles where rolname = current_user;`, ejecutado con el usuario de `DATABASE_URL`.
+- **Antes de activar RLS** (`alter table … enable row level security`), el paso 3 tiene que confirmar que el rol del servidor es el dueño de las tablas o tiene `BYPASSRLS`. **Si no lo es, activar RLS con sólo políticas de denegación deja al servidor sin acceso a sus propios datos y tumba producción.**
+- Activarlo es un cambio en la base de producción y requiere autorización explícita del Founder.
+- La tabla `credential_attempt_buckets` sí activa RLS: lo hace el servidor al arrancar.
 
-QRACKS cobra por el software. No custodia ni reparte premios, y nunca ve ni
-guarda un número de tarjeta: el cobro ocurre en el checkout hospedado de Stripe.
+## 7. Pagos (MON-003): poner Stripe en marcha
+
+QRACKS cobra por el software. No custodia ni reparte premios, y nunca ve ni guarda un número de tarjeta: el cobro ocurre en el checkout de Stripe. Las reglas y el flujo están en [flujos/pagos.md](flujos/pagos.md).
 
 ### Lo que hace falta en el entorno
 
-Tres variables, y **las tres juntas**. Con sólo algunas, el producto podría
-iniciar un cobro que después no sabría verificar, así que los pagos se quedan
-apagados hasta que estén las tres:
+Tres variables, **las tres juntas**:
 
 | Variable | De dónde sale |
 |---|---|
 | `STRIPE_SECRET_KEY` | Stripe → Developers → API keys → *Secret key* |
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Developers → Webhooks → el endpoint → *Signing secret* |
-| `PUBLIC_BASE_URL` | El origen público del servicio, p. ej. `https://qracks.net` |
-
-Se configuran en Render (Environment). **Nunca en el repositorio**, nunca en un
-issue, nunca pegadas en un chat.
+| `PUBLIC_BASE_URL` | El origen público del servicio, por ejemplo `https://qracks.net`. Sin ruta. |
 
 ### Alta del webhook en Stripe
 
 1. Stripe → Developers → Webhooks → *Add endpoint*.
-2. URL: `https://<tu-dominio>/api/payments/stripe/webhook`
-3. Eventos a enviar — sólo estos, y ninguno más:
+2. URL: `https://<tu-dominio>/api/payments/stripe/webhook`.
+3. Envía sólo estos eventos:
    - `checkout.session.completed`
    - `checkout.session.async_payment_succeeded`
    - `checkout.session.async_payment_failed`
@@ -90,56 +138,91 @@ issue, nunca pegadas en un chat.
    - `charge.dispute.created` *(sólo auditoría)*
 4. Copia el *Signing secret* a `STRIPE_WEBHOOK_SECRET` y reinicia el servicio.
 
-Empieza en **Test mode**, comprueba una compra de punta a punta con una tarjeta
-de prueba de Stripe, y sólo después cambia a las claves de producción. Las
-claves de test y las de producción tienen webhooks distintos: al cambiar unas,
-hay que cambiar el otro.
+**Claves y webhooks:**
+- Las claves de test y las de producción tienen webhooks distintos: al cambiar unas, hay que cambiar el otro.
+- El sandbox usa claves de test y producción, claves live.
+- Cualquier cobro, también de prueba, requiere autorización explícita del Founder.
 
 ### Comprobar que está vivo
 
-- El precio se lee de `commercial_config`, no del código. Cambiarlo en Panel
-  Plataforma cambia lo que se cobra en el siguiente checkout; las compras ya
-  hechas conservan lo que pagaron.
-- Al arrancar, el log dice el estado de los pagos en UNA línea, sin secretos:
-  `payments_readiness {"when":"startup","state":"ready",...}`, o bien
-  `PAYMENTS MISCONFIGURED {..."problems":[...]}` con el nombre de lo que falta.
-  El mismo diagnóstico, con la URL exacta del webhook, está en Panel Plataforma →
-  **Pagos (Stripe)**. Mirarlo ANTES de cualquier prueba de punta a punta.
-- Sin NINGUNA variable de Stripe (`disabled`), "Pasar a Plus" dice que el pago
-  con tarjeta no está disponible y deja la vía manual. Eso es lo correcto.
-- Con ALGUNA pero no todas, o alguna mal (`misconfigured`), no se abre ningún
-  checkout, el webhook contesta 503 (Stripe reintenta) y la pantalla NO ofrece
-  la vía manual: es un error de despliegue. Al corregirlo y reiniciar, los pagos
-  pendientes se confirman solos.
-- Ver la checklist "MON-003 / Stripe deployment checklist" del README: sandbox
-  con claves test, producción con claves live, y cada signing secret con SU
-  destino.
+- El precio se lee de `commercial_config`, no del código. Cambiarlo en el panel cambia el siguiente checkout; las compras ya hechas conservan su precio.
+- Al arrancar, el log dice el estado de los pagos en una línea y sin secretos: `payments_readiness {"when":"startup","state":"ready",…}`, o `PAYMENTS MISCONFIGURED {…"problems":[…]}` con lo que falta.
+- El mismo diagnóstico, con la URL exacta del webhook, está en el panel de plataforma → **Pagos (Stripe)**.
+- **`disabled`** (ninguna variable): «Pasar a Plus» dice que el pago con tarjeta no está disponible y ofrece la vía manual.
+- **`misconfigured`** (algunas variables, o alguna mal): no se abre ningún checkout, el webhook responde 503 (Stripe reintenta) y la pantalla no ofrece la vía manual. Al corregirlo y reiniciar, los pagos pendientes se confirman solos.
+- Checklist de despliegue: «MON-003 / Stripe deployment checklist» en el `README.md`.
 
 ### Qué mirar cuando algo va mal
 
-En los logs, sin secretos (nunca se escribe ninguna clave):
+Los logs de pagos son una línea `payments <evento> {…json…}`, sin secretos. La lista completa sale con `grep -o 'logPayment("[a-z_]*' server.js`. Los valores de abajo son **los que aparecen escritos en el log**: búscalos tal cual.
 
-| Mensaje | Significa |
+**Rutina y configuración:**
+
+| Línea en el log | Significa | Qué hacer |
+|---|---|---|
+| `payments checkout_created` / `checkout_reused` | Se abrió un checkout, o un reintento reutilizó el anterior en vez de duplicarlo | Nada |
+| `payments checkout_creation_failed` | No se pudo crear; `code` dice por qué | Si persiste, revisar Stripe |
+| `payments_readiness` / `PAYMENTS MISCONFIGURED` | Estado de los pagos al arrancar; `problems` dice qué falta | Corregir las variables (con autorización) |
+| `payments checkout_refused_misconfigured` | Se pidió Plus con los pagos mal configurados; no se creó nada | Corregir la configuración |
+| `payments checkout_replacement_busy` | Dos pestañas pidieron un checkout nuevo a la vez; la segunda recibió `409 replacement_in_progress` | Nada |
+| `payments checkout_identity_still_chargeable` / `checkout_blocked_unresolved` | Una sesión anterior podría seguir cobrando, así que no se crea otra (`503 checkout_unavailable`) | Revisar en Stripe las sesiones abiertas de esa quiniela |
+| `payments checkout_attempts_exhausted` | 24 intentos sobre la misma compra; se detiene y pide a una persona | Revisar la compra y sus sesiones en Stripe |
+| `payments webhook_rejected` | Llegó un evento con los pagos sin configurar o mal configurados; respondió 503 y Stripe reintenta | Corregir la configuración |
+| `payments webhook_invalid_signature` | Llegó algo que no venía de Stripe, o el signing secret no es el de ese destino (test y live cruzados) | Revisar el secret del destino |
+| `payments webhook_api_version_differs` | El destino del webhook usa otra versión de API | Crear el destino con la versión fijada |
+| `payments reconciled` | Un pago se recuperó sin webhook, al volver el admin | Nada |
+
+**Cobros que necesitan a una persona.** **La decisión es manual del operador**: no hay un procedimiento automatizado ni una política de devoluciones escrita.
+
+1. `payments webhook_processed {"decision": …}` con una de estas decisiones significa **dinero cobrado y Plus no otorgado**:
+
+| `decision` | Qué pasó |
 |---|---|
-| `payments checkout_created` | se abrió un checkout |
-| `payments checkout_reused` | un segundo intento reutilizó el anterior, no se duplicó |
-| `payments checkout_creation_failed` | no se pudo crear; el `code` dice por qué |
-| `payments_readiness` / `PAYMENTS MISCONFIGURED` | el estado de los pagos al arrancar; `problems` dice qué falta |
-| `payments checkout_refused_misconfigured` | se pulsó "Pasar a Plus" con los pagos mal configurados; no se creó nada |
-| `payments webhook_rejected` | llegó un evento con los pagos sin configurar (`not_configured`) o mal configurados (`misconfigured`); 503, Stripe reintenta |
-| `payments webhook_invalid_signature` | llegó algo que no venía de Stripe, o el signing secret no es el de ESTE destino (test/live cruzados) |
-| `payments webhook_api_version_differs` | el destino del webhook usa otra versión de API; crear el destino con la fijada |
-| `payments webhook_processed` | evento evaluado; `decision` dice qué se hizo |
-| `payments reconciled` | un pago se recuperó sin webhook, al volver el Admin |
-| `payments payment_requires_attention` | hay un cobro que un humano tiene que mirar |
+| `stale_scope` | Pagaron un torneo que ya terminó: hay que devolver o trasladar |
+| `amount_mismatch`, `currency_mismatch` | El importe o la moneda no son los esperados |
+| `scope_unproven`, `snapshot_unusable` | No se pudo probar a qué torneo u oferta corresponde el pago |
+| `quiniela_missing` | La quiniela ya no existe |
 
-Un `webhook_processed` con `decision: "stale_scope"` significa que alguien pagó
-un torneo que ya terminó: **el cobro es real y el plan no se otorgó**. Hay que
-decidir a mano (devolver o trasladar); el producto no lo hace solo a propósito.
+   **Comprueba en Stripe si hubo cobro:** estas tres decisiones se toman antes de mirar el pago, así que pueden venir de un evento sin cobro (por ejemplo, una sesión expirada).
+   - `unknown_purchase`: un evento que no corresponde a ninguna compra de QRACKS.
+   - `identity_mismatch`: la sesión no es la que la compra registró.
+   - `superseded_purchase`: una compra que el sistema ya había sustituido por otra.
 
-Lo mismo con `charge.refunded` y `charge.dispute.created`: se registran y se
-marcan, pero **no revocan Plus automáticamente**. La política de revocación es
-una decisión comercial que todavía no está tomada.
+   **`already_paid`** normalmente no requiere acción: el pago ya estaba confirmado. **Excepto** si la auditoría de esa compra lleva `two_checkouts_were_paid_for_one_tournament`: eso son **dos cobros** y hay que devolver uno. En el log de `webhook_processed` un cargo doble sólo aparece como `already_paid`, así que revisa la auditoría siempre que veas esa decisión.
 
-Las compras y su auditoría viven en la fila `platform_payment_intents`, que sólo
-se puede leer con la contraseña de plataforma.
+   No requieren acción: `confirm` (otorgado), `replay_event` / `ignored_stale_event` (evento repetido o viejo) y `not_paid` (sin cobro).
+
+2. `payments payment_requires_attention` tiene tres formas:
+
+| Forma | Significa |
+|---|---|
+| `{"purchaseId", "code": "refunded" \| "disputed"}` | Reembolso o disputa en Stripe. **No revoca Plus automáticamente**: la política de revocación no está decidida. |
+| `{"purchaseId": null, "code": <error>}`, y el webhook responde `500 unapplied_payment` | Un pago válido no se pudo aplicar (por ejemplo, `code: "grant_id_conflict"`). El `purchaseId` está en la línea `payments entitlement_grant_failed` justo anterior. Stripe reintenta; si se repite, revisar logs y base. |
+| `{"slug", "incidents": […], "auditEntries", "flagged"}` | Varias sesiones de checkout para una misma compra (posible cargo doble). Revisar en Stripe cuál cobró. |
+
+3. También piden revisión `payments session_multiplicity`, `checkout_session_multiplicity_blocked` y `session_double_charge_revealed` (cargo doble revelado), y `payments entitlement_grant_failed` (Plus no se pudo escribir; Stripe reintenta).
+
+**Dónde mirar:**
+
+- **El log de Render:** el evento y el `purchaseId`.
+- **La fila `platform_payment_intents`:** las compras (`purchases`), los eventos ya vistos (`seenEvents`) y la auditoría (`audit`).
+  - Sólo la lee la plataforma, con `GET /api/kv/platform_payment_intents` y la contraseña de plataforma en `X-Qracks-Platform-Auth`. El panel no tiene una vista de esta fila.
+  - No pegues la contraseña en un chat ni la dejes en el historial de la terminal.
+  - La fila sólo la escribe el servidor.
+- **En la auditoría**, cada alerta lleva uno de estos códigos, escritos tal cual:
+
+| Código en la auditoría | Significa |
+|---|---|
+| `paid_for_a_finished_tournament` | Se pagó un torneo que ya terminó |
+| `amount_mismatch`, `currency_mismatch` | Importe o moneda distintos de los esperados |
+| `provider_identity_mismatch` | La sesión no es la que la compra registró |
+| `paid_for_a_deleted_quiniela` | La quiniela ya no existe |
+| `purchase_snapshot_unusable`, `current_tournament_unreadable` | No se puede probar el torneo o la oferta |
+| `refunded`, `disputed` | Reembolso o disputa |
+| `several_provider_checkouts_for_one_purchase`, `another_checkout_was_used_beside_a_paid_one`, `two_checkouts_were_used_without_reported_payment`, `two_checkouts_were_paid_for_one_tournament` | Varias sesiones o un cargo doble |
+| `open_checkout_could_not_be_resolved` | No se pudo descartar que una sesión abierta cobre |
+| `retired_because_another_checkout_is_the_active_one`, `retired_because_another_checkout_was_paid`, `superseded_by_a_newer_checkout` | Sesiones retiradas a propósito; normalmente informativo |
+
+- **En Stripe:** cada compra guarda los ids de sus sesiones de checkout (`providerSessionId` / `providerSessionIds`, que empiezan con `cs_`). Con ese id se busca la sesión y su cobro en el Dashboard de Stripe.
+
+Las compras y su auditoría viven en `platform_payment_intents`, que sólo lee la plataforma y sólo escribe el servidor.
