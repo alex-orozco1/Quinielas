@@ -273,7 +273,7 @@
   #quiniela-root .lg-banner[hidden]{ display:none; }
   #quiniela-root .lg-banner{ background:#F6E1DE; border:1px solid var(--red); color:#7d251d; border-radius:10px; padding:8px 11px; margin-bottom:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:600; }
   #quiniela-root .lg-match{ display:flex; flex-direction:column; gap:8px; }
-  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; max-width:340px; }
+  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; max-width:300px; }
   #quiniela-root label.lg-team{ font-weight:700; font-size:15px; overflow-wrap:anywhere; min-width:0; text-transform:none; letter-spacing:0; color:var(--ink); margin:0; }
   #quiniela-root input[type=text].lg-goal{ width:56px; height:44px; text-align:center; font-size:20px; font-weight:800; border:1.5px solid var(--line); border-radius:10px; background:var(--chalk); color:var(--ink); padding:0; font-variant-numeric:tabular-nums; }
   #quiniela-root input[type=text].lg-goal:focus{ outline:3px solid var(--gold); outline-offset:1px; border-color:var(--pitch-light); }
@@ -3698,8 +3698,12 @@
   // for the top of a tab. Renderer must call wireScreenHeader(main, tabId) after inserting.
   function screenHeaderHtml(tabId, title, extraButtonsHtml, suppressOnboardingAutoShow){
     // Liguilla con marcador abierta: se pronostica el marcador, no sólo quién gana.
-    const lgScoreOpen = tabId === "jornada" && meta && Array.isArray(meta.rounds) && meta.rounds.some(r => isLg(r) && r.published !== false && !isRoundLocked(r) && (lgRulesOf(r) || {}).capture === "score");
-    const intro = lgScoreOpen ? "Pronostica cada partido antes de que cierre la jornada. En liguilla escribes el marcador." : (SCREEN_INTRO[tabId] || "");
+    // Con liguilla (abierta, cerrada o jugada) el texto no habla de «elegir quién gana».
+    const lgVisible = tabId === "jornada" && meta && Array.isArray(meta.rounds) && meta.rounds.some(r => isLg(r) && r.published !== false);
+    const lgScoreOpen = lgVisible && meta.rounds.some(r => isLg(r) && r.published !== false && !isRoundLocked(r) && (lgRulesOf(r) || {}).capture === "score");
+    const intro = lgScoreOpen ? "Pronostica cada partido antes de que cierre la jornada. En liguilla escribes el marcador."
+      : lgVisible ? "Haz tus pronósticos antes de que cierre cada jornada y consulta aquí tus resultados."
+      : (SCREEN_INTRO[tabId] || "");
     return `
       <div class="section-title">
         <span class="display">${esc(title)}</span>
@@ -8785,7 +8789,7 @@
         ${noPasswordYet ? `<p class="muted qz-tight">🔒 Se protegen con tu contraseña de administrador.</p>` : `
         <div class="qz-unlock">
           <label for="qz-r-lg-pw">Contraseña de administrador</label>
-          <div class="qz-unlock-row">${passwordFieldHtml("qz-r-lg-pw", `placeholder="Para cambiar las reglas" autocomplete="current-password"`)}<button class="btn btn-primary" id="qz-r-lg-unlock">Desbloquear</button></div>
+          <div class="qz-unlock-row">${passwordFieldHtml("qz-r-lg-pw", `placeholder="Contraseña" autocomplete="current-password"`)}<button class="btn btn-primary" id="qz-r-lg-unlock">Desbloquear</button></div>
         </div>`}
       </section>`;
     }
