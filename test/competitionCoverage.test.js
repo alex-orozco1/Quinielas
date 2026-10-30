@@ -297,10 +297,13 @@ test("COPY DINÁMICO · 4. manual o desconocida -> sin \"liguilla\"", () => {
 });
 
 test("COPY DINÁMICO · el frontend no tiene ninguna frase de cobertura propia", () => {
-  // Código de la pantalla, sin comentarios: ni "liguilla" ni "eliminatorias".
+  // Código de la pantalla, sin comentarios: ninguna frase de COBERTURA de Plus
+  // («incluida la liguilla»), ni "eliminatorias". Desde el sprint de liguilla la
+  // palabra «liguilla» sí aparece en la pantalla, pero como fase del juego
+  // (reglas, fase de la jornada), nunca como frase de lo que cubre Plus.
   const code = indexSrc.replace(/<!--[\s\S]*?-->/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ")
     .split("\n").map((l) => { const i = l.search(/(^|[^:])\/\//); return i === -1 ? l : l.slice(0, i + 1); }).join("\n");
-  assert.ok(!/liguilla/i.test(code), "ningún 'liguilla' fuera de comentarios en public/index.html");
+  assert.ok(!/incluida la liguilla|liguilla incluida|incluye la liguilla/i.test(code), "ninguna frase de cobertura con 'liguilla' en public/index.html");
   assert.ok(!/eliminatorias/i.test(code), "ningún 'eliminatorias' fuera de comentarios");
   // Y en el servidor la frase sólo vive en el catálogo.
   for (const f of ["server.js", "planLimits.js", "platformState.js", "payments/paymentsDomain.js", "payments/stripeAdapter.js"]) {

@@ -225,7 +225,32 @@ const DIAGNOSTIC = Object.freeze({
   CROSS_PROVIDER_ID: "cross_provider_id",
   LOCKED_BY_RESULTS: "locked_by_results",
   KICKOFF_PAST_DEADLINE: "kickoff_past_deadline",
+  // Liguilla (D4). Un partido NUEVO cuyo grupo ya tiene jornadas de liguilla y
+  // no tiene una sola ubicación posible (varias jornadas con la misma clave,
+  // o la única sólo «cerca» por fecha). No se coloca por cercanía: va a
+  // «pendientes de colocar» y lo ubica el Admin.
+  AMBIGUOUS_PLACEMENT: "ambiguous_placement",
 });
+
+// ---- fase de liguilla (sólo para MOSTRAR, nunca identidad) ----------------
+//
+// Del nombre de stage del proveedor (ya sin prefijo de torneo) a la fase de
+// QRACKS. Sólo los nombres que se reconocen sin duda; lo demás queda sin fase
+// y el Admin la indica. El leg sale de { number, total } del proveedor.
+function phaseFromFixture(fx) {
+  const name = typeof (fx && fx.stageName) === "string" ? fx.stageName.trim() : "";
+  let round = null;
+  if (/^quarter[- ]?finals?$/i.test(name)) round = "quarter";
+  else if (/^semi[- ]?finals?$/i.test(name)) round = "semi";
+  else if (/^finals?$/i.test(name)) round = "final";
+  if (!round) return null;
+  const leg = fx.leg && Number.isSafeInteger(fx.leg.number) && Number.isSafeInteger(fx.leg.total) ? fx.leg : null;
+  let legName = null;
+  if (leg && leg.total === 1 && leg.number === 1) legName = "unico";
+  else if (leg && leg.total === 2 && leg.number === 1) legName = "ida";
+  else if (leg && leg.total === 2 && leg.number === 2) legName = "vuelta";
+  return { round, leg: legName, source: "provider" };
+}
 
 // Los campos de un partido que pertenecen al PROVEEDOR. Todo lo demás
 // (`id`, `results`, `resultsPublished`, `published`, `deadline`) es de QRACKS y
@@ -275,6 +300,8 @@ function matchFromFixture(fx) {
     externalHomeId: (fx.home && fx.home.id) || null,
     externalAwayId: (fx.away && fx.away.id) || null,
     kickoffAt: fx.kickoffAt || null,
+    // El leg del proveedor ({ number, total }), sólo para mostrar ida/vuelta.
+    ...(fx.leg && Number.isSafeInteger(fx.leg.number) ? { leg: { number: fx.leg.number, total: Number.isSafeInteger(fx.leg.total) ? fx.leg.total : null } } : {}),
   };
 }
 
@@ -647,7 +674,23 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
     // Los que pertenecen a una jornada que YA existe se añaden a ella; crear otra
     // sería partir el mismo día de partidos en dos jornadas distintas.
     const sinDueño = [];
+    // Liguilla (D4): si el grupo ya tiene jornadas de liguilla, un partido
+    // nuevo sólo se coloca solo cuando hay UNA ubicación posible. Varias
+    // jornadas con la misma clave (ida y vuelta organizadas por el Admin), o
+    // una sola que no lo contiene por su clave de ronda ni por su ventana,
+    // es ambigüedad: el partido va a «pendientes de colocar», nunca a la
+    // jornada más cercana por fecha ni a una jornada nueva.
+    const keyCandidates = roundsByGroupKey.get(key) || [];
+    const liguillaGroup = keyCandidates.some((r) => r && r.stage === "liguilla");
     for (const c of members) {
+      if (liguillaGroup) {
+        const owner = keyCandidates.length === 1 ? ownerFor(key, c.fixture) : null;
+        if (!owner) {
+          note(DIAGNOSTIC.AMBIGUOUS_PLACEMENT, c.fixture.providerFixtureId, keyCandidates.map((r) => r.number).join(","));
+          keepStaged(c);
+          continue;
+        }
+      }
       const owner = ownerFor(key, c.fixture);
       if (!owner) { sinDueño.push(c); continue; }
       if (owner.resultsPublished) {
@@ -725,6 +768,11 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
         syncGroupKey: key,
         // Etiqueta del proveedor, SÓLO para mostrar. Nunca identidad.
         phaseLabel: cluster[0].stageName || null,
+        // Fase reconocida (Cuartos/Semifinal/Final · Ida/Vuelta), sólo si el
+        // proveedor la da sin duda. Es una sugerencia de pantalla: la jornada
+        // sigue siendo regular hasta que el Admin la marca como liguilla, y
+        // un sync posterior nunca la reescribe.
+        ...(phaseFromFixture(cluster[0]) ? { phase: phaseFromFixture(cluster[0]) } : {}),
       });
       for (const fx of cluster) {
         const c = candByFixture.get(fx);
@@ -768,6 +816,8 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
 
 module.exports = {
   planCompetitionSync,
+  matchFromFixture,
+  phaseFromFixture,
   identityKey,
   fromProviderEvent,
   fromDomainEvent,

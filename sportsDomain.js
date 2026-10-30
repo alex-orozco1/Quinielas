@@ -324,7 +324,7 @@ function makeEvent({
   provider, providerEventId, instanceId, stageId,
   providerRoundId, leg, aggregateKey,
   startsAt, status, competitors, score, providerRaw,
-  regulationScore, penaltyScore, extraTimeScore, scoreReasons, providerStatusRaw,
+  regulationScore, finalWithoutShootout, penaltyScore, extraTimeScore, scoreReasons, providerStatusRaw,
 }) {
   if (!provider || !isUsableProviderId(providerEventId)) {
     throw new Error("makeEvent: provider and a usable providerEventId are required");
@@ -363,6 +363,8 @@ function makeEvent({
     // pudo determinar sin ambigüedad", y aguas abajo significa "no sugieras
     // resultado" — nunca un valor por defecto.
     regulationScore: normalizeScore(regulationScore),
+    // Liguilla: marcador final sin tanda, sólo cuando está demostrado (scoreContract.js).
+    finalWithoutShootout: normalizeScore(finalWithoutShootout),
     // Sólo para mostrar y auditar. Jamás entra en el 1X2.
     penaltyScore: normalizeScore(penaltyScore),
     extraTimeScore: normalizeScore(extraTimeScore),

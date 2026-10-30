@@ -102,6 +102,7 @@ function toEvents({ events, instances } = {}) {
     // Sin arrastrarlo aquí, esta ruta perdería en silencio la única señal con
     // la que se puede puntuar — y lo haría el día que alguien la conecte.
     regulationScore: ev.regulationScore || null,
+    finalWithoutShootout: ev.finalWithoutShootout || null,
     scoreReasons: ev.scoreReasons || [],
     providerStatusRaw: ev.providerStatus == null ? null : ev.providerStatus,
     providerRaw: { round: ev.round ?? null, status: ev.providerStatus ?? null },

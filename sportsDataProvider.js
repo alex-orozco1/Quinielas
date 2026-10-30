@@ -151,6 +151,7 @@ function normalizeEvent(raw, provider) {
     // El único que puede alimentar un 1X2. null cuando el estado no prueba que
     // el partido terminara en los 90 — es decir, exactamente en AET y PEN.
     regulationScore: scores.regulation,
+    finalWithoutShootout: scores.finalWithoutShootout,
     scoreReasons: scores.reasons,
     providerStatus: raw.strStatus || null,
   };
@@ -198,6 +199,7 @@ function fromDomainEvent(e, stageNameById) {
     participants: [side("home"), side("away")],
     score: e.score || null,
     regulationScore: e.regulationScore || null,
+    finalWithoutShootout: e.finalWithoutShootout || null,
     scoreReasons: e.scoreReasons || [],
     providerStatus: e.providerStatusRaw == null ? null : String(e.providerStatusRaw),
   };

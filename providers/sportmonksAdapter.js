@@ -520,6 +520,7 @@ function toEvents({ fixtures, stages } = {}) {
       // provider-agnóstico decide qué es utilizable y qué no.
       score: scores.final,
       regulationScore: scores.regulation,
+      finalWithoutShootout: scores.finalWithoutShootout,
       penaltyScore: scores.penalty,
       extraTimeScore: scores.extraTime,
       scoreReasons: scores.reasons,

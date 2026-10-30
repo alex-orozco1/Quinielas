@@ -22,6 +22,8 @@ const {
 } = require("./planLimits");
 const competitionCoverage = require("./competitionCoverage");
 const { outcomeFromRegulation } = require("./scoreContract");
+const liguillaScoring = require("./liguillaScoring");
+const liguillaRules = require("./liguillaRules");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
   applyEntitlementGrant, applyQuinielaSettings,
@@ -48,7 +50,7 @@ const { validateMetaShape } = require("./metaShape");
 const { validateBetClosures, legacyScorerBetId } = require("./metaBets");
 // MS2 · D4: cada pregunta de torneo con su propio cierre, puesto por el servidor.
 const { betCloseState, withStoredBetFields, resolveBetCloses, archiveBetsForClose } = require("./betCloses");
-const { planCompetitionSync, identityKey } = require("./competitionSync");
+const { planCompetitionSync, identityKey, matchFromFixture } = require("./competitionSync");
 const paymentsDomain = require("./payments/paymentsDomain");
 const stripeAdapter = require("./payments/stripeAdapter");
 const { currentDefaultSeason } = require("./seasonDefaults");
@@ -1124,7 +1126,9 @@ function resolveMetaAuthTier(oldValue, providedOwnerAuth, providedPlatformAuth, 
 // its old rules. Nobody is inferred to be its creator.
 const ADMIN_PASSWORD_MIN_LENGTH = 8;
 const ADMIN_PASSWORD_MAX_LENGTH = 200;
-const RULE_SETTINGS_FIELDS = Object.freeze(["entryFee", "pointsPerCorrectPick"]);
+// Liguilla: la configuración de liguilla es una regla del juego más, con la
+// misma protección (sprint de liguilla, H11).
+const RULE_SETTINGS_FIELDS = Object.freeze(["entryFee", "pointsPerCorrectPick", "liguilla"]);
 function creatorIdOf(value) {
   const id = value && value.creatorId;
   return typeof id === "string" && id ? id : null;
@@ -1441,6 +1445,15 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
       }
     });
   }
+  // Liguilla (D1, D2, D5, D6): candado por torneo, copia de reglas por
+  // jornada, publicación con reglas y sin rivales pendientes, y resultados
+  // parciales sólo con estado explícito. Antes de sellar la revisión, para
+  // que la copia de reglas que pone el servidor forme parte de ella.
+  const liguilla = liguillaRules.applyLiguillaWrite({
+    oldValue, merged,
+    scopeId: opts && opts.liguillaScopeId,
+    nowIso: (opts && opts.nowIso) || new Date().toISOString(),
+  });
   // Returns the value to store PLUS what the merge had to do, so the caller
   // can tell the Admin their tab was behind instead of quietly disagreeing
   // with them. The stored revision is computed from the merge result, never
@@ -1460,6 +1473,7 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
     ruleFieldsKept,
     ownerPasswordTooShort,
     canChangeOwnerPassword: canChangeOwnerFields,
+    liguillaRefused: liguilla.ok ? null : liguilla,
   };
 }
 
@@ -1639,6 +1653,10 @@ function validateRoundsIntegrity(newValue, oldValue, nowMs) {
         return { ok: false, reason: "round_not_closed", roundNumber: round.number };
       }
     }
+    // Liguilla (D2): una jornada de liguilla puede publicar resultados
+    // parciales con estado explícito por partido; eso lo revisa
+    // liguillaRules.checkLiguillaResults(). La fase regular sigue igual.
+    if (round.stage === "liguilla") continue;
     const results = round.results || {};
     const matches = Array.isArray(round.matches) ? round.matches : [];
     for (const m of matches) {
@@ -2063,9 +2081,15 @@ app.post("/api/kv/:key", async (req, res) => {
             roundsRevision: roundsWrite.storedRevision,
           });
         }
+        // Liguilla (D1): el candado de reglas se ata al ciclo de torneo en curso,
+        // leído de platform_index bajo lock, nunca de la meta.
+        const scopeEntry = info.slug && platformIdx && Array.isArray(platformIdx.quinielas)
+          ? platformIdx.quinielas.find((q) => q.slug === info.slug) : null;
         const metaMerge = mergeProtectedMetaFields(oldValue, betsValue, authTier, roundsWrite, {
           requesterIsCreator: authTier === "admin-pin" && requestIsCreator(req, info.slug, oldValue),
           betsWrite,
+          liguillaScopeId: (scopeEntry && scopeEntry.tournamentScope && scopeEntry.tournamentScope.id) || null,
+          nowIso: new Date().toISOString(),
         });
         if (metaMerge.creatorChangesRefused > 0) {
           // Onboarding B: removing, demoting or resetting the creator takes
@@ -2088,6 +2112,11 @@ app.post("/api/kv/:key", async (req, res) => {
         if (metaMerge.ownerPasswordTooShort) {
           await client.query("ROLLBACK");
           return res.status(400).json({ error: "admin_password_too_short", minLength: ADMIN_PASSWORD_MIN_LENGTH });
+        }
+        if (metaMerge.liguillaRefused) {
+          await client.query("ROLLBACK");
+          const { status, ok, ...body } = metaMerge.liguillaRefused;
+          return res.status(status).json(body);
         }
 
         const mergedValue = metaMerge.value;
@@ -2418,6 +2447,15 @@ app.post("/api/kv/:key", async (req, res) => {
           await client.query("ROLLBACK");
           return res.status(403).json({ error: "round_locked" });
         }
+        // Liguilla: sus pronósticos se guardan partido a partido (ver
+        // /picks/:pid/match). Un documento entero que trae otra cosa para una
+        // jornada de liguilla —una pestaña antigua, u otra sesión que guardó
+        // antes— se rechaza: nunca se pisa en silencio.
+        const liguillaPicks = liguillaRules.validateLiguillaPicksWrite(metaValue, oldPicks, value);
+        if (!liguillaPicks.ok) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "liguilla_pick_conflict", roundId: liguillaPicks.roundId });
+        }
         await putRow(req.params.key, value, client);
         await client.query("COMMIT");
         return res.json({ key: req.params.key, ok: true });
@@ -2464,6 +2502,119 @@ app.delete("/api/kv/:key", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "server_error" });
   }
+});
+
+// ---------- liguilla: un pronóstico, un partido ----------
+//
+// Sprint de liguilla. En una jornada de liguilla cada partido se guarda solo,
+// en cuanto está completo, y el servidor lo confirma. Este endpoint escribe UN
+// partido sobre lo guardado (leído bajo lock), así que dos sesiones que
+// guardan partidos distintos nunca se pisan; y si dos guardan el MISMO
+// partido, gana la que sabía lo que había: `expected` es lo que el navegador
+// cree que está guardado, y si no coincide se devuelve 409 con lo guardado.
+// El cierre se juzga con el reloj de Postgres, igual que en /api/kv.
+const PICK_PARTICIPANT_ID = /^[a-z0-9_]{1,60}$/i;
+const QUINIELA_SLUG = /^[a-z0-9-]{1,60}$/;
+app.post("/api/quinielas/:slug/picks/:pid/match", async (req, res) => {
+  const { slug, pid } = req.params;
+  if (!QUINIELA_SLUG.test(slug) || !PICK_PARTICIPANT_ID.test(pid)) return res.status(400).json({ error: "invalid_key" });
+  const body = req.body || {};
+  if (typeof body.roundId !== "string" || typeof body.matchId !== "string") return res.status(400).json({ error: "invalid_params" });
+  const metaKey = `quiniela:${slug}:meta`;
+  const picksKey = `quiniela:${slug}:picks:${pid}`;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const meta = await getRowLocked(metaKey, client);
+    if (!meta) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); }
+    const participant = (meta.participants || []).find((p) => p && p.id === pid);
+    if (!isAuthenticatedAsParticipantReq(req, slug, participant)) {
+      await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
+      return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
+    }
+    const picksDoc = (await getRowLocked(picksKey, client)) || {};
+    const nowRow = await client.query("SELECT NOW() as now");
+    const now = nowRow.rows[0].now;
+    const out = liguillaRules.applyMatchPick({
+      meta, picksDoc, roundId: body.roundId, matchId: body.matchId,
+      value: body.value, expected: body.expected === undefined ? null : body.expected, nowMs: now.getTime(),
+    });
+    if (!out.ok) {
+      await client.query("ROLLBACK");
+      const { status, ok, ...rest } = out;
+      return res.status(status).json(rest);
+    }
+    await putRow(picksKey, out.doc, client);
+    await client.query("COMMIT");
+    return res.json({ ok: true, value: out.accepted, acceptedAt: now.toISOString() });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("liguilla match pick failed", err);
+    return res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------- liguilla: colocar un partido pendiente ----------
+//
+// D4. Un partido que el sync no pudo ubicar sin ambigüedad queda en
+// `stagedFixtures` («pendientes de colocar»). Sólo el Admin lo coloca, y sólo
+// en un borrador (jornada sin publicar, por tanto sin pronósticos): nada
+// publicado se toca. `stagedFixtures` lo escribe sólo el servidor, por eso
+// esto es un endpoint y no un guardado de la meta.
+app.post("/api/quinielas/:slug/staged/place", async (req, res) => {
+  const { slug } = req.params;
+  if (!QUINIELA_SLUG.test(slug)) return res.status(400).json({ error: "invalid_key" });
+  const body = req.body || {};
+  if (typeof body.identityKey !== "string" || typeof body.roundId !== "string") return res.status(400).json({ error: "invalid_params" });
+  const metaKey = `quiniela:${slug}:meta`;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const meta = await getRowLocked(metaKey, client);
+    if (!meta) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); }
+    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
+    if (!isAdminOrOwner) {
+      await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
+      return res.status(403).json({ error: "forbidden" });
+    }
+    const staged = Array.isArray(meta.stagedFixtures) ? meta.stagedFixtures : [];
+    const at = staged.findIndex((f) => f && identityKey(f.provider, f.providerFixtureId) === body.identityKey);
+    if (at < 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "staged_not_found" }); }
+    const round = (meta.rounds || []).find((r) => r && r.id === body.roundId);
+    if (!round) { await client.query("ROLLBACK"); return res.status(404).json({ error: "round_not_found" }); }
+    if (round.published !== false || round.resultsPublished) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "round_not_draft" });
+    }
+    const before = JSON.parse(JSON.stringify(meta));
+    const fx = staged[at];
+    round.matches = Array.isArray(round.matches) ? round.matches : [];
+    if (!round.matches.some((m) => m && identityKey(m.externalProvider || round.provider, m.externalEventId) === body.identityKey)) {
+      round.matches.push({ id: "m_" + crypto.randomBytes(5).toString("hex"), ...matchFromFixture(fx) });
+    }
+    meta.stagedFixtures = staged.filter((_, i) => i !== at);
+    await putRow(metaKey, stampMetaWrite(meta, before), client);
+    await client.query("COMMIT");
+    return res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("staged place failed", err);
+    return res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
+// El módulo de puntos de la liguilla, el MISMO archivo que usa el servidor.
+// Sin caché larga: si cambia con un deploy, el navegador lo vuelve a pedir.
+app.get("/liguillaScoring.js", (req, res) => {
+  res.set("Cache-Control", "no-cache");
+  res.type("application/javascript");
+  res.sendFile(path.join(__dirname, "liguillaScoring.js"));
 });
 
 // ---------- narrow self-service endpoints ----------
@@ -6056,7 +6207,15 @@ function buildRoundSuggestions(round, events) {
     // producía una sugerencia plausible y equivocada (riesgo R8 de DATA-004A).
     // Sin marcador reglamentario NO se sugiere nada: el Admin lo captura. Falla
     // cerrado, que en un producto que reparte dinero es la única opción.
-    const result = outcomeFromRegulation(hit.regulationScore, straight);
+    // Liguilla: se califica el marcador final SIN la tanda. Sólo se sugiere
+    // cuando está demostrado (scoreContract.finalWithoutShootout: terminó en
+    // los 90, sin prórroga ni penales). Con prórroga o penales no se sugiere
+    // nada y el Admin captura a mano, también el 1X2.
+    const liguilla = round.stage === "liguilla";
+    const base = liguilla ? hit.finalWithoutShootout : hit.regulationScore;
+    const result = liguilla
+      ? outcomeFromRegulation(hit.finalWithoutShootout, straight)
+      : outcomeFromRegulation(hit.regulationScore, straight);
     if (!result) {
       // No desaparece en silencio: se dice que se vio el partido y por qué no
       // se pudo proponer resultado.
@@ -6068,7 +6227,9 @@ function buildRoundSuggestions(round, events) {
         // distintos y llevan al Admin a mirar cosas distintas.
         reason: straight === null
           ? "orientation_not_proven"
-          : (hit.scoreReasons && hit.scoreReasons[0]) || "regulation_not_proven",
+          : (liguilla && hit.regulationScore && !hit.finalWithoutShootout)
+            ? "extra_time_or_penalties"
+            : (hit.scoreReasons && hit.scoreReasons[0]) || "regulation_not_proven",
         providerStatus: hit.providerStatus || null,
       });
       continue;
@@ -6079,7 +6240,9 @@ function buildRoundSuggestions(round, events) {
       // Se muestra el marcador de regulación, que es el que explica el 1X2
       // sugerido. Enseñar el final junto a un resultado derivado del
       // reglamentario haría que la sugerencia pareciera un error.
-      score: `${hit.regulationScore.home}-${hit.regulationScore.away}`,
+      score: `${base.home}-${base.away}`,
+      // Liguilla con marcador: los goles orientados al tablero (a = teamA).
+      ...(liguilla ? { goals: straight ? { a: base.home, b: base.away } : { a: base.away, b: base.home } } : {}),
       finalScore: hit.score ? `${hit.score.home}-${hit.score.away}` : null,
       result,
       date: hit.dateTime,
