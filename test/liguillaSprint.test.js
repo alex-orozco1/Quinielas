@@ -465,6 +465,7 @@ test("QA P2 · sync: nada se añade solo a una liguilla publicada; leg desconoci
     const p = planCompetitionSync({ provider: "sportmonks", existingRounds: [round(pub)], existingStaged: [], nowMs: NOWMS,
       fixtures: [f("1", "2026-11-26T01:00:00Z"), f("2", "2026-11-29T01:00:00Z"), f("3", "2026-11-26T03:00:00Z", { away: null })] });
     assert.equal(p.matchAdditions.length, 0, "publicada=" + pub);
+    if (pub) assert.ok(p.diagnostics.some((d) => d.code === "liguilla_round_published"), "el diagnóstico dice el motivo real");
     assert.deepEqual(p.stagedFixtures.map((x) => x.providerFixtureId).sort(), ["2", "3"]);
   }
 });
@@ -486,4 +487,19 @@ test("QA H1 · reintentar lo mismo que ya quedó guardado es un éxito, no un co
   assert.deepEqual(out.accepted, s(1, 0));
   const otro = R.applyMatchPick({ meta: published(), picksDoc: doc, roundId: "r18", matchId: "m1", value: s(2, 0), expected: null, nowMs: BEFORE });
   assert.equal(otro.error, "pick_conflict", "un valor distinto sigue siendo conflicto");
+});
+
+test("QA ronda 2 · recrear una liguilla publicada (abierta) no saca partidos ni cambia sus reglas", () => {
+  const pub = apply(meta(), publish(meta(), "r18")).merged;
+  assert.deepEqual(pub.liguillaPublished.r18.matchIds, ["m1", "m2"]);
+  const sin = clone(pub); sin.rounds = sin.rounds.filter((r) => r.id !== "r18");
+  const borrada = apply(pub, sin).merged;
+  const recreada = clone(borrada); const r = clone(pub.rounds.find((x) => x.id === "r18")); r.matches = r.matches.slice(0, 1); recreada.rounds.push(r);
+  assert.equal(apply(borrada, recreada).out.error, "liguilla_matches_locked");
+  const nuevoCiclo = clone(borrada); nuevoCiclo.settings.liguilla = { capture: "result", resultPoints: 5, exactBonus: 0 };
+  const b2 = apply(borrada, nuevoCiclo, "scope-2").merged;
+  const otra = clone(b2); otra.rounds.push(clone(pub.rounds.find((x) => x.id === "r18")));
+  const out = apply(b2, otra, "scope-2");
+  assert.equal(out.out.ok, true);
+  assert.deepEqual(out.merged.rounds.find((x) => x.id === "r18").scoring, RULES_BOTH, "conserva las reglas con que se publicó");
 });

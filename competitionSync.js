@@ -230,6 +230,9 @@ const DIAGNOSTIC = Object.freeze({
   // o la única sólo «cerca» por fecha). No se coloca por cercanía: va a
   // «pendientes de colocar» y lo ubica el Admin.
   AMBIGUOUS_PLACEMENT: "ambiguous_placement",
+  // Liguilla (D4). Un partido NUEVO cuya única jornada posible ya está
+  // publicada: nada publicado se mueve ni se completa solo. Va a pendientes.
+  LIGUILLA_ROUND_PUBLISHED: "liguilla_round_published",
 });
 
 // ---- fase de liguilla (sólo para MOSTRAR, nunca identidad) ----------------
@@ -693,7 +696,8 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
         const structural = key.startsWith("round:") || !key.endsWith(":leg:none");
         const owner = only && only.published === false && structural ? ownerFor(key, c.fixture) : null;
         if (!owner) {
-          note(DIAGNOSTIC.AMBIGUOUS_PLACEMENT, c.fixture.providerFixtureId, keyCandidates.map((r) => r.number).join(","));
+          const code = only && only.published !== false ? DIAGNOSTIC.LIGUILLA_ROUND_PUBLISHED : DIAGNOSTIC.AMBIGUOUS_PLACEMENT;
+          note(code, c.fixture.providerFixtureId, keyCandidates.map((r) => r.number).join(","));
           keepStaged(c);
           continue;
         }

@@ -149,7 +149,10 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
       // D4: nada publicado se mueve. Ningún partido sale de una jornada de
       // liguilla publicada; y después del cierre tampoco entran partidos ni
       // cambian los equipos (eso cambiaría lo que significa cada pronóstico).
+      // Sin versión anterior (la jornada se borró y se recrea), manda el
+      // registro: sus partidos tampoco pueden salir (Technical QA ronda 2).
       const prevMatches = new Map(((before && before.matches) || []).filter(isObj).map((m) => [m.id, m]));
+      if (!before && rec && Array.isArray(rec.matchIds)) rec.matchIds.forEach((id) => prevMatches.set(id, null));
       const nextMatches = new Map((Array.isArray(round.matches) ? round.matches : []).filter(isObj).map((m) => [m.id, m]));
       for (const id of prevMatches.keys()) {
         if (!nextMatches.has(id)) return fail(409, "liguilla_matches_locked", { roundNumber: round.number });
@@ -158,6 +161,7 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
         if (nextMatches.size !== prevMatches.size) return fail(409, "liguilla_matches_locked", { roundNumber: round.number });
         for (const [id, m] of nextMatches) {
           const o = prevMatches.get(id);
+          if (o === null) continue;   // sólo sabemos que existía (registro)
           if (!o || o.teamA !== m.teamA || o.teamB !== m.teamB) return fail(409, "liguilla_matches_locked", { roundNumber: round.number });
         }
       }
@@ -195,13 +199,21 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
       }
       const pending = (Array.isArray(round.matches) ? round.matches : []).filter((m) => !m || !m.teamA || !m.teamB).length;
       if (pending) return fail(409, "liguilla_rival_pending", { roundNumber: round.number, pending });
-      round.scoring = { ...lock.rules };
+      // Recrear una jornada ya publicada conserva las reglas con que se publicó,
+      // aunque el torneo en curso tenga otras (Technical QA ronda 2).
+      round.scoring = rec && rec.scoring ? { ...rec.scoring } : { ...lock.rules };
     }
     // El registro del cierre de cada jornada de liguilla publicada; se
     // actualiza mientras todavía no cierra (el Admin puede ajustarlo antes).
     if (round.stage === "liguilla" && isPublished(round)) {
       const prevClose = rec ? new Date(rec.deadline).getTime() : NaN;
-      if (!rec || !(Number.isFinite(prevClose) && prevClose <= nowMs)) publishedRec[round.id] = { deadline: round.deadline };
+      const ids = (Array.isArray(round.matches) ? round.matches : []).filter(isObj).map((m) => m.id);
+      const prevIds = rec && Array.isArray(rec.matchIds) ? rec.matchIds : [];
+      publishedRec[round.id] = {
+        deadline: !rec || !(Number.isFinite(prevClose) && prevClose <= nowMs) ? round.deadline : rec.deadline,
+        matchIds: [...new Set([...prevIds, ...ids])],
+        scoring: round.scoring ? { ...round.scoring } : (rec && rec.scoring) || null,
+      };
     }
     if (round.stage === "liguilla" && isPublished(round) && round.resultsPublished) {
       const check = checkLiguillaResults(round);
