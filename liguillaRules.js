@@ -93,6 +93,7 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
   // El candado lo escribe sólo el servidor: la fila guardada siempre gana.
   const locks = Array.isArray(old.liguillaLocks) ? JSON.parse(JSON.stringify(old.liguillaLocks)) : [];
   delete merged.liguillaLocks;
+  delete merged.liguillaLock;   // se calcula en cada lectura, nunca se guarda
   const settings = isObj(merged.settings) ? merged.settings : (merged.settings = {});
   const oldSettings = isObj(old.settings) ? old.settings : {};
 
@@ -132,6 +133,16 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
       else delete round.scoring;
     } else {
       delete round.scoring;
+    }
+    // D3: una jornada de liguilla publicada conserva su cierre una vez que
+    // pasó. Moverlo (reabrir, o «reprogramar» un aplazado) reabriría
+    // pronósticos ya cerrados.
+    if (wasPublished && before.stage === "liguilla" && round.deadline !== before.deadline) {
+      const closedAt = new Date(before.deadline).getTime();
+      const now = new Date(nowIso).getTime();
+      if (Number.isFinite(closedAt) && closedAt <= now) {
+        return fail(409, "liguilla_round_closed", { roundNumber: round.number });
+      }
     }
     const newlyPublished = isPublished(round) && !wasPublished;
     if (round.stage === "liguilla" && newlyPublished) {

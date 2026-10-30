@@ -264,6 +264,62 @@
     color:var(--pitch-light);
   }
 
+  /* liguilla (sprint de liguilla) */
+  #quiniela-root .sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  #quiniela-root .lg-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px; }
+  #quiniela-root .lg-phase{ font-weight:800; font-size:19px; line-height:1.2; color:var(--pitch-dark); }
+  #quiniela-root .lg-sub{ font-size:12.5px; margin-top:2px; }
+  #quiniela-root .lg-strip{ background:#FFF6DF; border:1px solid #EAD9A6; border-radius:10px; padding:8px 11px; font-size:13px; display:flex; flex-direction:column; gap:2px; margin-bottom:12px; }
+  #quiniela-root .lg-banner{ background:#F6E1DE; border:1px solid var(--red); color:#7d251d; border-radius:10px; padding:8px 11px; margin-bottom:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:600; }
+  #quiniela-root .lg-match{ display:flex; flex-direction:column; gap:8px; }
+  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; }
+  #quiniela-root .lg-team{ font-weight:700; font-size:15px; overflow-wrap:anywhere; min-width:0; }
+  #quiniela-root .lg-goal{ width:56px; height:44px; text-align:center; font-size:20px; font-weight:800; border:1.5px solid var(--line); border-radius:10px; background:var(--chalk); color:var(--ink); padding:0; font-variant-numeric:tabular-nums; }
+  #quiniela-root .lg-goal:focus{ outline:3px solid var(--gold); outline-offset:1px; border-color:var(--pitch-light); }
+  #quiniela-root .lg-goal[aria-invalid="true"]{ border-color:var(--red); }
+  #quiniela-root .lg-goal:disabled{ opacity:.7; }
+  #quiniela-root .lg-state{ font-size:13px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; min-height:20px; }
+  #quiniela-root .lg-ok{ color:var(--pitch-light); font-weight:700; }
+  #quiniela-root .lg-bad{ color:#9b2c22; font-weight:600; }
+  #quiniela-root .lg-warn{ color:#7a5a12; font-weight:600; }
+  #quiniela-root .lg-result{ display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:8px; align-items:center; font-weight:700; }
+  #quiniela-root .lg-result > span:first-child{ text-align:right; overflow-wrap:anywhere; }
+  #quiniela-root .lg-result > span:last-child{ overflow-wrap:anywhere; }
+  #quiniela-root .lg-result strong{ background:var(--chalk); border-radius:8px; padding:3px 10px; font-variant-numeric:tabular-nums; }
+  #quiniela-root .lg-sum{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:13px; }
+  #quiniela-root .lg-chip{ font-size:12px; font-weight:800; border-radius:999px; padding:2px 9px; border:1px solid var(--line); color:var(--ink-soft); background:var(--paper); white-space:nowrap; }
+  #quiniela-root .lg-chip.on{ color:#1B4332; background:#DCEFE1; border-color:#2D6A4F; }
+  #quiniela-root .lg-status{ font-size:12px; font-weight:800; color:var(--pitch-dark); background:var(--chalk); border-radius:999px; padding:2px 9px; }
+  #quiniela-root .lg-fieldset{ border:0; padding:0; margin:0 0 10px; display:flex; flex-direction:column; gap:8px; min-width:0; }
+  #quiniela-root .lg-fieldset legend{ font-weight:800; margin-bottom:6px; padding:0; }
+  #quiniela-root .lg-opt{ display:flex; gap:10px; align-items:flex-start; border:1.5px solid var(--line); border-radius:10px; padding:10px; background:var(--paper); cursor:pointer; }
+  #quiniela-root .lg-opt.on{ border:2px solid var(--pitch-light); background:#F1F8F3; }
+  #quiniela-root .lg-opt.na{ border-style:dashed; background:transparent; cursor:default; }
+  #quiniela-root .lg-opt input[type=radio], #quiniela-root .lg-opt input[type=checkbox]{ width:20px; height:20px; margin:2px 0 0; flex:none; accent-color:var(--pitch-light); }
+  #quiniela-root .lg-opt-txt{ display:flex; flex-direction:column; gap:1px; flex:1; min-width:0; cursor:inherit; }
+  #quiniela-root .lg-opt-state{ font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--pitch-light); }
+  #quiniela-root .lg-opt.na .lg-opt-state, #quiniela-root .lg-opt:not(.on) .lg-opt-state{ color:var(--ink-soft); }
+  #quiniela-root .lg-pts{ width:60px; height:40px; text-align:center; font-weight:800; font-size:16px; border:1.5px solid var(--line); border-radius:8px; }
+  #quiniela-root .lg-pts:disabled{ background:var(--chalk); color:var(--ink-soft); }
+  #quiniela-root .lg-example-wrap{ display:flex; flex-direction:column; gap:8px; margin:6px 0 10px; }
+  #quiniela-root table.lg-example td, #quiniela-root table.lg-example th{ font-size:13px; padding:5px 8px; font-variant-numeric:tabular-nums; }
+  #quiniela-root .lg-seg{ grid-template-columns:1fr 1fr; }
+  #quiniela-root .lg-seg label{ cursor:pointer; }
+  #quiniela-root .lg-seg label:focus-within{ outline:3px solid var(--gold); outline-offset:1px; }
+  #quiniela-root .lg-status-row{ grid-template-columns:repeat(4, minmax(0,1fr)); }
+  #quiniela-root .lg-status-row .pick-btn{ font-size:12px; padding:9px 2px; }
+  #quiniela-root .lg-org-row{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); flex-wrap:wrap; }
+  #quiniela-root .lg-org-row > span:first-child{ min-width:0; overflow-wrap:anywhere; flex:1 1 180px; }
+  #quiniela-root .lg-org-place{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  #quiniela-root .lg-org-row select{ max-width:100%; }
+  #quiniela-root .lg-org-group{ margin-bottom:10px; }
+  #quiniela-root td.lg-cell-ok{ color:#1B4332; font-weight:700; }
+  #quiniela-root td.lg-cell-no{ color:#7d251d; }
+  @media (max-width:360px){
+    #quiniela-root .lg-status-row{ grid-template-columns:1fr 1fr; }
+    #quiniela-root .lg-phase{ font-size:17px; }
+  }
+
   /* login */
   #quiniela-root .login-wrap{
     min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
@@ -1450,6 +1506,7 @@
 <body>
 <div id="quiniela-root"></div>
 
+<script src="/liguillaScoring.js"></script>
 <script>
 (function(){
   const TEAMS = ["América","Atlante","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"];
@@ -1733,6 +1790,21 @@
   // message depending on which screen happened to fail.
   const ERROR_MESSAGES = {
     round_locked: "Esta jornada ya cerró — ya no se puede cambiar.",
+    // Liguilla (sprint de liguilla).
+    liguilla_rules_required: "Antes de publicar una jornada de liguilla, guarda las reglas de liguilla en Admin → Reglas.",
+    liguilla_rules_locked: "Las reglas de liguilla ya quedaron fijas para este torneo: se fijaron al publicar la primera jornada de liguilla.",
+    liguilla_stage_locked: "Esta jornada ya se publicó: conserva su tipo (regular o liguilla) y sus reglas.",
+    liguilla_rival_pending: "Falta confirmar algún rival. Puedes guardarla como borrador y publicarla cuando estén los dos equipos.",
+    liguilla_rules_invalid: "Revisa las reglas de liguilla: los puntos son números enteros de 0 a 99, y el bono sólo existe con marcador exacto.",
+    liguilla_rules_no_prize: "Activa al menos un premio: resultado, bono por exacto o los dos.",
+    liguilla_result_mismatch: "El resultado no coincide con el marcador. Vuelve a capturar los goles.",
+    liguilla_result_with_status: "Un partido pendiente, aplazado o anulado no lleva marcador. Elige una de las dos cosas.",
+    liguilla_round_closed: "Esta jornada de liguilla ya cerró: su cierre no se puede mover. Un partido aplazado conserva su cierre original.",
+    invalid_score: "Escribe un número entero de 0 a 30 en cada lado.",
+    liguilla_pick_conflict: "Tus pronósticos de liguilla cambiaron en otra sesión. Recarga la página para ver lo guardado.",
+    pick_conflict: "Ese pronóstico cambió desde otra sesión.",
+    round_not_draft: "Sólo se pueden colocar partidos en jornadas sin publicar.",
+    staged_not_found: "Ese partido ya no está pendiente. Recarga para ver lo actual.",
     unauthorized: "No pudimos confirmar quién eres. Vuelve a intentar o cambia de usuario desde tu nombre, arriba.",
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     too_many_attempts: "Demasiados intentos. Espera un rato e intenta de nuevo, o entra desde un dispositivo donde ya hayas entrado.",
@@ -2276,6 +2348,13 @@
   async function setPicksWithError(pid, data){
     try{
       const creds = { owner: currentUserPinCache };
+      const first = await kvSetWithError(currentPicksKey(pid), data, creds);
+      // Liguilla: sus partidos se guardan uno por uno. Si otra sesión guardó
+      // uno antes, este documento traía una copia vieja: se toma lo guardado
+      // para las jornadas de liguilla (nunca se pisa) y se reintenta una vez.
+      if(first.ok || first.error !== "liguilla_pick_conflict") return first;
+      const fresh = await getPicks(pid);
+      meta.rounds.filter(isLg).forEach(r => { if(fresh[r.id]) data[r.id] = { ...fresh[r.id], ...(data[r.id] && data[r.id].__extra ? { __extra: data[r.id].__extra } : {}) }; else delete data[r.id]; });
       return await kvSetWithError(currentPicksKey(pid), data, creds);
     }catch(e){ console.error("save picks failed", e); return { ok: false, error: "network_error" }; }
   }
@@ -3959,6 +4038,8 @@
     meta.rounds.forEach(r => {
       if(!r.resultsPublished) return;
       if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
+      // Liguilla: base + bono con las reglas de ESA jornada (liguillaScoring.js).
+      if(isLg(r)){ const sr = LG.scoreRound(r, picks[r.id]); pts += sr.total; played += sr.scored; return; }
       r.matches.forEach(m => {
         const result = r.results ? r.results[m.id] : null;
         if(!result) return;
@@ -4016,6 +4097,7 @@
       let pts = 0;
       published.forEach(r => {
         if(r.id === lastId) return;
+        if(isLg(r)){ pts += LG.scoreRound(r, picks[r.id]).total; return; }
         r.matches.forEach(m => {
           const result = r.results[m.id];
           if(!result) return;
@@ -7081,7 +7163,7 @@
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
-          <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en la Jornada ${esc(pending.round.number)}.</p>
+          <p style="margin:4px 0 0;">Te faltan <strong id="qz-pending-count">${pending.missing} de ${pending.total}</strong> partidos en ${isLg(pending.round) ? esc(roundTitle(pending.round)) : `la Jornada ${esc(pending.round.number)}`}.</p>
         </div>
       ` : ``}</div>
       ${showPaymentNote ? `
@@ -7150,8 +7232,8 @@
     rounds.forEach(round => {
       const box = document.getElementById("qz-round-" + round.id);
       if(jornadaFilter === "porjugar") renderRoundVoting(box, round, round.id === (heroRound && heroRound.id));
-      else if(jornadaFilter === "envivo") renderRoundLocked(box, round);
-      else renderRoundPlayed(box, round);
+      else if(jornadaFilter === "envivo") (isLg(round) ? renderLiguillaLocked : renderRoundLocked)(box, round);
+      else (isLg(round) ? renderLiguillaPlayed : renderRoundPlayed)(box, round);
     });
 
     if(jornadaFilter === "porjugar"){
@@ -7447,6 +7529,8 @@
 
   function renderRoundVoting(box, round, isHeroRound){
     const roundPicks = myPicks[round.id] || {};
+    const lg = isLg(round);
+    const lgRules = lgRulesOf(round);
     const jornadaBets = (meta.customBets || []).filter(b => b.scope === "jornada");
     // A draft that matches what is saved is not a pending change.
     const roundDraftsPending = jornadaBets.some(b => {
@@ -7454,13 +7538,14 @@
       return d != null && d.trim() !== ((roundPicks.__extra || {})[b.id] || "");
     });
     box.innerHTML = `
+      ${lg ? `<div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), "cierra " + fmtWhenTz(round.deadline)].filter(Boolean).join(" · "))}</div></div></div>${lgRulesStripHtml(lgRules)}<div class="lg-banner" id="qz-lg-banner-${esc(round.id)}" role="alert" hidden></div>` : ``}
       <div class="clock-card" style="margin-bottom:14px;">
-        <div class="clock-label">${isHeroRound ? "Cierre de quiniela" : `Jornada ${esc(round.number)} · cierre de quiniela`}</div>
+        <div class="clock-label">${isHeroRound || lg ? "Cierre de quiniela" : `Jornada ${esc(round.number)} · cierre de quiniela`}</div>
         <div id="qz-clockbody-${esc(round.id)}">${clockDigitsHtml(round.deadline)}</div>
       </div>
       <div id="qz-matches-${esc(round.id)}"></div>
-      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;">Tus pronósticos de partidos se guardan solos apenas los eliges.</p>
-      <button class="btn btn-primary" data-save="${esc(round.id)}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>
+      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;">${lg ? (lgRules && lgRules.capture === "score" ? "Cada partido se guarda solo cuando tiene los dos goles. «✓ Guardado» aparece cuando el servidor lo confirma." : "Cada pronóstico se guarda solo al elegirlo. «✓ Guardado» aparece cuando el servidor lo confirma.") : "Tus pronósticos de partidos se guardan solos apenas los eliges."}</p>
+      ${lg ? `` : `<button class="btn btn-primary" data-save="${esc(round.id)}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>`}
       ${jornadaBets.length ? `
         <div class="card" style="margin-top:14px;">
           <div class="eyebrow">🎯 Preguntas de esta jornada</div>
@@ -7483,7 +7568,7 @@
     `;
     const matchesDiv = document.getElementById("qz-matches-" + round.id);
     const statusEl = document.getElementById("qz-savestatus-" + round.id);
-    matchesDiv.innerHTML = round.matches.map(m => {
+    matchesDiv.innerHTML = lg ? lgVotingMatchesHtml(round) : round.matches.map(m => {
       const pick = roundPicks[m.id];
       return `
         <div class="match-card">
@@ -7525,7 +7610,8 @@
       };
       jornadaSaveBtn.addEventListener("click", runJornadaSave);
     }
-    matchesDiv.querySelectorAll(".pick-row").forEach(row => {
+    if(lg) lgWireVoting(matchesDiv, round);
+    if(!lg) matchesDiv.querySelectorAll(".pick-row").forEach(row => {
       row.querySelectorAll(".pick-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
           if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
@@ -7591,7 +7677,8 @@
         saveBtn.textContent = "Guardar mis picks";
       }
     }
-    box.querySelector("[data-save]").addEventListener("click", async () => {
+    const manualSaveBtn = box.querySelector("[data-save]");
+    if(manualSaveBtn) manualSaveBtn.addEventListener("click", async () => {
       await runManualSave();
     });
   }
@@ -8093,7 +8180,7 @@
     const list = document.getElementById("qz-hist-list");
     list.innerHTML = published.map(r => `
       <div class="history-item">
-        <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} partidos</span></div>
+        <div><strong>${esc(roundTitle(r))}</strong> <span class="muted">· ${roundSubtitle(r) ? esc(roundSubtitle(r)) + " · " : ""}${esc(r.matches.length)} partidos</span></div>
         <button class="btn btn-ghost btn-sm" data-round="${esc(r.id)}">Ver detalle</button>
       </div>
     `).join("");
@@ -8107,6 +8194,11 @@
 
   function renderHistDetail(round){
     const detail = document.getElementById("qz-hist-detail");
+    if(isLg(round)){
+      renderLiguillaHistDetail(detail, round);
+      detail.scrollIntoView({ behavior: window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      return;
+    }
     const perParticipant = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const picks = (allPicksCache[p.id] || {})[round.id] || {};
       let correct = 0;
@@ -8161,6 +8253,1021 @@
     const targetTop = scrollTarget.getBoundingClientRect().top + window.scrollY - headerHeight - BREATHING_ROOM_PX;
     const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     window.scrollTo({ top: Math.max(0, targetTop), behavior: reducedMotion ? "auto" : "smooth" });
+  }
+
+  // ---------- LIGUILLA (sprint de liguilla, D1–D7) ----------
+  //
+  // La puntuación vive en /liguillaScoring.js, el MISMO archivo que usa el
+  // servidor: aquí sólo se pinta. Una jornada sin `stage` es fase regular y
+  // nada de este bloque la toca.
+  const LG = window.QracksLiguilla || null;
+  function isLg(r){ return !!(LG && r && r.stage === "liguilla"); }
+  function lgPhaseText(r){ return LG && r ? LG.phaseLabel(r.phase) : null; }
+  // La fase primero; el número de jornada es dato secundario.
+  function roundTitle(r){
+    if(!isLg(r)) return "Jornada " + r.number;
+    return lgPhaseText(r) || ("Liguilla · Jornada " + r.number);
+  }
+  function roundSubtitle(r){ return isLg(r) && lgPhaseText(r) ? "Jornada " + r.number : ""; }
+  function lgRulesOf(r){ return isLg(r) ? LG.roundRules(r) : null; }
+  function lgConfigRules(){
+    if(!LG) return null;
+    const v = LG.validateRules(meta.settings && meta.settings.liguilla);
+    return v.ok ? v.rules : null;
+  }
+  function lgPts(n){ return n + " " + (Number(n) === 1 ? "pt" : "pts"); }
+  function lgScoreText(s){ return s && LG && LG.isScore(s) ? `${s.a}–${s.b}` : ""; }
+  function lgRulesSummary(rules){
+    if(!rules) return "";
+    if(rules.capture === "result") return `Quién gana o empate · ${lgPts(rules.resultPoints)} por acierto`;
+    if(rules.resultPoints && rules.exactBonus) return `Marcador exacto · resultado ${lgPts(rules.resultPoints)} · bono +${rules.exactBonus}`;
+    if(rules.resultPoints) return `Marcador exacto · sólo resultado, ${lgPts(rules.resultPoints)}`;
+    return `Marcador exacto · sólo exacto, ${lgPts(rules.exactBonus)}`;
+  }
+  function lgRulesStripHtml(rules){
+    if(!rules) return "";
+    const head = rules.capture === "score" ? "Pronostica el marcador." : "Pronostica quién gana o si empatan.";
+    let detail;
+    if(rules.capture === "result") detail = `${lgPts(rules.resultPoints)} por acierto, también por un empate.`;
+    else if(rules.resultPoints && rules.exactBonus) detail = `Resultado ${lgPts(rules.resultPoints)} · marcador exacto +${rules.exactBonus} (total ${rules.resultPoints + rules.exactBonus}).`;
+    else if(rules.resultPoints) detail = `Acertar ganador o empate da ${lgPts(rules.resultPoints)}. El exacto no da bono.`;
+    else detail = `Sólo el marcador exacto da puntos: ${lgPts(rules.exactBonus)}.`;
+    return `<div class="lg-strip"><strong>${esc(head)}</strong><span>${esc(detail)}</span><span>Cuenta la prórroga, no los penales.</span></div>`;
+  }
+  function lgLockedRoundLabel(lock){
+    if(!lock) return "";
+    const r = meta.rounds.find(x => x.id === lock.roundId);
+    return r ? roundTitle(r) : ("la Jornada " + lock.roundNumber);
+  }
+  // Lo guardado (aceptado por el servidor) de UN partido en mis pronósticos.
+  function lgAccepted(round, matchId){
+    const rp = myPicks[round.id] || {};
+    const rules = lgRulesOf(round);
+    if(rules && rules.capture === "score"){
+      const s = rp.__score && rp.__score[matchId];
+      return LG.isScore(s) ? { a: s.a, b: s.b } : null;
+    }
+    return ["A","D","B"].includes(rp[matchId]) ? rp[matchId] : null;
+  }
+  function lgSetAccepted(round, matchId, value){
+    const rules = lgRulesOf(round);
+    if(!myPicks[round.id]) myPicks[round.id] = {};
+    const rp = myPicks[round.id];
+    if(value == null){ delete rp[matchId]; if(rp.__score) delete rp.__score[matchId]; return; }
+    if(rules.capture === "score"){
+      rp[matchId] = LG.outcomeOfScore(value);
+      rp.__score = rp.__score || {};
+      rp.__score[matchId] = { a: value.a, b: value.b };
+    } else {
+      rp[matchId] = value;
+    }
+  }
+  function lgPickText(round, m, value){
+    if(value == null) return "";
+    if(typeof value === "object") return lgScoreText(value);
+    return value === "A" ? m.teamA : value === "B" ? m.teamB : "Empate";
+  }
+  function lgOutcomeText(m, outcome){
+    return outcome === "A" ? "Gana " + m.teamA : outcome === "B" ? "Gana " + m.teamB : outcome === "D" ? "Empate" : "";
+  }
+  function lgTime(iso){
+    try{ return new Date(iso).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }); }catch(e){ return ""; }
+  }
+
+  // ---- guardado por partido -------------------------------------------------
+  //
+  // Cada partido se guarda solo en cuanto tiene los dos goles (o el botón en
+  // 1X2), y «Guardado» aparece sólo cuando el servidor lo confirma. Una sola
+  // escritura en curso a la vez; si la persona sigue escribiendo, se envía lo
+  // último. Un partido incompleto no se envía y no detiene a los demás.
+  const lgDrafts = {};   // roundId -> matchId -> { a: "2", b: "" } lo escrito, sin confirmar
+  const lgState = {};    // roundId -> matchId -> { st, at, error, current }
+  const lgRejected = {}; // roundId -> matchId -> { value, at } lo que el cierre no aceptó
+  const lgQueue = new Map(); // "rid|mid" -> { round, matchId, value }
+  let lgWorking = false;
+  function lgSt(rid, mid){ return ((lgState[rid] || {})[mid]) || null; }
+  function lgSetSt(rid, mid, st){ (lgState[rid] = lgState[rid] || {})[mid] = st; }
+  function lgDraft(rid, mid){ return ((lgDrafts[rid] || {})[mid]) || null; }
+  function lgSetDraft(rid, mid, d){ (lgDrafts[rid] = lgDrafts[rid] || {}); if(d) lgDrafts[rid][mid] = d; else delete lgDrafts[rid][mid]; }
+  // "" -> null (vacío no es 0), "2" -> 2, cualquier otra cosa -> NaN.
+  function lgParseGoal(v){
+    const t = String(v == null ? "" : v).trim();
+    if(t === "") return null;
+    if(!/^\d{1,2}$/.test(t)) return NaN;
+    const n = Number(t);
+    return LG.isGoals(n) ? n : NaN;
+  }
+  function lgEnqueue(round, matchId, value){
+    lgQueue.set(round.id + "|" + matchId, { round, matchId, value });
+    lgSetSt(round.id, matchId, { st: "saving" });
+    lgPaintMatch(round, matchId);
+    lgPump();
+  }
+  async function lgPump(){
+    if(lgWorking) return;
+    lgWorking = true;
+    try{
+      while(lgQueue.size){
+        const [key, job] = lgQueue.entries().next().value;
+        lgQueue.delete(key);
+        await lgSend(job);
+      }
+    } finally { lgWorking = false; }
+  }
+  async function lgPost(round, matchId, value, expected){
+    const headers = setAuthHeaders({ "Content-Type": "application/json" }, currentUserPinCache);
+    try{
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/picks/" + encodeURIComponent(currentUser.id) + "/match", {
+        method: "POST", headers, credentials: "same-origin",
+        body: JSON.stringify({ roundId: round.id, matchId, value, expected }),
+      });
+      const data = await res.json().catch(() => ({}));
+      return { status: res.status, ...data };
+    }catch(e){ return { status: 0, error: "network_error" }; }
+  }
+  async function lgSend({ round, matchId, value, force }){
+    const who = currentUser && currentUser.id;
+    const expected = force !== undefined ? force : lgAccepted(round, matchId);
+    const r = await lgPost(round, matchId, value, expected);
+    if(!currentUser || currentUser.id !== who) return; // cambió la sesión mientras tanto
+    if(r.status === 200 && r.ok){
+      lgSetAccepted(round, matchId, r.value);
+      lgSetSt(round.id, matchId, { st: "saved", at: r.acceptedAt });
+      const d = lgDraft(round.id, matchId);
+      if(d && lgDraftEquals(d, r.value)) lgSetDraft(round.id, matchId, null);
+      if(lgRejected[round.id]) delete lgRejected[round.id][matchId];
+    } else if(r.status === 409 && r.error === "pick_conflict"){
+      lgSetSt(round.id, matchId, { st: "conflict", current: r.current, mine: value });
+    } else if(r.error === "round_locked"){
+      if(r.current !== undefined) lgSetAccepted(round, matchId, r.current);
+      (lgRejected[round.id] = lgRejected[round.id] || {})[matchId] = { value, at: new Date(serverNow()).toISOString() };
+      lgSetSt(round.id, matchId, { st: "locked" });
+      lgPaintMatch(round, matchId);
+      toast("Se cerró la jornada. Tu último cambio no se aceptó; quedó lo que estaba guardado.", 5000);
+      const main = document.getElementById("qz-main");
+      if(main && activeTab === "jornada") renderJornada(main);
+      return;
+    } else {
+      const msg = r.status === 0 ? "No se guardó: sin conexión." : (r.status >= 500 ? "No se guardó: el servidor no respondió." : humanizeError(r.error, r));
+      lgSetSt(round.id, matchId, { st: "error", error: msg, value });
+    }
+    lgPaintMatch(round, matchId);
+    lgPaintBanner(round);
+  }
+  function lgDraftEquals(d, v){
+    if(v == null) return false;
+    if(typeof v === "object") return lgParseGoal(d.a) === v.a && lgParseGoal(d.b) === v.b;
+    return d.pick === v;
+  }
+  function lgRetryAll(round){
+    Object.entries(lgState[round.id] || {}).forEach(([mid, st]) => {
+      if(st && st.st === "error" && st.value != null) lgEnqueue(round, mid, st.value);
+    });
+  }
+  function lgPaintBanner(round){
+    const el = document.getElementById("qz-lg-banner-" + round.id);
+    if(!el) return;
+    const failed = Object.values(lgState[round.id] || {}).filter(s => s && s.st === "error").length;
+    el.hidden = !failed;
+    el.innerHTML = failed ? `<span>${failed} pronóstico${failed===1?"":"s"} sin guardar.</span> <button type="button" class="btn btn-ghost btn-sm" data-lg-retry-all="${esc(round.id)}">Reintentar todo</button>` : "";
+    const btn = el.querySelector("[data-lg-retry-all]");
+    if(btn) btn.addEventListener("click", () => lgRetryAll(round));
+  }
+  // El estado visible de UN partido, siempre desde lgState + lo aceptado.
+  function lgStateHtml(round, m){
+    const rules = lgRulesOf(round);
+    const accepted = lgAccepted(round, m.id);
+    const st = lgSt(round.id, m.id);
+    const d = lgDraft(round.id, m.id);
+    const acceptedTxt = lgPickText(round, m, accepted);
+    if(st && st.st === "conflict"){
+      return `<span class="lg-warn">Desde otra sesión quedó <strong>${esc(lgPickText(round, m, st.current) || "sin pronóstico")}</strong>.</span>
+        <button type="button" class="btn btn-ghost btn-sm" data-lg-use-mine="${esc(m.id)}">Usar el mío (${esc(lgPickText(round, m, st.mine))})</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-lg-keep-theirs="${esc(m.id)}">Quedarme con ${esc(lgPickText(round, m, st.current) || "ése")}</button>`;
+    }
+    if(st && st.st === "saving") return `<span class="muted">Guardando…</span>`;
+    if(st && st.st === "error") return `<span class="lg-bad">${esc(st.error)}</span> <button type="button" class="btn btn-ghost btn-sm" data-lg-retry="${esc(m.id)}">Reintentar</button>`;
+    if(rules.capture === "score" && d){
+      const a = lgParseGoal(d.a), b = lgParseGoal(d.b);
+      if(Number.isNaN(a) || Number.isNaN(b)) return `<span class="lg-bad">Escribe un número entero de 0 a 30.</span>`;
+      if(a === null || b === null){
+        if(a === null && b === null && !accepted) return `<span class="muted">Sin pronóstico</span>`;
+        return accepted
+          ? `<span class="lg-warn">Cambio incompleto. Sigue guardado: <strong>${esc(acceptedTxt)}</strong>.</span>`
+          : `<span class="lg-warn">Falta un número. Los demás partidos se guardan igual.</span>`;
+      }
+    }
+    if(accepted){
+      const outcome = rules.capture === "score" ? lgOutcomeText(m, LG.outcomeOfScore(accepted)) : "";
+      return `${outcome ? `<span>${esc(outcome)}</span>` : ``}<span class="lg-ok">✓ Guardado${st && st.at ? " " + esc(lgTime(st.at)) : ""}</span>`;
+    }
+    return `<span class="muted">Sin pronóstico</span>`;
+  }
+  function lgPaintMatch(round, matchId){
+    const el = document.getElementById("qz-lg-st-" + round.id + "-" + matchId);
+    const m = round.matches.find(x => x.id === matchId);
+    if(!el || !m) return;
+    el.innerHTML = lgStateHtml(round, m);
+    lgWireStateButtons(el, round, m);
+    const rules = lgRulesOf(round);
+    if(rules.capture === "result"){
+      const accepted = lgAccepted(round, m.id);
+      const pending = lgDraft(round.id, m.id);
+      const shown = pending ? pending.pick : accepted;
+      document.querySelectorAll('[data-lg-row="' + CSS.escape(round.id + "|" + m.id) + '"] .pick-btn').forEach(b => {
+        b.classList.toggle("selected", b.dataset.val === shown);
+        b.setAttribute("aria-pressed", b.dataset.val === shown ? "true" : "false");
+      });
+    }
+  }
+  function lgWireStateButtons(el, round, m){
+    const retry = el.querySelector("[data-lg-retry]");
+    if(retry) retry.addEventListener("click", () => { const st = lgSt(round.id, m.id); if(st && st.value != null) lgEnqueue(round, m.id, st.value); });
+    const mine = el.querySelector("[data-lg-use-mine]");
+    if(mine) mine.addEventListener("click", () => {
+      const st = lgSt(round.id, m.id);
+      lgQueue.set(round.id + "|" + m.id, { round, matchId: m.id, value: st.mine, force: st.current == null ? null : st.current });
+      lgSetSt(round.id, m.id, { st: "saving" }); lgPaintMatch(round, m.id); lgPump();
+    });
+    const theirs = el.querySelector("[data-lg-keep-theirs]");
+    if(theirs) theirs.addEventListener("click", () => {
+      const st = lgSt(round.id, m.id);
+      lgSetAccepted(round, m.id, st.current == null ? null : st.current);
+      lgSetDraft(round.id, m.id, null);
+      lgSetSt(round.id, m.id, { st: "saved" });
+      const box = document.getElementById("qz-round-" + round.id);
+      if(box) renderRoundVoting(box, round, false);
+    });
+  }
+  const lgTimers = {};
+  function lgOnScoreInput(round, m, side, input, immediate){
+    if(isRoundLocked(round)){ renderJornada(document.getElementById("qz-main")); return; }
+    const accepted = lgAccepted(round, m.id);
+    const d = Object.assign({ a: accepted ? String(accepted.a) : "", b: accepted ? String(accepted.b) : "" }, lgDraft(round.id, m.id) || {});
+    d[side] = input.value;
+    const a = lgParseGoal(d.a), b = lgParseGoal(d.b);
+    input.setAttribute("aria-invalid", Number.isNaN(side === "a" ? a : b) ? "true" : "false");
+    if(accepted && a === accepted.a && b === accepted.b){ lgSetDraft(round.id, m.id, null); }
+    else lgSetDraft(round.id, m.id, d);
+    const prev = lgSt(round.id, m.id);
+    if(prev && (prev.st === "error" || prev.st === "saved")) lgSetSt(round.id, m.id, null);
+    lgPaintMatch(round, m.id);
+    const key = round.id + "|" + m.id;
+    clearTimeout(lgTimers[key]);
+    if(a === null || b === null || Number.isNaN(a) || Number.isNaN(b)) return;
+    if(accepted && a === accepted.a && b === accepted.b) return;
+    const go = () => { const dd = lgDraft(round.id, m.id); if(!dd) return; const aa = lgParseGoal(dd.a), bb = lgParseGoal(dd.b); if(LG.isGoals(aa) && LG.isGoals(bb)) lgEnqueue(round, m.id, { a: aa, b: bb }); };
+    if(immediate) go(); else lgTimers[key] = setTimeout(go, 700);
+  }
+
+  // ---- participante: votar --------------------------------------------------
+  function lgVotingMatchesHtml(round){
+    const rules = lgRulesOf(round);
+    return round.matches.map(m => {
+      const accepted = lgAccepted(round, m.id);
+      const d = lgDraft(round.id, m.id);
+      if(rules.capture === "score"){
+        const va = d ? d.a : (accepted ? String(accepted.a) : "");
+        const vb = d ? d.b : (accepted ? String(accepted.b) : "");
+        const ia = "qz-lg-a-" + round.id + "-" + m.id, ib = "qz-lg-b-" + round.id + "-" + m.id;
+        return `
+          <div class="match-card lg-match" data-lg-match="${esc(m.id)}">
+            <div class="lg-line"><label class="lg-team" for="${esc(ia)}">${esc(m.teamA)}</label><input class="lg-goal" id="${esc(ia)}" data-side="a" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" autocomplete="off" value="${esc(va)}" aria-label="Goles de ${esc(m.teamA)}" aria-describedby="qz-lg-st-${esc(round.id)}-${esc(m.id)}"></div>
+            <div class="lg-line"><label class="lg-team" for="${esc(ib)}">${esc(m.teamB)}</label><input class="lg-goal" id="${esc(ib)}" data-side="b" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" autocomplete="off" value="${esc(vb)}" aria-label="Goles de ${esc(m.teamB)}" aria-describedby="qz-lg-st-${esc(round.id)}-${esc(m.id)}"></div>
+            <div class="lg-state" id="qz-lg-st-${esc(round.id)}-${esc(m.id)}" role="status" aria-live="polite">${lgStateHtml(round, m)}</div>
+          </div>`;
+      }
+      const shown = d ? d.pick : accepted;
+      return `
+        <div class="match-card lg-match">
+          ${matchTeamsHtml(m)}
+          <div class="pick-row" data-lg-row="${esc(round.id)}|${esc(m.id)}">
+            <button type="button" class="pick-btn ${shown==='A'?'selected':''}" data-val="A" aria-pressed="${shown==='A'}">${esc(m.teamA)}</button>
+            <button type="button" class="pick-btn ${shown==='D'?'selected':''}" data-val="D" aria-pressed="${shown==='D'}">Empate</button>
+            <button type="button" class="pick-btn ${shown==='B'?'selected':''}" data-val="B" aria-pressed="${shown==='B'}">${esc(m.teamB)}</button>
+          </div>
+          <div class="lg-state" id="qz-lg-st-${esc(round.id)}-${esc(m.id)}" role="status" aria-live="polite">${lgStateHtml(round, m)}</div>
+        </div>`;
+    }).join("");
+  }
+  function lgWireVoting(container, round){
+    const rules = lgRulesOf(round);
+    round.matches.forEach(m => {
+      const st = document.getElementById("qz-lg-st-" + round.id + "-" + m.id);
+      if(st) lgWireStateButtons(st, round, m);
+    });
+    if(rules.capture === "score"){
+      container.querySelectorAll("[data-lg-match]").forEach(card => {
+        const m = round.matches.find(x => x.id === card.dataset.lgMatch);
+        card.querySelectorAll(".lg-goal").forEach(inp => {
+          inp.addEventListener("input", () => lgOnScoreInput(round, m, inp.dataset.side, inp, false));
+          inp.addEventListener("change", () => lgOnScoreInput(round, m, inp.dataset.side, inp, true));
+          inp.addEventListener("focus", () => { try{ inp.select(); }catch(e){} });
+        });
+      });
+    } else {
+      container.querySelectorAll("[data-lg-row]").forEach(row => {
+        const mid = row.dataset.lgRow.split("|")[1];
+        row.querySelectorAll(".pick-btn").forEach(btn => btn.addEventListener("click", () => {
+          if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
+          if(lgAccepted(round, mid) === btn.dataset.val && !lgDraft(round.id, mid)) return;
+          lgSetDraft(round.id, mid, { pick: btn.dataset.val });
+          lgEnqueue(round, mid, btn.dataset.val);
+        }));
+      });
+    }
+    lgPaintBanner(round);
+  }
+
+  // ---- participante: cerrada --------------------------------------------------
+  function renderLiguillaLocked(box, round){
+    const rules = lgRulesOf(round);
+    const rejected = lgRejected[round.id] || {};
+    const cards = round.matches.map(m => {
+      const accepted = lgAccepted(round, m.id);
+      const rej = rejected[m.id];
+      const d = lgDraft(round.id, m.id);
+      let lateTxt = "";
+      if(rej && !(accepted != null && JSON.stringify(rej.value) === JSON.stringify(accepted))){
+        lateTxt = `<div class="lg-bad">Tu cambio a ${esc(lgPickText(round, m, rej.value))} llegó a las ${esc(lgTime(rej.at))} y no se aceptó.</div>`;
+      } else if(d && !lgDraftEquals(d, accepted)){
+        lateTxt = `<div class="lg-bad">Tu cambio sin terminar no se guardó antes del cierre.</div>`;
+      }
+      const st = lgSt(round.id, m.id);
+      return `
+        <div class="match-card lg-match">
+          ${matchTeamsHtml(m)}
+          ${accepted != null
+            ? `<div>Quedó tu pronóstico <strong>${esc(lgPickText(round, m, accepted))}</strong>${st && st.at ? `, aceptado ${esc(lgTime(st.at))}` : ``}.</div>`
+            : `<div class="lg-bad">No guardaste pronóstico. Este partido no te da puntos.</div>`}
+          ${lateTxt}
+        </div>`;
+    }).join("");
+    const others = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
+    box.innerHTML = `
+      <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), "cerró " + fmtWhenTz(round.deadline)].filter(Boolean).join(" · "))}</div></div><span class="badge unpaid">🔒 Esperando resultado</span></div>
+      ${lgRulesStripHtml(rules)}
+      ${roundBetAnswersHtml(round, false)}
+      ${cards}
+      <div class="divider"></div>
+      <div class="eyebrow">Lo que votó todo el mundo</div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr></thead>
+          <tbody>${others.map(p => {
+            const rp = (allPicksCache[p.id] || {})[round.id] || {};
+            return `<tr class="${p.id===currentUser.id?'me':''}"><td>${esc(p.name)}</td>${round.matches.map(m => {
+              const v = rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
+              return `<td style="text-align:center;">${esc(lgPickText(round, m, v) || "—")}</td>`;
+            }).join("")}</tr>`;
+          }).join("")}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // ---- participante: resultados (Jugados) ------------------------------------
+  function lgResultText(round, m){
+    const st = LG.matchStatusOf(round, m.id);
+    if(st === "void") return "Anulado";
+    if(st === "postponed") return "Aplazado";
+    if(st === "pending" || !round.results || !round.results[m.id]) return "Pendiente";
+    const s = round.scores && round.scores[m.id];
+    return s ? lgScoreText(s) : lgOutcomeText(m, round.results[m.id]);
+  }
+  function lgMatchBreakdownHtml(round, m, out, pickValue){
+    const rules = lgRulesOf(round);
+    const mine = pickValue == null ? null : lgPickText(round, m, pickValue);
+    if(out.state === "void") return `<div class="muted">Anulado · no suma para nadie${mine ? ` · tu pronóstico: ${esc(mine)}` : ``}</div>`;
+    if(out.state === "postponed") return `<div class="muted">Aplazado · ${mine ? `Tu pronóstico ${esc(mine)} se conserva` : `No enviaste pronóstico`} · todavía no se califica</div>`;
+    if(out.state === "pending") return `<div class="muted">${mine ? `Tu pronóstico: ${esc(mine)}` : `No enviaste pronóstico`} · Resultado pendiente</div>`;
+    const resWord = round.results[m.id] === "D" ? "Empate" : "Resultado";
+    const chips = [
+      `<span class="lg-chip ${out.resultHit ? "on" : ""}">${out.resultHit ? "✓" : "✗"} ${resWord}</span>`,
+      rules.capture === "score" ? `<span class="lg-chip ${out.exactHit ? "on" : ""}">${out.exactHit ? "✓" : "✗"} Exacto</span>` : ``,
+    ].join("");
+    const sum = rules.capture === "score" && rules.exactBonus
+      ? `Base ${out.base} + bono ${out.bonus} = <strong>${esc(lgPts(out.total))}</strong>`
+      : `<strong>${esc(lgPts(out.total))}</strong>`;
+    return `<div class="muted">${mine ? `Tu pronóstico: ${esc(mine)}` : `No enviaste pronóstico`}</div><div class="lg-sum">${chips}<span>${sum}</span></div>`;
+  }
+  function renderLiguillaPlayed(box, round){
+    const rules = lgRulesOf(round);
+    const rp = myPicks[round.id] || {};
+    const res = LG.scoreRound(round, rp);
+    const partial = res.pending + res.postponed > 0;
+    box.innerHTML = `
+      <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), partial ? "resultados parciales" : "resultados oficiales"].filter(Boolean).join(" · "))}</div></div><span class="badge paid">${esc(lgPts(res.total))}</span></div>
+      ${lgRulesStripHtml(rules)}
+      ${round.matches.map((m, i) => {
+        const out = res.matches[i];
+        const pickValue = rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
+        const st = LG.matchStatusOf(round, m.id);
+        return `
+          <div class="match-card lg-match">
+            <div class="lg-result"><span>${esc(m.teamA)}</span><strong>${esc(lgResultText(round, m))}</strong><span>${esc(m.teamB)}</span></div>
+            ${lgMatchBreakdownHtml(round, m, out, pickValue)}
+          </div>`;
+      }).join("")}
+      ${partial ? `<p class="muted">Faltan por calificar ${res.pending + res.postponed} partido${res.pending + res.postponed === 1 ? "" : "s"}. Los puntos se actualizan cuando el admin publique su resultado.</p>` : ``}
+      ${roundBetAnswersHtml(round, true)}`;
+  }
+
+  // ---- Historial: detalle de una jornada de liguilla -------------------------
+  function renderLiguillaHistDetail(detail, round){
+    const rules = lgRulesOf(round);
+    const rows = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
+      const rp = (allPicksCache[p.id] || {})[round.id] || {};
+      const res = LG.scoreRound(round, rp);
+      const cells = round.matches.map((m, i) => {
+        const out = res.matches[i];
+        const v = rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
+        const txt = lgPickText(round, m, v) || "—";
+        let tail = "";
+        if(out.state === "scored") tail = out.total ? ` · ${rules.capture === "score" && rules.exactBonus ? `${out.base}+${out.bonus}` : out.total}` : " · 0";
+        const cls = out.state !== "scored" ? "" : (out.total ? "lg-cell-ok" : "lg-cell-no");
+        return `<td class="${cls}" style="text-align:center;">${esc(txt)}${esc(tail)}</td>`;
+      }).join("");
+      const hits = `${res.resultHits} res.${rules.capture === "score" ? ` · ${res.exactHits} exacto${res.exactHits === 1 ? "" : "s"}` : ""}`;
+      return `<tr><td>${esc(p.name)}</td>${cells}<td style="text-align:center;">${esc(hits)}</td><td style="text-align:center;font-weight:700;">${esc(res.total)}</td></tr>`;
+    }).join("");
+    detail.innerHTML = `
+      <div class="card" style="overflow-x:auto;">
+        <h3>${esc(roundTitle(round))}${roundSubtitle(round) ? ` <span class="muted" style="font-weight:500;">· ${esc(roundSubtitle(round))}</span>` : ``}</h3>
+        <p class="muted">${esc(lgRulesSummary(rules))}. «Aciertos» cuenta partidos; «Pts» son los puntos de esta jornada.</p>
+        <table>
+          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Aciertos</th><th style="text-align:center;">Pts</th></tr></thead>
+          <tbody>
+            <tr style="background:var(--chalk);"><td><strong>Resultado real</strong></td>${round.matches.map(m => `<td style="text-align:center;font-weight:700;">${esc(lgResultText(round, m))}</td>`).join("")}<td></td><td></td></tr>
+            ${rows}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  // ---- admin: reglas de liguilla ---------------------------------------------
+  function lgFormFromSettings(){
+    const r = lgConfigRules();
+    if(!r) return { capture: null, resultOn: true, resultPts: "1", bonusOn: true, bonusPts: "1" };
+    return { capture: r.capture, resultOn: r.resultPoints > 0, resultPts: String(r.resultPoints || 1),
+      bonusOn: r.capture === "score" && r.exactBonus > 0, bonusPts: String(r.exactBonus || 1) };
+  }
+  // De lo que hay en el formulario a una regla (o un error escrito).
+  function lgRulesFromForm(f){
+    if(!f.capture) return { error: "Elige qué se pronostica en liguilla." };
+    const num = (v) => /^\d{1,2}$/.test(String(v).trim()) ? Number(String(v).trim()) : NaN;
+    const rp = f.resultOn ? num(f.resultPts) : 0;
+    const bp = f.capture === "score" && f.bonusOn ? num(f.bonusPts) : 0;
+    if(Number.isNaN(rp) || Number.isNaN(bp)) return { error: "Escribe un número entero de 0 a 99." };
+    const v = LG.validateRules({ capture: f.capture, resultPoints: rp, exactBonus: bp });
+    if(!v.ok) return { error: v.reason === "liguilla_rules_no_prize" ? "Activa al menos un premio." : "Escribe un número entero de 0 a 99." };
+    return { rules: v.rules };
+  }
+  function lgExampleHtml(rules){
+    if(!rules) return `<p class="muted qz-tight">Elige la captura y los premios para ver el ejemplo.</p>`;
+    const s = (a, b) => ({ a, b });
+    const rows = rules.capture === "score"
+      ? [[s(2,1), s(3,1)], [s(2,1), s(2,1)], [s(1,1), s(2,2)], [s(1,1), s(1,1)], [s(2,1), s(0,1)]]
+      : [[s(2,1), "A"], [s(1,1), "D"], [s(2,1), "B"]];
+    const body = rows.map(([real, pick]) => {
+      const pickScore = typeof pick === "object" ? pick : null;
+      const out = LG.scoreMatch({ rules, pickScore, pick: pickScore ? LG.outcomeOfScore(pickScore) : pick, result: LG.outcomeOfScore(real), resultScore: real, published: true });
+      const pickTxt = pickScore ? lgScoreText(pickScore) : (pick === "A" ? "Gana local" : pick === "B" ? "Gana visitante" : "Empate");
+      return rules.capture === "score"
+        ? `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td>${out.base}</td><td>${out.bonus}</td><td><strong>${out.total}</strong></td></tr>`
+        : `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td><strong>${out.total}</strong></td></tr>`;
+    }).join("");
+    const head = rules.capture === "score" ? `<tr><th>Termina</th><th>Pronóstico</th><th>Base</th><th>Bono</th><th>Total</th></tr>` : `<tr><th>Termina</th><th>Pronóstico</th><th>Pts</th></tr>`;
+    return `<table class="lg-example"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  }
+  function reglasLiguillaCardHtml(st, unlocked, noPasswordYet){
+    const lock = meta.liguillaLock || null;
+    const saved = lgConfigRules();
+    const regular = meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1;
+    const status = lock ? `Fijas` : (saved ? `Configurada` : `Sin configurar`);
+    const head = `<div class="qz-sec-head"><div class="eyebrow" id="qz-r-lg-t">Liguilla</div><span class="lg-status">${esc(status)}</span></div>
+      <p class="muted qz-tight">Se configura aparte. La fase regular sigue con <strong>${esc(regular)} ${esc(pointsWord(regular))} por acierto</strong>.</p>`;
+    if(lock){
+      return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
+        <p class="qz-wz-value">${esc(lgRulesSummary(lock.rules))}</p>
+        <p class="muted qz-tight">Fijas desde que publicaste <strong>${esc(lgLockedRoundLabel(lock))}</strong> (${esc(fmtWhenTz(lock.lockedAt))}). Valen para cuartos, semifinal y final de este torneo, aunque borres esa jornada.</p>
+        ${lgExampleHtml(lock.rules)}
+      </section>`;
+    }
+    if(!unlocked){
+      return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
+        <p class="qz-wz-value">${saved ? esc(lgRulesSummary(saved)) : "Todavía no eliges cómo se juega la liguilla."}</p>
+        <p class="muted qz-tight">🔒 ${noPasswordYet ? "Se protegen con tu contraseña de administrador." : "Para cambiarlas, desbloquea con tu contraseña de administrador (arriba)."}</p>
+      </section>`;
+    }
+    const preview = lgRulesFromForm(st);
+    const isScore = st.capture === "score";
+    const radio = (val, title, sub) => `
+      <label class="lg-opt ${st.capture === val ? "on" : ""}" for="qz-r-lg-cap-${val}">
+        <input type="radio" name="qz-r-lg-cap" id="qz-r-lg-cap-${val}" value="${val}" ${st.capture === val ? "checked" : ""}>
+        <span class="lg-opt-txt">${st.capture === val ? `<span class="lg-opt-state">Elegido</span>` : ``}<strong>${esc(title)}</strong><span class="muted">${esc(sub)}</span></span>
+      </label>`;
+    return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
+      <fieldset class="lg-fieldset"><legend>¿Qué pronostican en liguilla?</legend>
+        ${radio("result", "Quién gana o si empatan", "Local, empate o visitante")}
+        ${radio("score", "Marcador exacto", "Dos números, por ejemplo 2–1. El ganador sale del marcador.")}
+      </fieldset>
+      ${st.capture ? `
+      <fieldset class="lg-fieldset"><legend>¿Qué da puntos?</legend>
+        <div class="lg-opt ${st.resultOn ? "on" : ""}">
+          <input type="checkbox" id="qz-r-lg-res-on" ${st.resultOn ? "checked" : ""}>
+          <label class="lg-opt-txt" for="qz-r-lg-res-on"><span class="lg-opt-state">${st.resultOn ? "Activado" : "Desactivado"}</span><strong>Acertar el resultado</strong><span class="muted">Ganador o empate</span></label>
+          <label class="sr-only" for="qz-r-lg-res-pts">Puntos por resultado</label>
+          <input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-res-pts" value="${esc(st.resultPts)}" ${st.resultOn ? "" : "disabled"} autocomplete="off">
+        </div>
+        <div class="lg-opt ${isScore && st.bonusOn ? "on" : ""} ${isScore ? "" : "na"}">
+          <input type="checkbox" id="qz-r-lg-bon-on" ${isScore && st.bonusOn ? "checked" : ""} ${isScore ? "" : "disabled"}>
+          <label class="lg-opt-txt" for="qz-r-lg-bon-on"><span class="lg-opt-state">${isScore ? (st.bonusOn ? "Activado" : "Desactivado") : "No disponible"}</span><strong>Bono por marcador exacto</strong><span class="muted">${isScore ? "Se suma al resultado" : "Requiere elegir «Marcador exacto»."}</span></label>
+          <label class="sr-only" for="qz-r-lg-bon-pts">Puntos de bono por exacto</label>
+          ${isScore ? `<input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-bon-pts" value="${esc(st.bonusPts)}" ${st.bonusOn ? "" : "disabled"} autocomplete="off">` : ``}
+        </div>
+      </fieldset>
+      <div class="lg-example-wrap" aria-live="polite">
+        <strong>${preview.rules ? "Con estas reglas" : "Ejemplo"}</strong>
+        ${preview.rules ? lgExampleHtml(preview.rules) : `<p class="lg-bad">${esc(preview.error)}</p>`}
+        ${lgRulesStripHtml(preview.rules || null)}
+      </div>` : ``}
+      <p class="qz-field-error" id="qz-r-lg-err" role="alert" hidden></p>
+      <button class="btn btn-primary" id="qz-r-lg-save" ${st.capture ? "" : "disabled"}>Guardar reglas de liguilla</button>
+      <p class="muted qz-tight">Puedes cambiarlas hasta publicar la primera jornada de liguilla; después quedan fijas para todo el torneo.</p>
+      ${renderAdminReglas._lgReturn ? `<div class="qz-wz-callout" role="status"><p>Cuando las guardes, vuelve a Jornadas para publicar <strong>${esc(renderAdminReglas._lgReturn.title)}</strong>.</p><button class="btn btn-ghost btn-sm" id="qz-r-lg-back">Volver a Jornadas</button></div>` : ``}
+    </section>`;
+  }
+  function wireReglasLiguilla(body, st, repaint, saveProtected){
+    const back = document.getElementById("qz-r-lg-back");
+    if(back) back.addEventListener("click", () => { adminSubTab = "rondas"; renderAdmin(document.getElementById("qz-main")); });
+    body.querySelectorAll('input[name="qz-r-lg-cap"]').forEach(r => r.addEventListener("change", () => {
+      st.capture = r.value;
+      if(st.capture === "result") st.bonusOn = false;
+      repaint();
+      const again = document.getElementById("qz-r-lg-cap-" + r.value); if(again) again.focus();
+    }));
+    const resOn = document.getElementById("qz-r-lg-res-on");
+    if(resOn) resOn.addEventListener("change", () => { st.resultOn = resOn.checked; repaint(); const e = document.getElementById("qz-r-lg-res-on"); if(e) e.focus(); });
+    const bonOn = document.getElementById("qz-r-lg-bon-on");
+    if(bonOn) bonOn.addEventListener("change", () => { st.bonusOn = bonOn.checked; repaint(); const e = document.getElementById("qz-r-lg-bon-on"); if(e) e.focus(); });
+    const live = (id, key) => {
+      const inp = document.getElementById(id);
+      if(!inp) return;
+      inp.addEventListener("input", () => {
+        st[key] = inp.value;
+        const wrap = body.querySelector(".lg-example-wrap");
+        const preview = lgRulesFromForm(st);
+        if(wrap) wrap.innerHTML = `<strong>${preview.rules ? "Con estas reglas" : "Ejemplo"}</strong>${preview.rules ? lgExampleHtml(preview.rules) : `<p class="lg-bad">${esc(preview.error)}</p>`}${lgRulesStripHtml(preview.rules || null)}`;
+      });
+    };
+    live("qz-r-lg-res-pts", "resultPts");
+    live("qz-r-lg-bon-pts", "bonusPts");
+    const save = document.getElementById("qz-r-lg-save");
+    if(save) save.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const out = lgRulesFromForm(st);
+      if(out.error){ setupFieldError("qz-r-lg-err", out.error); return; }
+      const done = setupBusy(btn, "Guardando…");
+      const ok = await saveProtected("liguilla", { ...out.rules }, "qz-r-lg-err", "✅ Listo, las reglas de liguilla quedaron guardadas.");
+      done();
+      if(ok){
+        const ret = renderAdminReglas._lgReturn;
+        renderAdminReglas._state.lg = null;
+        repaint();
+        if(ret) toast(`Ahora puedes publicar ${ret.title} desde Jornadas.`, 5000);
+      }
+    });
+  }
+
+  // ---- admin: publicar una jornada de liguilla -------------------------------
+  // Un solo flujo: sin reglas, se configuran primero; con reglas y sin
+  // candado, se confirma que quedan fijas. El servidor revisa lo mismo.
+  async function lgPublishGate(round){
+    if(!isLg(round)) return true;
+    const pending = round.matches.filter(m => !m.teamA || !m.teamB).length;
+    if(pending){ toast(`Falta confirmar ${pending} rival${pending===1?"":"es"} para publicar.`, 5000); return false; }
+    const rules = lgConfigRules();
+    if(!rules){
+      const go = await qzConfirm(`Es la primera jornada de liguilla. Elige cómo se juega: las reglas valen para cuartos, semifinal y final.`,
+        { title: "Antes de publicar, configura la liguilla", confirmLabel: "Configurar liguilla", cancelLabel: "Ahora no" });
+      if(go){
+        renderAdminReglas._lgReturn = { roundId: round.id, title: roundTitle(round) };
+        adminSubTab = "reglas";
+        await renderAdmin(document.getElementById("qz-main"));
+        document.getElementById("qz-r-lg-t")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      return false;
+    }
+    if(meta.liguillaLock) return true;
+    return qzConfirm(`Reglas: ${lgRulesSummary(rules)}.\n• Al publicar, las reglas de liguilla quedan fijas para todo el torneo.\n• No cambian aunque después borres esta jornada.`,
+      { title: `¿Publicar ${roundTitle(round)}?`, confirmLabel: "Publicar", cancelLabel: "Cancelar" });
+  }
+  async function lgAfterPublish(){
+    try{
+      const fresh = await getMeta({ owner: adminOrOwnerCred() });
+      if(fresh) adoptFreshMeta(meta, fresh);
+    }catch(e){ console.error("refresh tras publicar liguilla falló", e); }
+    renderAdminReglas._lgReturn = null;
+  }
+
+  // ---- admin: organizar ida y vuelta (D4) ------------------------------------
+  function lgDrafts_rounds(){ return meta.rounds.filter(r => isLg(r) && r.published === false); }
+  function lgEarliest(round){
+    const t = round.matches.map(m => Date.parse(m.kickoffAt)).filter(Number.isFinite);
+    return t.length ? new Date(Math.min(...t)).toISOString() : null;
+  }
+  function lgOrganizerHtml(plan){
+    const target = (mid) => plan.assign[mid];
+    const groups = [...plan.rounds, { key: "__new", title: "Jornada nueva (borrador)" }].map(r => {
+      const ms = plan.matches.filter(m => target(m.id) === r.key);
+      if(r.key === "__new" && !ms.length) return "";
+      const ko = ms.map(m => Date.parse(m.kickoffAt)).filter(Number.isFinite);
+      const close = ko.length ? fmtWhenTz(new Date(Math.min(...ko)).toISOString()) : null;
+      return `<div class="card lg-org-group">
+        <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;"><strong>${esc(r.title)}</strong><span class="muted">${esc(ms.length + (ms.length === 1 ? " partido" : " partidos"))}</span></div>
+        <div class="muted">${close ? `Cierra ${esc(close)} (primer partido)` : (ms.length ? "Sin fecha de partido: revisa el cierre al guardar" : "Quedaría vacía")}</div>
+        ${ms.map(m => `<div class="lg-org-row"><span>${esc(m.teamA || "Por definir")} vs ${esc(m.teamB || "Por definir")}<br><span class="muted">${m.kickoffAt ? esc(fmtWhenTz(m.kickoffAt)) : "sin fecha"}</span></span>
+          <label class="sr-only" for="qz-org-${esc(m.id)}">Mover partido</label><select id="qz-org-${esc(m.id)}" data-org-match="${esc(m.id)}">${plan.rounds.map(r => `<option value="${esc(r.key)}" ${target(m.id) === r.key ? "selected" : ""}>${esc(r.title)}</option>`).join("")}<option value="__new" ${target(m.id) === "__new" ? "selected" : ""}>Jornada nueva (borrador)</option></select></div>`).join("")}
+      </div>`;
+    }).join("");
+    return `<div class="card" id="qz-lg-organizer">
+      <div class="eyebrow">Organizar partidos de liguilla</div>
+      <p class="muted">Sólo borradores: nada publicado ni con pronósticos se mueve. Revisa qué partidos quedan en cada jornada y su cierre antes de confirmar.</p>
+      ${groups}
+      <p class="qz-field-error" id="qz-org-err" role="alert" hidden></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" id="qz-org-confirm">Confirmar organización</button><button class="btn btn-ghost" id="qz-org-cancel">Cancelar</button></div>
+    </div>`;
+  }
+  function lgOrganizerPlan(){
+    if(renderAdminRondas._org) return renderAdminRondas._org;
+    const rounds = lgDrafts_rounds().sort((a,b) => a.number - b.number);
+    const plan = { rounds: rounds.map(r => ({ key: r.id, title: roundTitle(r) + " (J" + r.number + ")" })), matches: [], assign: {} };
+    rounds.forEach(r => r.matches.forEach(m => { plan.matches.push({ ...m, from: r.id }); plan.assign[m.id] = r.id; }));
+    renderAdminRondas._org = plan;
+    return plan;
+  }
+  function wireOrganizer(body){
+    const plan = renderAdminRondas._org;
+    body.querySelectorAll("[data-org-match]").forEach(sel => sel.addEventListener("change", () => {
+      plan.assign[sel.dataset.orgMatch] = sel.value;
+      renderAdminRondas(body).then(() => document.getElementById("qz-org-" + sel.dataset.orgMatch)?.focus());
+    }));
+    document.getElementById("qz-org-cancel").addEventListener("click", () => { renderAdminRondas._org = null; renderAdminRondas(body); });
+    document.getElementById("qz-org-confirm").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      // Se arma sobre una COPIA del tablero: si algo no cuadra, el tablero de
+      // la pestaña no se toca.
+      const work = JSON.parse(JSON.stringify(meta.rounds));
+      const byId = new Map(work.map(r => [r.id, r]));
+      // Ninguno de los borradores puede haberse publicado mientras tanto.
+      if(plan.rounds.some(r => !byId.get(r.key) || byId.get(r.key).published !== false)){
+        renderAdminRondas._org = null; toast("Una de las jornadas ya no es borrador. Vuelve a abrir Organizar."); renderAdminRondas(body); return;
+      }
+      let fresh = null;
+      if(Object.values(plan.assign).includes("__new")){
+        const src = byId.get(plan.matches.find(m => plan.assign[m.id] === "__new").from);
+        fresh = { id: uid("r"), number: Math.max(...work.map(r => r.number)) + 1, matches: [], deadline: src.deadline,
+          results: {}, resultsPublished: false, published: false, stage: "liguilla",
+          ...(src.provider ? { provider: src.provider } : {}), ...(src.syncGroupKey ? { syncGroupKey: src.syncGroupKey } : {}),
+          ...(src.externalRoundId != null ? { externalRoundId: src.externalRoundId } : {}),
+          ...(src.phase && src.phase.round ? { phase: { round: src.phase.round, leg: null, source: "admin" } } : {}) };
+        work.push(fresh);
+        byId.set(fresh.id, fresh);
+      }
+      const matchById = new Map(plan.matches.map(m => [m.id, m]));
+      plan.rounds.forEach(r => { byId.get(r.key).matches = []; });
+      plan.matches.forEach(m => {
+        const dest = plan.assign[m.id] === "__new" ? fresh : byId.get(plan.assign[m.id]);
+        const { from, ...clean } = matchById.get(m.id);
+        dest.matches.push(clean);
+      });
+      // El cierre de cada borrador: su primer partido, si tiene fecha.
+      [...plan.rounds.map(r => byId.get(r.key)), ...(fresh ? [fresh] : [])].forEach(r => { const first = lgEarliest(r); if(first) r.deadline = first; });
+      if(work.some(r => isLg(r) && r.published === false && !r.matches.length)){
+        setupFieldError("qz-org-err", "Una jornada quedaría sin partidos. Mueve al menos uno o deja los partidos donde estaban.");
+        return;
+      }
+      btn.disabled = true;
+      const snapshot = meta.rounds;
+      meta.rounds = work;
+      const result = await setMetaWithError(meta);
+      if(result.ok){
+        renderAdminRondas._org = null;
+        toast("✅ Listo, los partidos quedaron organizados. Revisa el cierre de cada jornada antes de publicar.", 5000);
+        renderAdmin(document.getElementById("qz-main"));
+      } else {
+        if(!result.reconciled) meta.rounds = snapshot;
+        btn.disabled = false;
+        setupFieldError("qz-org-err", humanizeError(result.error, result));
+      }
+    });
+  }
+
+  // ---- admin: pendientes de colocar (D4) -------------------------------------
+  function lgStagedHtml(){
+    const staged = Array.isArray(meta.stagedFixtures) ? meta.stagedFixtures : [];
+    if(!staged.length) return "";
+    const drafts = meta.rounds.filter(r => r.published === false && !r.resultsPublished);
+    const suggest = (f) => {
+      const t = Date.parse(f.kickoffAt);
+      if(!Number.isFinite(t)) return null;
+      let best = null, bestD = Infinity;
+      drafts.forEach(r => r.matches.forEach(m => { const d = Math.abs(Date.parse(m.kickoffAt) - t); if(Number.isFinite(d) && d < bestD){ bestD = d; best = r; } }));
+      return best;
+    };
+    return `<div class="card" id="qz-lg-staged">
+      <div class="eyebrow">Pendientes de colocar (${esc(staged.length)})</div>
+      <p class="muted">Partidos que llegaron del calendario y no tienen una sola jornada posible. No los ubicamos solos: elige tú. Sólo se pueden colocar en borradores.</p>
+      ${staged.map((f, i) => {
+        const key = (f.provider || "") + "|" + (f.providerFixtureId || "");
+        const s = suggest(f);
+        return `<div class="lg-org-row"><span>${esc((f.home && f.home.name) || "Por definir")} vs ${esc((f.away && f.away.name) || "Por definir")}<br><span class="muted">${f.kickoffAt ? esc(fmtWhenTz(f.kickoffAt)) : "sin fecha del proveedor"}${s ? ` · parece de ${esc(roundTitle(s))}` : ``}</span></span>
+          ${drafts.length ? `<span class="lg-org-place"><label class="sr-only" for="qz-stg-${i}">Jornada</label><select id="qz-stg-${i}">${drafts.map(r => `<option value="${esc(r.id)}" ${s && s.id === r.id ? "selected" : ""}>${esc(roundTitle(r))} (J${esc(r.number)})${s && s.id === r.id ? " · sugerida" : ""}</option>`).join("")}</select>
+          <button class="btn btn-ghost btn-sm" data-stg-place="${esc(key)}" data-stg-sel="qz-stg-${i}">Colocar</button></span>` : `<span class="muted">Crea un borrador para colocarlo.</span>`}</div>`;
+      }).join("")}
+    </div>`;
+  }
+  function wireStaged(body){
+    body.querySelectorAll("[data-stg-place]").forEach(btn => btn.addEventListener("click", async () => {
+      const sel = document.getElementById(btn.dataset.stgSel);
+      btn.disabled = true;
+      try{
+        const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/staged/place`, {
+          method: "POST", headers: setAuthHeaders({ "Content-Type": "application/json" }, adminOrOwnerCred()), credentials: "same-origin",
+          body: JSON.stringify({ identityKey: btn.dataset.stgPlace, roundId: sel.value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if(!res.ok){ toast(humanizeError(data.error, data)); btn.disabled = false; return; }
+        const fresh = await getMeta({ owner: adminOrOwnerCred() });
+        if(fresh) adoptFreshMeta(meta, fresh);
+        toast("✅ Partido colocado.");
+        renderAdmin(document.getElementById("qz-main"));
+      }catch(e){ toast(humanizeError("network_error")); btn.disabled = false; }
+    }));
+  }
+
+  // ---- admin: resultados de liguilla (D2) ------------------------------------
+  // Cada partido: con resultado (dos goles o 1X2, según la captura),
+  // pendiente, aplazado o anulado. El 1X2 sale del marcador.
+  function renderLiguillaResultados(body, form, round, extrasHtml, wireExtras){
+    const rules = lgRulesOf(round);
+    const isPublished = !!round.resultsPublished;
+    const stillOpen = !isPublished && isRoundLocked(round) === false;
+    const st = renderLiguillaResultados._st && renderLiguillaResultados._st.roundId === round.id ? renderLiguillaResultados._st : null;
+    const editing = !isPublished || !!(st && st.correcting);
+    // Lo editable vive en el borrador de la jornada (draft*), como en la fase regular.
+    if(editing && !round.draftMatchStatus && !round.draftScores && !round.draftResults){
+      round.draftResults = { ...(round.results || {}) };
+      round.draftScores = JSON.parse(JSON.stringify(round.scores || {}));
+      round.draftMatchStatus = { ...(round.matchStatus || {}) };
+    }
+    const dRes = editing ? (round.draftResults || (round.draftResults = {})) : (round.results || {});
+    const dSco = editing ? (round.draftScores || (round.draftScores = {})) : (round.scores || {});
+    const dSt = editing ? (round.draftMatchStatus || (round.draftMatchStatus = {})) : (round.matchStatus || {});
+    const statusOf = (mid) => dSt[mid] || (dRes[mid] ? "result" : null);
+    const resolved = round.matches.filter(m => {
+      const s = statusOf(m.id);
+      if(s === "void") return true;
+      if(s !== "result") return false;
+      return rules.capture === "score" ? LG.isScore(dSco[m.id]) : ["A","D","B"].includes(dRes[m.id]);
+    }).length;
+    const unresolved = round.matches.filter(m => { const s = statusOf(m.id); return s !== "pending" && s !== "postponed" && s !== "void" && !(s === "result" && (rules.capture === "score" ? LG.isScore(dSco[m.id]) : dRes[m.id])); });
+    const waiting = round.matches.filter(m => ["pending","postponed"].includes(statusOf(m.id))).length;
+    const canPublish = editing && !stillOpen && resolved > 0 && !unresolved.length;
+    const seg = (m, val, text) => `<button type="button" class="pick-btn ${statusOf(m.id) === val ? "selected" : ""}" data-lg-status="${esc(m.id)}" data-val="${esc(val)}" aria-pressed="${statusOf(m.id) === val ? "true" : "false"}" ${editing ? "" : "disabled"}>${esc(text)}${statusOf(m.id) === val ? " ✓" : ""}</button>`;
+    form.innerHTML = `
+      <div class="card">
+        <p style="margin:0 0 12px;">${isPublished ? `<span class="badge paid" style="font-size:13px;padding:5px 10px;">🟢 Resultados publicados${waiting ? " (parciales)" : ""}</span>` : `<span class="badge" style="font-size:13px;padding:5px 10px;">⚪ Sin publicar</span>`}
+          ${isPublished && editing ? `<span class="badge unpaid" style="margin-left:6px;">✏️ Corrigiendo — lo publicado no cambia hasta que confirmes</span>` : ``}</p>
+        <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+          <span>${esc(roundTitle(round))}${roundSubtitle(round) ? " · " + esc(roundSubtitle(round)) : ""}</span>
+          ${editing ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>` : ``}
+        </div>
+        <p class="muted" style="margin-top:4px;">${rules.capture === "score" ? "Marcador final con prórroga, sin la tanda de penales." : "Resultado del marcador final con prórroga, sin la tanda de penales."}</p>
+        <p class="muted" id="qz-autofill-status"></p>
+        ${round.matches.map(m => {
+          const s = statusOf(m.id);
+          const sc = dSco[m.id] || null;
+          return `<div class="match-card lg-match" id="qz-rescard-${esc(m.id)}">
+            <div class="pick-row lg-status-row" role="group" aria-label="Estado de ${esc(m.teamA)} vs ${esc(m.teamB)}">${seg(m, "result", "Con resultado")}${seg(m, "pending", "Pendiente")}${seg(m, "postponed", "Aplazado")}${seg(m, "void", "Anulado")}</div>
+            ${s === "result" ? (rules.capture === "score" ? `
+              <div class="lg-line"><label class="lg-team" for="qz-lgr-a-${esc(m.id)}">${esc(m.teamA)}</label><input class="lg-goal" id="qz-lgr-a-${esc(m.id)}" data-lgr="${esc(m.id)}" data-side="a" type="text" inputmode="numeric" maxlength="2" value="${sc ? esc(sc.a) : ""}" ${editing ? "" : "disabled"} autocomplete="off"></div>
+              <div class="lg-line"><label class="lg-team" for="qz-lgr-b-${esc(m.id)}">${esc(m.teamB)}</label><input class="lg-goal" id="qz-lgr-b-${esc(m.id)}" data-lgr="${esc(m.id)}" data-side="b" type="text" inputmode="numeric" maxlength="2" value="${sc ? esc(sc.b) : ""}" ${editing ? "" : "disabled"} autocomplete="off"></div>
+              <div class="muted" id="qz-lgr-out-${esc(m.id)}">${sc && LG.isScore(sc) ? esc(lgOutcomeText(m, LG.outcomeOfScore(sc))) : "Escribe los dos goles."}</div>`
+              : `<div class="pick-row" data-lgr-pick="${esc(m.id)}">
+                  <button type="button" class="pick-btn ${dRes[m.id]==='A'?'selected':''}" data-val="A" ${editing ? "" : "disabled"}>${esc(m.teamA)}</button>
+                  <button type="button" class="pick-btn ${dRes[m.id]==='D'?'selected':''}" data-val="D" ${editing ? "" : "disabled"}>Empate</button>
+                  <button type="button" class="pick-btn ${dRes[m.id]==='B'?'selected':''}" data-val="B" ${editing ? "" : "disabled"}>${esc(m.teamB)}</button>
+                </div>`)
+              : `<div class="lg-result"><span>${esc(m.teamA)}</span><strong>${s === "pending" ? "Pendiente" : s === "postponed" ? "Aplazado" : s === "void" ? "Anulado" : "Sin capturar"}</strong><span>${esc(m.teamB)}</span></div>
+                 <div class="muted">${s === "pending" ? "Todavía no hay marcador. Sus pronósticos se conservan." : s === "postponed" ? "Sus pronósticos se conservan y siguen cerrados. Se califica cuando publiques su resultado." : s === "void" ? "Nadie gana ni pierde puntos. No cuenta como acierto ni como fallo." : "Elige «Con resultado» y captura el marcador, o marca su estado."}</div>`}
+            <div class="result-tag" id="qz-suggest-${esc(m.id)}"></div>
+          </div>`;
+        }).join("")}
+        ${editing ? `
+          <button class="btn btn-ghost" id="qz-save-draft" style="width:100%;padding:12px;">Guardar borrador</button>
+          <button class="btn btn-primary" id="qz-publish-results" style="width:100%;padding:12px;margin-top:8px;" ${canPublish ? "" : "disabled"}>${isPublished ? "Publicar corrección" : (waiting ? `Publicar ${resolved} resultado${resolved===1?"":"s"} · ${waiting} sin calificar` : "Publicar resultados")}</button>
+          ${stillOpen ? `<p class="muted" style="text-align:center;margin-top:6px;">Todavía no puedes publicar: el plazo para votar no ha cerrado.</p>`
+            : (unresolved.length ? `<p class="muted" style="text-align:center;margin-top:6px;">Falta capturar o marcar: ${unresolved.map(m => `${esc(m.teamA)} vs ${esc(m.teamB)}`).join(", ")}.</p>` : ``)}
+          ${isPublished ? `<button class="btn btn-ghost btn-sm" id="qz-cancel-correction" style="width:100%;margin-top:8px;">Cancelar corrección</button>` : ``}
+        ` : `<button class="btn btn-ghost" id="qz-start-correction" style="width:100%;padding:12px;">${waiting ? "Capturar lo que falta o corregir" : "Corregir resultados"}</button>`}
+      </div>
+      ${extrasHtml || ""}`;
+    const repaint = () => renderLiguillaResultados(body, form, round, extrasHtml, wireExtras);
+    form.querySelectorAll("[data-lg-status]").forEach(b => b.addEventListener("click", () => {
+      const mid = b.dataset.lgStatus, val = b.dataset.val;
+      if(val === "void" && dSt[mid] !== "void"){
+        qzConfirm("Nadie gana ni pierde puntos en este partido. No cuenta como acierto ni como fallo. Los pronósticos se conservan y puedes corregirlo después.", { title: "¿Anular este partido?", confirmLabel: "Anular partido", cancelLabel: "Mejor no" })
+          .then(ok => { if(ok){ dSt[mid] = "void"; delete dRes[mid]; delete dSco[mid]; repaint(); } });
+        return;
+      }
+      // «Con resultado» sin goles todavía se marca en el borrador; al publicar
+      // sólo viaja el resultado, nunca esta marca.
+      if(val === "result") dSt[mid] = "result";
+      else { dSt[mid] = val; delete dRes[mid]; delete dSco[mid]; }
+      repaint();
+    }));
+    form.querySelectorAll("[data-lgr]").forEach(inp => inp.addEventListener("input", () => {
+      const mid = inp.dataset.lgr;
+      const a = lgParseGoal(document.getElementById("qz-lgr-a-" + mid).value);
+      const b = lgParseGoal(document.getElementById("qz-lgr-b-" + mid).value);
+      const out = document.getElementById("qz-lgr-out-" + mid);
+      const m = round.matches.find(x => x.id === mid);
+      if(LG.isGoals(a) && LG.isGoals(b)){ dSco[mid] = { a, b }; dRes[mid] = LG.outcomeOfScore(dSco[mid]); if(out) out.textContent = lgOutcomeText(m, dRes[mid]); }
+      else { delete dSco[mid]; delete dRes[mid]; if(out) out.textContent = (Number.isNaN(a) || Number.isNaN(b)) ? "Escribe un número entero de 0 a 30." : "Escribe los dos goles."; }
+      const pub = document.getElementById("qz-publish-results");
+      if(pub){
+        const ok = !stillOpen && round.matches.every(x => { const s = statusOf(x.id); return s === "pending" || s === "postponed" || s === "void" || (s === "result" && (rules.capture === "score" ? LG.isScore(dSco[x.id]) : dRes[x.id])); })
+          && round.matches.some(x => statusOf(x.id) === "void" || (statusOf(x.id) === "result" && (rules.capture === "score" ? LG.isScore(dSco[x.id]) : dRes[x.id])));
+        pub.disabled = !ok;
+      }
+    }));
+    form.querySelectorAll("[data-lgr-pick]").forEach(row => row.querySelectorAll(".pick-btn").forEach(btn => btn.addEventListener("click", () => {
+      dRes[row.dataset.lgrPick] = btn.dataset.val; repaint();
+    })));
+    const autofill = document.getElementById("qz-autofill");
+    if(autofill) autofill.addEventListener("click", async () => {
+      const statusEl = document.getElementById("qz-autofill-status");
+      statusEl.textContent = "Buscando resultados…";
+      try{
+        const data = await fetchSportsResults(round.id);
+        if(!data.ok || data.reliabilityState){ statusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState); return; }
+        let found = 0;
+        const byMatch = {}; (data.suggestions || []).forEach(s => { byMatch[s.matchId] = s; });
+        const un = {}; (data.unscorable || []).forEach(u => { un[u.matchId] = u; });
+        round.matches.forEach(m => {
+          const tag = document.getElementById("qz-suggest-" + m.id);
+          if(!tag) return;
+          const hit = byMatch[m.id];
+          if(hit && (rules.capture !== "score" || (hit.goals && LG.isScore(hit.goals)))){
+            found++;
+            const txt = rules.capture === "score" ? lgScoreText(hit.goals) : lgOutcomeText(m, hit.result);
+            tag.innerHTML = `Sugerido: <strong>${esc(txt)}</strong> (terminó en los 90) <button type="button" class="btn btn-gold btn-sm" data-lg-accept="${esc(m.id)}">✓ Usar</button>`;
+            tag.querySelector("[data-lg-accept]").addEventListener("click", () => {
+              dSt[m.id] = "result";
+              if(rules.capture === "score"){ dSco[m.id] = { ...hit.goals }; dRes[m.id] = LG.outcomeOfScore(hit.goals); } else dRes[m.id] = hit.result;
+              repaint();
+            });
+          } else if(un[m.id]){
+            tag.textContent = un[m.id].reason === "extra_time_or_penalties"
+              ? "Hubo prórroga o penales y no podemos confirmar el marcador sin la tanda. Captúralo tú."
+              : unscorableCopy(un[m.id].reason);
+          } else tag.textContent = "Sin resultado automático todavía. Puedes capturarlo a mano.";
+        });
+        statusEl.textContent = found ? found + " de " + round.matches.length + " partidos con sugerencia. Revisa y confirma." : "Sin sugerencias por ahora. Captura los resultados a mano.";
+      }catch(e){ statusEl.textContent = "⚠️ " + sportsDataFailureMessage(null); }
+    });
+    const saveDraft = document.getElementById("qz-save-draft");
+    if(saveDraft) saveDraft.addEventListener("click", async () => {
+      saveDraft.disabled = true;
+      const result = await setMetaWithError(meta);
+      toast(result.ok ? "✅ Listo, tu borrador quedó guardado." : humanizeError(result.error, result));
+      saveDraft.disabled = false;
+    });
+    const pub = document.getElementById("qz-publish-results");
+    if(pub) pub.addEventListener("click", async () => {
+      const waitingNow = round.matches.filter(m => ["pending","postponed"].includes(statusOf(m.id)));
+      const voided = round.matches.filter(m => statusOf(m.id) === "void");
+      const lines = [`• Se califican los partidos con resultado${voided.length ? "; los anulados dan 0 a todos" : ""}.`];
+      if(waitingNow.length) lines.push("• Quedan sin calificar: " + waitingNow.map(m => m.teamA + " vs " + m.teamB + " (" + (statusOf(m.id) === "postponed" ? "aplazado" : "pendiente") + ")").join(", ") + ".");
+      lines.push("• La tabla se actualiza con estos puntos.");
+      if(!(await qzConfirm(lines.join("\n"), { title: isPublished ? `¿Publicar la corrección de ${roundTitle(round)}?` : `¿Publicar resultados de ${roundTitle(round)}?`, confirmLabel: isPublished ? "Publicar corrección" : "Publicar" }))) return;
+      pub.disabled = true;
+      const before = JSON.parse(JSON.stringify(round));
+      const results = {}, scores = {}, status = {};
+      round.matches.forEach(m => {
+        const s = statusOf(m.id);
+        if(s === "pending" || s === "postponed" || s === "void"){ status[m.id] = s; return; }
+        results[m.id] = rules.capture === "score" ? LG.outcomeOfScore(dSco[m.id]) : dRes[m.id];
+        if(rules.capture === "score") scores[m.id] = { ...dSco[m.id] };
+      });
+      round.results = results; round.matchStatus = status;
+      if(rules.capture === "score") round.scores = scores; else delete round.scores;
+      round.resultsPublished = true;
+      delete round.draftResults; delete round.draftScores; delete round.draftMatchStatus;
+      logAudit(before.resultsPublished ? "Corrigió resultados" : "Publicó resultados", roundTitle(round) + " (J" + round.number + ")");
+      const result = await setMetaWithError(meta);
+      if(result.ok){
+        renderLiguillaResultados._st = null;
+        allPicksCache = {};
+        toast("✅ Listo, los resultados quedaron publicados y los puntos se actualizaron.");
+        if(!before.resultsPublished) trackEvent("result_published", { source: "admin_resultados" });
+      } else {
+        if(!result.reconciled) meta.rounds = meta.rounds.map(r => r.id === round.id ? before : r);
+        toast(humanizeError(result.error, result));
+      }
+      renderAdminResultados(body);
+    });
+    const startCorr = document.getElementById("qz-start-correction");
+    if(startCorr) startCorr.addEventListener("click", () => {
+      renderLiguillaResultados._st = { roundId: round.id, correcting: true };
+      round.draftResults = { ...(round.results || {}) };
+      round.draftScores = JSON.parse(JSON.stringify(round.scores || {}));
+      round.draftMatchStatus = { ...(round.matchStatus || {}) };
+      repaint();
+    });
+    const cancelCorr = document.getElementById("qz-cancel-correction");
+    if(cancelCorr) cancelCorr.addEventListener("click", async () => {
+      renderLiguillaResultados._st = null;
+      delete round.draftResults; delete round.draftScores; delete round.draftMatchStatus;
+      await setMeta(meta);
+      renderAdminResultados(body);
+    });
+    if(wireExtras) wireExtras();
+  }
+
+  // ---- admin: tipo y fase de la jornada en el editor -------------------------
+  function lgEditorState(editingRound){
+    const key = editingRound ? editingRound.id : "__new";
+    const cur = renderAdminRondas._lgForm;
+    if(cur && cur.key === key) return cur;
+    const ph = editingRound && editingRound.phase;
+    return (renderAdminRondas._lgForm = {
+      key, stage: editingRound && editingRound.stage === "liguilla" ? "liguilla" : "regular",
+      round: (ph && ph.round) || "", leg: (ph && ph.leg) || "", source: (ph && ph.source) || null,
+      orig: ph ? JSON.stringify(ph) : null,
+    });
+  }
+  function lgEditorHtml(editingRound){
+    if(!LG) return "";
+    const f = lgEditorState(editingRound);
+    const fixed = !!(editingRound && editingRound.published !== false);
+    const opt = (v, text, cur) => `<option value="${esc(v)}" ${cur === v ? "selected" : ""}>${esc(text)}</option>`;
+    const providerHint = editingRound && editingRound.phase && editingRound.phase.source === "provider" && f.stage !== "liguilla"
+      ? `<p class="muted qz-tight">El calendario la marca como ${esc(LG.phaseLabel(editingRound.phase))}. Si es de liguilla, márcala aquí.</p>` : ``;
+    return `
+      <fieldset class="lg-fieldset" style="margin-bottom:12px;"><legend>Fase de la jornada</legend>
+        ${fixed ? `<p class="muted qz-tight">${f.stage === "liguilla" ? "Liguilla" : "Fase regular"} · ya publicada: conserva su tipo y sus reglas.</p>` : `
+        <div class="pick-row lg-seg">
+          <label class="pick-btn ${f.stage !== "liguilla" ? "selected" : ""}"><input type="radio" name="qz-lg-stage" value="regular" class="sr-only" ${f.stage !== "liguilla" ? "checked" : ""}>Regular${f.stage !== "liguilla" ? " ✓" : ""}</label>
+          <label class="pick-btn ${f.stage === "liguilla" ? "selected" : ""}"><input type="radio" name="qz-lg-stage" value="liguilla" class="sr-only" ${f.stage === "liguilla" ? "checked" : ""}>Liguilla${f.stage === "liguilla" ? " ✓" : ""}</label>
+        </div>${providerHint}`}
+        ${f.stage === "liguilla" ? `
+        <div class="row2 qz-row-narrow">
+          <div class="field"><label for="qz-lg-round">Ronda</label><select id="qz-lg-round">${opt("", "Sin indicar", f.round)}${opt("quarter", "Cuartos de final", f.round)}${opt("semi", "Semifinal", f.round)}${opt("final", "Final", f.round)}</select></div>
+          <div class="field"><label for="qz-lg-leg">Partido</label><select id="qz-lg-leg">${opt("", "Sin indicar", f.leg)}${opt("ida", "Ida", f.leg)}${opt("vuelta", "Vuelta", f.leg)}${opt("unico", "Partido único", f.leg)}</select></div>
+        </div>
+        <p class="muted qz-tight">${f.source === "provider" && JSON.stringify({ round: f.round || null, leg: f.leg || null, source: "provider" }) === f.orig ? "Dato del proveedor." : "Lo indicas tú. Un sync posterior no lo cambia."}</p>` : ``}
+      </fieldset>`;
+  }
+  function lgWireEditor(body, editingRound){
+    const f = lgEditorState(editingRound);
+    body.querySelectorAll('input[name="qz-lg-stage"]').forEach(r => r.addEventListener("change", () => { f.stage = r.value; renderAdminRondas(body); }));
+    const sr = document.getElementById("qz-lg-round"), sl = document.getElementById("qz-lg-leg");
+    if(sr) sr.addEventListener("change", () => { f.round = sr.value; });
+    if(sl) sl.addEventListener("change", () => { f.leg = sl.value; });
+  }
+  function lgPhaseFromEditor(f){
+    if(!f.round && !f.leg) return null;
+    const ph = { round: f.round || null, leg: f.leg || null, source: "admin" };
+    if(f.orig){ const o = JSON.parse(f.orig); if(o.round === ph.round && o.leg === ph.leg) return o; }
+    return ph;
+  }
+  // Una jornada NUEVA desde el formulario: tipo, fase y si se publica o se
+  // guarda como borrador. `gate` resuelve a false si hay que parar.
+  function lgNewRoundFields(number, matches){
+    const f = lgEditorState(null);
+    const draftOnly = renderAdminRondas._lgDraftOnly === true;
+    renderAdminRondas._lgDraftOnly = false;
+    const liguilla = f.stage === "liguilla";
+    const ph = liguilla ? lgPhaseFromEditor(f) : null;
+    // Un borrador nace sin publicar; nunca se despublica una jornada existente.
+    const fields = liguilla ? { stage: "liguilla", ...(ph ? { phase: ph } : {}), ...(draftOnly ? { published: false } : {}) } : null;
+    return {
+      draftOnly: liguilla && draftOnly,
+      publishing: liguilla && !draftOnly,
+      gate: liguilla && !draftOnly ? lgPublishGate({ ...fields, number, matches }) : Promise.resolve(true),
+      apply(round){ if(fields) Object.assign(round, fields); },
+    };
+  }
+  function lgApplyEditor(round, f){
+    if(round.published === false){
+      if(f.stage === "liguilla") round.stage = "liguilla"; else delete round.stage;
+    }
+    if(round.stage === "liguilla"){
+      const ph = lgPhaseFromEditor(f);
+      if(ph) round.phase = ph; else delete round.phase;
+    }
   }
 
   // ---------- ADMIN ----------
@@ -9390,7 +10497,8 @@
       try{ await ensureAllPicksLoaded(); }catch(e){ console.error("reglas picks load failed", e); }
       if(!body.isConnected) return;
     }
-    const st = renderAdminReglas._state || (renderAdminReglas._state = { form: null, grade: null, pen: null });
+    const st = renderAdminReglas._state || (renderAdminReglas._state = { form: null, grade: null, pen: null, lg: null });
+    if(!st.lg) st.lg = lgFormFromSettings();
     const repaint = () => renderAdminReglas(body, { quick: true });
     const s = meta.settings || {};
     const points = s.pointsPerCorrectPick != null ? s.pointsPerCorrectPick : 1;
@@ -9482,6 +10590,7 @@
             <p class="qz-field-error" id="qz-r-pen-err" role="alert" hidden></p>
             <button class="btn btn-primary" id="qz-r-pen-save" ${st.pen.enabled === !!penalty.enabled && !st.pen.enabled ? "hidden" : ""}>Guardar penalización</button>
           </section>
+          ${LG ? reglasLiguillaCardHtml(st.lg, unlocked, noPasswordYet) : ``}
           <section class="card qz-r-wide" aria-labelledby="qz-r-extras-t">
             <div class="qz-sec-head"><div class="eyebrow" id="qz-r-extras-t">Preguntas extra</div>${helpLinkHtml("reglas.extras")}</div>
             ${helpBlockHtml("reglas.extras")}
@@ -9554,6 +10663,7 @@
       toast(okMsg);
       return true;
     }
+    if(LG) wireReglasLiguilla(body, st.lg, repaint, saveProtected);
     const pointsInput = document.getElementById("qz-r-points");
     if(pointsInput){
       pointsInput.addEventListener("input", () => {
@@ -10283,6 +11393,7 @@
     const createCardHtml = `
       <div class="card" id="qz-round-form">
         <div class="eyebrow">${editingRound ? `Editando jornada ${esc(editingRound.number)}` : `Crear jornada ${nextNumber}`}</div>
+        ${lgEditorHtml(editingRound)}
         ${editingRound && editingRound.resultsPublished ? `<p class="muted" style="color:var(--red);">Esta jornada ya tiene resultados publicados. Si cambias los equipos, los resultados guardados podrían dejar de tener sentido — revísalos después de guardar.</p>` : ``}
         <div id="qz-match-rows">${draft.matches.map(matchRowHtml).join("")}</div>
         <button class="btn btn-ghost btn-sm" id="qz-add-match" style="margin-bottom:14px;">+ Agregar partido</button>
@@ -10292,12 +11403,17 @@
           <p class="muted" id="qz-deadline-error" style="color:var(--red);display:none;margin-top:4px;"></p>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-primary" id="qz-publish-round" style="flex:1;padding:12px;">${editingRound ? "Guardar cambios" : `Publicar jornada ${nextNumber}`}</button>
+          <button class="btn btn-primary" id="qz-publish-round" style="flex:1;padding:12px;">${editingRound ? "Guardar cambios" : (lgEditorState(null).stage === "liguilla" ? `Publicar jornada ${nextNumber} de liguilla` : `Publicar jornada ${nextNumber}`)}</button>
+          ${!editingRound && lgEditorState(null).stage === "liguilla" ? `<button class="btn btn-ghost" id="qz-lg-save-draft" style="padding:12px;">Guardar borrador</button>` : ``}
           ${editingRound ? `<button class="btn btn-ghost" id="qz-cancel-edit" style="padding:12px;">Cancelar</button>` : ``}
         </div>
       </div>
     `;
 
+    // Liguilla: organizar borradores y pendientes de colocar (D4).
+    const lgTopCardsHtml = (renderAdminRondas._org ? lgOrganizerHtml(lgOrganizerPlan())
+      : (lgDrafts_rounds().length ? `<div class="card"><div class="eyebrow">Liguilla</div><p class="muted">Organiza qué partidos van en cada jornada borrador (ida, vuelta) antes de publicar. Sólo borradores: nada publicado se mueve.</p><button class="btn btn-ghost btn-sm" id="qz-lg-organize">Organizar partidos</button></div>` : ``))
+      + lgStagedHtml();
     body.innerHTML = `
       ${createCardHtml}
       ${meta.settings.sportsdbLeagueId ? `
@@ -10309,6 +11425,7 @@
         <div class="muted" id="qz-sync-notes" style="margin-top:2px;"></div>
       </div>
       ` : ``}
+      ${lgTopCardsHtml}
       <div class="card">
         <div class="eyebrow">Jornadas existentes</div>
         ${meta.rounds.length ? meta.rounds.slice().reverse().map(r => {
@@ -10325,10 +11442,13 @@
             : "";
           // La etiqueta del proveedor ("Quarter-finals") se muestra si vino,
           // pero nunca es identidad de nada.
-          const faseTxt = r.phaseLabel ? ` · ${esc(r.phaseLabel)}` : "";
+          // Liguilla: de dónde viene la fase (proveedor o Admin), o que falta.
+          const faseTxt = isLg(r)
+            ? (r.phase ? (r.phase.source === "provider" ? " · fase del proveedor" : " · fase indicada por ti") : ` · <span style="color:var(--gold);">fase sin confirmar · indícala en Editar</span>`)
+            : (r.phaseLabel ? ` · ${esc(r.phaseLabel)}${r.phase && r.published === false ? " · ¿es de liguilla? márcala en Editar" : ""}` : "");
           return `
           <div class="history-item">
-            <div><strong>Jornada ${esc(r.number)}</strong> <span class="muted">· ${esc(r.matches.length)} ${r.matches.length === 1 ? "partido" : "partidos"} · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
+            <div><strong>${esc(roundTitle(r))}</strong>${isLg(r) ? ` <span class="lg-chip on">Liguilla</span>` : ``} <span class="muted">· ${isLg(r) ? esc("Jornada " + r.number + " · ") : ""}${esc(r.matches.length)} ${r.matches.length === 1 ? "partido" : "partidos"} · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
             <div style="display:flex;gap:6px;">
               ${isImportedUnpublished ? `<button class="btn btn-gold btn-sm" data-publish-round="${esc(r.id)}">Publicar jornada</button>` : ``}
               <button class="btn btn-ghost btn-sm" data-edit-round="${esc(r.id)}">Editar</button>
@@ -10340,6 +11460,11 @@
       </div>
     `;
 
+    lgWireEditor(body, editingRound);
+    const organizeBtn = document.getElementById("qz-lg-organize");
+    if(organizeBtn) organizeBtn.addEventListener("click", () => { renderAdminRondas._org = null; lgOrganizerPlan(); renderAdminRondas(body); });
+    if(renderAdminRondas._org && document.getElementById("qz-lg-organizer")) wireOrganizer(body);
+    wireStaged(body);
     const syncBtn = document.getElementById("qz-sync-competition");
     if(syncBtn){
       syncBtn.addEventListener("click", async () => {
@@ -10390,7 +11515,7 @@
             // antes desaparecía en el mismo instante en que había algo que
             // contar: justo cuando el import sí había traído jornadas nuevas, el
             // Admin no veía nada. Encontrado en el navegador real, no en un test.
-            if(data.createdRounds > 0 || data.updatedMatches > 0 || data.addedMatches > 0){
+            if(data.stagedFixtures > 0 || data.createdRounds > 0 || data.updatedMatches > 0 || data.addedMatches > 0){
               // El import lo hace el SERVIDOR. Sin traer el estado nuevo, esta
               // pestaña repintaba desde su copia vieja y la lista de jornadas
               // seguía mostrando lo de antes: el Admin importaba la Liguilla
@@ -10434,6 +11559,7 @@
         const round = meta.rounds.find(r => r.id === btn.dataset.publishRound);
         if(!round) return;
         const rowEl = btn.closest(".history-item") || btn.parentElement;
+        if(!(await lgPublishGate(round))) return;
         if(!(await gateFirstPublish(rowEl, "after"))) return;
         btn.disabled = true;
         round.published = true;
@@ -10442,7 +11568,9 @@
         // loop with no explanation and no way out.
         const result = await setMetaWithError(meta);
         if(result.ok){
-          toast(`✅ La Jornada ${round.number} está abierta. Cierra el ${fmtWhenTz(round.deadline)}.`, 5000);
+          if(isLg(round)) await lgAfterPublish();
+          if(isLg(round)) toast("✅ " + roundTitle(round) + " está abierta. Cierra el " + fmtWhenTz(round.deadline) + ".", 5000);
+          else toast(`✅ La Jornada ${round.number} está abierta. Cierra el ${fmtWhenTz(round.deadline)}.`, 5000);
           renderAdmin(document.getElementById("qz-main"));
         }else{
           if(!result.reconciled) round.published = false; // roll back the in-memory flip on failure
@@ -10498,6 +11626,7 @@
         clearRoundDraft(draftKind);
         renderAdminRondas._editingId = null;
         renderAdminRondas._draft = null;
+        renderAdminRondas._lgForm = null;
         renderAdminRondas(body);
       });
     }
@@ -10556,13 +11685,16 @@
         reconcilePenaltyLedger(meta);
         editingRound.matches = clean;
         editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);
+        lgApplyEditor(editingRound, lgEditorState(editingRound));
         applyLinkedChoice(linkedChoice, editingRound, editingRound.deadline);
         const result = await setMetaWithError(meta);
         if(result.ok){
           clearRoundDraft(draftKind);
-          toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");
+          if(isLg(editingRound)) toast("✅ Listo, " + roundTitle(editingRound) + " quedó actualizada.");
+          else toast("✅ Listo, la Jornada " + editingRound.number + " quedó actualizada.");
           renderAdminRondas._editingId = null;
           renderAdminRondas._draft = null;
+          renderAdminRondas._lgForm = null;
           renderAdmin(document.getElementById("qz-main"));
         } else {
           // Full rollback: the round goes back to its exact pre-edit
@@ -10583,6 +11715,10 @@
 
       // Onboarding B: only a NEW round publishes; editing never does.
       const publishRow = document.getElementById("qz-publish-round").parentElement;
+      // Liguilla: «Guardar borrador» crea la jornada sin publicarla; publicar
+      // pasa por las reglas de liguilla (un solo flujo, lgPublishGate).
+      const lgNew = lgNewRoundFields(nextNumber, clean);
+      if(!(await lgNew.gate)) return;
       if(!(await gateFirstPublish(publishRow, "before"))) return;
       if(dropIfAlreadyPublished(clean)){ renderAdminRondas._draft = null; renderAdmin(document.getElementById("qz-main")); return; } // #35
       const isFirstRoundEver = meta.rounds.length === 0;
@@ -10595,6 +11731,7 @@
         resultsPublished: false,
         published: true // manual rounds are visible to participants immediately, same as always — see AUTO-001
       };
+      lgNew.apply(round);
       meta.rounds.push(round);
       // MON-001A: upgraded from the boolean-only setMeta() to
       // setMetaWithError() -- this is the primary way an admin creates
@@ -10606,7 +11743,10 @@
       // friendly message instead of a dead-end retry loop.
       const result = await setMetaWithError(meta);
       if(result.ok){
-        toast("✅ La Jornada " + nextNumber + " está abierta. Cierra el " + fmtWhenTz(round.deadline) + ".", 5000);
+        if(lgNew.publishing) await lgAfterPublish();
+        renderAdminRondas._lgForm = null;
+        toast(lgNew.draftOnly ? "✅ Borrador guardado. Publícalo desde la lista cuando esté listo."
+          : "✅ " + (lgNew.publishing ? roundTitle(round) : "La Jornada " + nextNumber) + " está abierta. Cierra el " + fmtWhenTz(round.deadline) + ".", 5000);
         if(isFirstRoundEver){
           trackOnceConfirmed(
             "first_round_" + SLUG,
@@ -10635,6 +11775,8 @@
       }
     });
 
+    const lgDraftBtn = document.getElementById("qz-lg-save-draft");
+    if(lgDraftBtn) lgDraftBtn.addEventListener("click", () => { renderAdminRondas._lgDraftOnly = true; document.getElementById("qz-publish-round").click(); });
     body.querySelectorAll("[data-del-round]").forEach(btn => {
       btn.addEventListener("click", () => deleteRoundWithRollback(btn, btn.dataset.delRound));
     });
@@ -10873,7 +12015,7 @@
           <button class="btn btn-ghost btn-sm" id="qz-bulk-autofill">🔎 Buscar resultados pendientes (todas)</button>
         </div>
         <select id="qz-round-select">
-          ${eligibleRounds.slice().reverse().map(r => `<option value="${esc(r.id)}" ${r.id===target?'selected':''}>Jornada ${esc(r.number)} ${r.resultsPublished?'(ya capturada)':''}</option>`).join("")}
+          ${eligibleRounds.slice().reverse().map(r => `<option value="${esc(r.id)}" ${r.id===target?'selected':''}>${esc(roundTitle(r))}${roundSubtitle(r) ? " · " + esc(roundSubtitle(r)) : ""} ${r.resultsPublished?(isLg(r) && r.matchStatus && Object.values(r.matchStatus).some(v => v === "pending" || v === "postponed") ? '(parcial)' : '(ya capturada)'):''}</option>`).join("")}
         </select>
         <p class="muted" id="qz-bulk-autofill-status" style="margin-top:8px;margin-bottom:-4px;"></p>
       </div>
@@ -10925,6 +12067,88 @@
     if(jornadaBets.length) await ensureAllPicksLoaded();
     const sortedParticipantsForJornadaBets = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     const form = document.getElementById("qz-results-form");
+    // Compartido por la fase regular y la liguilla (sprint de liguilla).
+    function jornadaBetsCardHtml(){
+      if(!jornadaBets.length) return "";
+      return `
+        <div class="card" style="padding:8px 12px;overflow-x:auto;">
+          <div class="qz-sec-head" style="padding:10px 12px 0;"><div class="eyebrow">Calificar preguntas de la Jornada ${esc(round.number)}</div>${helpLinkHtml("resultados.calificar")}</div>
+          <div style="padding:0 12px;">${helpBlockHtml("resultados.calificar")}</div>
+          <p class="muted" style="padding:0 12px;margin-top:-4px;">Al marcar «¿Atinó?», ${esc(markedPointsWhen())}. Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
+          <table>
+            <thead>
+              <tr>
+                <th class="qz-sticky-col">Participante</th>
+                ${jornadaBets.map(bet => `<th colspan="2" class="qz-bet-th" style="text-align:center;">${esc(bet.label)}</th>`).join("")}
+              </tr>
+              <tr>
+                <th class="qz-sticky-col"></th>
+                ${jornadaBets.map(() => `<th style="text-align:center;">Respondió</th><th style="text-align:center;">¿Atinó?</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${sortedParticipantsForJornadaBets.map(p => `
+                <tr>
+                  <td class="qz-sticky-col">${esc(p.name)}</td>
+                  ${jornadaBets.map(bet => {
+                    const guess = ((allPicksCache[p.id] || {})[round.id] || {}).__extra ? (allPicksCache[p.id][round.id].__extra[bet.id] || "") : "";
+                    const correct = round.customBetResults && round.customBetResults[bet.id] ? round.customBetResults[bet.id][p.id] : false;
+                    return `
+                      <td style="text-align:center;">${guess ? esc(guess) : '<span class="muted">—</span>'}</td>
+                      <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" data-pid="${esc(p.id)}" data-bet="${esc(bet.id)}" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
+                    `;
+                  }).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+`;
+    }
+    function wireJornadaBetsGrade(){
+      form.querySelectorAll("[data-role=jornada-bet-correct]").forEach(checkbox => {
+        checkbox.addEventListener("change", async () => {
+          const pid = checkbox.dataset.pid;
+          const betId = checkbox.dataset.bet;
+          if(!round.customBetResults) round.customBetResults = {};
+          if(!round.customBetResults[betId]) round.customBetResults[betId] = {};
+          round.customBetResults[betId][pid] = checkbox.checked;
+          const ok = await setMeta(meta);
+          if(!ok){ checkbox.checked = !checkbox.checked; round.customBetResults[betId][pid] = checkbox.checked; toast("No se pudo guardar, intenta de nuevo"); }
+          else if(checkbox.checked) markHelpLearned("resultados.calificar", "reglas.extras");
+        });
+      });
+    }
+    function appendResultsLog(){
+      const logEntries = (meta.auditLog || []).slice().reverse().slice(0, 20);
+      if(logEntries.length){
+        const logDiv = document.createElement("div");
+        logDiv.className = "card";
+        logDiv.innerHTML = `
+          <div class="eyebrow">Bitácora de resultados</div>
+          <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${esc(logEntries.length)}.</p>
+          <table>
+            <tbody>
+              ${logEntries.map(e => `
+                <tr>
+                  <td class="muted" style="white-space:nowrap;">${new Date(e.ts).toLocaleString("es-MX", {dateStyle:"short", timeStyle:"short"})}</td>
+                  <td><strong>${esc(e.admin)}</strong></td>
+                  <td>${esc(e.action)}</td>
+                  <td class="muted">${esc(e.detail)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        `;
+        body.appendChild(logDiv);
+      }
+    }
+    // Liguilla (D2): estados por partido, marcador y publicación parcial.
+    if(isLg(round)){
+      renderLiguillaResultados(body, form, round, jornadaBetsCardHtml(), () => { wireJornadaBetsGrade(); wireHelp(form, () => renderAdminResultados(body)); });
+      appendResultsLog();
+      return;
+    }
 
     const VALID_RESULTS = ["A", "D", "B"];
     const isPublished = !!round.resultsPublished;
@@ -11008,40 +12232,7 @@
           </details>
         ` : ``}
       </div>
-      ${jornadaBets.length ? `
-        <div class="card" style="padding:8px 12px;overflow-x:auto;">
-          <div class="qz-sec-head" style="padding:10px 12px 0;"><div class="eyebrow">Calificar preguntas de la Jornada ${esc(round.number)}</div>${helpLinkHtml("resultados.calificar")}</div>
-          <div style="padding:0 12px;">${helpBlockHtml("resultados.calificar")}</div>
-          <p class="muted" style="padding:0 12px;margin-top:-4px;">Al marcar «¿Atinó?», ${esc(markedPointsWhen())}. Desliza hacia los lados para ver todas — el nombre se queda fijo.</p>
-          <table>
-            <thead>
-              <tr>
-                <th class="qz-sticky-col">Participante</th>
-                ${jornadaBets.map(bet => `<th colspan="2" class="qz-bet-th" style="text-align:center;">${esc(bet.label)}</th>`).join("")}
-              </tr>
-              <tr>
-                <th class="qz-sticky-col"></th>
-                ${jornadaBets.map(() => `<th style="text-align:center;">Respondió</th><th style="text-align:center;">¿Atinó?</th>`).join("")}
-              </tr>
-            </thead>
-            <tbody>
-              ${sortedParticipantsForJornadaBets.map(p => `
-                <tr>
-                  <td class="qz-sticky-col">${esc(p.name)}</td>
-                  ${jornadaBets.map(bet => {
-                    const guess = ((allPicksCache[p.id] || {})[round.id] || {}).__extra ? (allPicksCache[p.id][round.id].__extra[bet.id] || "") : "";
-                    const correct = round.customBetResults && round.customBetResults[bet.id] ? round.customBetResults[bet.id][p.id] : false;
-                    return `
-                      <td style="text-align:center;">${guess ? esc(guess) : '<span class="muted">—</span>'}</td>
-                      <td style="text-align:center;"><input type="checkbox" data-role="jornada-bet-correct" data-pid="${esc(p.id)}" data-bet="${esc(bet.id)}" ${correct ? "checked" : ""} ${guess ? "" : "disabled"}></td>
-                    `;
-                  }).join("")}
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      ` : ``}
+      ${jornadaBetsCardHtml()}
     `;
     const autofillBtn = document.getElementById("qz-autofill");
     if(autofillBtn) autofillBtn.addEventListener("click", async () => {
@@ -11232,42 +12423,10 @@
         renderAdminResultados(body);
       });
     }
-    form.querySelectorAll("[data-role=jornada-bet-correct]").forEach(checkbox => {
-      checkbox.addEventListener("change", async () => {
-        const pid = checkbox.dataset.pid;
-        const betId = checkbox.dataset.bet;
-        if(!round.customBetResults) round.customBetResults = {};
-        if(!round.customBetResults[betId]) round.customBetResults[betId] = {};
-        round.customBetResults[betId][pid] = checkbox.checked;
-        const ok = await setMeta(meta);
-        if(!ok){ checkbox.checked = !checkbox.checked; round.customBetResults[betId][pid] = checkbox.checked; toast("No se pudo guardar, intenta de nuevo"); }
-        else if(checkbox.checked) markHelpLearned("resultados.calificar", "reglas.extras");
-      });
-    });
+    wireJornadaBetsGrade();
     wireHelp(form, () => renderAdminResultados(body));
 
-    const logEntries = (meta.auditLog || []).slice().reverse().slice(0, 20);
-    if(logEntries.length){
-      const logDiv = document.createElement("div");
-      logDiv.className = "card";
-      logDiv.innerHTML = `
-        <div class="eyebrow">Bitácora de resultados</div>
-        <p class="muted" style="margin-top:-4px;">Quién cambió qué y cuándo — las últimas ${esc(logEntries.length)}.</p>
-        <table>
-          <tbody>
-            ${logEntries.map(e => `
-              <tr>
-                <td class="muted" style="white-space:nowrap;">${new Date(e.ts).toLocaleString("es-MX", {dateStyle:"short", timeStyle:"short"})}</td>
-                <td><strong>${esc(e.admin)}</strong></td>
-                <td>${esc(e.action)}</td>
-                <td class="muted">${esc(e.detail)}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      `;
-      body.appendChild(logDiv);
-    }
+    appendResultsLog();
   }
 
   function renderAdminParticipantes(body){
@@ -12883,6 +14042,7 @@
             let pts = 0;
             tenantMeta.rounds.forEach(rnd => {
               if(!rnd.resultsPublished) return;
+              if(isLg(rnd)){ pts += LG.scoreRound(rnd, picksCache[pid] && picksCache[pid][rnd.id]).total; return; }
               rnd.matches.forEach(m => {
                 const result = rnd.results ? rnd.results[m.id] : null;
                 if(!result) return;

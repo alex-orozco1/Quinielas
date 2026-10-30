@@ -1688,6 +1688,18 @@ app.get("/api/kv/:key", async (req, res) => {
       const isAdminOrOwner = isRequestAdminOrOwner(req, info.slug, value);
       const selfParticipantId = isAdminOrOwner ? null : requestSelfParticipantId(req, info.slug, value);
       value = stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId);
+      // Liguilla (D1): el candado del torneo EN CURSO, para que las pantallas
+      // sepan si las reglas ya están fijas. Se calcula en cada lectura desde
+      // platform_index; nunca se guarda (applyLiguillaWrite lo descarta).
+      if (Array.isArray(value.liguillaLocks) && value.liguillaLocks.length) {
+        let scopeId = null;
+        if (info.slug) {
+          const idx = await getRow("platform_index");
+          const entry = idx && Array.isArray(idx.quinielas) ? idx.quinielas.find((q) => q.slug === info.slug) : null;
+          scopeId = entry && entry.tournamentScope ? entry.tournamentScope.id : null;
+        }
+        value.liguillaLock = liguillaRules.lockFor(value.liguillaLocks, scopeId || liguillaRules.LEGACY_SCOPE);
+      }
     } else if (info.kind === "platform") {
       if (req.params.key === "platform_settings") {
         const providedPlatformAuth = req.get("x-qracks-platform-auth") || "";

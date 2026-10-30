@@ -409,3 +409,13 @@ test("FASE · la fase que indicó el Admin no la toca un sync posterior", () => 
   plan(rounds, [fx("1", "2026-11-26T01:00:00Z", { stageName: "Semi-finals" })]);
   assert.equal(JSON.stringify(rounds.map((r) => r.phase)), before);
 });
+
+test("D3 · una jornada de liguilla cerrada no se reabre moviendo su cierre", () => {
+  const old = apply(meta(), publish(meta(), "r18")).merged;
+  old.rounds.find((r) => r.id === "r18").deadline = "2026-11-19T00:00:00.000Z"; // ya cerró (NOW = 20 nov)
+  const next = clone(old); next.rounds.find((r) => r.id === "r18").deadline = "2026-12-01T00:00:00.000Z";
+  assert.equal(apply(old, next).out.error, "liguilla_round_closed");
+  const open = apply(meta(), publish(meta(), "r18")).merged;
+  const moved = clone(open); moved.rounds.find((r) => r.id === "r18").deadline = "2026-11-28T01:00:00Z";
+  assert.equal(apply(open, moved).out.ok, true, "antes del cierre el Admin puede ajustarlo, como hoy");
+});
