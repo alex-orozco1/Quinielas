@@ -25,7 +25,14 @@
 const L = require("./liguillaScoring");
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+// Comparación canónica: PostgreSQL (jsonb) no conserva el orden de las
+// claves, así que {a,b} y {b,a} son el mismo valor.
+function canonical(v) {
+  if (Array.isArray(v)) return "[" + v.map(canonical).join(",") + "]";
+  if (v && typeof v === "object") return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonical(v[k])).join(",") + "}";
+  return JSON.stringify(v === undefined ? null : v);
+}
+const same = (a, b) => canonical(a === undefined ? null : a) === canonical(b === undefined ? null : b);
 const isPublished = (r) => !!r && r.published !== false;
 const LEGACY_SCOPE = "legacy";
 
@@ -94,6 +101,12 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
   const locks = Array.isArray(old.liguillaLocks) ? JSON.parse(JSON.stringify(old.liguillaLocks)) : [];
   delete merged.liguillaLocks;
   delete merged.liguillaLock;   // se calcula en cada lectura, nunca se guarda
+  // Qué jornadas de liguilla se publicaron alguna vez, con su cierre. Lo
+  // escribe sólo el servidor y sobrevive a borrar la jornada: retirarla y
+  // volverla a publicar, o recrearla con el mismo id, no la reabre ni le
+  // cambia el tipo (Technical QA, P1).
+  const publishedRec = isObj(old.liguillaPublished) ? JSON.parse(JSON.stringify(old.liguillaPublished)) : {};
+  delete merged.liguillaPublished;
   const settings = isObj(merged.settings) ? merged.settings : (merged.settings = {});
   const oldSettings = isObj(old.settings) ? old.settings : {};
 
@@ -122,6 +135,33 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
       return fail(400, "invalid_value", { field: "rounds.phase", roundNumber: round.number });
     }
     const wasPublished = !!before && isPublished(before);
+    const rec = Object.prototype.hasOwnProperty.call(publishedRec, round.id) ? publishedRec[round.id] : null;
+    const nowMs = new Date(nowIso).getTime();
+    if (rec || (wasPublished && before.stage === "liguilla")) {
+      // Una jornada de liguilla publicada sigue siendo de liguilla y publicada.
+      if (round.stage !== "liguilla") return fail(409, "liguilla_stage_locked", { roundNumber: round.number });
+      if (!isPublished(round)) return fail(409, "liguilla_unpublish_blocked", { roundNumber: round.number });
+      const closeMs = new Date(rec ? rec.deadline : before.deadline).getTime();
+      const closed = Number.isFinite(closeMs) && closeMs <= nowMs;
+      if (closed && round.deadline !== (rec ? rec.deadline : before.deadline)) {
+        return fail(409, "liguilla_round_closed", { roundNumber: round.number });
+      }
+      // D4: nada publicado se mueve. Ningún partido sale de una jornada de
+      // liguilla publicada; y después del cierre tampoco entran partidos ni
+      // cambian los equipos (eso cambiaría lo que significa cada pronóstico).
+      const prevMatches = new Map(((before && before.matches) || []).filter(isObj).map((m) => [m.id, m]));
+      const nextMatches = new Map((Array.isArray(round.matches) ? round.matches : []).filter(isObj).map((m) => [m.id, m]));
+      for (const id of prevMatches.keys()) {
+        if (!nextMatches.has(id)) return fail(409, "liguilla_matches_locked", { roundNumber: round.number });
+      }
+      if (closed && before) {
+        if (nextMatches.size !== prevMatches.size) return fail(409, "liguilla_matches_locked", { roundNumber: round.number });
+        for (const [id, m] of nextMatches) {
+          const o = prevMatches.get(id);
+          if (!o || o.teamA !== m.teamA || o.teamB !== m.teamB) return fail(409, "liguilla_matches_locked", { roundNumber: round.number });
+        }
+      }
+    }
     // D5: el tipo de una jornada publicada no cambia.
     if (wasPublished && (before.stage || null) !== (round.stage || null)) {
       return fail(409, "liguilla_stage_locked", { roundNumber: round.number });
@@ -157,6 +197,12 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
       if (pending) return fail(409, "liguilla_rival_pending", { roundNumber: round.number, pending });
       round.scoring = { ...lock.rules };
     }
+    // El registro del cierre de cada jornada de liguilla publicada; se
+    // actualiza mientras todavía no cierra (el Admin puede ajustarlo antes).
+    if (round.stage === "liguilla" && isPublished(round)) {
+      const prevClose = rec ? new Date(rec.deadline).getTime() : NaN;
+      if (!rec || !(Number.isFinite(prevClose) && prevClose <= nowMs)) publishedRec[round.id] = { deadline: round.deadline };
+    }
     if (round.stage === "liguilla" && isPublished(round) && round.resultsPublished) {
       const check = checkLiguillaResults(round);
       if (!check.ok) return check;
@@ -171,6 +217,7 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
     }
   }
   if (locks.length) merged.liguillaLocks = locks;
+  if (Object.keys(publishedRec).length) merged.liguillaPublished = publishedRec;
   return { ok: true, lockedNow };
 }
 
@@ -242,6 +289,6 @@ function applyMatchPick({ meta, picksDoc, roundId, matchId, value, expected, now
 }
 
 module.exports = {
-  LEGACY_SCOPE, lockFor, applyLiguillaWrite, checkLiguillaResults,
+  LEGACY_SCOPE, lockFor, canonical, applyLiguillaWrite, checkLiguillaResults,
   validateLiguillaPicksWrite, storedMatchPick, applyMatchPick,
 };

@@ -684,7 +684,14 @@ function planCompetitionSync({ existingRounds, existingStaged, fixtures, events,
     const liguillaGroup = keyCandidates.some((r) => r && r.stage === "liguilla");
     for (const c of members) {
       if (liguillaGroup) {
-        const owner = keyCandidates.length === 1 ? ownerFor(key, c.fixture) : null;
+        // Una sola ubicación posible: un único borrador con esa clave, una
+        // clave estructural (ronda del proveedor, o stage + leg conocido; un
+        // leg desconocido deja sólo la fecha como pista). Nada se añade solo
+        // a una jornada de liguilla publicada (Technical QA, P2); a un
+        // borrador sí, aunque el rival esté por definir (D6: no se publica así).
+        const only = keyCandidates.length === 1 ? keyCandidates[0] : null;
+        const structural = key.startsWith("round:") || !key.endsWith(":leg:none");
+        const owner = only && only.published === false && structural ? ownerFor(key, c.fixture) : null;
         if (!owner) {
           note(DIAGNOSTIC.AMBIGUOUS_PLACEMENT, c.fixture.providerFixtureId, keyCandidates.map((r) => r.number).join(","));
           keepStaged(c);

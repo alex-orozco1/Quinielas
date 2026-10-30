@@ -1029,7 +1029,7 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
     // being captured for the first time or a correction to one that's already
     // live (which keeps its old, real `results` untouched and visible the
     // whole time this is happening).
-    clone.rounds.forEach((r) => { delete r.draftResults; });
+    clone.rounds.forEach((r) => { delete r.draftResults; delete r.draftScores; delete r.draftMatchStatus; });
     // AUTO-001 HOTFIX (BUG 2): defense in depth — the frontend's own
     // visibleRounds() already hides published:false rounds from
     // participants, but that's UI, not a real barrier. A non-admin/owner

@@ -419,3 +419,61 @@ test("D3 · una jornada de liguilla cerrada no se reabre moviendo su cierre", ()
   const moved = clone(open); moved.rounds.find((r) => r.id === "r18").deadline = "2026-11-28T01:00:00Z";
   assert.equal(apply(open, moved).out.ok, true, "antes del cierre el Admin puede ajustarlo, como hoy");
 });
+
+// ---- correcciones de Technical QA (ronda 1) --------------------------------
+
+test("QA P1 · una jornada de liguilla publicada no se retira, ni se recrea como regular, ni se reabre por esa vía", () => {
+  const pub = apply(meta(), publish(meta(), "r18")).merged;
+  assert.ok(pub.liguillaPublished && pub.liguillaPublished.r18, "el servidor registra la publicación");
+  const retirar = clone(pub); retirar.rounds.find((r) => r.id === "r18").published = false;
+  assert.equal(apply(pub, retirar).out.error, "liguilla_unpublish_blocked");
+  // Cerró: borrarla y recrearla con el mismo id
+  const closed = clone(pub); closed.rounds.find((r) => r.id === "r18").deadline = "2026-11-19T00:00:00.000Z";
+  closed.liguillaPublished.r18.deadline = "2026-11-19T00:00:00.000Z";
+  const sin = clone(closed); sin.rounds = sin.rounds.filter((r) => r.id !== "r18");
+  const borrada = apply(closed, sin);
+  assert.equal(borrada.out.ok, true);
+  assert.ok(borrada.merged.liguillaPublished.r18, "el registro sobrevive al borrado");
+  const comoRegular = clone(borrada.merged); comoRegular.rounds.push({ ...clone(closed.rounds.find((r) => r.id === "r18")), stage: undefined, deadline: "2026-12-30T00:00:00Z" });
+  assert.equal(apply(borrada.merged, comoRegular).out.error, "liguilla_stage_locked");
+  const reabierta = clone(borrada.merged); reabierta.rounds.push({ ...clone(closed.rounds.find((r) => r.id === "r18")), deadline: "2026-12-30T00:00:00Z" });
+  assert.equal(apply(borrada.merged, reabierta).out.error, "liguilla_round_closed");
+  const forjado = clone(pub); forjado.liguillaPublished = {}; forjado.rounds.find((r) => r.id === "r18").published = false;
+  assert.equal(apply(pub, forjado).out.error, "liguilla_unpublish_blocked", "el registro enviado por el cliente no cuenta");
+});
+
+test("QA P2 · D4 en el servidor: ningún partido sale de una liguilla publicada; tras el cierre no entran ni cambian equipos", () => {
+  const pub = apply(meta(), publish(meta(), "r18")).merged;
+  const fuera = clone(pub); fuera.rounds.find((r) => r.id === "r18").matches.pop();
+  assert.equal(apply(pub, fuera).out.error, "liguilla_matches_locked");
+  const closed = clone(pub); closed.rounds.find((r) => r.id === "r18").deadline = "2026-11-19T00:00:00.000Z";
+  closed.liguillaPublished.r18.deadline = "2026-11-19T00:00:00.000Z";
+  const inv = clone(closed); const m = inv.rounds.find((r) => r.id === "r18").matches[0]; [m.teamA, m.teamB] = [m.teamB, m.teamA];
+  assert.equal(apply(closed, inv).out.error, "liguilla_matches_locked");
+  const extra = clone(closed); extra.rounds.find((r) => r.id === "r18").matches.push(match("m9"));
+  assert.equal(apply(closed, extra).out.error, "liguilla_matches_locked");
+  const abierta = clone(pub); abierta.rounds.find((r) => r.id === "r18").matches.push(match("m9"));
+  assert.equal(apply(pub, abierta).out.ok, true, "antes del cierre se puede añadir, como en la fase regular");
+});
+
+test("QA P2 · sync: nada se añade solo a una liguilla publicada; leg desconocido = sólo fecha = pendiente", () => {
+  const f = (id, at, extra = {}) => ({ providerFixtureId: id, providerRoundId: null, stageId: "77", stageName: "Quarter-finals", kickoffAt: at,
+    home: { id: "h" + id, name: "H" + id }, away: { id: "a" + id, name: "A" + id }, leg: null, status: "scheduled", provider: "sportmonks", ...extra });
+  const round = (published) => ({ id: "r1", number: 18, stage: "liguilla", published, resultsPublished: false, deadline: "2026-11-26T01:00:00Z",
+    provider: "sportmonks", syncGroupKey: "stage:77:leg:none", matches: [{ id: "x1", externalEventId: "1", externalProvider: "sportmonks", teamA: "H1", teamB: "A1", kickoffAt: "2026-11-26T01:00:00Z" }] });
+  for (const pub of [true, false]) {
+    const p = planCompetitionSync({ provider: "sportmonks", existingRounds: [round(pub)], existingStaged: [], nowMs: NOWMS,
+      fixtures: [f("1", "2026-11-26T01:00:00Z"), f("2", "2026-11-29T01:00:00Z"), f("3", "2026-11-26T03:00:00Z", { away: null })] });
+    assert.equal(p.matchAdditions.length, 0, "publicada=" + pub);
+    assert.deepEqual(p.stagedFixtures.map((x) => x.providerFixtureId).sort(), ["2", "3"]);
+  }
+});
+
+test("QA P3 · el orden de las claves no es un conflicto (jsonb reordena)", () => {
+  const m = published();
+  const stored = { r18: { m1: "A", m2: "D", __score: { m2: s(1, 1), m1: s(2, 1) } } };
+  const client = { r18: { m1: "A", m2: "D", __score: { m1: { b: 1, a: 2 }, m2: s(1, 1) } } };
+  assert.equal(R.validateLiguillaPicksWrite(m, stored, client).ok, true);
+  const out = R.applyMatchPick({ meta: m, picksDoc: stored, roundId: "r18", matchId: "m1", value: s(3, 1), expected: { b: 1, a: 2 }, nowMs: BEFORE });
+  assert.equal(out.ok, true);
+});

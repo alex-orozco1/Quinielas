@@ -1803,6 +1803,8 @@
     liguilla_result_mismatch: "El resultado no coincide con el marcador. Vuelve a capturar los goles.",
     liguilla_result_with_status: "Un partido pendiente, aplazado o anulado no lleva marcador. Elige una de las dos cosas.",
     liguilla_round_closed: "Esta jornada de liguilla ya cerró: su cierre no se puede mover. Un partido aplazado conserva su cierre original.",
+    liguilla_unpublish_blocked: "Una jornada de liguilla publicada no se puede retirar ni volver a borrador.",
+    liguilla_matches_locked: "Los partidos de una jornada de liguilla publicada no se mueven, y después del cierre tampoco cambian sus equipos.",
     invalid_score: "Escribe un número entero de 0 a 30 en cada lado.",
     liguilla_pick_conflict: "Tus pronósticos de liguilla cambiaron en otra sesión. Recarga la página para ver lo guardado.",
     pick_conflict: "Ese pronóstico cambió desde otra sesión.",
@@ -4124,6 +4126,12 @@
   async function render(){
     if(!meta){
       root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
+      return;
+    }
+    // Liguilla: sin /liguillaScoring.js no se puede puntuar la liguilla. Se
+    // detiene la pantalla en vez de puntuarla como fase regular sin avisar.
+    if(!LG && Array.isArray(meta.rounds) && meta.rounds.some(r => r && r.stage === "liguilla")){
+      root.innerHTML = `<div class="login-wrap"><div class="login-card"><p style="text-align:center;">No pudimos cargar las reglas de liguilla. Revisa tu conexión y recarga la página.</p><button class="btn btn-primary" style="width:100%;" onclick="location.reload()">Recargar</button></div></div>`;
       return;
     }
     if(!currentUser){
@@ -13228,6 +13236,19 @@
     meta.rounds.filter(r=>r.resultsPublished).forEach(r => {
       r.matches.forEach(m => {
         const row = { "Jornada": r.number, "Partido": m.teamA + " vs " + m.teamB, "Resultado": r.results[m.id] === 'A' ? m.teamA : r.results[m.id]==='B' ? m.teamB : "Empate" };
+        // Liguilla: fase, marcador o estado (pendiente/aplazado/anulado), y
+        // los pronósticos como marcador; nunca un «Empate» inventado.
+        if(isLg(r)){
+          row["Jornada"] = roundTitle(r) + " (J" + r.number + ")";
+          row["Resultado"] = lgResultText(r, m);
+          const rules = lgRulesOf(r);
+          meta.participants.forEach(p => {
+            const rp = (allPicksCache[p.id]||{})[r.id]||{};
+            row[p.name] = lgPickText(r, m, rules && rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id]) || "";
+          });
+          detailRows.push(row);
+          return;
+        }
         meta.participants.forEach(p => {
           const pick = ((allPicksCache[p.id]||{})[r.id]||{})[m.id];
           row[p.name] = pick === 'A' ? m.teamA : pick === 'B' ? m.teamB : pick === 'D' ? "Empate" : "";

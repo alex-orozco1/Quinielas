@@ -271,6 +271,42 @@ test.describe("liguilla en el servidor real", () => {
     assert.equal(viaMatch.body.error, "not_liguilla");
   });
 
+  itest("QA P1 · retirar y republicar una jornada de liguilla cerrada no la reabre; recrearla regular tampoco", async () => {
+    const q = await conLiguilla("retirar");
+    assert.equal((await publicar(q, "r_lgretirar")).status, 200);
+    assert.equal((await matchPick(q, q.beto, { roundId: "r_lgretirar", matchId: "m_lgretirar1", value: s(1, 0), expected: null })).status, 200);
+    await cerrar(q, "r_lgretirar");
+    const st = await stored(q);
+    st.liguillaPublished.r_lgretirar.deadline = st.rounds[0].deadline;   // el cierre ya pasó, también en el registro
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(st)]);
+    const v = await read(q);
+    v.rounds[0].published = false;
+    assert.deepEqual([(await write(q, v)).status, (await write(q, v)).body.error], [409, "liguilla_unpublish_blocked"]);
+    const w = await read(q);
+    w.rounds = [];
+    assert.equal((await write(q, w)).status, 200, "borrarla sigue permitido");
+    const x = await read(q);
+    x.rounds = [{ ...liguillaRound("retirar"), published: true, deadline: enHoras(48), stage: undefined, phase: undefined }];
+    assert.equal((await write(q, x)).body.error, "liguilla_stage_locked");
+    x.rounds[0].stage = "liguilla";
+    assert.equal((await write(q, x)).body.error, "liguilla_round_closed");
+    const late = await matchPick(q, q.beto, { roundId: "r_lgretirar", matchId: "m_lgretirar1", value: s(3, 3), expected: s(1, 0) });
+    assert.notEqual(late.status, 200);
+  });
+
+  itest("QA P2 · los borradores de resultados (marcadores y estados) no se ven sin ser admin", async () => {
+    const q = await conLiguilla("borr");
+    assert.equal((await publicar(q, "r_lgborr")).status, 200);
+    const v = await read(q);
+    v.rounds[0].draftScores = { m_lgborr1: s(2, 0) }; v.rounds[0].draftMatchStatus = { m_lgborr2: "void" };
+    assert.equal((await write(q, v)).status, 200);
+    for (const headers of [beto(q), {}]) {
+      const r = (await call("GET", kvPath(q.slug), { headers })).body.value.rounds[0];
+      assert.equal(r.draftScores, undefined);
+      assert.equal(r.draftMatchStatus, undefined);
+    }
+  });
+
   itest("PENDIENTES · colocar un partido pendiente sólo en un borrador; nada publicado se toca", async () => {
     const q = await conLiguilla("colocar");
     const v = await stored(q);
