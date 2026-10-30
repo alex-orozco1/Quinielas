@@ -270,12 +270,13 @@
   #quiniela-root .lg-phase{ font-weight:800; font-size:19px; line-height:1.2; color:var(--pitch-dark); }
   #quiniela-root .lg-sub{ font-size:12.5px; margin-top:2px; }
   #quiniela-root .lg-strip{ background:#FFF6DF; border:1px solid #EAD9A6; border-radius:10px; padding:8px 11px; font-size:13px; display:flex; flex-direction:column; gap:2px; margin-bottom:12px; }
+  #quiniela-root .lg-banner[hidden]{ display:none; }
   #quiniela-root .lg-banner{ background:#F6E1DE; border:1px solid var(--red); color:#7d251d; border-radius:10px; padding:8px 11px; margin-bottom:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:600; }
   #quiniela-root .lg-match{ display:flex; flex-direction:column; gap:8px; }
-  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; }
-  #quiniela-root .lg-team{ font-weight:700; font-size:15px; overflow-wrap:anywhere; min-width:0; }
-  #quiniela-root .lg-goal{ width:56px; height:44px; text-align:center; font-size:20px; font-weight:800; border:1.5px solid var(--line); border-radius:10px; background:var(--chalk); color:var(--ink); padding:0; font-variant-numeric:tabular-nums; }
-  #quiniela-root .lg-goal:focus{ outline:3px solid var(--gold); outline-offset:1px; border-color:var(--pitch-light); }
+  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; max-width:480px; }
+  #quiniela-root label.lg-team{ font-weight:700; font-size:15px; overflow-wrap:anywhere; min-width:0; text-transform:none; letter-spacing:0; color:var(--ink); margin:0; }
+  #quiniela-root input[type=text].lg-goal{ width:56px; height:44px; text-align:center; font-size:20px; font-weight:800; border:1.5px solid var(--line); border-radius:10px; background:var(--chalk); color:var(--ink); padding:0; font-variant-numeric:tabular-nums; }
+  #quiniela-root input[type=text].lg-goal:focus{ outline:3px solid var(--gold); outline-offset:1px; border-color:var(--pitch-light); }
   #quiniela-root .lg-goal[aria-invalid="true"]{ border-color:var(--red); }
   #quiniela-root .lg-goal:disabled{ opacity:.7; }
   #quiniela-root .lg-state{ font-size:13px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; min-height:20px; }
@@ -292,19 +293,21 @@
   #quiniela-root .lg-status{ font-size:12px; font-weight:800; color:var(--pitch-dark); background:var(--chalk); border-radius:999px; padding:2px 9px; }
   #quiniela-root .lg-fieldset{ border:0; padding:0; margin:0 0 10px; display:flex; flex-direction:column; gap:8px; min-width:0; }
   #quiniela-root .lg-fieldset legend{ font-weight:800; margin-bottom:6px; padding:0; }
-  #quiniela-root .lg-opt{ display:flex; gap:10px; align-items:flex-start; border:1.5px solid var(--line); border-radius:10px; padding:10px; background:var(--paper); cursor:pointer; }
+  #quiniela-root .lg-opt, #quiniela-root label.lg-opt{ display:flex; text-transform:none; letter-spacing:0; font-size:14px; font-weight:500; color:var(--ink); margin:0; gap:10px; align-items:flex-start; border:1.5px solid var(--line); border-radius:10px; padding:10px; background:var(--paper); cursor:pointer; }
   #quiniela-root .lg-opt.on{ border:2px solid var(--pitch-light); background:#F1F8F3; }
   #quiniela-root .lg-opt.na{ border-style:dashed; background:transparent; cursor:default; }
   #quiniela-root .lg-opt input[type=radio], #quiniela-root .lg-opt input[type=checkbox]{ width:20px; height:20px; margin:2px 0 0; flex:none; accent-color:var(--pitch-light); }
-  #quiniela-root .lg-opt-txt{ display:flex; flex-direction:column; gap:1px; flex:1; min-width:0; cursor:inherit; }
+  #quiniela-root .lg-opt-txt, #quiniela-root label.lg-opt-txt{ text-transform:none; letter-spacing:0; font-size:14px; font-weight:500; color:var(--ink); margin:0; display:flex; flex-direction:column; gap:1px; flex:1; min-width:0; cursor:inherit; }
   #quiniela-root .lg-opt-state{ font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--pitch-light); }
   #quiniela-root .lg-opt.na .lg-opt-state, #quiniela-root .lg-opt:not(.on) .lg-opt-state{ color:var(--ink-soft); }
-  #quiniela-root .lg-pts{ width:60px; height:40px; text-align:center; font-weight:800; font-size:16px; border:1.5px solid var(--line); border-radius:8px; }
-  #quiniela-root .lg-pts:disabled{ background:var(--chalk); color:var(--ink-soft); }
+  #quiniela-root input[type=text].lg-pts{ flex:none; width:64px; padding:0; height:40px; text-align:center; font-weight:800; font-size:16px; border:1.5px solid var(--line); border-radius:8px; }
+  #quiniela-root input[type=text].lg-pts:disabled{ background:var(--chalk); color:var(--ink-soft); }
   #quiniela-root .lg-example-wrap{ display:flex; flex-direction:column; gap:8px; margin:6px 0 10px; }
-  #quiniela-root table.lg-example td, #quiniela-root table.lg-example th{ font-size:13px; padding:5px 8px; font-variant-numeric:tabular-nums; }
+  #quiniela-root .lg-table-wrap{ overflow-x:auto; max-width:100%; }
+  #quiniela-root table.lg-example{ width:100%; }
+  #quiniela-root table.lg-example td, #quiniela-root table.lg-example th{ font-size:13px; padding:5px 6px; font-variant-numeric:tabular-nums; }
   #quiniela-root .lg-seg{ grid-template-columns:1fr 1fr; }
-  #quiniela-root .lg-seg label{ cursor:pointer; }
+  #quiniela-root .lg-seg label{ cursor:pointer; margin:0; display:block; }
   #quiniela-root .lg-seg label:focus-within{ outline:3px solid var(--gold); outline-offset:1px; }
   #quiniela-root .lg-status-row{ grid-template-columns:repeat(4, minmax(0,1fr)); }
   #quiniela-root .lg-status-row .pick-btn{ font-size:12px; padding:9px 2px; }
@@ -6957,7 +6960,7 @@
               <div class="qz-brand-context">${esc(meta.groupName)}</div>
               ${currentUser.isAdmin ? `<span class="qz-plan-badge" id="qz-plan-badge" ${planState && planState.plan === "PLUS" ? "" : "hidden"}>★ Plus</span>` : ``}
             </div>
-            ${contextRound ? `<div class="qz-brand-round">Jornada ${esc(contextRound.number)}</div>` : ``}
+            ${contextRound ? `<div class="qz-brand-round">${esc(roundTitle(contextRound))}</div>` : ``}
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             ${currentUser.isAdmin ? `<span class="qz-tooltip-wrap${headerShareTooltipVisible ? ' qz-tooltip-active' : ''}" id="qz-header-copy-wrap"><button id="qz-header-copy-link" class="btn btn-ghost btn-sm" title="Compartir esta quiniela" aria-label="Compartir esta quiniela" aria-describedby="qz-header-copy-tooltip" aria-expanded="${headerShareTooltipVisible ? 'true' : 'false'}" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:15px;">🔗</button><span class="qz-tooltip-bubble" id="qz-header-copy-tooltip" role="tooltip">Compartir esta quiniela</span></span>` : ``}
@@ -7332,10 +7335,12 @@
     }
     if(published[published.length - 1].resultsPublished){
       const prepared = meta.rounds.filter(r => isRoundUsableForSetup(r, serverNow())).sort((a, b) => a.number - b.number)[0];
+      const roundsAction = { id: "rounds", label: prepared ? `Publicar jornada ${prepared.number}` : `Preparar jornada ${nextRoundNumber()}` };
+      if(prepared && isLg(prepared)) roundsAction.label = "Publicar " + roundTitle(prepared);
       return {
         title: "Resultados publicados",
         text: "Consulta las posiciones y prepara la siguiente jornada.",
-        actions: [{ id: "table", label: "Ver tabla" }, { id: "rounds", label: prepared ? `Publicar jornada ${prepared.number}` : `Preparar jornada ${nextRoundNumber()}` }],
+        actions: [{ id: "table", label: "Ver tabla" }, roundsAction],
       };
     }
     return null;
@@ -7888,7 +7893,7 @@
     ctx.fillText(meta.groupName, width / 2, 90, width - 80);
     ctx.fillStyle = "rgba(247,245,236,0.75)";
     ctx.font = `600 17px ${F}`;
-    ctx.fillText("TABLA DE POSICIONES" + (context ? " · JORNADA " + context.number : ""), width / 2, 120);
+    ctx.fillText("TABLA DE POSICIONES" + (context ? " · " + roundTitle(context).toUpperCase() : ""), width / 2, 120);
 
     ctx.strokeStyle = "rgba(214,167,60,0.4)";
     ctx.lineWidth = 2;
@@ -8284,9 +8289,13 @@
     if(rules.resultPoints) return `Marcador exacto · sólo resultado, ${lgPts(rules.resultPoints)}`;
     return `Marcador exacto · sólo exacto, ${lgPts(rules.exactBonus)}`;
   }
-  function lgRulesStripHtml(rules){
+  // `summary`: fuera de la votación (cerrada, jugados) se describen las reglas,
+  // no se pide pronosticar.
+  function lgRulesStripHtml(rules, summary){
     if(!rules) return "";
-    const head = rules.capture === "score" ? "Pronostica el marcador." : "Pronostica quién gana o si empatan.";
+    const head = summary
+      ? (rules.capture === "score" ? "Liguilla con marcador exacto." : "Liguilla: quién gana o si empatan.")
+      : (rules.capture === "score" ? "Pronostica el marcador." : "Pronostica quién gana o si empatan.");
     let detail;
     if(rules.capture === "result") detail = `${lgPts(rules.resultPoints)} por acierto, también por un empate.`;
     else if(rules.resultPoints && rules.exactBonus) detail = `Resultado ${lgPts(rules.resultPoints)} · marcador exacto +${rules.exactBonus} (total ${rules.resultPoints + rules.exactBonus}).`;
@@ -8404,6 +8413,10 @@
       lgSetSt(round.id, matchId, { st: "locked" });
       lgPaintMatch(round, matchId);
       toast("Se cerró la jornada. Tu último cambio no se aceptó; quedó lo que estaba guardado.", 5000);
+      // El servidor ya la cerró: la pantalla la muestra cerrada (sólo en esta
+      // pestaña; un participante nunca guarda la meta) y lleva a «En vivo».
+      if(!isRoundLocked(round)) round.deadline = new Date(serverNow() - 1000).toISOString();
+      jornadaFilter = "envivo";
       const main = document.getElementById("qz-main");
       if(main && activeTab === "jornada") renderJornada(main);
       return;
@@ -8606,7 +8619,7 @@
     const others = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"}));
     box.innerHTML = `
       <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), "cerró " + fmtWhenTz(round.deadline)].filter(Boolean).join(" · "))}</div></div><span class="badge unpaid">🔒 Esperando resultado</span></div>
-      ${lgRulesStripHtml(rules)}
+      ${lgRulesStripHtml(rules, true)}
       ${roundBetAnswersHtml(round, false)}
       ${cards}
       <div class="divider"></div>
@@ -8657,7 +8670,7 @@
     const partial = res.pending + res.postponed > 0;
     box.innerHTML = `
       <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), partial ? "resultados parciales" : "resultados oficiales"].filter(Boolean).join(" · "))}</div></div><span class="badge paid">${esc(lgPts(res.total))}</span></div>
-      ${lgRulesStripHtml(rules)}
+      ${lgRulesStripHtml(rules, true)}
       ${round.matches.map((m, i) => {
         const out = res.matches[i];
         const pickValue = rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
@@ -8737,7 +8750,7 @@
         : `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td><strong>${out.total}</strong></td></tr>`;
     }).join("");
     const head = rules.capture === "score" ? `<tr><th>Termina</th><th>Pronóstico</th><th>Base</th><th>Bono</th><th>Total</th></tr>` : `<tr><th>Termina</th><th>Pronóstico</th><th>Pts</th></tr>`;
-    return `<table class="lg-example"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    return `<div class="lg-table-wrap"><table class="lg-example"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
   }
   function reglasLiguillaCardHtml(st, unlocked, noPasswordYet){
     const lock = meta.liguillaLock || null;
@@ -8849,7 +8862,7 @@
     const rules = lgConfigRules();
     if(!rules){
       const go = await qzConfirm(`Es la primera jornada de liguilla. Elige cómo se juega: las reglas valen para cuartos, semifinal y final.`,
-        { title: "Antes de publicar, configura la liguilla", confirmLabel: "Configurar liguilla", cancelLabel: "Ahora no" });
+        { title: "Antes de publicar, configura la liguilla", confirmLabel: "Configurar liguilla", cancelLabel: "Ahora no", destructive: false });
       if(go){
         renderAdminReglas._lgReturn = { roundId: round.id, title: roundTitle(round) };
         adminSubTab = "reglas";
@@ -8860,7 +8873,7 @@
     }
     if(meta.liguillaLock) return true;
     return qzConfirm(`Reglas: ${lgRulesSummary(rules)}.\n• Al publicar, las reglas de liguilla quedan fijas para todo el torneo.\n• No cambian aunque después borres esta jornada.`,
-      { title: `¿Publicar ${roundTitle(round)}?`, confirmLabel: "Publicar", cancelLabel: "Cancelar" });
+      { title: `¿Publicar ${roundTitle(round)}?`, confirmLabel: "Publicar", cancelLabel: "Cancelar", destructive: false });
   }
   async function lgAfterPublish(){
     try{
@@ -8884,7 +8897,7 @@
       const ko = ms.map(m => Date.parse(m.kickoffAt)).filter(Number.isFinite);
       const close = ko.length ? fmtWhenTz(new Date(Math.min(...ko)).toISOString()) : null;
       return `<div class="card lg-org-group">
-        <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;"><strong>${esc(r.title)}</strong><span class="muted">${esc(ms.length + (ms.length === 1 ? " partido" : " partidos"))}</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;"><strong>${esc(r.title)}</strong><span class="muted">${esc(ms.length + (ms.length === 1 ? " partido" : " partidos"))}</span></div>
         <div class="muted">${close ? `Cierra ${esc(close)} (primer partido)` : (ms.length ? "Sin fecha de partido: revisa el cierre al guardar" : "Quedaría vacía")}</div>
         ${ms.map(m => `<div class="lg-org-row"><span>${esc(m.teamA || "Por definir")} vs ${esc(m.teamB || "Por definir")}<br><span class="muted">${m.kickoffAt ? esc(fmtWhenTz(m.kickoffAt)) : "sin fecha"}</span></span>
           <label class="sr-only" for="qz-org-${esc(m.id)}">Mover partido</label><select id="qz-org-${esc(m.id)}" data-org-match="${esc(m.id)}">${plan.rounds.map(r => `<option value="${esc(r.key)}" ${target(m.id) === r.key ? "selected" : ""}>${esc(r.title)}</option>`).join("")}<option value="__new" ${target(m.id) === "__new" ? "selected" : ""}>Jornada nueva (borrador)</option></select></div>`).join("")}
@@ -9151,7 +9164,7 @@
       const lines = [`• Se califican los partidos con resultado${voided.length ? "; los anulados dan 0 a todos" : ""}.`];
       if(waitingNow.length) lines.push("• Quedan sin calificar: " + waitingNow.map(m => m.teamA + " vs " + m.teamB + " (" + (statusOf(m.id) === "postponed" ? "aplazado" : "pendiente") + ")").join(", ") + ".");
       lines.push("• La tabla se actualiza con estos puntos.");
-      if(!(await qzConfirm(lines.join("\n"), { title: isPublished ? `¿Publicar la corrección de ${roundTitle(round)}?` : `¿Publicar resultados de ${roundTitle(round)}?`, confirmLabel: isPublished ? "Publicar corrección" : "Publicar" }))) return;
+      if(!(await qzConfirm(lines.join("\n"), { title: isPublished ? `¿Publicar la corrección de ${roundTitle(round)}?` : `¿Publicar resultados de ${roundTitle(round)}?`, confirmLabel: isPublished ? "Publicar corrección" : "Publicar", destructive: false }))) return;
       pub.disabled = true;
       const before = JSON.parse(JSON.stringify(round));
       const results = {}, scores = {}, status = {};
