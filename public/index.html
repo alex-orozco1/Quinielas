@@ -273,7 +273,7 @@
   #quiniela-root .lg-banner[hidden]{ display:none; }
   #quiniela-root .lg-banner{ background:#F6E1DE; border:1px solid var(--red); color:#7d251d; border-radius:10px; padding:8px 11px; margin-bottom:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:600; }
   #quiniela-root .lg-match{ display:flex; flex-direction:column; gap:8px; }
-  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; max-width:480px; }
+  #quiniela-root .lg-line{ display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; max-width:340px; }
   #quiniela-root label.lg-team{ font-weight:700; font-size:15px; overflow-wrap:anywhere; min-width:0; text-transform:none; letter-spacing:0; color:var(--ink); margin:0; }
   #quiniela-root input[type=text].lg-goal{ width:56px; height:44px; text-align:center; font-size:20px; font-weight:800; border:1.5px solid var(--line); border-radius:10px; background:var(--chalk); color:var(--ink); padding:0; font-variant-numeric:tabular-nums; }
   #quiniela-root input[type=text].lg-goal:focus{ outline:3px solid var(--gold); outline-offset:1px; border-color:var(--pitch-light); }
@@ -316,6 +316,8 @@
   #quiniela-root .lg-org-place{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   #quiniela-root .lg-org-row select{ max-width:100%; }
   #quiniela-root .lg-org-group{ margin-bottom:10px; }
+  #quiniela-root .lg-scroll-hint{ display:none; font-size:12.5px; }
+  @media (max-width:700px){ #quiniela-root .lg-scroll-hint{ display:block; } }
   #quiniela-root td.lg-cell-ok{ color:#1B4332; font-weight:700; }
   #quiniela-root td.lg-cell-no{ color:#7d251d; }
   @media (max-width:360px){
@@ -3384,7 +3386,7 @@
   const ONBOARDING_CONTENT = {
     jornada: {
       title: "Jornada",
-      text: "Aquí realizas tus pronósticos antes de que cierre la jornada. Tus picks se guardan automáticamente cuando los seleccionas."
+      text: "Aquí haces tus pronósticos antes de que cierre la jornada. Se guardan solos en cuanto los eliges o escribes."
     },
     tabla: {
       title: "Tabla",
@@ -3695,7 +3697,9 @@
   // Builds the title row (with a "?" help button) + 2-line screen intro + onboarding card,
   // for the top of a tab. Renderer must call wireScreenHeader(main, tabId) after inserting.
   function screenHeaderHtml(tabId, title, extraButtonsHtml, suppressOnboardingAutoShow){
-    const intro = SCREEN_INTRO[tabId] || "";
+    // Liguilla con marcador abierta: se pronostica el marcador, no sólo quién gana.
+    const lgScoreOpen = tabId === "jornada" && meta && Array.isArray(meta.rounds) && meta.rounds.some(r => isLg(r) && r.published !== false && !isRoundLocked(r) && (lgRulesOf(r) || {}).capture === "score");
+    const intro = lgScoreOpen ? "Pronostica cada partido antes de que cierre la jornada. En liguilla escribes el marcador." : (SCREEN_INTRO[tabId] || "");
     return `
       <div class="section-title">
         <span class="display">${esc(title)}</span>
@@ -7557,7 +7561,7 @@
         <div id="qz-clockbody-${esc(round.id)}">${clockDigitsHtml(round.deadline)}</div>
       </div>
       <div id="qz-matches-${esc(round.id)}"></div>
-      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;">${lg ? (lgRules && lgRules.capture === "score" ? "Cada partido se guarda solo cuando tiene los dos goles. «✓ Guardado» aparece cuando el servidor lo confirma." : "Cada pronóstico se guarda solo al elegirlo. «✓ Guardado» aparece cuando el servidor lo confirma.") : "Tus pronósticos de partidos se guardan solos apenas los eliges."}</p>
+      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;">${lg ? (lgRules && lgRules.capture === "score" ? "Cada partido se guarda solo cuando tiene los dos goles. «✓ Guardado» aparece cuando de verdad quedó guardado." : "Cada pronóstico se guarda solo al elegirlo. «✓ Guardado» aparece cuando de verdad quedó guardado.") : "Tus pronósticos de partidos se guardan solos apenas los eliges."}</p>
       ${lg ? `` : `<button class="btn btn-primary" data-save="${esc(round.id)}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>`}
       ${jornadaBets.length ? `
         <div class="card" style="margin-top:14px;">
@@ -8522,6 +8526,7 @@
   }
   const lgTimers = {};
   function lgOnScoreInput(round, m, side, input, immediate){
+    if(immediate && /^0\d$/.test(input.value.trim())) input.value = String(Number(input.value.trim()));
     if(isRoundLocked(round)){ renderJornada(document.getElementById("qz-main")); return; }
     const accepted = lgAccepted(round, m.id);
     const d = Object.assign({ a: accepted ? String(accepted.a) : "", b: accepted ? String(accepted.b) : "" }, lgDraft(round.id, m.id) || {});
@@ -8709,16 +8714,17 @@
         return `<td class="${cls}" style="text-align:center;">${esc(txt)}${esc(tail)}</td>`;
       }).join("");
       const hits = `${res.resultHits} res.${rules.capture === "score" ? ` · ${res.exactHits} exacto${res.exactHits === 1 ? "" : "s"}` : ""}`;
-      return `<tr><td>${esc(p.name)}</td>${cells}<td style="text-align:center;">${esc(hits)}</td><td style="text-align:center;font-weight:700;">${esc(res.total)}</td></tr>`;
+      return `<tr><td class="qz-sticky-col">${esc(p.name)}</td><td style="text-align:center;font-weight:700;">${esc(res.total)}</td>${cells}<td style="text-align:center;">${esc(hits)}</td></tr>`;
     }).join("");
     detail.innerHTML = `
       <div class="card" style="overflow-x:auto;">
         <h3>${esc(roundTitle(round))}${roundSubtitle(round) ? ` <span class="muted" style="font-weight:500;">· ${esc(roundSubtitle(round))}</span>` : ``}</h3>
-        <p class="muted">${esc(lgRulesSummary(rules))}. «Aciertos» cuenta partidos; «Pts» son los puntos de esta jornada.</p>
+        <p class="muted">${esc(lgRulesSummary(rules))}. En cada partido, «1+1» es base + bono. «Aciertos» cuenta partidos («res.» = resultado acertado); «Pts» son los puntos de esta jornada.</p>
+        <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido; el nombre y los puntos van primero.</p>
         <table>
-          <thead><tr><th>Participante</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Aciertos</th><th style="text-align:center;">Pts</th></tr></thead>
+          <thead><tr><th class="qz-sticky-col">Participante</th><th style="text-align:center;">Pts</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Aciertos</th></tr></thead>
           <tbody>
-            <tr style="background:var(--chalk);"><td><strong>Resultado real</strong></td>${round.matches.map(m => `<td style="text-align:center;font-weight:700;">${esc(lgResultText(round, m))}</td>`).join("")}<td></td><td></td></tr>
+            <tr style="background:var(--chalk);"><td class="qz-sticky-col"><strong>Resultado real</strong></td><td></td>${round.matches.map(m => `<td style="text-align:center;font-weight:700;">${esc(lgResultText(round, m))}</td>`).join("")}<td></td></tr>
             ${rows}
           </tbody>
         </table>
@@ -8753,11 +8759,10 @@
       const pickScore = typeof pick === "object" ? pick : null;
       const out = LG.scoreMatch({ rules, pickScore, pick: pickScore ? LG.outcomeOfScore(pickScore) : pick, result: LG.outcomeOfScore(real), resultScore: real, published: true });
       const pickTxt = pickScore ? lgScoreText(pickScore) : (pick === "A" ? "Gana local" : pick === "B" ? "Gana visitante" : "Empate");
-      return rules.capture === "score"
-        ? `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td>${out.base}</td><td>${out.bonus}</td><td><strong>${out.total}</strong></td></tr>`
-        : `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td><strong>${out.total}</strong></td></tr>`;
+      const pts = rules.capture === "score" && rules.exactBonus && rules.resultPoints ? out.base + " + " + out.bonus + " = " : "";
+      return `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td>${esc(pts)}<strong>${esc(out.total)}</strong></td></tr>`;
     }).join("");
-    const head = rules.capture === "score" ? `<tr><th>Termina</th><th>Pronóstico</th><th>Base</th><th>Bono</th><th>Total</th></tr>` : `<tr><th>Termina</th><th>Pronóstico</th><th>Pts</th></tr>`;
+    const head = `<tr><th>Termina</th><th>Pronóstico</th><th>${rules.capture === "score" && rules.exactBonus && rules.resultPoints ? "Base + bono" : "Pts"}</th></tr>`;
     return `<div class="lg-table-wrap"><table class="lg-example"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
   }
   function reglasLiguillaCardHtml(st, unlocked, noPasswordYet){
@@ -8777,7 +8782,11 @@
     if(!unlocked){
       return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
         <p class="qz-wz-value">${saved ? esc(lgRulesSummary(saved)) : "Todavía no eliges cómo se juega la liguilla."}</p>
-        <p class="muted qz-tight">🔒 ${noPasswordYet ? "Se protegen con tu contraseña de administrador." : "Para cambiarlas, desbloquea con tu contraseña de administrador (arriba)."}</p>
+        ${noPasswordYet ? `<p class="muted qz-tight">🔒 Se protegen con tu contraseña de administrador.</p>` : `
+        <div class="qz-unlock">
+          <label for="qz-r-lg-pw">Contraseña de administrador</label>
+          <div class="qz-unlock-row">${passwordFieldHtml("qz-r-lg-pw", `placeholder="Para cambiar las reglas" autocomplete="current-password"`)}<button class="btn btn-primary" id="qz-r-lg-unlock">Desbloquear</button></div>
+        </div>`}
       </section>`;
     }
     const preview = lgRulesFromForm(st);
@@ -8818,7 +8827,28 @@
       ${renderAdminReglas._lgReturn ? `<div class="qz-wz-callout" role="status"><p>Cuando las guardes, vuelve a Jornadas para publicar <strong>${esc(renderAdminReglas._lgReturn.title)}</strong>.</p><button class="btn btn-ghost btn-sm" id="qz-r-lg-back">Volver a Jornadas</button></div>` : ``}
     </section>`;
   }
+  // Lleva la vista a la tarjeta de liguilla, por debajo del encabezado fijo.
+  function lgScrollToCard(){
+    const el = document.getElementById("qz-r-lg-t");
+    if(!el) return;
+    const headerEl = document.querySelector("#quiniela-root .qz-header");
+    const headerHeight = headerEl ? headerEl.getBoundingClientRect().height : 0;
+    const top = el.closest("section").getBoundingClientRect().top + window.scrollY - headerHeight - 12;
+    window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+  }
   function wireReglasLiguilla(body, st, repaint, saveProtected){
+    const lgUnlock = document.getElementById("qz-r-lg-unlock");
+    if(lgUnlock){
+      lgUnlock.addEventListener("click", async () => {
+        if(lgUnlock.disabled) return;
+        const val = document.getElementById("qz-r-lg-pw").value;
+        const result = await verifyOwnerPasswordResult(val);
+        if(result.ok){ ownerUnlocked = true; ownerPasswordCache = val; await repaint(); lgScrollToCard(); }
+        else toast(pinFailureMessage(result, "❌ Contraseña incorrecta"));
+      });
+      enterSubmits("qz-r-lg-pw", "qz-r-lg-unlock");
+      wirePasswordToggles(lgUnlock.closest(".qz-unlock"));
+    }
     const back = document.getElementById("qz-r-lg-back");
     if(back) back.addEventListener("click", () => { adminSubTab = "rondas"; renderAdmin(document.getElementById("qz-main")); });
     body.querySelectorAll('input[name="qz-r-lg-cap"]').forEach(r => r.addEventListener("change", () => {
@@ -8869,13 +8899,13 @@
     if(pending){ toast(`Falta confirmar ${pending} rival${pending===1?"":"es"} para publicar.`, 5000); return false; }
     const rules = lgConfigRules();
     if(!rules){
-      const go = await qzConfirm(`Es la primera jornada de liguilla. Elige cómo se juega: las reglas valen para cuartos, semifinal y final.`,
+      const go = await qzConfirm(`Es la primera jornada de liguilla. Elige cómo se juega: las reglas valen para cuartos, semifinal y final, y quedan fijas al publicar.`,
         { title: "Antes de publicar, configura la liguilla", confirmLabel: "Configurar liguilla", cancelLabel: "Ahora no", destructive: false });
       if(go){
         renderAdminReglas._lgReturn = { roundId: round.id, title: roundTitle(round) };
         adminSubTab = "reglas";
         await renderAdmin(document.getElementById("qz-main"));
-        document.getElementById("qz-r-lg-t")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        lgScrollToCard();
       }
       return false;
     }
@@ -9072,16 +9102,16 @@
           return `<div class="match-card lg-match" id="qz-rescard-${esc(m.id)}">
             <div class="pick-row lg-status-row" role="group" aria-label="Estado de ${esc(m.teamA)} vs ${esc(m.teamB)}">${seg(m, "result", "Con resultado")}${seg(m, "pending", "Pendiente")}${seg(m, "postponed", "Aplazado")}${seg(m, "void", "Anulado")}</div>
             ${s === "result" ? (rules.capture === "score" ? `
-              <div class="lg-line"><label class="lg-team" for="qz-lgr-a-${esc(m.id)}">${esc(m.teamA)}</label><input class="lg-goal" id="qz-lgr-a-${esc(m.id)}" data-lgr="${esc(m.id)}" data-side="a" type="text" inputmode="numeric" maxlength="2" value="${sc ? esc(sc.a) : ""}" ${editing ? "" : "disabled"} autocomplete="off"></div>
-              <div class="lg-line"><label class="lg-team" for="qz-lgr-b-${esc(m.id)}">${esc(m.teamB)}</label><input class="lg-goal" id="qz-lgr-b-${esc(m.id)}" data-lgr="${esc(m.id)}" data-side="b" type="text" inputmode="numeric" maxlength="2" value="${sc ? esc(sc.b) : ""}" ${editing ? "" : "disabled"} autocomplete="off"></div>
-              <div class="muted" id="qz-lgr-out-${esc(m.id)}">${sc && LG.isScore(sc) ? esc(lgOutcomeText(m, LG.outcomeOfScore(sc))) : "Escribe los dos goles."}</div>`
+              <div class="lg-line"><label class="lg-team" for="qz-lgr-a-${esc(m.id)}">${esc(m.teamA)}</label><input class="lg-goal" id="qz-lgr-a-${esc(m.id)}" data-lgr="${esc(m.id)}" data-side="a" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" aria-label="Goles de ${esc(m.teamA)}" aria-describedby="qz-lgr-out-${esc(m.id)}" value="${sc ? esc(sc.a) : ""}" ${editing ? "" : "disabled"} autocomplete="off"></div>
+              <div class="lg-line"><label class="lg-team" for="qz-lgr-b-${esc(m.id)}">${esc(m.teamB)}</label><input class="lg-goal" id="qz-lgr-b-${esc(m.id)}" data-lgr="${esc(m.id)}" data-side="b" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" aria-label="Goles de ${esc(m.teamB)}" aria-describedby="qz-lgr-out-${esc(m.id)}" value="${sc ? esc(sc.b) : ""}" ${editing ? "" : "disabled"} autocomplete="off"></div>
+              <div class="muted" id="qz-lgr-out-${esc(m.id)}" aria-live="polite">${sc && LG.isScore(sc) ? esc(lgOutcomeText(m, LG.outcomeOfScore(sc))) : "Escribe los dos goles."}</div>`
               : `<div class="pick-row" data-lgr-pick="${esc(m.id)}">
                   <button type="button" class="pick-btn ${dRes[m.id]==='A'?'selected':''}" data-val="A" ${editing ? "" : "disabled"}>${esc(m.teamA)}</button>
                   <button type="button" class="pick-btn ${dRes[m.id]==='D'?'selected':''}" data-val="D" ${editing ? "" : "disabled"}>Empate</button>
                   <button type="button" class="pick-btn ${dRes[m.id]==='B'?'selected':''}" data-val="B" ${editing ? "" : "disabled"}>${esc(m.teamB)}</button>
                 </div>`)
               : `<div class="lg-result"><span>${esc(m.teamA)}</span><strong>${s === "pending" ? "Pendiente" : s === "postponed" ? "Aplazado" : s === "void" ? "Anulado" : "Sin capturar"}</strong><span>${esc(m.teamB)}</span></div>
-                 <div class="muted">${s === "pending" ? "Todavía no hay marcador. Sus pronósticos se conservan." : s === "postponed" ? "Sus pronósticos se conservan y siguen cerrados. Se califica cuando publiques su resultado." : s === "void" ? "Nadie gana ni pierde puntos. No cuenta como acierto ni como fallo." : "Elige «Con resultado» y captura el marcador, o marca su estado."}</div>`}
+                 <div class="muted">${s === "pending" ? "Todavía no hay marcador (por jugarse o sin capturar). Sus pronósticos se conservan." : s === "postponed" ? "Sus pronósticos se conservan y siguen cerrados. Se califica cuando publiques su resultado." : s === "void" ? "Nadie gana ni pierde puntos. No cuenta como acierto ni como fallo." : "Elige «Con resultado» y captura el marcador, o marca su estado."}</div>`}
             <div class="result-tag" id="qz-suggest-${esc(m.id)}"></div>
           </div>`;
         }).join("")}
@@ -9246,9 +9276,9 @@
         ${f.stage === "liguilla" ? `
         <div class="row2 qz-row-narrow">
           <div class="field"><label for="qz-lg-round">Ronda</label><select id="qz-lg-round">${opt("", "Sin indicar", f.round)}${opt("quarter", "Cuartos de final", f.round)}${opt("semi", "Semifinal", f.round)}${opt("final", "Final", f.round)}</select></div>
-          <div class="field"><label for="qz-lg-leg">Partido</label><select id="qz-lg-leg">${opt("", "Sin indicar", f.leg)}${opt("ida", "Ida", f.leg)}${opt("vuelta", "Vuelta", f.leg)}${opt("unico", "Partido único", f.leg)}</select></div>
+          <div class="field"><label for="qz-lg-leg">Ida o vuelta</label><select id="qz-lg-leg">${opt("", "Sin indicar", f.leg)}${opt("ida", "Ida", f.leg)}${opt("vuelta", "Vuelta", f.leg)}${opt("unico", "Partido único", f.leg)}</select></div>
         </div>
-        <p class="muted qz-tight">${f.source === "provider" && JSON.stringify({ round: f.round || null, leg: f.leg || null, source: "provider" }) === f.orig ? "Dato del proveedor." : "Lo indicas tú. Un sync posterior no lo cambia."}</p>` : ``}
+        <p class="muted qz-tight">${f.source === "provider" && JSON.stringify({ round: f.round || null, leg: f.leg || null, source: "provider" }) === f.orig ? "Dato del calendario." : "Lo indicas tú. Si el calendario se actualiza, esto no se modifica."}</p>` : ``}
       </fieldset>`;
   }
   function lgWireEditor(body, editingRound){
@@ -11465,7 +11495,7 @@
           // pero nunca es identidad de nada.
           // Liguilla: de dónde viene la fase (proveedor o Admin), o que falta.
           const faseTxt = isLg(r)
-            ? (r.phase ? (r.phase.source === "provider" ? " · fase del proveedor" : " · fase indicada por ti") : ` · <span style="color:var(--gold);">fase sin confirmar · indícala en Editar</span>`)
+            ? (r.phase ? (r.phase.source === "provider" ? " · fase del calendario" : " · fase indicada por ti") : ` · <span style="color:var(--gold);">fase sin confirmar · indícala en Editar</span>`)
             : (r.phaseLabel ? ` · ${esc(r.phaseLabel)}${r.phase && r.published === false ? " · ¿es de liguilla? márcala en Editar" : ""}` : "");
           return `
           <div class="history-item">

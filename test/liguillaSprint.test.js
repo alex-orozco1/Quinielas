@@ -477,3 +477,13 @@ test("QA P3 · el orden de las claves no es un conflicto (jsonb reordena)", () =
   const out = R.applyMatchPick({ meta: m, picksDoc: stored, roundId: "r18", matchId: "m1", value: s(3, 1), expected: { b: 1, a: 2 }, nowMs: BEFORE });
   assert.equal(out.ok, true);
 });
+
+test("QA H1 · reintentar lo mismo que ya quedó guardado es un éxito, no un conflicto", () => {
+  const doc = { r18: { m1: "A", __score: { m1: s(1, 0) } } };
+  const out = R.applyMatchPick({ meta: published(), picksDoc: doc, roundId: "r18", matchId: "m1", value: s(1, 0), expected: null, nowMs: BEFORE });
+  assert.equal(out.ok, true);
+  assert.equal(out.unchanged, true);
+  assert.deepEqual(out.accepted, s(1, 0));
+  const otro = R.applyMatchPick({ meta: published(), picksDoc: doc, roundId: "r18", matchId: "m1", value: s(2, 0), expected: null, nowMs: BEFORE });
+  assert.equal(otro.error, "pick_conflict", "un valor distinto sigue siendo conflicto");
+});

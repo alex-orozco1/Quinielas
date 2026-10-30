@@ -272,6 +272,10 @@ function applyMatchPick({ meta, picksDoc, roundId, matchId, value, expected, now
   if (!Number.isFinite(deadline) || nowMs > deadline) return fail(403, "round_locked", { current });
   const norm = L.normalizePick(rules.capture, value);
   if (!norm.ok) return fail(400, norm.reason, { current });
+  // Lo mismo que ya está guardado es un éxito, no un conflicto: es el
+  // reintento de un guardado cuya respuesta se perdió (Product QA, H1).
+  const wanted = rules.capture === "score" ? norm.score : norm.pick;
+  if (same(current, wanted)) return { ok: true, doc: picksDoc, accepted: current, unchanged: true };
   // Lo que el navegador cree que está guardado. Si otra sesión guardó otra
   // cosa mientras tanto, no se pisa: se devuelve lo guardado para que la
   // persona decida.

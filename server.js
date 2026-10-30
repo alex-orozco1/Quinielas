@@ -2557,7 +2557,7 @@ app.post("/api/quinielas/:slug/picks/:pid/match", async (req, res) => {
       const { status, ok, ...rest } = out;
       return res.status(status).json(rest);
     }
-    await putRow(picksKey, out.doc, client);
+    if (!out.unchanged) await putRow(picksKey, out.doc, client);
     await client.query("COMMIT");
     return res.json({ ok: true, value: out.accepted, acceptedAt: now.toISOString() });
   } catch (err) {
