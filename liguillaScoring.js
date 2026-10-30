@@ -5,10 +5,11 @@
 // en /liguillaScoring.js, así que no puede haber dos copias que se separen.
 //
 // Reglas aprobadas (sprint de liguilla, D1–D7):
-//   - Captura «result» (1X2) o «score» (marcador exacto). Con marcador, el 1X2
-//     sale de los goles; nunca se pide aparte.
-//   - Puntos por resultado y bono por exacto, configurables y SUMADOS. Un empate
-//     acertado es acierto de resultado. Con captura 1X2 no hay bono.
+//   - Atinarle al resultado (ganador o empate) SIEMPRE da puntos (1 a 99, los
+//     elige el Admin). El marcador exacto es un extra OPCIONAL: si se activa,
+//     suma +N y cada quien escribe el marcador; el 1X2 sale de los goles y
+//     nunca se pide aparte. Sin extra, se pronostica sólo ganador o empate.
+//     La captura («result» o «score») se deduce de si hay extra.
 //   - Goles: enteros de 0 a 30, igual en interfaz y servidor.
 //   - Estados de partido: con resultado, pendiente, aplazado, anulado. Sólo un
 //     partido con resultado se califica. Pendiente y aplazado esperan; anulado
@@ -60,14 +61,15 @@
   // normalizada, o { ok:false, reason }.
   function validateRules(r) {
     if (!isObj(r)) return { ok: false, reason: "liguilla_rules_invalid" };
-    if (!CAPTURES.includes(r.capture)) return { ok: false, reason: "liguilla_rules_invalid" };
     if (!isPoints(r.resultPoints)) return { ok: false, reason: "liguilla_rules_invalid" };
+    // El resultado siempre premia: no existe «sólo exacto».
+    if (r.resultPoints < 1) return { ok: false, reason: "liguilla_rules_result_required" };
     const bonus = r.exactBonus == null ? 0 : r.exactBonus;
     if (!isPoints(bonus)) return { ok: false, reason: "liguilla_rules_invalid" };
-    // Sin marcador no hay exacto: un bono con captura 1X2 sería una combinación imposible.
-    if (r.capture === "result" && bonus !== 0) return { ok: false, reason: "liguilla_rules_invalid" };
-    if (r.resultPoints === 0 && bonus === 0) return { ok: false, reason: "liguilla_rules_no_prize" };
-    return { ok: true, rules: Object.freeze({ capture: r.capture, resultPoints: r.resultPoints, exactBonus: bonus }) };
+    // Con extra por exacto se escribe el marcador; sin extra, 1X2.
+    const capture = bonus > 0 ? "score" : "result";
+    if (r.capture != null && r.capture !== capture) return { ok: false, reason: "liguilla_rules_invalid" };
+    return { ok: true, rules: Object.freeze({ capture, resultPoints: r.resultPoints, exactBonus: bonus }) };
   }
   function sameRules(a, b) {
     const va = validateRules(a), vb = validateRules(b);

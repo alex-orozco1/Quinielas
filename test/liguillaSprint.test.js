@@ -16,8 +16,8 @@ const line = (phase, side, goals) => ({ phase, side, goals });
 const both = (phase, h, a) => [line(phase, "home", h), line(phase, "away", a)];
 
 const RULES_BOTH = { capture: "score", resultPoints: 1, exactBonus: 1 };
-const RULES_EXACT_ONLY = { capture: "score", resultPoints: 0, exactBonus: 1 };
-const RULES_RESULT_ONLY = { capture: "score", resultPoints: 1, exactBonus: 0 };
+// Sin extra por exacto se pronostica ganador o empate (1X2).
+const RULES_RESULT_ONLY = { capture: "result", resultPoints: 1, exactBonus: 0 };
 const s = (a, b) => ({ a, b });
 const score = (rules, pick, real) => L.scoreMatch({
   rules, pickScore: pick, pick: L.outcomeOfScore(pick), result: L.outcomeOfScore(real), resultScore: real,
@@ -26,9 +26,9 @@ const score = (rules, pick, real) => L.scoreMatch({
 
 // ---- puntos: la tabla aprobada en las tres combinaciones ------------------
 
-test("PUNTOS · tabla aprobada: resultado 1 + bono 1, sólo exacto, sólo resultado", () => {
+test("PUNTOS · tabla aprobada: ganador/empate 1 + extra exacto 1, y sólo ganador/empate (sin extra)", () => {
   const cases = [
-    // real,   pronóstico, ambos, sólo exacto, sólo resultado
+    // real,   pronóstico, con extra, (sin uso), sólo ganador/empate
     [s(2, 1), s(3, 1), 1, 0, 1],
     [s(2, 1), s(2, 1), 2, 1, 1],
     [s(1, 1), s(2, 2), 1, 0, 1],
@@ -37,8 +37,8 @@ test("PUNTOS · tabla aprobada: resultado 1 + bono 1, sólo exacto, sólo result
   ];
   for (const [real, pick, both, exact, result] of cases) {
     assert.equal(score(RULES_BOTH, pick, real), both, `ambos ${JSON.stringify([real, pick])}`);
-    assert.equal(score(RULES_EXACT_ONLY, pick, real), exact, `sólo exacto ${JSON.stringify([real, pick])}`);
-    assert.equal(score(RULES_RESULT_ONLY, pick, real), result, `sólo resultado ${JSON.stringify([real, pick])}`);
+    const r1x2 = L.scoreMatch({ rules: RULES_RESULT_ONLY, pick: L.outcomeOfScore(pick), result: L.outcomeOfScore(real), published: true }).total;
+    assert.equal(r1x2, result, `sólo ganador/empate ${JSON.stringify([real, pick])}`);
   }
 });
 
@@ -92,9 +92,16 @@ test("ESTADOS · transiciones recalculan sin doble conteo (pendiente→resultado
   assert.equal(voided.resultHits, 1, "el anulado no cuenta como acierto ni como fallo");
 });
 
+test("REGLAS · el ganador/empate siempre premia; el exacto es un extra opcional que define la captura", () => {
+  assert.deepEqual(L.validateRules({ resultPoints: 1, exactBonus: 3 }).rules, { capture: "score", resultPoints: 1, exactBonus: 3 });
+  assert.deepEqual(L.validateRules({ resultPoints: 2, exactBonus: 0 }).rules, { capture: "result", resultPoints: 2, exactBonus: 0 });
+  assert.equal(L.validateRules({ resultPoints: 0, exactBonus: 1 }).reason, "liguilla_rules_result_required", "no existe «sólo exacto»");
+  assert.equal(L.validateRules({ capture: "score", resultPoints: 1, exactBonus: 0 }).ok, false, "marcador sin extra no es una opción");
+});
+
 test("REGLAS · combinaciones imposibles y límites", () => {
   assert.equal(L.validateRules({ capture: "result", resultPoints: 1, exactBonus: 1 }).ok, false, "sin marcador no hay bono");
-  assert.equal(L.validateRules({ capture: "score", resultPoints: 0, exactBonus: 0 }).reason, "liguilla_rules_no_prize");
+  assert.equal(L.validateRules({ capture: "score", resultPoints: 0, exactBonus: 0 }).reason, "liguilla_rules_result_required");
   assert.equal(L.validateRules({ capture: "score", resultPoints: 100, exactBonus: 0 }).ok, false);
   assert.equal(L.validateRules({ capture: "score", resultPoints: 1.5, exactBonus: 0 }).ok, false);
   assert.equal(L.validateRules({ capture: "x", resultPoints: 1 }).ok, false);

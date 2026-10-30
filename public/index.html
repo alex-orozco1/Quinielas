@@ -1800,8 +1800,8 @@
     liguilla_rules_locked: "Las reglas de liguilla ya quedaron fijas para este torneo: se fijaron al publicar la primera jornada de liguilla.",
     liguilla_stage_locked: "Esta jornada ya se publicó: conserva su tipo (regular o liguilla) y sus reglas.",
     liguilla_rival_pending: "Falta confirmar algún rival. Puedes guardarla como borrador y publicarla cuando estén los dos equipos.",
-    liguilla_rules_invalid: "Revisa las reglas de liguilla: los puntos son números enteros de 0 a 99, y el bono sólo existe con marcador exacto.",
-    liguilla_rules_no_prize: "Activa al menos un premio: resultado, bono por exacto o los dos.",
+    liguilla_rules_invalid: "Revisa las reglas de liguilla: los puntos son números enteros de 1 a 99.",
+    liguilla_rules_result_required: "Atinarle al ganador o al empate siempre da puntos: escribe de 1 a 99.",
     liguilla_result_mismatch: "El resultado no coincide con el marcador. Vuelve a capturar los goles.",
     liguilla_result_with_status: "Un partido pendiente, aplazado o anulado no lleva marcador. Elige una de las dos cosas.",
     liguilla_round_closed: "Esta jornada de liguilla ya cerró: su cierre no se puede mover. Un partido aplazado conserva su cierre original.",
@@ -8300,10 +8300,8 @@
   function lgScoreText(s){ return s && LG && LG.isScore(s) ? `${s.a}–${s.b}` : ""; }
   function lgRulesSummary(rules){
     if(!rules) return "";
-    if(rules.capture === "result") return `Quién gana o empate · ${lgPts(rules.resultPoints)} por acierto`;
-    if(rules.resultPoints && rules.exactBonus) return `Marcador exacto · resultado ${lgPts(rules.resultPoints)} · bono +${rules.exactBonus}`;
-    if(rules.resultPoints) return `Marcador exacto · sólo resultado, ${lgPts(rules.resultPoints)}`;
-    return `Marcador exacto · sólo exacto, ${lgPts(rules.exactBonus)}`;
+    if(!rules.exactBonus) return `Ganador o empate · ${lgPts(rules.resultPoints)} por acierto · sin extra por marcador exacto`;
+    return `Ganador o empate · ${lgPts(rules.resultPoints)} · marcador exacto +${rules.exactBonus} (total ${rules.resultPoints + rules.exactBonus})`;
   }
   // `summary`: fuera de la votación (cerrada, jugados) se describen las reglas,
   // no se pide pronosticar.
@@ -8312,11 +8310,9 @@
     const head = summary
       ? (rules.capture === "score" ? "Liguilla con marcador exacto." : "Liguilla: quién gana o si empatan.")
       : (rules.capture === "score" ? "Pronostica el marcador." : "Pronostica quién gana o si empatan.");
-    let detail;
-    if(rules.capture === "result") detail = `${lgPts(rules.resultPoints)} por acierto, también por un empate.`;
-    else if(rules.resultPoints && rules.exactBonus) detail = `Resultado ${lgPts(rules.resultPoints)} · marcador exacto +${rules.exactBonus} (total ${rules.resultPoints + rules.exactBonus}).`;
-    else if(rules.resultPoints) detail = `Acertar ganador o empate da ${lgPts(rules.resultPoints)}. El exacto no da bono.`;
-    else detail = `Sólo el marcador exacto da puntos: ${lgPts(rules.exactBonus)}.`;
+    const detail = rules.exactBonus
+      ? `Ganador o empate ${lgPts(rules.resultPoints)} · marcador exacto +${rules.exactBonus} (total ${rules.resultPoints + rules.exactBonus}).`
+      : `${lgPts(rules.resultPoints)} por atinarle al ganador o al empate.`;
     return `<div class="lg-strip"><strong>${esc(head)}</strong><span>${esc(detail)}</span><span>Cuenta la prórroga, no los penales.</span></div>`;
   }
   function lgLockedRoundLabel(lock){
@@ -8738,23 +8734,22 @@
   // ---- admin: reglas de liguilla ---------------------------------------------
   function lgFormFromSettings(){
     const r = lgConfigRules();
-    if(!r) return { capture: null, resultOn: true, resultPts: "1", bonusOn: true, bonusPts: "1" };
-    return { capture: r.capture, resultOn: r.resultPoints > 0, resultPts: String(r.resultPoints || 1),
-      bonusOn: r.capture === "score" && r.exactBonus > 0, bonusPts: String(r.exactBonus || 1) };
+    if(!r) return { resultPts: "1", bonusOn: false, bonusPts: "1" };
+    return { resultPts: String(r.resultPoints), bonusOn: r.exactBonus > 0, bonusPts: String(r.exactBonus || 1) };
   }
   // De lo que hay en el formulario a una regla (o un error escrito).
   function lgRulesFromForm(f){
-    if(!f.capture) return { error: "Elige qué se pronostica en liguilla." };
     const num = (v) => /^\d{1,2}$/.test(String(v).trim()) ? Number(String(v).trim()) : NaN;
-    const rp = f.resultOn ? num(f.resultPts) : 0;
-    const bp = f.capture === "score" && f.bonusOn ? num(f.bonusPts) : 0;
-    if(Number.isNaN(rp) || Number.isNaN(bp)) return { error: "Escribe un número entero de 0 a 99." };
-    const v = LG.validateRules({ capture: f.capture, resultPoints: rp, exactBonus: bp });
-    if(!v.ok) return { error: v.reason === "liguilla_rules_no_prize" ? "Activa al menos un premio." : "Escribe un número entero de 0 a 99." };
+    const rp = num(f.resultPts);
+    if(Number.isNaN(rp) || rp < 1) return { error: "Escribe cuántos puntos da atinarle al ganador o al empate: un número entero de 1 a 99." };
+    const bp = f.bonusOn ? num(f.bonusPts) : 0;
+    if(f.bonusOn && (Number.isNaN(bp) || bp < 1)) return { error: "Escribe los puntos extra por marcador exacto: un número entero de 1 a 99." };
+    const v = LG.validateRules({ resultPoints: rp, exactBonus: bp });
+    if(!v.ok) return { error: "Escribe un número entero de 1 a 99." };
     return { rules: v.rules };
   }
   function lgExampleHtml(rules){
-    if(!rules) return `<p class="muted qz-tight">Elige la captura y los premios para ver el ejemplo.</p>`;
+    if(!rules) return `<p class="muted qz-tight">Escribe los puntos para ver el ejemplo.</p>`;
     const s = (a, b) => ({ a, b });
     const rows = rules.capture === "score"
       ? [[s(2,1), s(3,1)], [s(2,1), s(2,1)], [s(1,1), s(2,2)], [s(1,1), s(1,1)], [s(2,1), s(0,1)]]
@@ -8763,10 +8758,10 @@
       const pickScore = typeof pick === "object" ? pick : null;
       const out = LG.scoreMatch({ rules, pickScore, pick: pickScore ? LG.outcomeOfScore(pickScore) : pick, result: LG.outcomeOfScore(real), resultScore: real, published: true });
       const pickTxt = pickScore ? lgScoreText(pickScore) : (pick === "A" ? "Gana local" : pick === "B" ? "Gana visitante" : "Empate");
-      const pts = rules.capture === "score" && rules.exactBonus && rules.resultPoints ? out.base + " + " + out.bonus + " = " : "";
+      const pts = rules.exactBonus ? out.base + " + " + out.bonus + " = " : "";
       return `<tr><td>${esc(lgScoreText(real))}</td><td>${esc(pickTxt)}</td><td>${esc(pts)}<strong>${esc(out.total)}</strong></td></tr>`;
     }).join("");
-    const head = `<tr><th>Termina</th><th>Pronóstico</th><th>${rules.capture === "score" && rules.exactBonus && rules.resultPoints ? "Base + bono" : "Pts"}</th></tr>`;
+    const head = `<tr><th>Termina</th><th>Pronóstico</th><th>${rules.exactBonus ? "Ganador + exacto" : "Pts"}</th></tr>`;
     return `<div class="lg-table-wrap"><table class="lg-example"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
   }
   function reglasLiguillaCardHtml(st, unlocked, noPasswordYet){
@@ -8794,39 +8789,24 @@
       </section>`;
     }
     const preview = lgRulesFromForm(st);
-    const isScore = st.capture === "score";
-    const radio = (val, title, sub) => `
-      <label class="lg-opt ${st.capture === val ? "on" : ""}" for="qz-r-lg-cap-${val}">
-        <input type="radio" name="qz-r-lg-cap" id="qz-r-lg-cap-${val}" value="${val}" ${st.capture === val ? "checked" : ""}>
-        <span class="lg-opt-txt">${st.capture === val ? `<span class="lg-opt-state">Elegido</span>` : ``}<strong>${esc(title)}</strong><span class="muted">${esc(sub)}</span></span>
-      </label>`;
     return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
-      <fieldset class="lg-fieldset"><legend>¿Qué pronostican en liguilla?</legend>
-        ${radio("result", "Quién gana o si empatan", "Local, empate o visitante")}
-        ${radio("score", "Marcador exacto", "Dos números, por ejemplo 2–1. El ganador sale del marcador.")}
-      </fieldset>
-      ${st.capture ? `
-      <fieldset class="lg-fieldset"><legend>¿Qué da puntos?</legend>
-        <div class="lg-opt ${st.resultOn ? "on" : ""}">
-          <input type="checkbox" id="qz-r-lg-res-on" ${st.resultOn ? "checked" : ""}>
-          <label class="lg-opt-txt" for="qz-r-lg-res-on"><span class="lg-opt-state">${st.resultOn ? "Activado" : "Desactivado"}</span><strong>Acertar el resultado</strong><span class="muted">Ganador o empate</span></label>
-          <label class="sr-only" for="qz-r-lg-res-pts">Puntos por resultado</label>
-          <input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-res-pts" value="${esc(st.resultPts)}" ${st.resultOn ? "" : "disabled"} autocomplete="off">
-        </div>
-        <div class="lg-opt ${isScore && st.bonusOn ? "on" : ""} ${isScore ? "" : "na"}">
-          <input type="checkbox" id="qz-r-lg-bon-on" ${isScore && st.bonusOn ? "checked" : ""} ${isScore ? "" : "disabled"}>
-          <label class="lg-opt-txt" for="qz-r-lg-bon-on"><span class="lg-opt-state">${isScore ? (st.bonusOn ? "Activado" : "Desactivado") : "No disponible"}</span><strong>Bono por marcador exacto</strong><span class="muted">${isScore ? "Se suma al resultado" : "Requiere elegir «Marcador exacto»."}</span></label>
-          <label class="sr-only" for="qz-r-lg-bon-pts">Puntos de bono por exacto</label>
-          ${isScore ? `<input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-bon-pts" value="${esc(st.bonusPts)}" ${st.bonusOn ? "" : "disabled"} autocomplete="off">` : ``}
-        </div>
-      </fieldset>
+      <div class="field qz-field-narrow">
+        <label for="qz-r-lg-res-pts">Puntos por atinarle al ganador o al empate</label>
+        <input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-res-pts" value="${esc(st.resultPts)}" autocomplete="off">
+      </div>
+      <div class="lg-opt ${st.bonusOn ? "on" : ""}">
+        <input type="checkbox" id="qz-r-lg-bon-on" ${st.bonusOn ? "checked" : ""}>
+        <label class="lg-opt-txt" for="qz-r-lg-bon-on"><span class="lg-opt-state">${st.bonusOn ? "Activado" : "Desactivado"}</span><strong>Puntos extra por marcador exacto</strong><span class="muted">${st.bonusOn ? "Cada quien escribe el marcador (por ejemplo 2–1); el ganador sale de ahí. El extra se suma a los puntos del ganador o empate." : "Opcional. Si lo activas, cada quien escribe el marcador y atinarle exacto suma puntos extra."}</span></label>
+        <label class="sr-only" for="qz-r-lg-bon-pts">Puntos extra por marcador exacto</label>
+        ${st.bonusOn ? `<input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-bon-pts" value="${esc(st.bonusPts)}" autocomplete="off">` : ``}
+      </div>
       <div class="lg-example-wrap" aria-live="polite">
         <strong>${preview.rules ? "Con estas reglas" : "Ejemplo"}</strong>
         ${preview.rules ? lgExampleHtml(preview.rules) : `<p class="lg-bad">${esc(preview.error)}</p>`}
         ${lgRulesStripHtml(preview.rules || null)}
-      </div>` : ``}
+      </div>
       <p class="qz-field-error" id="qz-r-lg-err" role="alert" hidden></p>
-      <button class="btn btn-primary" id="qz-r-lg-save" ${st.capture ? "" : "disabled"}>Guardar reglas de liguilla</button>
+      <button class="btn btn-primary" id="qz-r-lg-save">Guardar reglas de liguilla</button>
       <p class="muted qz-tight">Puedes cambiarlas hasta publicar la primera jornada de liguilla; después quedan fijas para todo el torneo.</p>
       ${renderAdminReglas._lgReturn ? `<div class="qz-wz-callout" role="status"><p>Cuando las guardes, vuelve a Jornadas para publicar <strong>${esc(renderAdminReglas._lgReturn.title)}</strong>.</p><button class="btn btn-ghost btn-sm" id="qz-r-lg-back">Volver a Jornadas</button></div>` : ``}
     </section>`;
@@ -8855,14 +8835,6 @@
     }
     const back = document.getElementById("qz-r-lg-back");
     if(back) back.addEventListener("click", () => { adminSubTab = "rondas"; renderAdmin(document.getElementById("qz-main")); });
-    body.querySelectorAll('input[name="qz-r-lg-cap"]').forEach(r => r.addEventListener("change", () => {
-      st.capture = r.value;
-      if(st.capture === "result") st.bonusOn = false;
-      repaint();
-      const again = document.getElementById("qz-r-lg-cap-" + r.value); if(again) again.focus();
-    }));
-    const resOn = document.getElementById("qz-r-lg-res-on");
-    if(resOn) resOn.addEventListener("change", () => { st.resultOn = resOn.checked; repaint(); const e = document.getElementById("qz-r-lg-res-on"); if(e) e.focus(); });
     const bonOn = document.getElementById("qz-r-lg-bon-on");
     if(bonOn) bonOn.addEventListener("change", () => { st.bonusOn = bonOn.checked; repaint(); const e = document.getElementById("qz-r-lg-bon-on"); if(e) e.focus(); });
     const live = (id, key) => {
