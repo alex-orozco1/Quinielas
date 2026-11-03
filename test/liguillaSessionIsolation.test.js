@@ -46,7 +46,7 @@ function harness(opts = {}) {
       requests.push(req);
       pending.push(req);
     }),
-    document: { getElementById: () => null, querySelectorAll: () => [], querySelector: () => null },
+    document: { els: {}, activeElement: null, getElementById: (id) => env.document.els[id] || null, querySelectorAll: () => [], querySelector: () => null },
     qzConfirm: async (message, o) => { confirms.push({ message, o }); return !!opts.confirm; },
     kvSetWithError: opts.kvSet || (async () => ({ ok: true })),
     loader: null,
@@ -688,6 +688,31 @@ test("RELECTURA · H3: la relectura no redibuja la jornada (no mueve el scroll n
   assert.ok(!/renderJornada\(/.test(fn), "sólo pinta los partidos que cambiaron");
   assert.ok(/lgPaintChanged\(changed\)/.test(fn));
   const paint = sliceFn(html, "function lgPaintChanged(changed)");
-  assert.ok(paint.includes("input !== document.activeElement"), "no toca el campo enfocado");
+  assert.ok(!/renderJornada\(/.test(paint));
+});
+
+// ---- Technical QA de 9639ad1 ------------------------------------------------
+
+test("RELECTURA · J1: si un campo del partido está enfocado, también se actualiza (no queda un marcador mezclado)", async () => {
+  const { app, pending, server, env } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m1: "A", m2: "D", __score: { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } } } };
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  const input = (v) => ({ value: v, sel: null, setSelectionRange(a, b){ this.sel = [a, b]; } });
+  const a1 = input("2"), b1 = input("1");
+  env.document.els["qz-lg-a-r_lg-m1"] = a1;
+  env.document.els["qz-lg-b-r_lg-m1"] = b1;
+  env.document.activeElement = a1;                       // Ana tocó el campo de goles local de m1
+  server[A.id].r_lg.m1 = "B"; server[A.id].r_lg.__score.m1 = { a: 0, b: 3 };   // otro dispositivo: 0–3
+  pending.shift().resolve(ok({ a: 6, b: 6 }));
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(app.picks().r_lg.__score.m1, { a: 0, b: 3 });
+  assert.equal(a1.value, "0", "el campo enfocado muestra lo del servidor");
+  assert.equal(b1.value, "3");
+  assert.deepEqual(a1.sel, [1, 1], "el cursor queda al final");
 });
 

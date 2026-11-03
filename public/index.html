@@ -8474,14 +8474,21 @@
     return changed;
   }
   // Pinta sólo los partidos que cambiaron, sin redibujar la jornada: no se
-  // mueve el scroll ni se pierde el foco (H3 de b14c58c). Un campo que la
-  // persona tiene enfocado no se toca.
+  // mueve el scroll ni se pierde el foco (H3 de b14c58c). También el campo
+  // enfocado se actualiza (J1 de 9639ad1): un partido sólo llega aquí si no
+  // tiene borrador, así que lo que muestra ese campo es el valor anterior y
+  // no hay nada escrito que perder. Se conserva la posición del cursor.
   function lgPaintChanged(changed){
     changed.forEach(({ round, matchId }) => {
       const v = lgAccepted(round, matchId);
       ["a", "b"].forEach(side => {
         const input = document.getElementById("qz-lg-" + side + "-" + round.id + "-" + matchId);
-        if(input && input !== document.activeElement) input.value = v && typeof v === "object" ? String(v[side]) : "";
+        if(!input) return;
+        const next = v && typeof v === "object" ? String(v[side]) : "";
+        if(input.value === next) return;
+        const focused = input === document.activeElement;
+        input.value = next;
+        if(focused){ try{ input.setSelectionRange(next.length, next.length); }catch(e){} }
       });
       lgPaintMatch(round, matchId);
     });
