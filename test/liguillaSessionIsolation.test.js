@@ -702,7 +702,7 @@ test("RELECTURA · J1: si un campo del partido está enfocado, también se actua
   assert.equal(await app.clickSwitch(), true);
   server[A.id] = { r_lg: { m1: "A", m2: "D", __score: { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } } } };
   await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
-  const input = (v) => ({ value: v, sel: null, setSelectionRange(a, b){ this.sel = [a, b]; } });
+  const input = (v) => ({ value: v, sel: null, selected: false, setSelectionRange(a, b){ this.sel = [a, b]; }, select(){ this.selected = true; } });
   const a1 = input("2"), b1 = input("1");
   env.document.els["qz-lg-a-r_lg-m1"] = a1;
   env.document.els["qz-lg-b-r_lg-m1"] = b1;
@@ -713,7 +713,7 @@ test("RELECTURA · J1: si un campo del partido está enfocado, también se actua
   assert.deepEqual(app.picks().r_lg.__score.m1, { a: 0, b: 3 });
   assert.equal(a1.value, "0", "el campo enfocado muestra lo del servidor");
   assert.equal(b1.value, "3");
-  assert.deepEqual(a1.sel, [1, 1], "el cursor queda al final");
+  assert.equal(a1.selected, true, "el valor nuevo queda seleccionado");
 });
 
 // ---- Technical QA de 3bea6f9 ------------------------------------------------
@@ -742,4 +742,32 @@ test("RELECTURA · K1: si el campo enfocado tenía todo seleccionado, el valor n
   assert.deepEqual([a1.selectionStart, a1.selectionEnd], [0, 1]);
   assert.equal(b1.value, "3");
 });
+
+// ---- Technical QA de fc67921 ------------------------------------------------
+
+for (const [name, start] of [["K2: campo vacío", { value: "", s: 0, e: 0 }], ["K3: cursor al inicio del valor anterior", { value: "2", s: 0, e: 0 }], ["K3: cursor al final del valor anterior", { value: "2", s: 1, e: 1 }]]) {
+  test("RELECTURA · " + name + ": el valor nuevo queda seleccionado (lo que se teclee lo reemplaza)", async () => {
+    const { app, pending, server, env } = harness({ confirm: true });
+    app.setRounds([ROUND]);
+    app.as(A, "1111");
+    app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+    await tick();
+    assert.equal(await app.clickSwitch(), true);
+    server[A.id] = start.value
+      ? { r_lg: { m1: "A", m2: "D", __score: { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } } } }
+      : { r_lg: { m2: "D", __score: { m2: { a: 6, b: 6 } } } };
+    await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+    const a1 = { value: start.value, selectionStart: start.s, selectionEnd: start.e, selected: false,
+      select(){ this.selected = true; this.selectionStart = 0; this.selectionEnd = this.value.length; },
+      setSelectionRange(a, b){ this.selectionStart = a; this.selectionEnd = b; } };
+    env.document.els["qz-lg-a-r_lg-m1"] = a1;
+    env.document.activeElement = a1;
+    server[A.id].r_lg.m1 = "B"; server[A.id].r_lg.__score = server[A.id].r_lg.__score || {}; server[A.id].r_lg.__score.m1 = { a: 1, b: 3 };
+    pending.shift().resolve(ok({ a: 6, b: 6 }));
+    for (let i = 0; i < 10; i++) await tick();
+    assert.equal(a1.value, "1");
+    assert.equal(a1.selected, true);
+    assert.deepEqual([a1.selectionStart, a1.selectionEnd], [0, 1]);
+  });
+}
 
