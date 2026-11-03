@@ -8431,33 +8431,68 @@
   // Reloj lógico: ordena las lecturas de pronósticos entre sí.
   let lgSeq = 0;
   let lgSwitching = false;
-  // Respuestas tardías (Technical QA de 602a38a, G1): el valor que trae una
-  // respuesta de una sesión anterior NO manda; sólo avisa que el servidor
-  // cambió. Si la misma persona está dentro, se vuelve a leer del servidor
-  // (esa lectura sale después de que la escritura quedó confirmada, así que
-  // trae ese valor o uno más nuevo) y se toma para los partidos de liguilla
-  // que la sesión actual no tiene en camino, guardados ni en borrador. Si no
-  // está dentro, su próxima entrada lee del servidor después: no hace falta
-  // nada más. Por "quiniela|participante", la última lectura completada.
+  // Respuestas tardías (Technical QA de 602a38a, G1, y de b14c58c, H1–H3):
+  // el valor que trae una respuesta de una sesión anterior NO manda; sólo
+  // avisa que el servidor cambió. Si la misma persona está dentro, se vuelve a
+  // leer del servidor (esa lectura sale después de que la escritura quedó
+  // confirmada, así que trae ese valor o uno más nuevo) y se toma para los
+  // partidos de liguilla que la sesión actual no tiene en camino, guardados,
+  // en borrador ni confirmados por el servidor después de que salió la
+  // relectura. Si no está dentro, su próxima entrada lee del servidor después:
+  // no hace falta nada más. Una relectura que falla no cambia nada, y una que
+  // termina en otra sesión no se aplica.
+  // Por "quiniela|participante", la última relectura completada.
   const lgRefreshed = {};
+  // Por "jornada|partido": cuándo (lgSeq) esta sesión recibió del servidor la
+  // última respuesta sobre ese partido.
+  const lgLocalSeq = {};
   // Copia a `into` lo de las jornadas de liguilla de `from` (lectura del
-  // servidor), partido por partido, salvo lo que la sesión actual tiene suyo.
-  function lgMergeServer(into, from){
-    if(!into || !from) return into;
+  // servidor hecha en `seq`), partido por partido, salvo lo que la sesión
+  // actual tiene suyo o más nuevo. Devuelve los partidos que cambiaron.
+  function lgMergeServer(into, from, seq){
+    const changed = [];
+    if(!into || !from) return changed;
     meta.rounds.filter(isLg).forEach(round => {
       const src = from[round.id] || {};
       (round.matches || []).forEach(m => {
         if(lgSt(round.id, m.id) || lgDraft(round.id, m.id)) return;
+        if((lgLocalSeq[round.id + "|" + m.id] || 0) > seq) return;
         const has = Object.prototype.hasOwnProperty.call(src, m.id);
         const score = src.__score && src.__score[m.id];
-        if(!has && !into[round.id]) return;
+        const cur = into[round.id] || {};
+        const curScore = cur.__score && cur.__score[m.id];
+        const same = (has ? cur[m.id] === src[m.id] : !Object.prototype.hasOwnProperty.call(cur, m.id))
+          && (score ? !!curScore && curScore.a === score.a && curScore.b === score.b : !curScore);
+        if(same) return;
         const rp = into[round.id] = into[round.id] || {};
         if(has) rp[m.id] = src[m.id]; else delete rp[m.id];
         if(score){ rp.__score = rp.__score || {}; rp.__score[m.id] = { a: score.a, b: score.b }; }
         else if(rp.__score) delete rp.__score[m.id];
+        changed.push({ round, matchId: m.id });
       });
     });
-    return into;
+    return changed;
+  }
+  // Pinta sólo los partidos que cambiaron, sin redibujar la jornada: no se
+  // mueve el scroll ni se pierde el foco (H3 de b14c58c). Un campo que la
+  // persona tiene enfocado no se toca.
+  function lgPaintChanged(changed){
+    changed.forEach(({ round, matchId }) => {
+      const v = lgAccepted(round, matchId);
+      ["a", "b"].forEach(side => {
+        const input = document.getElementById("qz-lg-" + side + "-" + round.id + "-" + matchId);
+        if(input && input !== document.activeElement) input.value = v && typeof v === "object" ? String(v[side]) : "";
+      });
+      lgPaintMatch(round, matchId);
+    });
+  }
+  // Lectura de los pronósticos propios que distingue un error (null) de «no
+  // hay nada guardado» ({}): una relectura fallida no borra nada (H1).
+  async function lgGetOwnPicks(pid){
+    try{
+      const r = await kvGet(currentPicksKey(pid), { owner: currentUserPinCache });
+      return r.found ? r.value : {};
+    }catch(e){ return null; }
   }
   // Carga los pronósticos de `pid` al entrar. Si mientras tanto se completó
   // una relectura más nueva (por una respuesta tardía), manda esa.
@@ -8465,19 +8500,22 @@
     const since = ++lgSeq;
     const fresh = await getPicks(pid);
     const last = lgRefreshed[SLUG + "|" + pid];
-    if(last && last.seq > since) lgMergeServer(fresh, last.picks);
+    if(last && last.seq > since) lgMergeServer(fresh, last.picks, last.seq);
     return fresh;
   }
   async function lgRefreshAfterLate(owner){
     const key = owner.slug + "|" + owner.pid;
     const seq = ++lgSeq;
-    const fresh = await getPicks(owner.pid);
-    if(!fresh || (lgRefreshed[key] && lgRefreshed[key].seq > seq)) return;
+    const gen = lgGen;
+    const fresh = await lgGetOwnPicks(owner.pid);
+    if(!fresh) return;
+    if(lgRefreshed[key] && lgRefreshed[key].seq > seq) return;
     lgRefreshed[key] = { seq, picks: fresh };
+    // Salió y volvió a entrar mientras tanto: esa entrada ya leyó después (H2).
+    if(gen !== lgGen) return;
     if(!(currentUser && currentUser.id === owner.pid && SLUG === owner.slug)) return;
-    lgMergeServer(myPicks, fresh);
-    const main = document.getElementById("qz-main");
-    if(main && activeTab === "jornada" && !lgQueue.size) renderJornada(main);
+    const changed = lgMergeServer(myPicks, fresh, seq);
+    if(changed.length) lgPaintChanged(changed);
   }
   function lgOwnerNow(){ return currentUser ? { gen: lgGen, slug: SLUG, pid: currentUser.id } : null; }
   function lgSameOwner(o){ return !!o && o.gen === lgGen && o.slug === SLUG && !!currentUser && currentUser.id === o.pid; }
@@ -8485,7 +8523,7 @@
     lgGen += 1;
     lgQueue.clear();
     Object.keys(lgTimers).forEach(k => { clearTimeout(lgTimers[k].t); delete lgTimers[k]; });
-    [lgDrafts, lgState, lgRejected].forEach(o => Object.keys(o).forEach(k => { delete o[k]; }));
+    [lgDrafts, lgState, lgRejected, lgLocalSeq].forEach(o => Object.keys(o).forEach(k => { delete o[k]; }));
   }
   // Partidos de ESTA sesión que todavía no quedan guardados: en cola, en
   // camino, esperando los 700 ms, con error, conflicto o guardando, o con
@@ -8584,6 +8622,7 @@
       if(r.status === 200 && r.ok && currentUser && currentUser.id === owner.pid && SLUG === owner.slug) lgRefreshAfterLate(owner);
       return;
     }
+    if(r.status !== 0) lgLocalSeq[round.id + "|" + matchId] = ++lgSeq;
     if(r.status === 200 && r.ok){
       lgSetAccepted(round, matchId, r.value);
       lgSetSt(round.id, matchId, { st: "saved", at: r.acceptedAt });

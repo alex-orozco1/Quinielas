@@ -58,12 +58,23 @@ function harness(opts = {}) {
   env.getPicks = async (pid) => {
     if (env.loader) { const l = env.loader; env.loader = null; return l(pid); }
     if (opts.getPicks) return opts.getPicks(pid);
+    if (env.failReads) return {};                       // como la real: un error se vuelve {}
     return JSON.parse(JSON.stringify(env.server[pid] || {}));
   };
   env.toasts = [];
+  // Lectura directa del «servidor» (la relectura tras una respuesta tardía).
+  // env.reads permite retener o hacer fallar cada lectura.
+  env.reads = [];
+  env.kvGet = (key) => new Promise((resolve, reject) => {
+    const pid = key.split(":picks:")[1];
+    const snap = () => (env.server[pid] ? { found: true, value: JSON.parse(JSON.stringify(env.server[pid])) } : { found: false });
+    if (env.holdReads) env.reads.push({ pid, ok: () => resolve(snap()), okWith: (v) => resolve({ found: true, value: v }), fail: () => reject(new Error("kv get failed: HTTP 500")) });
+    else if (env.failReads) reject(new Error("kv get failed: HTTP 500"));
+    else resolve(snap());
+  });
   const factory = new Function("env", `
     const window = env.window, fetch = env.fetch, document = env.document, qzConfirm = env.qzConfirm;
-    const kvSetWithError = env.kvSetWithError, getPicks = env.getPicks;
+    const kvSetWithError = env.kvSetWithError, getPicks = env.getPicks, kvGet = env.kvGet;
     let currentUser = null, currentUserPinCache = null, ownerPasswordCache = null, myPicks = {}, meta = { rounds: env.rounds || [], settings: {} };
     let SLUG = "lg-demo", activeTab = "otra", jornadaFilter = "porjugar";
     const toast = (m) => env.toasts.push(m), renderJornada = () => {}, serverNow = () => Date.now(), isRoundLocked = () => false;
@@ -103,7 +114,7 @@ function harness(opts = {}) {
       lgEnqueue, lgRetryAll, lgSt, lgDraft, lgSetDraft, lgSetSt,
     };
   `);
-  return { app: factory(env), requests, pending, confirms, toasts: env.toasts, server: env.server };
+  return { app: factory(env), requests, pending, confirms, toasts: env.toasts, server: env.server, env };
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -582,5 +593,101 @@ test("CAMBIAR USUARIO · el aviso de espera dura lo que la espera y se repite si
   assert.equal(await first, true);
   const fn = sliceFn(html, "async function lgBeforeSwitch()");
   assert.ok(/toast\(WAIT, 6500\)/.test(fn), "dura más que la espera de 6 s");
+});
+
+// ---- Technical QA de b14c58c ------------------------------------------------
+
+test("RELECTURA · H1: si la relectura falla, no se borra nada de la pantalla", async () => {
+  const { app, pending, server, env } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m1: "A", m2: "D", __score: { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } } } };
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  env.failReads = true;                                // el servidor responde 500 a la relectura
+  pending.shift().resolve(ok({ a: 6, b: 6 }));
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(app.picks().r_lg.__score, { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } }, "siguen los dos guardados");
+});
+
+test("RELECTURA · H1: si la relectura falla durante la entrada, no pisa la carga buena", async () => {
+  const { app, pending, server, env } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m1: "A", m2: "D", __score: { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } } } };
+  let release;
+  const loading = app.login(A, "1111", () => new Promise((r) => { release = r; }));
+  env.failReads = true;
+  pending.shift().resolve(ok({ a: 6, b: 6 }));
+  for (let i = 0; i < 10; i++) await tick();
+  release(JSON.parse(JSON.stringify(server[A.id])));
+  await loading;
+  assert.deepEqual(app.picks().r_lg.__score, { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } });
+});
+
+test("RELECTURA · H2: una relectura lenta que termina después de salir y volver a entrar no pisa lo más nuevo", async () => {
+  const { app, pending, server, env } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);          // sesión 1 → 2
+  server[A.id] = { r_lg: { m2: "D", __score: { m2: { a: 6, b: 6 } } } };
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  env.holdReads = true;
+  pending.shift().resolve(ok({ a: 6, b: 6 }));          // lanza la relectura; el servidor la atiende con 6–6
+  for (let i = 0; i < 5; i++) await tick();
+  const stale = env.reads.shift();
+  const staleValue = JSON.parse(JSON.stringify(server[A.id]));
+  env.holdReads = false;
+  app.lgEnqueue(ROUND, "m2", { a: 3, b: 3 });           // guarda 3–3
+  await tick();
+  server[A.id] = { r_lg: { m2: "D", __score: { m2: { a: 3, b: 3 } } } };
+  pending.shift().resolve(ok({ a: 3, b: 3 }));
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(await app.clickSwitch(), true);          // sesión 2 → 3
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  assert.deepEqual(app.picks().r_lg.__score.m2, { a: 3, b: 3 });
+  stale.okWith(staleValue);                              // llega la relectura vieja
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(app.picks().r_lg.__score.m2, { a: 3, b: 3 }, "no vuelve el 6–6");
+});
+
+test("RELECTURA · H2: en la misma sesión, una relectura que salió antes de un guardado no lo pisa aunque se toque el campo", async () => {
+  const { app, pending, server, env } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m2: "D", __score: { m2: { a: 6, b: 6 } } } };
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  env.holdReads = true;
+  pending.shift().resolve(ok({ a: 6, b: 6 }));
+  for (let i = 0; i < 5; i++) await tick();
+  const stale = env.reads.shift();
+  const staleValue = JSON.parse(JSON.stringify(server[A.id]));
+  env.holdReads = false;
+  app.lgEnqueue(ROUND, "m2", { a: 3, b: 3 });
+  await tick();
+  pending.shift().resolve(ok({ a: 3, b: 3 }));
+  for (let i = 0; i < 5; i++) await tick();
+  app.lgSetSt(ROUND.id, "m2", null);                     // toca el campo: se limpia el estado
+  stale.okWith(staleValue);
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(app.picks().r_lg.__score.m2, { a: 3, b: 3 });
+});
+
+test("RELECTURA · H3: la relectura no redibuja la jornada (no mueve el scroll ni quita el foco)", () => {
+  const fn = html.slice(html.indexOf("async function lgRefreshAfterLate(owner)"), html.indexOf("function lgOwnerNow()"));
+  assert.ok(!/renderJornada\(/.test(fn), "sólo pinta los partidos que cambiaron");
+  assert.ok(/lgPaintChanged\(changed\)/.test(fn));
+  const paint = sliceFn(html, "function lgPaintChanged(changed)");
+  assert.ok(paint.includes("input !== document.activeElement"), "no toca el campo enfocado");
 });
 
