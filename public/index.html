@@ -317,6 +317,20 @@
   #quiniela-root .lg-org-row select{ max-width:100%; }
   #quiniela-root .lg-org-group{ margin-bottom:10px; }
   #quiniela-root .lg-scroll-hint{ display:none; font-size:12.5px; }
+  #quiniela-root .lg-h-wrap{ overflow-x:auto; max-width:100%; }
+  #quiniela-root table.lg-h-table{ border-collapse:separate; border-spacing:0; }
+  #quiniela-root table.lg-h-table th, #quiniela-root table.lg-h-table td{ vertical-align:top; padding:8px 10px; text-align:left; }
+  #quiniela-root .lg-h-cell{ min-width:150px; font-size:13px; line-height:1.35; }
+  #quiniela-root table.lg-h-table .lg-h-name{ white-space:normal; overflow-wrap:anywhere; width:128px; min-width:118px; max-width:140px; text-align:left; font-weight:500; text-transform:none; letter-spacing:0; color:var(--ink); font-size:13px; }
+  #quiniela-root .lg-h-name strong{ display:block; font-size:14px; }
+  #quiniela-root .lg-h-total{ display:block; font-weight:800; font-size:15px; color:var(--pitch-dark); }
+  #quiniela-root table.lg-h-table thead .lg-h-name{ text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); font-size:11px; }
+  #quiniela-root .lg-h-sum{ display:block; font-size:11.5px; color:var(--ink-soft); font-weight:500; text-transform:none; letter-spacing:0; }
+  #quiniela-root .lg-h-real td, #quiniela-root .lg-h-real th{ background:var(--chalk); }
+  #quiniela-root .lg-h-pts.ok{ color:#1B4332; }
+  #quiniela-root .lg-h-pts.no{ color:#7d251d; }
+  #quiniela-root .lg-h-why, #quiniela-root .lg-h-state{ font-size:12px; color:var(--ink-soft); }
+  #quiniela-root .lg-h-help{ font-size:13px; }
   @media (max-width:700px){ #quiniela-root .lg-scroll-hint{ display:block; } }
   #quiniela-root td.lg-cell-ok{ color:#1B4332; font-weight:700; }
   #quiniela-root td.lg-cell-no{ color:#7d251d; }
@@ -8736,6 +8750,42 @@
   }
 
   // ---- Historial: detalle de una jornada de liguilla -------------------------
+  // Historial de liguilla: cada celda separa el pronóstico, los puntos y por
+  // qué; el nombre y el total quedan fijos a la izquierda (revisión de e8fde8d:
+  // «2–1 · 1+1» mezclaba pronóstico y puntos sin explicarlos).
+  function lgRulesSentence(rules){
+    if(!rules) return "";
+    return rules.exactBonus
+      ? `Atinarle al ganador o al empate: ${lgPts(rules.resultPoints)}. Marcador exacto: +${rules.exactBonus} extra (en total ${lgPts(rules.resultPoints + rules.exactBonus)}).`
+      : `Atinarle al ganador o al empate: ${lgPts(rules.resultPoints)}. Sin puntos extra por marcador exacto.`;
+  }
+  function lgHitSummary(res){
+    const hits = res.resultHits;
+    let txt = !res.scored ? "Aún sin partidos calificados"
+      : hits ? `${hits} partido${hits === 1 ? "" : "s"} acertado${hits === 1 ? "" : "s"}` : "Ningún partido acertado";
+    if(res.exactHits) txt += ` (${res.exactHits} exacto${res.exactHits === 1 ? "" : "s"})`;
+    const waiting = res.pending + res.postponed;
+    if(waiting) txt += ` · ${waiting} sin calificar`;
+    return txt;
+  }
+  // Una celda: «Pronóstico: 2–1» / «2 pts · Marcador exacto» / desglose.
+  function lgHistCellHtml(round, m, out, pickValue){
+    const rules = lgRulesOf(round);
+    const pick = pickValue == null ? null : lgPickText(round, m, pickValue);
+    const pickLine = pick ? `<div class="lg-h-pick">Pronóstico: <strong>${esc(pick)}</strong></div>` : `<div class="lg-h-pick muted">Sin pronóstico</div>`;
+    if(out.state === "pending") return `${pickLine}<div class="lg-h-state">Pendiente · aún no se califica</div>`;
+    if(out.state === "postponed") return `${pickLine}<div class="lg-h-state">Aplazado · se califica cuando se juegue</div>`;
+    if(out.state === "void") return `${pickLine}<div class="lg-h-state">Anulado · no cuenta para nadie</div>`;
+    if(!pick) return `${pickLine}<div class="lg-h-pts">0 pts</div>`;
+    let kind;
+    if(out.exactHit) kind = "Marcador exacto";
+    else if(out.resultHit) kind = round.results[m.id] === "D" ? "Empate acertado" : "Resultado acertado";
+    else kind = "No acertó";
+    const pts = `<div class="lg-h-pts ${out.total ? "ok" : "no"}"><strong>${esc(lgPts(out.total))}</strong> · ${esc(kind)}</div>`;
+    const why = out.exactHit && rules && rules.exactBonus
+      ? `<div class="lg-h-why">${esc(out.base)} por resultado + ${esc(out.bonus)} extra por exacto = ${esc(lgPts(out.total))}</div>` : ``;
+    return pickLine + pts + why;
+  }
   function renderLiguillaHistDetail(detail, round){
     const rules = lgRulesOf(round);
     const rows = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
@@ -8744,27 +8794,25 @@
       const cells = round.matches.map((m, i) => {
         const out = res.matches[i];
         const v = rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
-        const txt = lgPickText(round, m, v) || "—";
-        let tail = "";
-        if(out.state === "scored") tail = out.total ? ` · ${rules.capture === "score" && rules.exactBonus ? `${out.base}+${out.bonus}` : out.total}` : " · 0";
-        const cls = out.state !== "scored" ? "" : (out.total ? "lg-cell-ok" : "lg-cell-no");
-        return `<td class="${cls}" style="text-align:center;">${esc(txt)}${esc(tail)}</td>`;
+        return `<td class="lg-h-cell">${lgHistCellHtml(round, m, out, v)}</td>`;
       }).join("");
-      const hits = `${res.resultHits} res.${rules.capture === "score" ? ` · ${res.exactHits} exacto${res.exactHits === 1 ? "" : "s"}` : ""}`;
-      return `<tr><td class="qz-sticky-col">${esc(p.name)}</td><td style="text-align:center;font-weight:700;">${esc(res.total)}</td>${cells}<td style="text-align:center;">${esc(hits)}</td></tr>`;
+      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(lgPts(res.total))}</span><span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
     }).join("");
     detail.innerHTML = `
-      <div class="card" style="overflow-x:auto;">
+      <div class="card">
         <h3>${esc(roundTitle(round))}${roundSubtitle(round) ? ` <span class="muted" style="font-weight:500;">· ${esc(roundSubtitle(round))}</span>` : ``}</h3>
-        <p class="muted">${esc(lgRulesSummary(rules))}. En cada partido, «1+1» es base + bono. «Aciertos» cuenta partidos («res.» = resultado acertado); «Pts» son los puntos de esta jornada.</p>
-        <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido; el nombre y los puntos van primero.</p>
-        <table>
-          <thead><tr><th class="qz-sticky-col">Participante</th><th style="text-align:center;">Pts</th>${round.matches.map(m=>`<th style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th style="text-align:center;">Aciertos</th></tr></thead>
-          <tbody>
-            <tr style="background:var(--chalk);"><td class="qz-sticky-col"><strong>Resultado real</strong></td><td></td>${round.matches.map(m => `<td style="text-align:center;font-weight:700;">${esc(lgResultText(round, m))}</td>`).join("")}<td></td></tr>
-            ${rows}
-          </tbody>
-        </table>
+        <div class="lg-strip"><strong>Reglas de esta jornada</strong><span>${esc(lgRulesSentence(rules))}</span><span>Cuenta el marcador final con prórroga, sin penales.</span></div>
+        <p class="muted lg-h-help">Cada casilla dice el pronóstico, los puntos que dio y por qué. A la izquierda, el total de la jornada y cuántos partidos acertó cada quien${rules.exactBonus ? "; un exacto también cuenta como partido acertado" : ""}.</p>
+        <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido; el nombre y los puntos se quedan fijos.</p>
+        <div class="lg-h-wrap">
+          <table class="lg-h-table">
+            <thead><tr><th class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Puntos de la jornada</span></th>${round.matches.map(m=>`<th class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr></thead>
+            <tbody>
+              <tr class="lg-h-real"><th scope="row" class="qz-sticky-col lg-h-name"><strong>Resultado real</strong></th>${round.matches.map(m => `<td class="lg-h-cell"><strong>${esc(lgResultText(round, m))}</strong></td>`).join("")}</tr>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
       </div>`;
   }
 
