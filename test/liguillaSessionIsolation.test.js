@@ -52,7 +52,14 @@ function harness(opts = {}) {
     loader: null,
     getPicks: null,
   };
-  env.getPicks = async (pid) => (env.loader ? env.loader(pid) : (opts.getPicks ? opts.getPicks(pid) : {}));
+  // «Servidor»: lo que una lectura de pronósticos devuelve. La carga al entrar
+  // puede usar un cargador propio (una sola vez); las relecturas leen esto.
+  env.server = opts.server || {};
+  env.getPicks = async (pid) => {
+    if (env.loader) { const l = env.loader; env.loader = null; return l(pid); }
+    if (opts.getPicks) return opts.getPicks(pid);
+    return JSON.parse(JSON.stringify(env.server[pid] || {}));
+  };
   env.toasts = [];
   const factory = new Function("env", `
     const window = env.window, fetch = env.fetch, document = env.document, qzConfirm = env.qzConfirm;
@@ -96,7 +103,7 @@ function harness(opts = {}) {
       lgEnqueue, lgRetryAll, lgSt, lgDraft, lgSetDraft, lgSetSt,
     };
   `);
-  return { app: factory(env), requests, pending, confirms, toasts: env.toasts };
+  return { app: factory(env), requests, pending, confirms, toasts: env.toasts, server: env.server };
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -186,14 +193,16 @@ test("AISLAMIENTO · A→salir→A: lo de la sesión anterior no se envía ni pi
   assert.deepEqual(app.picks(), fresh, "lo aceptado por el servidor sigue intacto");
 });
 
-test("AISLAMIENTO · A→salir→A con la respuesta aún en camino: al llegar se muestra lo que el servidor aceptó para A", async () => {
-  const { app, requests, pending } = harness();
+test("AISLAMIENTO · A→salir→A con la respuesta aún en camino: al llegar se relee y se muestra lo que el servidor tiene para A", async () => {
+  const { app, requests, pending, server } = harness();
+  app.setRounds([ROUND]);
   app.as(A, "1111");
   app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
   app.lgEnqueue(ROUND, "m2", { a: 3, b: 0 });
   await tick();
   app.switchUser();
   app.as(A, "1111", {});                               // al volver, el servidor aún no tenía el 2–1
+  server[A.id] = { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } };                // ahora sí
   pending.shift().resolve(ok({ a: 2, b: 1 }));
   for (let i = 0; i < 5; i++) await tick();
   assert.equal(requests.length, 1, "el 3–0 sigue sin enviarse");
@@ -267,8 +276,8 @@ test("CAMBIAR USUARIO · H2: «Cambiar de todos modos» sí cambia y B no hereda
   assert.equal(app.lgSt(ROUND.id, "m1"), null);
 });
 
-test("ENTRADA · H3: si el 2–1 de A llega mientras A vuelve a entrar y su carga no lo trae, se muestra igual", async () => {
-  const { app, pending } = harness();
+test("ENTRADA · H3: si el 2–1 de A llega mientras A vuelve a entrar y su carga no lo trae, se relee y se muestra", async () => {
+  const { app, pending, server } = harness();
   app.setRounds([ROUND]);
   app.as(A, "1111");
   app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
@@ -276,6 +285,7 @@ test("ENTRADA · H3: si el 2–1 de A llega mientras A vuelve a entrar y su carg
   app.switchUser();
   let release;
   const loading = app.login(A, "1111", () => new Promise((r) => { release = r; }));
+  server[A.id] = { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } };
   pending.shift().resolve(ok({ a: 2, b: 1 }));        // llega a media carga
   for (let i = 0; i < 5; i++) await tick();
   release({});                                         // la lectura salió antes de que el servidor lo aceptara
@@ -301,7 +311,7 @@ test("ENTRADA · H3: si llega con nadie dentro, B no lo ve; A al volver ve lo de
 });
 
 test("ENTRADA · H4: lo aceptado tarde no pisa lo que A ya escribió o guardó en la sesión nueva", async () => {
-  const { app, requests, pending } = harness();
+  const { app, requests, pending, server } = harness();
   app.setRounds([ROUND]);
   app.as(A, "1111");
   app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
@@ -311,6 +321,7 @@ test("ENTRADA · H4: lo aceptado tarde no pisa lo que A ya escribió o guardó e
   app.lgEnqueue(ROUND, "m1", { a: 0, b: 0 });          // A cambia de idea en la sesión nueva
   await tick();
   assert.equal(requests.length, 2);
+  server[A.id] = { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } };                // el servidor aceptó el viejo; el 0–0 aún no
   pending.shift().resolve(ok({ a: 2, b: 1 }));        // llega el viejo
   for (let i = 0; i < 5; i++) await tick();
   assert.equal(app.lgSt(ROUND.id, "m1").st, "saving", "sigue mostrando su 0–0 en camino");
@@ -325,14 +336,15 @@ test("ENTRADA · H4: lo aceptado tarde no pisa lo que A ya escribió o guardó e
 });
 
 test("ENTRADA · H4: lo aplicado con A dentro no revive en una entrada posterior", async () => {
-  const { app, pending } = harness();
+  const { app, pending, server } = harness();
   app.setRounds([ROUND]);
   app.as(A, "1111");
   app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
   await tick();
   app.switchUser();
   await app.login(A, "1111", async () => ({}));
-  pending.shift().resolve(ok({ a: 2, b: 1 }));        // ya dentro: se muestra
+  server[A.id] = { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } };
+  pending.shift().resolve(ok({ a: 2, b: 1 }));        // ya dentro: se relee y se muestra
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(app.picks().r_lg.__score.m1, { a: 2, b: 1 });
   await app.clickSwitch();
@@ -374,8 +386,8 @@ test("ENTRADA · F1: lo aceptado tarde NO pisa una lectura del servidor más nue
   assert.deepEqual(app.picks().r_lg.__score.m1, { a: 0, b: 1 }, "manda la lectura del servidor");
 });
 
-test("ENTRADA · F1: dos aceptados tardíos que llegan desordenados: manda el que el servidor aceptó después", async () => {
-  const { app, pending } = harness({ confirm: true });
+test("ENTRADA · F1: dos aceptados tardíos que llegan desordenados: manda lo que el servidor tiene, no el orden de llegada", async () => {
+  const { app, pending, server } = harness({ confirm: true });
   app.setRounds([ROUND]);
   app.as(A, "1111");
   app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
@@ -388,6 +400,7 @@ test("ENTRADA · F1: dos aceptados tardíos que llegan desordenados: manda el qu
   let release;
   const loading = app.login(A, "1111", () => new Promise((r) => { release = r; }));
   const [first, second] = [pending.shift(), pending.shift()];
+  server[A.id] = { r_lg: { m1: "A", __score: { m1: { a: 3, b: 0 } } } };
   second.resolve(ok({ a: 3, b: 0 }, "2026-11-03T00:00:02Z"));   // el más nuevo llega primero
   for (let i = 0; i < 5; i++) await tick();
   first.resolve(ok({ a: 2, b: 1 }, "2026-11-03T00:00:01Z"));
@@ -490,5 +503,84 @@ test("CAMBIAR USUARIO · F2: mientras espera, avisa que está guardando", async 
   assert.ok(toasts.some((t) => /Guardando tus pronósticos antes de cambiar de usuario/.test(t)));
   pending.shift().resolve(ok({ a: 2, b: 1 }));
   assert.equal(await done, true);
+});
+
+// ---- Technical QA de 602a38a ------------------------------------------------
+
+test("TARDÍA · G1: con A dentro, la respuesta vieja de otra sesión no pisa lo que A guardó después (mismo dispositivo)", async () => {
+  const { app, pending, server } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });          // el servidor lo acepta; la respuesta se retiene
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m2: "D", __score: { m2: { a: 6, b: 6 } } } };
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  app.lgEnqueue(ROUND, "m2", { a: 3, b: 3 });          // guarda 3–3 en la sesión nueva
+  await tick();
+  server[A.id] = { r_lg: { m2: "D", __score: { m2: { a: 3, b: 3 } } } };
+  pending.pop().resolve(ok({ a: 3, b: 3 }));
+  for (let i = 0; i < 5; i++) await tick();
+  app.lgSetSt(ROUND.id, "m2", null);                   // toca el campo y lo deja igual: se limpia el estado
+  pending.shift().resolve(ok({ a: 6, b: 6 }));        // llega la vieja
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(app.picks().r_lg.__score.m2, { a: 3, b: 3 }, "manda lo que el servidor tiene");
+});
+
+test("TARDÍA · G1: otro dispositivo cambió a 0–1 y A ya volvió a entrar; la respuesta vieja no lo pisa", async () => {
+  const { app, pending, server } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m2: "B", __score: { m2: { a: 0, b: 1 } } } };   // desde otro dispositivo
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  assert.deepEqual(app.picks().r_lg.__score.m2, { a: 0, b: 1 });
+  pending.shift().resolve(ok({ a: 6, b: 6 }));
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(app.picks().r_lg.__score.m2, { a: 0, b: 1 });
+  assert.equal(app.picks().r_lg.m2, "B");
+});
+
+test("TARDÍA · G1: si la relectura termina antes que la carga de la entrada, la carga vieja no la pisa", async () => {
+  const { app, pending, server } = harness();
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  app.switchUser();
+  let release;
+  const loading = app.login(A, "1111", () => new Promise((r) => { release = r; }));
+  server[A.id] = { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } };
+  pending.shift().resolve(ok({ a: 2, b: 1 }));        // relectura inmediata con el 2–1
+  for (let i = 0; i < 10; i++) await tick();
+  release({});                                         // la carga de la entrada (más vieja) termina después
+  await loading;
+  assert.deepEqual(app.picks().r_lg.__score.m1, { a: 2, b: 1 });
+});
+
+test("TARDÍA · G1: la respuesta tardía no usa su propio valor como verdad (sólo dispara una relectura)", () => {
+  const at = html.indexOf("async function lgSend({ round, matchId, value, force, owner })");
+  const send = html.slice(at, html.indexOf("function lgDraftEquals(", at));
+  const late = send.slice(send.indexOf("if(!lgSameOwner(owner)){", send.indexOf("lgPost(")), send.indexOf("return;\n    }", send.indexOf("lgPost(")));
+  assert.ok(late.includes("lgRefreshAfterLate(owner)"), "relee del servidor");
+  assert.ok(!/lgSetAccepted|r\.value/.test(late), "no aplica el valor de la respuesta");
+});
+
+test("CAMBIAR USUARIO · el aviso de espera dura lo que la espera y se repite si se vuelve a tocar", async () => {
+  const { app, pending, toasts } = harness({ confirm: false });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  const first = app.clickSwitch();
+  await tick();
+  assert.equal(await app.clickSwitch(), false);
+  assert.equal(toasts.filter((t) => /Guardando tus pronósticos/.test(t)).length, 2, "el segundo toque también lo dice");
+  pending.shift().resolve(ok({ a: 2, b: 1 }));
+  assert.equal(await first, true);
+  const fn = sliceFn(html, "async function lgBeforeSwitch()");
+  assert.ok(/toast\(WAIT, 6500\)/.test(fn), "dura más que la espera de 6 s");
 });
 
