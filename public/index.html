@@ -4233,7 +4233,7 @@
   async function enterRestoredSession(session, tab){
     const fullParticipant = meta.participants.find(p => p.id === session.participantId);
     currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
-    myPicks = lgWithLate(await getPicks(currentUser.id), currentUser.id);
+    myPicks = await lgReadPicks(currentUser.id);
     activeTab = (tab === "admin" && currentUser.isAdmin) ? "admin" : "jornada";
     await render();
     // MON-003: hasta aquí no se sabía quién volvía. Si venía de pagar, éste
@@ -6893,7 +6893,7 @@
       meta.participants.push(newParticipant);
       currentUser = newParticipant;
       currentUserPinCache = cleanPin;
-      myPicks = lgWithLate(await getPicks(newParticipant.id), newParticipant.id);
+      myPicks = await lgReadPicks(newParticipant.id);
       activeTab = "jornada";
       render();
     });
@@ -6971,7 +6971,7 @@
           }
         }
         currentUser = p;
-        myPicks = lgWithLate(await getPicks(p.id), p.id);
+        myPicks = await lgReadPicks(p.id);
         activeTab = (ADMIN_ENTRY && p.isAdmin) ? "admin" : "jornada";
         await render();
         if(afterEntry) toast(afterEntry, 5000);
@@ -8422,21 +8422,26 @@
   // y se vuelve a leer al entrar (P1 de la revisión de e8fde8d).
   let lgGen = 0;
   let lgWorkingGen = null;
-  let lgInFlight = 0;
+  // Guardados en camino, cada uno con la generación de quien lo envió: el
+  // colgado de una sesión anterior no cuenta como pendiente de la actual (F3).
+  const lgInFlightJobs = new Set();
+  // Reloj lógico: ordena llegadas de respuestas tardías y lecturas al entrar.
+  let lgSeq = 0;
+  let lgSwitching = false;
   // Aceptados por el servidor que llegaron cuando su sesión ya había terminado,
-  // por "quiniela|participante". Sólo se aplican a esa misma persona.
+  // por "quiniela|participante". Sólo se aplican a esa misma persona, y sólo
+  // si llegaron DESPUÉS de que empezó la lectura de sus pronósticos: lo que
+  // llegó antes ya está en esa lectura, o algo más nuevo lo reemplazó (F1).
   const lgLateAccepted = {};
-  // Aplica a `picks` (los de `pid`) lo que el servidor aceptó tarde, sin pisar
-  // lo que la sesión actual ya tiene en camino, guardado o en borrador (H4).
-  // Al entrar (keep=false) la lista se consume. Si la persona ya estaba
-  // dentro (keep=true), la entrada se marca aplicada: sigue viva sólo por si
-  // su carga de pronósticos todavía está en camino, y se descarta al cambiar
-  // de sesión para no revivir un valor viejo en la siguiente entrada.
-  function lgWithLate(picks, pid, keep){
+  // Aplica a `picks` (los de `pid`) lo aceptado tarde con llegada posterior a
+  // `since`, sin pisar lo que la sesión actual ya tiene en camino, guardado o
+  // en borrador (H4). Al entrar (keep=false) la lista se consume; con la
+  // persona ya dentro (keep=true) se conserva por si su lectura sigue en camino.
+  function lgWithLate(picks, pid, since, keep){
     const key = SLUG + "|" + pid;
     const list = lgLateAccepted[key];
-    if(!list || !list.length || !picks) return picks;
-    list.forEach((e) => {
+    if(list && list.length && picks) list.forEach((e) => {
+      if(e.seq <= since) return;
       const round = meta.rounds.find(r => r.id === e.roundId) || e.round;
       if(!round || !isLg(round) || lgSt(e.roundId, e.matchId) || lgDraft(e.roundId, e.matchId)) return;
       const rules = lgRulesOf(round);
@@ -8447,10 +8452,25 @@
         rp.__score = rp.__score || {};
         rp.__score[e.matchId] = { a: e.value.a, b: e.value.b };
       } else rp[e.matchId] = e.value;
-      if(keep) e.applied = true;
     });
     if(!keep) delete lgLateAccepted[key];
     return picks;
+  }
+  // Carga los pronósticos de `pid` al entrar, con lo aceptado tarde (H3/F1).
+  async function lgReadPicks(pid){
+    const since = ++lgSeq;
+    const fresh = await getPicks(pid);
+    return lgWithLate(fresh, pid, since, false);
+  }
+  // Recuerda un aceptado tarde. Si ya hay uno del mismo partido, manda el que
+  // el servidor aceptó después (acceptedAt), no el que llegó al último.
+  function lgRememberLate(owner, round, matchId, value, acceptedAt){
+    const key = owner.slug + "|" + owner.pid;
+    const list = lgLateAccepted[key] = lgLateAccepted[key] || [];
+    const prev = list.find(e => e.roundId === round.id && e.matchId === matchId);
+    if(prev && prev.acceptedAt && acceptedAt && prev.acceptedAt > acceptedAt) return;
+    lgDropLate(owner, round.id, matchId);
+    lgLateAccepted[key].push({ round, roundId: round.id, matchId, value, acceptedAt: acceptedAt || null, seq: ++lgSeq });
   }
   // La sesión actual obtuvo del servidor un valor más nuevo para el partido:
   // lo aceptado tarde por una sesión anterior ya no manda.
@@ -8465,25 +8485,51 @@
     lgQueue.clear();
     Object.keys(lgTimers).forEach(k => { clearTimeout(lgTimers[k].t); delete lgTimers[k]; });
     [lgDrafts, lgState, lgRejected].forEach(o => Object.keys(o).forEach(k => { delete o[k]; }));
-    Object.keys(lgLateAccepted).forEach(k => { lgLateAccepted[k] = lgLateAccepted[k].filter(e => !e.applied); });
   }
-  // «Cambiar usuario» (Technical QA de 6e12f12, H2): antes de cerrar la
-  // sesión, lo que esta persona dejó pendiente se envía con SU identidad
-  // (todavía en memoria) y se espera un momento. Lo que no se pudo guardar
-  // (sin conexión, incompleto, en conflicto) se dice y se pregunta: nunca se
-  // pierde en silencio. Devuelve true si se puede cambiar.
+  // Partidos de ESTA sesión que todavía no quedan guardados: en cola, en
+  // camino, esperando los 700 ms, con error, conflicto o guardando, o con
+  // algo escrito sin guardar. Se cuentan partidos, no envíos (F4).
+  function lgUnsavedKeys(){
+    const keys = new Set();
+    lgQueue.forEach((job, k) => keys.add(k));
+    lgInFlightJobs.forEach(j => { if(j.gen === lgGen) keys.add(j.key); });
+    Object.keys(lgTimers).forEach(k => keys.add(k));
+    Object.keys(lgState).forEach(rid => Object.keys(lgState[rid]).forEach(mid => {
+      const st = lgState[rid][mid];
+      if(st && (st.st === "error" || st.st === "conflict" || st.st === "saving")) keys.add(rid + "|" + mid);
+    }));
+    Object.keys(lgDrafts).forEach(rid => Object.keys(lgDrafts[rid]).forEach(mid => {
+      const d = lgDrafts[rid][mid];
+      const typed = (v) => String(v == null ? "" : v).trim() !== "";
+      if(d && (typed(d.a) || typed(d.b) || d.pick != null)) keys.add(rid + "|" + mid);
+    }));
+    return keys;
+  }
+  // «Cambiar usuario» (Technical QA de 6e12f12, H2, y de f7d4098, F2–F5):
+  // antes de cerrar la sesión, lo que esta persona dejó pendiente se envía con
+  // SU identidad (todavía en memoria) y se espera hasta 6 s, enviando también
+  // lo que escriba mientras tanto. Lo que no quedó guardado se dice y se
+  // pregunta: nunca se pierde en silencio. Devuelve true si se puede cambiar.
   async function lgBeforeSwitch(){
-    Object.keys(lgTimers).forEach(k => { const t = lgTimers[k]; clearTimeout(t.t); delete lgTimers[k]; t.go(); });
-    const until = Date.now() + 6000;
-    while((lgQueue.size || lgInFlight) && Date.now() < until) await new Promise(r => setTimeout(r, 150));
-    const busy = lgQueue.size + lgInFlight;
-    const failed = Object.values(lgState).reduce((n, byMatch) => n + Object.values(byMatch).filter(st => st && (st.st === "error" || st.st === "conflict" || st.st === "saving")).length, 0);
-    const incomplete = Object.values(lgDrafts).reduce((n, byMatch) => n + Object.values(byMatch).filter(d => d && d.a != null && !(LG.isGoals(lgParseGoal(d.a)) && LG.isGoals(lgParseGoal(d.b)))).length, 0);
-    const unsaved = Math.max(busy, failed) + incomplete;
-    if(!unsaved) return true;
-    const one = unsaved === 1;
-    return qzConfirm(`Tienes ${unsaved} pronóstico${one ? "" : "s"} de liguilla que todavía no ${one ? "queda" : "quedan"} guardado${one ? "" : "s"} (enviándose, sin conexión, a medias o en conflicto). Si cambias de usuario ahora, ${one ? "se pierde" : "se pierden"}.`,
-      { title: "¿Cambiar de usuario?", confirmLabel: "Cambiar de todos modos", cancelLabel: "Quedarme y revisar", destructive: true });
+    if(lgSwitching) return false;              // un solo diálogo a la vez
+    lgSwitching = true;
+    try{
+      const gen = lgGen;
+      const flushTimers = () => Object.keys(lgTimers).forEach(k => { const t = lgTimers[k]; clearTimeout(t.t); delete lgTimers[k]; t.go(); });
+      const busy = () => lgQueue.size || Object.keys(lgTimers).length || [...lgInFlightJobs].some(j => j.gen === gen);
+      flushTimers();
+      if(busy()) toast("Guardando tus pronósticos antes de cambiar de usuario…", 3000);
+      const until = Date.now() + 6000;
+      while(busy() && Date.now() < until){
+        await new Promise(r => setTimeout(r, 150));
+        flushTimers();
+      }
+      const unsaved = lgUnsavedKeys().size;
+      if(!unsaved) return true;
+      const one = unsaved === 1;
+      return await qzConfirm(`Tienes ${unsaved} pronóstico${one ? "" : "s"} de liguilla que todavía no ${one ? "queda" : "quedan"} guardado${one ? "" : "s"} (enviándose, sin conexión, a medias o en conflicto). Si cambias de usuario ahora, ${one ? "se pierde" : "se pierden"}.`,
+        { title: "¿Cambiar de usuario?", confirmLabel: "Cambiar de todos modos", cancelLabel: "Quedarme y revisar", destructive: true });
+    } finally { lgSwitching = false; }
   }
   function lgEnqueue(round, matchId, value, force){
     const owner = lgOwnerNow();
@@ -8523,9 +8569,10 @@
   async function lgSend({ round, matchId, value, force, owner }){
     if(!lgSameOwner(owner)) return;
     const expected = force !== undefined ? force : lgAccepted(round, matchId);
-    lgInFlight += 1;
+    const flight = { gen: owner.gen, key: round.id + "|" + matchId };
+    lgInFlightJobs.add(flight);
     let r;
-    try{ r = await lgPost(owner, round, matchId, value, expected); } finally { lgInFlight -= 1; }
+    try{ r = await lgPost(owner, round, matchId, value, expected); } finally { lgInFlightJobs.delete(flight); }
     if(!lgSameOwner(owner)){
       // Cambió la sesión mientras tanto: la respuesta no se aplica a nadie más.
       // Si es la MISMA persona (salió y volvió a entrar), lo aceptado por el
@@ -8534,11 +8581,9 @@
       // tenga algo propio en ese partido (H4). Su cola y sus borradores
       // anteriores no reviven.
       if(r.status === 200 && r.ok){
-        const key = owner.slug + "|" + owner.pid;
-        lgDropLate(owner, round.id, matchId);
-        (lgLateAccepted[key] = lgLateAccepted[key] || []).push({ round, roundId: round.id, matchId, value: r.value });
+        lgRememberLate(owner, round, matchId, r.value, r.acceptedAt);
         if(currentUser && currentUser.id === owner.pid && SLUG === owner.slug){
-          myPicks = lgWithLate(myPicks, owner.pid, true);
+          myPicks = lgWithLate(myPicks, owner.pid, 0, true);
           const main = document.getElementById("qz-main");
           if(main && activeTab === "jornada" && !lgQueue.size) renderJornada(main);
         }

@@ -49,14 +49,17 @@ function harness(opts = {}) {
     document: { getElementById: () => null, querySelectorAll: () => [], querySelector: () => null },
     qzConfirm: async (message, o) => { confirms.push({ message, o }); return !!opts.confirm; },
     kvSetWithError: opts.kvSet || (async () => ({ ok: true })),
-    getPicks: opts.getPicks || (async () => ({})),
+    loader: null,
+    getPicks: null,
   };
+  env.getPicks = async (pid) => (env.loader ? env.loader(pid) : (opts.getPicks ? opts.getPicks(pid) : {}));
+  env.toasts = [];
   const factory = new Function("env", `
     const window = env.window, fetch = env.fetch, document = env.document, qzConfirm = env.qzConfirm;
     const kvSetWithError = env.kvSetWithError, getPicks = env.getPicks;
     let currentUser = null, currentUserPinCache = null, ownerPasswordCache = null, myPicks = {}, meta = { rounds: env.rounds || [], settings: {} };
     let SLUG = "lg-demo", activeTab = "otra", jornadaFilter = "porjugar";
-    const toast = () => {}, renderJornada = () => {}, serverNow = () => Date.now(), isRoundLocked = () => false;
+    const toast = (m) => env.toasts.push(m), renderJornada = () => {}, serverNow = () => Date.now(), isRoundLocked = () => false;
     const esc = (s) => String(s), humanizeError = (c) => String(c);
     ${SET_AUTH}
     const currentPicksKey = (pid) => "quiniela:" + SLUG + ":picks:" + pid;
@@ -75,9 +78,13 @@ function harness(opts = {}) {
       // pronósticos del servidor (myPicks = lgWithLate(await getPicks(id), id)).
       async login(user, pin, loadPicks){
         currentUser = user; currentUserPinCache = pin;
-        const fresh = await loadPicks();
-        myPicks = typeof lgWithLate === "function" ? lgWithLate(fresh, user.id) : fresh;
+        env.loader = loadPicks;
+        try{
+          if (typeof lgReadPicks === "function") myPicks = await lgReadPicks(user.id);
+          else { const fresh = await getPicks(user.id); myPicks = typeof lgWithLate === "function" ? lgWithLate(fresh, user.id) : fresh; }
+        } finally { env.loader = null; }
       },
+      type(round, matchId, side, v){ lgOnScoreInput(round, { id: matchId }, side, { value: String(v), setAttribute(){} }, false); },
       typeScore(round, matchId, a, b){
         const m = { id: matchId };
         lgOnScoreInput(round, m, "a", { value: String(a), setAttribute(){} }, false);
@@ -89,14 +96,14 @@ function harness(opts = {}) {
       lgEnqueue, lgRetryAll, lgSt, lgDraft, lgSetDraft, lgSetSt,
     };
   `);
-  return { app: factory(env), requests, pending, confirms };
+  return { app: factory(env), requests, pending, confirms, toasts: env.toasts };
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const ROUND = { id: "r_lg", stage: "liguilla", published: true, deadline: "2099-01-01T00:00:00Z",
   scoring: { capture: "score", resultPoints: 1, exactBonus: 1 }, matches: [{ id: "m1" }, { id: "m2" }] };
 const A = { id: "p_ana" }, B = { id: "p_beto" };
-const ok = (value) => ({ ok: true, status: 200, json: async () => ({ ok: true, value, acceptedAt: "2026-11-03T00:00:00Z" }) });
+const ok = (value, acceptedAt = "2026-11-03T00:00:00Z") => ({ ok: true, status: 200, json: async () => ({ ok: true, value, acceptedAt }) });
 const pidOf = (req) => decodeURIComponent(req.url.split("/picks/")[1].split("/")[0]);
 
 test("AISLAMIENTO · A→B: el trabajo en cola de A nunca sale con la identidad de B, y B no hereda su estado", async () => {
@@ -198,6 +205,14 @@ test("AISLAMIENTO · A→salir→A con la respuesta aún en camino: al llegar se
 test("AISLAMIENTO · «Cambiar usuario» invalida la sesión de liguilla antes de volver a entrar", () => {
   const handler = sliceFn(html, 'document.getElementById("qz-switch-user").addEventListener("click", async () =>');
   assert.ok(handler.includes("lgResetSession()"), "el botón limpia cola, borradores y estados de liguilla");
+  assert.ok(handler.indexOf("lgBeforeSwitch()") > -1 && handler.indexOf("lgBeforeSwitch()") < handler.indexOf("lgResetSession()"), "primero se guarda o se pregunta");
+});
+
+test("ENTRADA · las tres entradas cargan los pronósticos con lgReadPicks (lo aceptado tarde, con su orden)", () => {
+  for (const id of ["currentUser.id", "newParticipant.id", "p.id"]) {
+    assert.ok(html.includes("myPicks = await lgReadPicks(" + id + ");"), id);
+  }
+  assert.equal((html.match(/myPicks = await getPicks\(/g) || []).length, 0, "ninguna entrada lee sin pasar por lgReadPicks");
 });
 
 // ---- Technical QA de 6e12f12 ------------------------------------------------
@@ -268,7 +283,7 @@ test("ENTRADA · H3: si el 2–1 de A llega mientras A vuelve a entrar y su carg
   assert.deepEqual(app.picks(), { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } });
 });
 
-test("ENTRADA · H3: si llega con nadie dentro, A lo ve al volver; B no", async () => {
+test("ENTRADA · H3: si llega con nadie dentro, B no lo ve; A al volver ve lo del servidor", async () => {
   const { app, pending } = harness();
   app.setRounds([ROUND]);
   app.as(A, "1111");
@@ -280,7 +295,8 @@ test("ENTRADA · H3: si llega con nadie dentro, A lo ve al volver; B no", async 
   await app.login(B, "2222", async () => ({}));
   assert.deepEqual(app.picks(), {}, "B no ve el pronóstico de A");
   await app.clickSwitch();
-  await app.login(A, "1111", async () => ({}));
+  // Esta lectura sale DESPUÉS de que llegó la respuesta: el servidor ya lo tiene.
+  await app.login(A, "1111", async () => ({ r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } }));
   assert.deepEqual(app.picks(), { r_lg: { m1: "A", __score: { m1: { a: 2, b: 1 } } } });
 });
 
@@ -337,5 +353,142 @@ test("GUARDAR · H1: el reintento tras liguilla_pick_conflict conserva las respu
   assert.equal(r.ok, true);
   assert.equal(sent.length, 2);
   assert.deepEqual(sent[1], { r_lg: { __extra: { q1: "Sí" } } }, "la respuesta extra sigue; el partido lo decide el servidor");
+});
+
+// ---- Technical QA de f7d4098 ------------------------------------------------
+
+test("ENTRADA · F1: lo aceptado tarde NO pisa una lectura del servidor más nueva (otro dispositivo lo cambió)", async () => {
+  const { app, pending } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);         // colgado: «Cambiar de todos modos»
+  await app.login(B, "2222", async () => ({}));
+  pending.shift().resolve(ok({ a: 6, b: 6 }));        // llega con B dentro
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(app.picks(), {}, "B no ve nada");
+  // Ana, en otro dispositivo, cambia a 0–1. Beto sale y Ana vuelve a entrar.
+  await app.clickSwitch();
+  await app.login(A, "1111", async () => ({ r_lg: { m1: "B", __score: { m1: { a: 0, b: 1 } } } }));
+  assert.deepEqual(app.picks().r_lg.__score.m1, { a: 0, b: 1 }, "manda la lectura del servidor");
+});
+
+test("ENTRADA · F1: dos aceptados tardíos que llegan desordenados: manda el que el servidor aceptó después", async () => {
+  const { app, pending } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  await app.clickSwitch();
+  app.as(A, "1111", {});
+  app.lgEnqueue(ROUND, "m1", { a: 3, b: 0 });
+  await tick();
+  await app.clickSwitch();
+  let release;
+  const loading = app.login(A, "1111", () => new Promise((r) => { release = r; }));
+  const [first, second] = [pending.shift(), pending.shift()];
+  second.resolve(ok({ a: 3, b: 0 }, "2026-11-03T00:00:02Z"));   // el más nuevo llega primero
+  for (let i = 0; i < 5; i++) await tick();
+  first.resolve(ok({ a: 2, b: 1 }, "2026-11-03T00:00:01Z"));
+  for (let i = 0; i < 5; i++) await tick();
+  release({});
+  await loading;
+  assert.deepEqual(app.picks().r_lg.__score.m1, { a: 3, b: 0 });
+});
+
+test("CAMBIAR USUARIO · F2: lo que A escribe mientras se espera también se envía como A, o se avisa", async () => {
+  const { app, requests, pending, confirms } = harness({ confirm: false });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  const done = app.clickSwitch();
+  await wait(50);
+  app.typeScore(ROUND, "m2", 1, 0);                    // escribe durante la espera
+  await wait(400);
+  pending.shift().resolve(ok({ a: 2, b: 1 }));
+  await wait(400);
+  assert.equal(requests.length, 2, "el 1–0 también salió");
+  assert.equal(pidOf(requests[1]), A.id);
+  assert.equal(requests[1].headers["X-Qracks-Auth"], "1111");
+  pending.shift().resolve(ok({ a: 1, b: 0 }));
+  assert.equal(await done, true);
+  assert.equal(confirms.length, 0, "todo quedó guardado: no pregunta");
+});
+
+test("CAMBIAR USUARIO · F2: si lo escrito durante la espera no alcanza a guardarse, se cuenta en el aviso", async () => {
+  const { app, pending, confirms } = harness({ confirm: false });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  const done = app.clickSwitch();
+  await wait(50);
+  app.type(ROUND, "m2", "a", 1);                       // a medias
+  pending.shift().resolve(ok({ a: 2, b: 1 }));
+  assert.equal(await done, false);
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0].message, /Tienes 1 pronóstico de liguilla/);
+  assert.deepEqual(app.lgDraft(ROUND.id, "m2"), { a: "1", b: "" });
+});
+
+test("CAMBIAR USUARIO · F3: el guardado colgado de A no le cuenta a B ni lo hace esperar", async () => {
+  const { app, confirms } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });         // se queda colgado para siempre
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  assert.equal(confirms.length, 1, "a A sí se le preguntó");
+  await app.login(B, "2222", async () => ({}));
+  const t0 = Date.now();
+  assert.equal(await app.clickSwitch(), true);
+  assert.ok(Date.now() - t0 < 1000, "B no espera por lo de A");
+  assert.equal(confirms.length, 1, "a B no se le pregunta nada");
+});
+
+test("CAMBIAR USUARIO · F4: el aviso cuenta partidos, no envíos; un borrador vacío no cuenta", async () => {
+  const { app, pending, confirms } = harness({ confirm: false });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });         // reenvío del mismo partido (al perder el foco)
+  app.lgSetDraft(ROUND.id, "m2", { a: "", b: "" });    // escribió y borró
+  const done = app.clickSwitch();
+  await wait(100);
+  pending.shift().resolve({ ok: false, status: 0, json: async () => { throw new Error("sin red"); } });
+  await wait(300);
+  if (pending.length) pending.shift().resolve({ ok: false, status: 0, json: async () => { throw new Error("sin red"); } });
+  assert.equal(await done, false);
+  assert.match(confirms[0].message, /Tienes 1 pronóstico de liguilla/);
+});
+
+test("CAMBIAR USUARIO · F5: un segundo «Cambiar usuario» durante la espera no abre otro diálogo", async () => {
+  const { app, pending, confirms } = harness({ confirm: false });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  const first = app.clickSwitch();
+  const second = await app.clickSwitch();
+  assert.equal(second, false, "el segundo no cambia");
+  pending.shift().resolve({ ok: false, status: 0, json: async () => { throw new Error("sin red"); } });
+  await first;
+  assert.equal(confirms.length, 1);
+});
+
+test("CAMBIAR USUARIO · F2: mientras espera, avisa que está guardando", async () => {
+  const { app, pending, toasts } = harness();
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m1", { a: 2, b: 1 });
+  await tick();
+  const done = app.clickSwitch();
+  await tick();
+  assert.ok(toasts.some((t) => /Guardando tus pronósticos antes de cambiar de usuario/.test(t)));
+  pending.shift().resolve(ok({ a: 2, b: 1 }));
+  assert.equal(await done, true);
 });
 
