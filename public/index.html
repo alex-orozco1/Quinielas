@@ -331,6 +331,13 @@
   #quiniela-root .lg-h-pts.no{ color:#7d251d; }
   #quiniela-root .lg-h-why, #quiniela-root .lg-h-state{ font-size:12px; color:var(--ink-soft); }
   #quiniela-root .lg-h-help{ font-size:13px; }
+  /* 320 px: la columna fija más una casilla caben completas en el ancho útil
+     (≈250 px), así ninguna casilla queda cortada al deslizar (UX de 6e12f12). */
+  @media (max-width:360px){
+    #quiniela-root table.lg-h-table th, #quiniela-root table.lg-h-table td{ padding:7px 7px; }
+    #quiniela-root table.lg-h-table .lg-h-name{ width:92px; min-width:88px; max-width:96px; }
+    #quiniela-root .lg-h-cell{ min-width:118px; }
+  }
   @media (max-width:700px){ #quiniela-root .lg-scroll-hint{ display:block; } }
   #quiniela-root td.lg-cell-ok{ color:#1B4332; font-weight:700; }
   #quiniela-root td.lg-cell-no{ color:#7d251d; }
@@ -2375,7 +2382,15 @@
       // para las jornadas de liguilla (nunca se pisa) y se reintenta una vez.
       if(first.ok || first.error !== "liguilla_pick_conflict") return first;
       const fresh = await getPicks(pid);
-      meta.rounds.filter(isLg).forEach(r => { if(fresh[r.id]) data[r.id] = { ...fresh[r.id], ...(data[r.id] && data[r.id].__extra ? { __extra: data[r.id].__extra } : {}) }; else delete data[r.id]; });
+      // Las respuestas a las preguntas de la jornada (__extra) son lo que se
+      // está guardando: se conservan aunque el servidor no tenga todavía esa
+      // jornada (Technical QA de 6e12f12, H1).
+      meta.rounds.filter(isLg).forEach(r => {
+        const extra = data[r.id] && data[r.id].__extra ? { __extra: data[r.id].__extra } : null;
+        if(fresh[r.id]) data[r.id] = { ...fresh[r.id], ...(extra || {}) };
+        else if(extra) data[r.id] = extra;
+        else delete data[r.id];
+      });
       return await kvSetWithError(currentPicksKey(pid), data, creds);
     }catch(e){ console.error("save picks failed", e); return { ok: false, error: "network_error" }; }
   }
@@ -4217,7 +4232,7 @@
   async function enterRestoredSession(session, tab){
     const fullParticipant = meta.participants.find(p => p.id === session.participantId);
     currentUser = fullParticipant || { id: session.participantId, name: session.name, isAdmin: session.isAdmin, hasPin: session.hasPin };
-    myPicks = await getPicks(currentUser.id);
+    myPicks = lgWithLate(await getPicks(currentUser.id), currentUser.id);
     activeTab = (tab === "admin" && currentUser.isAdmin) ? "admin" : "jornada";
     await render();
     // MON-003: hasta aquí no se sabía quién volvía. Si venía de pagar, éste
@@ -6877,7 +6892,7 @@
       meta.participants.push(newParticipant);
       currentUser = newParticipant;
       currentUserPinCache = cleanPin;
-      myPicks = await getPicks(newParticipant.id);
+      myPicks = lgWithLate(await getPicks(newParticipant.id), newParticipant.id);
       activeTab = "jornada";
       render();
     });
@@ -6955,7 +6970,7 @@
           }
         }
         currentUser = p;
-        myPicks = await getPicks(p.id);
+        myPicks = lgWithLate(await getPicks(p.id), p.id);
         activeTab = (ADMIN_ENTRY && p.isAdmin) ? "admin" : "jornada";
         await render();
         if(afterEntry) toast(afterEntry, 5000);
@@ -7054,6 +7069,8 @@
     const menuCopyBtn = document.getElementById("qz-menu-copy-link");
     if(menuCopyBtn) menuCopyBtn.addEventListener("click", copyAccessLink);
     document.getElementById("qz-switch-user").addEventListener("click", async () => {
+      // Liguilla: lo pendiente se envía como de quien lo escribió, o se avisa.
+      if(!(await lgBeforeSwitch())) return;
       await clearSessionCookie();
       // Unsaved answers are predictions: they do not stay behind on a shared
       // device for the next person (Technical QA, ronda 4).
@@ -7062,6 +7079,7 @@
       // persona se quedan con ella; nada de eso se envía ni se ve como de quien
       // entra después.
       lgResetSession();
+      allPicksCache = {};
       currentUser = null;
       ownerUnlocked = false;
       ownerPasswordCache = null;
@@ -8403,13 +8421,68 @@
   // y se vuelve a leer al entrar (P1 de la revisión de e8fde8d).
   let lgGen = 0;
   let lgWorkingGen = null;
+  let lgInFlight = 0;
+  // Aceptados por el servidor que llegaron cuando su sesión ya había terminado,
+  // por "quiniela|participante". Sólo se aplican a esa misma persona.
+  const lgLateAccepted = {};
+  // Aplica a `picks` (los de `pid`) lo que el servidor aceptó tarde, sin pisar
+  // lo que la sesión actual ya tiene en camino, guardado o en borrador (H4).
+  // Al entrar (keep=false) la lista se consume. Si la persona ya estaba
+  // dentro (keep=true), la entrada se marca aplicada: sigue viva sólo por si
+  // su carga de pronósticos todavía está en camino, y se descarta al cambiar
+  // de sesión para no revivir un valor viejo en la siguiente entrada.
+  function lgWithLate(picks, pid, keep){
+    const key = SLUG + "|" + pid;
+    const list = lgLateAccepted[key];
+    if(!list || !list.length || !picks) return picks;
+    list.forEach((e) => {
+      const round = meta.rounds.find(r => r.id === e.roundId) || e.round;
+      if(!round || !isLg(round) || lgSt(e.roundId, e.matchId) || lgDraft(e.roundId, e.matchId)) return;
+      const rules = lgRulesOf(round);
+      const rp = picks[e.roundId] = picks[e.roundId] || {};
+      if(e.value == null){ delete rp[e.matchId]; if(rp.__score) delete rp.__score[e.matchId]; }
+      else if(rules && rules.capture === "score"){
+        rp[e.matchId] = LG.outcomeOfScore(e.value);
+        rp.__score = rp.__score || {};
+        rp.__score[e.matchId] = { a: e.value.a, b: e.value.b };
+      } else rp[e.matchId] = e.value;
+      if(keep) e.applied = true;
+    });
+    if(!keep) delete lgLateAccepted[key];
+    return picks;
+  }
+  // La sesión actual obtuvo del servidor un valor más nuevo para el partido:
+  // lo aceptado tarde por una sesión anterior ya no manda.
+  function lgDropLate(owner, roundId, matchId){
+    const key = owner.slug + "|" + owner.pid;
+    if(lgLateAccepted[key]) lgLateAccepted[key] = lgLateAccepted[key].filter(e => !(e.roundId === roundId && e.matchId === matchId));
+  }
   function lgOwnerNow(){ return currentUser ? { gen: lgGen, slug: SLUG, pid: currentUser.id } : null; }
   function lgSameOwner(o){ return !!o && o.gen === lgGen && o.slug === SLUG && !!currentUser && currentUser.id === o.pid; }
   function lgResetSession(){
     lgGen += 1;
     lgQueue.clear();
-    Object.keys(lgTimers).forEach(k => { clearTimeout(lgTimers[k]); delete lgTimers[k]; });
+    Object.keys(lgTimers).forEach(k => { clearTimeout(lgTimers[k].t); delete lgTimers[k]; });
     [lgDrafts, lgState, lgRejected].forEach(o => Object.keys(o).forEach(k => { delete o[k]; }));
+    Object.keys(lgLateAccepted).forEach(k => { lgLateAccepted[k] = lgLateAccepted[k].filter(e => !e.applied); });
+  }
+  // «Cambiar usuario» (Technical QA de 6e12f12, H2): antes de cerrar la
+  // sesión, lo que esta persona dejó pendiente se envía con SU identidad
+  // (todavía en memoria) y se espera un momento. Lo que no se pudo guardar
+  // (sin conexión, incompleto, en conflicto) se dice y se pregunta: nunca se
+  // pierde en silencio. Devuelve true si se puede cambiar.
+  async function lgBeforeSwitch(){
+    Object.keys(lgTimers).forEach(k => { const t = lgTimers[k]; clearTimeout(t.t); delete lgTimers[k]; t.go(); });
+    const until = Date.now() + 6000;
+    while((lgQueue.size || lgInFlight) && Date.now() < until) await new Promise(r => setTimeout(r, 150));
+    const busy = lgQueue.size + lgInFlight;
+    const failed = Object.values(lgState).reduce((n, byMatch) => n + Object.values(byMatch).filter(st => st && (st.st === "error" || st.st === "conflict" || st.st === "saving")).length, 0);
+    const incomplete = Object.values(lgDrafts).reduce((n, byMatch) => n + Object.values(byMatch).filter(d => d && d.a != null && !(LG.isGoals(lgParseGoal(d.a)) && LG.isGoals(lgParseGoal(d.b)))).length, 0);
+    const unsaved = Math.max(busy, failed) + incomplete;
+    if(!unsaved) return true;
+    const one = unsaved === 1;
+    return qzConfirm(`Tienes ${unsaved} pronóstico${one ? "" : "s"} de liguilla que todavía no ${one ? "queda" : "quedan"} guardado${one ? "" : "s"} (enviándose, sin conexión, a medias o en conflicto). Si cambias de usuario ahora, ${one ? "se pierde" : "se pierden"}.`,
+      { title: "¿Cambiar de usuario?", confirmLabel: "Cambiar de todos modos", cancelLabel: "Quedarme y revisar", destructive: true });
   }
   function lgEnqueue(round, matchId, value, force){
     const owner = lgOwnerNow();
@@ -8449,19 +8522,29 @@
   async function lgSend({ round, matchId, value, force, owner }){
     if(!lgSameOwner(owner)) return;
     const expected = force !== undefined ? force : lgAccepted(round, matchId);
-    const r = await lgPost(owner, round, matchId, value, expected);
+    lgInFlight += 1;
+    let r;
+    try{ r = await lgPost(owner, round, matchId, value, expected); } finally { lgInFlight -= 1; }
     if(!lgSameOwner(owner)){
       // Cambió la sesión mientras tanto: la respuesta no se aplica a nadie más.
-      // Si quien está ahora es la MISMA persona (salió y volvió a entrar), lo
-      // aceptado por el servidor es suyo y se muestra; su cola y sus borradores
+      // Si es la MISMA persona (salió y volvió a entrar), lo aceptado por el
+      // servidor es suyo: se recuerda y se aplica también cuando termine de
+      // cargar sus pronósticos al entrar (H3), salvo que la sesión actual ya
+      // tenga algo propio en ese partido (H4). Su cola y sus borradores
       // anteriores no reviven.
-      if(r.status === 200 && r.ok && currentUser && currentUser.id === owner.pid && SLUG === owner.slug){
-        lgSetAccepted(round, matchId, r.value);
-        const main = document.getElementById("qz-main");
-        if(main && activeTab === "jornada" && !lgQueue.size) renderJornada(main);
+      if(r.status === 200 && r.ok){
+        const key = owner.slug + "|" + owner.pid;
+        lgDropLate(owner, round.id, matchId);
+        (lgLateAccepted[key] = lgLateAccepted[key] || []).push({ round, roundId: round.id, matchId, value: r.value });
+        if(currentUser && currentUser.id === owner.pid && SLUG === owner.slug){
+          myPicks = lgWithLate(myPicks, owner.pid, true);
+          const main = document.getElementById("qz-main");
+          if(main && activeTab === "jornada" && !lgQueue.size) renderJornada(main);
+        }
       }
       return;
     }
+    if(r.status !== 0) lgDropLate(owner, round.id, matchId);
     if(r.status === 200 && r.ok){
       lgSetAccepted(round, matchId, r.value);
       lgSetSt(round.id, matchId, { st: "saved", at: r.acceptedAt });
@@ -8589,12 +8672,12 @@
     if(prev && (prev.st === "error" || prev.st === "saved")) lgSetSt(round.id, m.id, null);
     lgPaintMatch(round, m.id);
     const key = round.id + "|" + m.id;
-    clearTimeout(lgTimers[key]);
+    if(lgTimers[key]){ clearTimeout(lgTimers[key].t); delete lgTimers[key]; }
     if(a === null || b === null || Number.isNaN(a) || Number.isNaN(b)) return;
     if(accepted && a === accepted.a && b === accepted.b) return;
     const owner = lgOwnerNow();
     const go = () => { if(!lgSameOwner(owner)) return; const dd = lgDraft(round.id, m.id); if(!dd) return; const aa = lgParseGoal(dd.a), bb = lgParseGoal(dd.b); if(LG.isGoals(aa) && LG.isGoals(bb)) lgEnqueue(round, m.id, { a: aa, b: bb }); };
-    if(immediate) go(); else lgTimers[key] = setTimeout(go, 700);
+    if(immediate) go(); else lgTimers[key] = { t: setTimeout(() => { delete lgTimers[key]; go(); }, 700), go };
   }
 
   // ---- participante: votar --------------------------------------------------
