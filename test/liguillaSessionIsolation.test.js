@@ -716,3 +716,30 @@ test("RELECTURA · J1: si un campo del partido está enfocado, también se actua
   assert.deepEqual(a1.sel, [1, 1], "el cursor queda al final");
 });
 
+// ---- Technical QA de 3bea6f9 ------------------------------------------------
+
+test("RELECTURA · K1: si el campo enfocado tenía todo seleccionado, el valor nuevo queda seleccionado (lo que se teclee lo reemplaza)", async () => {
+  const { app, pending, server, env } = harness({ confirm: true });
+  app.setRounds([ROUND]);
+  app.as(A, "1111");
+  app.lgEnqueue(ROUND, "m2", { a: 6, b: 6 });
+  await tick();
+  assert.equal(await app.clickSwitch(), true);
+  server[A.id] = { r_lg: { m1: "A", m2: "D", __score: { m1: { a: 2, b: 1 }, m2: { a: 6, b: 6 } } } };
+  await app.login(A, "1111", async () => JSON.parse(JSON.stringify(server[A.id])));
+  const input = (v, s0, s1) => ({ value: v, selectionStart: s0, selectionEnd: s1, selected: false, sel: null,
+    select(){ this.selected = true; this.selectionStart = 0; this.selectionEnd = this.value.length; },
+    setSelectionRange(a, b){ this.sel = [a, b]; this.selectionStart = a; this.selectionEnd = b; } });
+  const a1 = input("2", 0, 1), b1 = input("1", 1, 1);   // Shift+Tab: todo seleccionado
+  env.document.els["qz-lg-a-r_lg-m1"] = a1;
+  env.document.els["qz-lg-b-r_lg-m1"] = b1;
+  env.document.activeElement = a1;
+  server[A.id].r_lg.m1 = "B"; server[A.id].r_lg.__score.m1 = { a: 1, b: 3 };
+  pending.shift().resolve(ok({ a: 6, b: 6 }));
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(a1.value, "1");
+  assert.equal(a1.selected, true, "sigue todo seleccionado");
+  assert.deepEqual([a1.selectionStart, a1.selectionEnd], [0, 1]);
+  assert.equal(b1.value, "3");
+});
+

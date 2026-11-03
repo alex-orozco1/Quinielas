@@ -8477,7 +8477,8 @@
   // mueve el scroll ni se pierde el foco (H3 de b14c58c). También el campo
   // enfocado se actualiza (J1 de 9639ad1): un partido sólo llega aquí si no
   // tiene borrador, así que lo que muestra ese campo es el valor anterior y
-  // no hay nada escrito que perder. Se conserva la posición del cursor.
+  // no hay nada escrito que perder. Si tenía todo seleccionado, se selecciona
+  // el valor nuevo; si no, el cursor queda al final.
   function lgPaintChanged(changed){
     changed.forEach(({ round, matchId }) => {
       const v = lgAccepted(round, matchId);
@@ -8487,8 +8488,12 @@
         const next = v && typeof v === "object" ? String(v[side]) : "";
         if(input.value === next) return;
         const focused = input === document.activeElement;
+        // Si la persona tenía todo seleccionado (p. ej. al entrar con Tab), lo
+        // que teclee debe reemplazar el valor nuevo, no sumarse (K1 de 3bea6f9).
+        let allSelected = false;
+        if(focused){ try{ allSelected = input.value.length > 0 && input.selectionStart === 0 && input.selectionEnd === input.value.length; }catch(e){} }
         input.value = next;
-        if(focused){ try{ input.setSelectionRange(next.length, next.length); }catch(e){} }
+        if(focused){ try{ if(allSelected) input.select(); else input.setSelectionRange(next.length, next.length); }catch(e){} }
       });
       lgPaintMatch(round, matchId);
     });
