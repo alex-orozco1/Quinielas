@@ -7044,6 +7044,10 @@
       // Unsaved answers are predictions: they do not stay behind on a shared
       // device for the next person (Technical QA, ronda 4).
       try{ window.sessionStorage.removeItem(answerDraftKey()); }catch(e){}
+      // Liguilla: la cola, los borradores, los errores y los conflictos de esta
+      // persona se quedan con ella; nada de eso se envía ni se ve como de quien
+      // entra después.
+      lgResetSession();
       currentUser = null;
       ownerUnlocked = false;
       ownerPasswordCache = null;
@@ -8365,7 +8369,6 @@
   const lgState = {};    // roundId -> matchId -> { st, at, error, current }
   const lgRejected = {}; // roundId -> matchId -> { value, at } lo que el cierre no aceptó
   const lgQueue = new Map(); // "rid|mid" -> { round, matchId, value }
-  let lgWorking = false;
   function lgSt(rid, mid){ return ((lgState[rid] || {})[mid]) || null; }
   function lgSetSt(rid, mid, st){ (lgState[rid] = lgState[rid] || {})[mid] = st; }
   function lgDraft(rid, mid){ return ((lgDrafts[rid] || {})[mid]) || null; }
@@ -8378,27 +8381,50 @@
     const n = Number(t);
     return LG.isGoals(n) ? n : NaN;
   }
-  function lgEnqueue(round, matchId, value){
-    lgQueue.set(round.id + "|" + matchId, { round, matchId, value });
+  // Cada trabajo nace con DUEÑO: la quiniela, el participante y la generación
+  // de sesión de quien lo escribió. «Cambiar usuario» sube la generación
+  // (lgResetSession), así que nada de la sesión anterior se envía con la
+  // identidad nueva, ni se pinta en su pantalla, ni se reintenta como suyo. Una
+  // respuesta tardía se descarta: lo que el servidor ya aceptó sigue en su fila
+  // y se vuelve a leer al entrar (P1 de la revisión de e8fde8d).
+  let lgGen = 0;
+  let lgWorkingGen = null;
+  function lgOwnerNow(){ return currentUser ? { gen: lgGen, slug: SLUG, pid: currentUser.id } : null; }
+  function lgSameOwner(o){ return !!o && o.gen === lgGen && o.slug === SLUG && !!currentUser && currentUser.id === o.pid; }
+  function lgResetSession(){
+    lgGen += 1;
+    lgQueue.clear();
+    Object.keys(lgTimers).forEach(k => { clearTimeout(lgTimers[k]); delete lgTimers[k]; });
+    [lgDrafts, lgState, lgRejected].forEach(o => Object.keys(o).forEach(k => { delete o[k]; }));
+  }
+  function lgEnqueue(round, matchId, value, force){
+    const owner = lgOwnerNow();
+    if(!owner) return;
+    lgQueue.set(round.id + "|" + matchId, { round, matchId, value, owner, ...(force !== undefined ? { force } : {}) });
     lgSetSt(round.id, matchId, { st: "saving" });
     lgPaintMatch(round, matchId);
     lgPump();
   }
+  // Una cola por generación: un guardado de la sesión anterior que no responde
+  // no detiene los de la nueva.
   async function lgPump(){
-    if(lgWorking) return;
-    lgWorking = true;
+    const gen = lgGen;
+    if(lgWorkingGen === gen) return;
+    lgWorkingGen = gen;
     try{
-      while(lgQueue.size){
+      while(gen === lgGen && lgQueue.size){
         const [key, job] = lgQueue.entries().next().value;
         lgQueue.delete(key);
+        if(!lgSameOwner(job.owner)) continue;
         await lgSend(job);
       }
-    } finally { lgWorking = false; }
+    } finally { if(lgWorkingGen === gen) lgWorkingGen = null; }
   }
-  async function lgPost(round, matchId, value, expected){
-    const headers = setAuthHeaders({ "Content-Type": "application/json" }, currentUserPinCache);
+  async function lgPost(owner, round, matchId, value, expected){
+    // El PIN en memoria es del dueño: lgSameOwner() se comprobó justo antes.
+    const headers = setAuthHeaders({ "Content-Type": "application/json" }, currentUserPinCache, owner.pid);
     try{
-      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/picks/" + encodeURIComponent(currentUser.id) + "/match", {
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(owner.slug) + "/picks/" + encodeURIComponent(owner.pid) + "/match", {
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ roundId: round.id, matchId, value, expected }),
       });
@@ -8406,11 +8432,22 @@
       return { status: res.status, ...data };
     }catch(e){ return { status: 0, error: "network_error" }; }
   }
-  async function lgSend({ round, matchId, value, force }){
-    const who = currentUser && currentUser.id;
+  async function lgSend({ round, matchId, value, force, owner }){
+    if(!lgSameOwner(owner)) return;
     const expected = force !== undefined ? force : lgAccepted(round, matchId);
-    const r = await lgPost(round, matchId, value, expected);
-    if(!currentUser || currentUser.id !== who) return; // cambió la sesión mientras tanto
+    const r = await lgPost(owner, round, matchId, value, expected);
+    if(!lgSameOwner(owner)){
+      // Cambió la sesión mientras tanto: la respuesta no se aplica a nadie más.
+      // Si quien está ahora es la MISMA persona (salió y volvió a entrar), lo
+      // aceptado por el servidor es suyo y se muestra; su cola y sus borradores
+      // anteriores no reviven.
+      if(r.status === 200 && r.ok && currentUser && currentUser.id === owner.pid && SLUG === owner.slug){
+        lgSetAccepted(round, matchId, r.value);
+        const main = document.getElementById("qz-main");
+        if(main && activeTab === "jornada" && !lgQueue.size) renderJornada(main);
+      }
+      return;
+    }
     if(r.status === 200 && r.ok){
       lgSetAccepted(round, matchId, r.value);
       lgSetSt(round.id, matchId, { st: "saved", at: r.acceptedAt });
@@ -8511,8 +8548,7 @@
     const mine = el.querySelector("[data-lg-use-mine]");
     if(mine) mine.addEventListener("click", () => {
       const st = lgSt(round.id, m.id);
-      lgQueue.set(round.id + "|" + m.id, { round, matchId: m.id, value: st.mine, force: st.current == null ? null : st.current });
-      lgSetSt(round.id, m.id, { st: "saving" }); lgPaintMatch(round, m.id); lgPump();
+      lgEnqueue(round, m.id, st.mine, st.current == null ? null : st.current);
     });
     const theirs = el.querySelector("[data-lg-keep-theirs]");
     if(theirs) theirs.addEventListener("click", () => {
@@ -8542,7 +8578,8 @@
     clearTimeout(lgTimers[key]);
     if(a === null || b === null || Number.isNaN(a) || Number.isNaN(b)) return;
     if(accepted && a === accepted.a && b === accepted.b) return;
-    const go = () => { const dd = lgDraft(round.id, m.id); if(!dd) return; const aa = lgParseGoal(dd.a), bb = lgParseGoal(dd.b); if(LG.isGoals(aa) && LG.isGoals(bb)) lgEnqueue(round, m.id, { a: aa, b: bb }); };
+    const owner = lgOwnerNow();
+    const go = () => { if(!lgSameOwner(owner)) return; const dd = lgDraft(round.id, m.id); if(!dd) return; const aa = lgParseGoal(dd.a), bb = lgParseGoal(dd.b); if(LG.isGoals(aa) && LG.isGoals(bb)) lgEnqueue(round, m.id, { a: aa, b: bb }); };
     if(immediate) go(); else lgTimers[key] = setTimeout(go, 700);
   }
 
