@@ -19,6 +19,8 @@
 | `wake-service/server.mjs` | El servicio mínimo del piloto, sin base de datos ni dependencias. |
 | `dev/emulator.mjs` | Un servidor Node que pasa cada petición por el Worker. **Sólo para pruebas locales.** |
 | `test/*.test.mjs` | Las pruebas locales. |
+| `measure/` | H-WAKE: Worker de medición (`probe-worker.mjs`, bundle en `dist/worker.mjs`), script `probe.mjs` y el plan `PLAN-H-WAKE.md`. |
+| `dev/bundle.mjs` | Genera el Worker en un solo archivo. |
 
 **No se tocan** la app (`server.js`, `public/`), `render.yaml`, `package.json` ni la suite principal (`test/`).
 

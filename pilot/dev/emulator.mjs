@@ -6,7 +6,8 @@ import http from "node:http";
 import { Readable } from "node:stream";
 import { handle } from "../edge/worker.mjs";
 
-export function createEmulator({ origin, timeoutMs } = {}) {
+// `entry` (opcional): otro punto de entrada tipo Worker, p. ej. el de medición.
+export function createEmulator({ origin, timeoutMs, entry, env: extraEnv } = {}) {
   const waitUntils = [];
   const server = http.createServer(async (req, res) => {
     try {
@@ -15,7 +16,8 @@ export function createEmulator({ origin, timeoutMs } = {}) {
       if (req.method !== "GET" && req.method !== "HEAD") { init.body = Readable.toWeb(req); init.duplex = "half"; }
       const request = new Request(url, init);
       const ctx = { waitUntil: (p) => { waitUntils.push(p); } };
-      const response = await handle(request, { ORIGIN: origin }, ctx, { timeoutMs });
+      const env = Object.assign({ ORIGIN: origin }, extraEnv || {});
+      const response = entry ? await entry(request, env, ctx) : await handle(request, env, ctx, { timeoutMs });
       const headers = {};
       response.headers.forEach((v, k) => { if (k !== "set-cookie" && k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
       const cookies = response.headers.getSetCookie ? response.headers.getSetCookie() : [];

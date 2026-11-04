@@ -5,6 +5,8 @@
 //   POST /api/eco      → bytes y sha256 del cuerpo recibido (comprueba que nadie lo toca)
 //   POST /api/payments/stripe/webhook → igual que /api/eco (sólo simula la ruta)
 //   GET  /files/app.js → un archivo estático
+//   GET  /api/pilot-log?probe=<id> → qué peticiones con ese `probe` llegaron (método, ruta,
+//        bytes, sha256, si traía firma). Para contar que una API/POST llegó UNA sola vez.
 //   GET  cualquier otra ruta → HTML que muestra la ruta y los parámetros recibidos (escapados)
 //
 // Para las pruebas locales simula el arranque en frío: mientras `asleep`, las
@@ -13,6 +15,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 
+const STARTED_AT = new Date().toISOString(); // cambia en cada arranque: delata un arranque en frío
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 export function createWakeService({ asleep = false, holdPages = false } = {}) {
@@ -26,7 +29,8 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
     req.on("end", () => {
       const body = Buffer.concat(chunks);
       requests.push({ method: req.method, url: req.url, headers: req.headers, bytes: body.length,
-        sha256: crypto.createHash("sha256").update(body).digest("hex") });
+        sha256: crypto.createHash("sha256").update(body).digest("hex"), at: new Date().toISOString() });
+      if (requests.length > 1000) requests.splice(0, requests.length - 1000);
       const respond = () => route(req, res, body);
       const isPage = (req.method === "GET" || req.method === "HEAD") && !req.url.startsWith("/api/");
       if (sleeping) waiting.push(respond);
@@ -38,6 +42,12 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
     const url = new URL(req.url, "http://local");
     const p = url.pathname;
     if (req.method === "GET" && p === "/api/health") return json(res, 200, { ok: true, time: new Date().toISOString() });
+    if (req.method === "GET" && p === "/api/pilot-log") {
+      const id = url.searchParams.get("probe") || "";
+      const seen = id ? requests.filter((r) => { const q = new URL(r.url, "http://local"); return q.pathname !== "/api/pilot-log" && q.searchParams.get("probe") === id; }) : [];
+      return json(res, 200, { probe: id, startedAt: STARTED_AT, count: seen.length,
+        requests: seen.map((r) => ({ method: r.method, url: r.url, bytes: r.bytes, sha256: r.sha256, signature: Boolean(r.headers["stripe-signature"]), at: r.at })) });
+    }
     if (req.method === "GET" && p === "/api/eco-ip") return json(res, 200, {
       cfConnectingIp: req.headers["cf-connecting-ip"] || null,
       xForwardedFor: req.headers["x-forwarded-for"] || null,
