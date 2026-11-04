@@ -84,5 +84,5 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const svc = createWakeService();
   const port = Number(process.env.PORT || 3000);
-  svc.server.listen(port, () => console.log("wake-pilot listening on " + port));
+  svc.server.listen(port, () => console.log(`wake-pilot listening on ${port} startedAt=${STARTED_AT}`));
 }

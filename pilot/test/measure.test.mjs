@@ -50,3 +50,33 @@ test("el bundle publicado (pilot/measure/dist/worker.mjs) coincide con el códig
   const dist = fs.readFileSync(new URL("../measure/dist/worker.mjs", import.meta.url), "utf8");
   assert.equal(dist, bundle(), "regenerar con: node pilot/dev/bundle.mjs");
 });
+
+test("caso en navegador (local): con el origen dormido, la pantalla reabre la app por JavaScript en la misma URL", async (t) => {
+  let chromium = null; try { chromium = (await import("node:module")).createRequire(import.meta.url)("playwright").chromium; } catch { return t.skip("sin Playwright"); }
+  const { runBrowserCase } = await import("../measure/browser-probe.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hwake-b-"));
+  const svc = createWakeService({ asleep: true }); const op = await svc.listen();
+  const emu = createEmulator({ origin: `http://127.0.0.1:${op}`, timeoutMs: 500 }); const ep = await emu.listen();
+  try {
+    setTimeout(() => svc.wake(), 5000);
+    const { data } = await runBrowserCase({ direct: `http://127.0.0.1:${op}`, worker: `http://127.0.0.1:${ep}`, outDir: dir, force: true, appTimeoutMs: 30_000, quietMs: 2_000, log: () => {}, chromium });
+    assert.equal(data.first.status, 503); assert.equal(data.first.h1, "Estamos abriendo la administración de tu quiniela");
+    assert.ok(data.appAfterMs > 0, "la app apareció"); assert.equal(data.sameUrl, true); assert.equal(data.originGotSameUrl, true);
+    assert.equal(data.requestsAfterApp, 0); assert.deepEqual(data.otherRequests, []);
+    assert.equal(data.navigationType, "reload", "la abrió la recarga por JavaScript");
+  } finally { svc.wake(); await emu.close(); await svc.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("Cloudflare (simulado, sin red): la subida lleva el bundle y las dos variables; nunca Authorization", async () => {
+  const { buildUpload, createCloudflare } = await import("../measure/cloudflare.mjs");
+  const up = buildUpload({ code: "export default {}", origin: "https://qracks-hwake-pilot.onrender.com", pilotToken: "p" });
+  assert.equal(up.metadata.main_module, "worker.mjs");
+  assert.deepEqual(up.metadata.bindings.map((b) => [b.type, b.name]), [["plain_text", "ORIGIN"], ["secret_text", "PILOT_TOKEN"]]);
+  assert.ok(up.body.toString().includes('filename="worker.mjs"'));
+  assert.throws(() => buildUpload({ code: "", origin: "https://qracks.net", pilotToken: "p" }), /onrender\.com/, "nunca qracks.net como origen");
+  const sent = [];
+  const cf = createCloudflare({ accountId: "acc", log: () => {}, request: async (url, init) => { sent.push({ url, init }); return { status: 200, body: Buffer.from(JSON.stringify({ success: true, result: [] })) }; } });
+  await cf.status(); await cf.remove();
+  assert.deepEqual(sent.map((s) => s.init.method + " " + s.url.replace("https://api.cloudflare.com/client/v4", "")), ["GET /accounts/acc/workers/scripts", "DELETE /accounts/acc/workers/scripts/qracks-hwake-pilot"]);
+  assert.ok(sent.every((s) => !Object.keys(s.init.headers).some((h) => h.toLowerCase() === "authorization")), "el token lo añade el proxy");
+});

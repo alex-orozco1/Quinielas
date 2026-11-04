@@ -1,119 +1,139 @@
 # UX-INFRA-001 · H-WAKE · Plan de medición (sin recursos creados)
 
-**Estado:** preparado. **No se ha creado nada.** Crear el servicio y el Worker requiere tu autorización explícita.
-**Alcance:** medir qué responde Render mientras despierta, con el servicio mínimo (sin base de datos) y el Worker en `workers.dev`.
+**Estado:** preparado. **No se ha creado nada**, y no se ha cambiado la red ni Cloudflare. Cada paso marcado «requiere autorización» espera tu aprobación explícita.
+**Alcance:** medir qué responde Render mientras despierta, con el servicio mínimo (sin base de datos) y el Worker en `workers.dev`. Ejecuta **Claude**, desde esta sesión en la nube.
 **Fuera de alcance:** producción, `qracks.net`, DNS, pagos, datos reales, H-IP completo y H-TLS.
 
-Fuentes: **[Claude]** ejecutado o leído en el código · **[GPT]** revisado por GPT · **[Render API]** leído con el conector, sólo lectura · **[Doc]** documentación, no es una prueba.
+Fuentes: **[Claude]** ejecutado o leído en el código · **[GPT]** revisado por GPT · **[Render API]** leído con el conector, sólo lectura · **[Doc]** documentación consultada, no es una prueba.
 
-## 1. Recursos exactos que se crearían
+## 1. Quién hace cada cosa
 
-| # | Recurso | Configuración | Quién lo crea |
+| Paso | Quién | Qué | Requiere autorización |
 |---|---|---|---|
-| R-A | Rama `ux-infra/piloto-hwake` | Copia de `ux-infra/piloto-pantalla-carga` en el SHA aprobado. Nunca `main` ni `mon001a-plan-limits-enforcement`. | Claude (git push) |
-| R-B | Servicio web de Render `qracks-hwake-pilot` | Ver la tabla siguiente. | Claude con el conector de Render, o tú en el dashboard |
-| R-C | Worker de Cloudflare `qracks-hwake-pilot` en `*.workers.dev` | Ver la tabla siguiente. | **Tú**: no hay conector de Cloudflare y la red de la sesión bloquea `api.cloudflare.com` |
+| 1 | Tú | Cuenta de Cloudflare (crearla si no existe) y **token de API acotado como secreto de red** (§2.1) | La cuenta es tuya |
+| 2 | Tú | Autorizar R-A, R-B y R-C (§3) y el apagado (§5) | **Sí** |
+| 3 | Claude | `cloudflare.mjs comprobar`: token válido, cuenta y subdominio de `workers.dev` | — |
+| 4 | Claude | Crear R-A (rama), R-B (Render, con el conector) y R-C (Worker, con la API). Te doy los **dos hosts reales**: el que devuelve Render y el de `workers.dev`. | **Sí** |
+| 5 | Tú | **Red:** añadir exactamente esos dos hosts (§2.2). Se aplica a esta sesión en ~1 min [Doc]. | Es tuyo |
+| 6 | Claude | Medición (§4), unas 3,5 h. Entre ciclos me programo un aviso para continuar. | Incluida en el paso 2 |
+| 7 | Claude + tú | Apagado (§5) | Incluido en el paso 2 |
 
-**Servicio web de Render (R-B):**
+## 2. Accesos mínimos
+
+### 2.1 Cloudflare: token de API como secreto de red
+- **Por qué:**
+  - No hay conector de Cloudflare instalado.
+  - En el directorio existe «Cloudflare Developer Platform», pero **no he podido comprobar** que pueda subir código de un Worker. No lo uso como base.
+  - La API oficial sí lo permite: subir el script (`PUT …/workers/scripts/{nombre}`), activar `workers.dev` (`POST …/scripts/{nombre}/subdomain`) y borrar (`DELETE …/scripts/{nombre}`) [Doc].
+- **Token, en el dashboard → My Profile → API Tokens → Create Custom Token:**
+  - Permiso: **Account · Workers Scripts · Edit**. Nada de zonas, DNS ni rutas.
+  - Recursos: **sólo tu cuenta**.
+  - TTL: fecha de fin a **48–72 h**.
+- **Dónde va:** en este entorno, **Edit cloud environment → Network secrets → Add secret**.
+  - Allowed websites: `api.cloudflare.com`.
+  - Cabecera: `Authorization`, con prefijo `Bearer`.
+  - El proxy de la sesión añade el token a las peticiones a ese host. **Yo nunca lo veo**, no pasa por el chat ni queda en archivos [Doc].
+  - Ese host no necesita estar en Allowed domains [Doc].
+- **Si `comprobar` no puede listar la cuenta:** me das el *Account ID* en el chat. No es secreto: aparece en la URL del dashboard.
+- **Si la cuenta aún no tiene subdominio de `workers.dev`:** abres una vez Workers & Pages en el dashboard. `comprobar` lo detecta.
+
+### 2.2 Red: sólo los dos hosts del piloto
+- **Edit cloud environment → Network access → Custom**, marcando **«Also include default list of common package managers»** para conservar lo de ahora.
+- **Allowed domains:** exactamente estos dos:
+  - `<host real de Render>`: el que devuelva la creación de R-B. No se adivina.
+  - `qracks-hwake-pilot.<tu-subdominio>.workers.dev`
+- **No** uses `*.onrender.com`: incluiría el host de producción `quinielas-a0b3.onrender.com`.
+- [Claude] Comprobado en esta sesión:
+  - el túnel `CONNECT` de `probe.mjs` sale por el proxy con verificación TLS normal;
+  - Chromium también sale por el proxy con verificación TLS normal;
+  - un host no permitido recibe 403 del proxy.
+
+## 3. Recursos (requieren autorización)
+
+| # | Recurso | Configuración |
+|---|---|---|
+| R-A | Rama `ux-infra/piloto-hwake` | Copia de `ux-infra/piloto-pantalla-carga` en el SHA aprobado. Nunca `main` ni `mon001a-plan-limits-enforcement`. |
+| R-B | Servicio web de Render `qracks-hwake-pilot` | Ver la tabla siguiente. |
+| R-C | Worker `qracks-hwake-pilot` en `workers.dev` | Ver la tabla siguiente. |
+
+**R-B · Servicio web de Render:**
 
 | Campo | Valor |
 |---|---|
-| Plan | `free` |
-| Región | `virginia`, la misma que producción |
-| Repo | `alex-orozco1/Quinielas` |
-| Rama | `ux-infra/piloto-hwake` |
+| Plan y región | `free`, `virginia` |
+| Rama | R-A |
 | `autoDeploy` | `no` |
-| Comando de build | `echo sin-build` (no instala dependencias ni ejecuta la app) |
-| Comando de arranque | `node pilot/wake-service/server.mjs` |
-| Variables de entorno | Ninguna |
-| Health check | Sin configurar |
+| Build | `echo sin-build` |
+| Arranque | `node pilot/wake-service/server.mjs` |
+| Variables, base de datos y health check | Ninguno |
 
-**Worker de Cloudflare (R-C):**
+**R-C · Worker:**
 
 | Campo | Valor |
 |---|---|
-| Código | `pilot/measure/dist/worker.mjs`, archivo único |
-| Variable `ORIGIN` | `https://qracks-hwake-pilot.onrender.com` |
-| Secreto `PILOT_TOKEN` | Valor aleatorio, por ejemplo `openssl rand -hex 16`. Tú lo eliges y no se guarda en el repo ni en el chat. |
-| Rutas | **Ninguna en `qracks.net`** |
+| Código | `pilot/measure/dist/worker.mjs` (sha256 `458876f4…de948`) |
+| `ORIGIN` | El host real de R-B; el script rechaza cualquier origen que no sea `*.onrender.com` |
+| `PILOT_TOKEN` | Aleatorio, generado por `cloudflare.mjs`. Sólo vive en el Worker y en `pilot/measure/out/pilot-token` (0600, fuera de git) |
+| Rutas | Ninguna en `qracks.net` |
 
-El servicio mínimo no tiene base de datos, secretos ni dependencias. Su `/api/health` usa el mismo contrato que la app. El Worker sólo pide a `ORIGIN`. Su endpoint `/__pilot/probe` exige el token, sólo acepta rutas que empiezan por `/` y responde 404 sin token.
+## 4. Medición
+### 4.1 Horas gratuitas: cota conservadora (estimación)
+- **Supuestos** [Doc]:
+  - las 750 h se reinician al **inicio de cada mes de calendario**;
+  - un servicio dormido **no** consume horas;
+  - si se agotan, Render **suspende todos los servicios free del workspace, incluida producción**.
+- **Cota** [Claude, estimación]:
+  - Tomo el reinicio más temprano posible: el 1 de noviembre en UTC+14, que es el 31 de octubre a las 10:00 UTC.
+  - Hasta el 4 de noviembre a las 23:40 UTC van ≈ 110 h.
+  - [Render API] el workspace tiene dos servicios web free.
+  - Aunque los dos hubieran estado despiertos todo el tiempo, se habrían consumido ≤ 220 h, y quedarían **≥ 530 h**.
+- **El piloto** usa ≤ 3,5 h despierto. **No es una medición:** el consumo real no se puede leer con el conector (`instance_count` llega vacío).
 
-## 2. Duración prevista y horas gratuitas
-- **Ciclos de medición:**
-  - una matriz con el origen despierto;
-  - 7 casos en frío;
-  - 2 repeticiones de los casos clave (`directo-nav` y `worker-sub-nav`).
-  - En total, unos 10 ciclos.
-- **Cada caso en frío:**
-  - al menos 16 min sin peticiones, para que Render lo duerma tras 15 min [Doc];
-  - 1–2 min de medición;
-  - unos 15 min despierto hasta volver a dormirse.
-- **Estimación:** unas **3 h de reloj** y **≤ 3 h despiertas** del servicio piloto. Es una estimación, no una medición.
-- Las horas cuentan contra las **750 h/mes del workspace, compartidas con producción** [Doc].
-- **No sé cuántas horas quedan.** La métrica `instance_count` llega vacía para servicios free [Render API].
+### 4.2 Ciclos (≈ 11, unas 3,5 h de reloj y ≤ 3,5 h despiertas)
+1. **`probe.mjs despierto`:** matriz de base. Es **HTTP**: estado, cabeceras, tiempos, URL conservada y paso único de API y `POST` (conteo en el origen por `probe=<id>`).
+2. **`probe.mjs dormido <caso>`**, un caso por ciclo, también **HTTP**:
+   - `directo-nav`;
+   - `worker-sub-nav` y `worker-sub-api`: lo que **el Worker** recibe de Render; es la base de `isRenderWakePage`;
+   - `worker-nav`, `worker-post`, `worker-webhook` y `worker-head`;
+   - repeticiones de `directo-nav` y `worker-sub-nav`.
+3. **`browser-probe.mjs`**, en frío y en **navegador real** (Chromium por el proxy): es **la única prueba de la reapertura por JavaScript**.
+   - Registra la pantalla, cada consulta a `/api/health` y los documentos pedidos.
+   - Comprueba que la app aparece en la **misma URL** con su fragmento, que el origen recibe la misma ruta y parámetros, y que no hay peticiones tras abrir.
+   - El tipo de navegación final (`reload`) confirma que la abrió la recarga por JavaScript.
 
-## 3. Apagado al terminar
-1. **Render:** desde el dashboard, suspender o borrar `qracks-hwake-pilot`. El conector no tiene herramienta para suspender ni borrar. Después compruebo con el conector [Render API] que el servicio figura suspendido o que ya no aparece.
-2. **Cloudflare:** borrar el Worker `qracks-hwake-pilot` (Workers & Pages → el Worker → Settings → Delete).
-3. **Rama:** `ux-infra/piloto-hwake` se borra o se conserva sin auto-deploy. Con `autoDeploy: no`, un push no despliega nada.
-4. **Si algo se alarga:** el piloto se apaga al terminar la sesión de medición aunque falten casos. Los casos pendientes se reportan como no medidos.
+`probe.mjs` **no** demuestra la reapertura automática. Sus casos `worker-nav` sólo prueban que se sirve la pantalla y que la misma URL abre la app cuando se vuelve a pedir.
 
-## 4. Medición preparada [Claude]
-`pilot/measure/probe.mjs` se ejecuta con Node 18 o superior, desde una máquina con salida a `*.onrender.com` y `*.workers.dev`:
-```
-HWAKE_DIRECT=https://qracks-hwake-pilot.onrender.com \
-HWAKE_WORKER=https://qracks-hwake-pilot.<cuenta>.workers.dev \
-HWAKE_TOKEN=<PILOT_TOKEN> node pilot/measure/probe.mjs despierto
-node pilot/measure/probe.mjs dormido <caso>      # exige ≥ 16 min sin peticiones
-node pilot/measure/probe.mjs resumen
-```
+### 4.3 Cómo se confirma cada despertar
+Un caso en frío sólo cuenta como **confirmado** si coinciden tres señales:
+1. **Inactividad** [Claude]: el registro local muestra ≥ 16 min sin peticiones del piloto antes del caso.
+2. **Proceso nuevo** [Claude]: cambia el `startedAt` de `/api/pilot-log` respecto al ciclo anterior.
+3. **Render** [Render API]:
+   - `list_logs` muestra la línea `wake-pilot listening on … startedAt=<ese valor>` justo después de la primera petición del caso, y ninguna otra entre ciclos.
+   - Además se revisa `list_events` del servicio. Si Render no emite eventos al dormir o despertar un servicio free, lo reporto como ausencia observada.
 
-**Qué registra cada petición:**
-- estado y todas las cabeceras, incluidos `Set-Cookie`;
-- tiempo hasta las cabeceras y tiempo total;
-- bytes, sha256, inicio del cuerpo, `<title>` y `<h1>`.
+Si alguna señal no cuadra, el caso se reporta como **no confirmado** y no se usa para `isRenderWakePage`.
 
-**Comprobaciones de cada corrida:**
-- **Arranque en frío:** se confirma si cambia `startedAt` del servicio (`/api/pilot-log`), porque cada proceso tiene uno nuevo.
-- **URL conservada:** el servicio devuelve la ruta y los parámetros que recibió (`#seen`), incluidos `qz_pago`, `qz_sess` y una «ñ».
-- **Paso único:** cada petición lleva un `probe=<id>`. `/api/pilot-log` cuenta cuántas veces llegó al origen; para API y `POST` debe ser 1.
+### 4.4 `isRenderWakePage`
+- Sólo a partir de las respuestas confirmadas de `worker-sub-nav` y `worker-sub-api`, guardadas como datos de prueba sin secretos.
+- Sólo vale un rasgo que esté en todas las respuestas en frío y en ninguna despierta.
+- Si Render retiene la subpetición en vez de devolver una página propia, se queda en `false`.
+- **Riesgo por observar** [Doc]: `waitUntil` dura como mucho 30 s tras la respuesta. Si Render tarda más en despertar, la petición mantenida puede cancelarse. `worker-nav` mide si llega al origen.
 
-**Matriz con el origen despierto:** directo y por el Worker, con 3 repeticiones.
-- `GET /api/health`
-- `GET /a/…?qz_pago&qz_sess&ñ`
-- `POST /api/eco` (20 KB) y el webhook con firma de prueba; se compara el sha256
-- `HEAD /crear`
-- `/files/app.js`
-- `/redir`
-- `/api/eco-ip` (sólo se registra: **no cierra H-IP**)
-- además, la subpetición del Worker (`/__pilot/probe`) en sus variantes de navegación y de API.
+## 5. Apagado (requiere autorización junto con la creación)
 
-**Casos en frío** (uno por ciclo, porque la primera petición es la que despierta al origen):
+| # | Quién | Acción | Verificación |
+|---|---|---|---|
+| A1 | Claude | `cloudflare.mjs borrar` | `cloudflare.mjs estado` dice «no existe», y el host de `workers.dev` deja de servir el Worker |
+| A2 | **Tú** | Render → `qracks-hwake-pilot` → Settings → **Delete Web Service**. El conector no puede suspender ni borrar. | Claude, con `list_services` [Render API]: el servicio ya no aparece |
+| A3 | Claude | Borrar la rama R-A (`git push --delete`), después de A2 | `git ls-remote` |
+| A4 | Tú | Borrar el secreto de red y revocar el token, o dejar que venza su TTL. Volver la red a su nivel anterior. | — |
 
-| Caso | Qué responde |
-|---|---|
-| `directo-nav` | Qué recibe un navegador sin Worker |
-| `worker-sub-nav` | Qué recibe **el Worker** en una subpetición de página: es la base de `isRenderWakePage` |
-| `worker-sub-api` | Lo mismo, para una subpetición de API |
-| `worker-nav` | ¿La persona ve la pantalla a los ~3 s? ¿Llegó al origen la petición mantenida con `waitUntil`? ¿La misma URL abre la app al despertar? |
-| `worker-post` | ¿El `POST` llega exactamente una vez con los mismos bytes, o Render lo responde o lo pierde mientras despierta? |
-| `worker-webhook` | Lo mismo, con `stripe-signature` |
-| `worker-head` | `HEAD` de página en frío |
-
-**Pruebas locales de las herramientas:** `# tests 41 · # pass 41 · # fail 0 · # skipped 0`, en `pilot/test/measure.test.mjs` y el resto de la suite. **No son H-WAKE.**
-- Comprueban que el bundle funciona como Worker, que el token es obligatorio, que el token no se guarda, que la URL se conserva, que los `POST` llegan una vez y que el bundle publicado coincide con el código fuente.
-- La prueba local encontró que el `fetch` de Node reemplaza `sec-fetch-mode` por `cors`. El Worker no habría visto navegaciones, así que el script usa `node:http`/`node:https`.
-
-## 5. Cómo se definirá `isRenderWakePage` (sin adivinar)
-1. Se guardan las respuestas de `worker-sub-nav` y `worker-sub-api`, en frío y despiertas, como datos de prueba. No contienen secretos.
-2. Se busca qué distingue las respuestas en frío de las de la app: estado, cabeceras y marcas del cuerpo. Sólo vale lo que aparezca en **todas** las repeticiones en frío y en **ninguna** despierta.
-3. La regla se escribe con pruebas que clasifican esas respuestas guardadas.
-4. **Si Render retiene la subpetición hasta despertar** y no devuelve una página propia, `isRenderWakePage` se queda en `false` y se documenta así.
-
-**Riesgo por observar** [Doc, no comprobado en esta sesión]: `waitUntil` tiene un límite de tiempo tras enviar la respuesta. Si Render tarda más, la subpetición puede cancelarse. El caso `worker-nav` mide si llega al origen.
+- **Sin A2 inmediato:** un servicio dormido no consume horas [Doc]. Sólo gastaría si alguien pide su URL.
+- **Alternativa descartada:** que Claude borre R-B con la API de Render exigiría una API key **de cuenta completa**, con acceso a producción y a sus variables. No la recomiendo.
+- Si la medición se alarga o falla, se apaga igual al terminar la sesión, y los casos pendientes se reportan como **no medidos**.
 
 ## 6. Lo que este corte NO demuestra
 - H-IP completo: ni el limitador real ni la IP desde dos redes conocidas.
-- H-TLS y H-DNS: no se usa `qracks.net` ni un dominio de prueba.
-- El tiempo de arranque de la **app completa con base de datos**: el servicio mínimo arranca más rápido.
+- H-TLS y H-DNS.
+- El arranque de la app completa con base de datos.
+- Navegadores distintos de Chromium.

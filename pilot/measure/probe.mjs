@@ -22,6 +22,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
 import https from "node:https";
+import tls from "node:tls";
 import { fileURLToPath } from "node:url";
 import { isHealthyPayload } from "../edge/waker.mjs";
 
@@ -38,10 +39,35 @@ const MAX_WAIT_MS = 180_000;
 // node:http(s) y no fetch(): el fetch de Node REEMPLAZA `sec-fetch-mode` por «cors», y
 // entonces el Worker nunca vería una navegación (encontrado en la prueba local).
 // Aquí las cabeceras salen tal cual y los tiempos se toman de los eventos del socket.
+// Si hay HTTPS_PROXY (p. ej. el proxy de una sesión en la nube), el HTTPS va por un túnel
+// CONNECT con verificación TLS normal (CA del sistema más NODE_EXTRA_CA_CERTS); nunca se desactiva.
+function proxyFor(u) {
+  const p = process.env.HTTPS_PROXY || process.env.https_proxy;
+  if (!p || u.protocol !== "https:") return null;
+  const no = (process.env.NO_PROXY || process.env.no_proxy || "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (no.some((n) => n === u.hostname || (n.startsWith(".") && u.hostname.endsWith(n)) || (n.startsWith("*.") && u.hostname.endsWith(n.slice(1))))) return null;
+  return new URL(p);
+}
+function tunnelAgent(u, proxy) {
+  const agent = new https.Agent({ keepAlive: false });
+  agent.createConnection = (opts, cb) => {
+    const auth = proxy.username ? { "proxy-authorization": "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64") } : {};
+    const target = `${u.hostname}:${u.port || 443}`;
+    const c = http.request({ host: proxy.hostname, port: proxy.port || 80, method: "CONNECT", path: target, headers: Object.assign({ host: target }, auth) });
+    c.on("connect", (res, socket) => {
+      if (res.statusCode !== 200) { socket.destroy(); return cb(Object.assign(new Error(`proxy CONNECT ${res.statusCode}`), { code: "PROXY_" + res.statusCode })); }
+      cb(null, tls.connect({ socket, servername: u.hostname }));
+    });
+    c.on("error", cb); c.end();
+  };
+  return agent;
+}
+
 export function rawRequest(url, { method = "GET", headers = {}, body = null, timeoutMs = MAX_WAIT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url); const lib = u.protocol === "https:" ? https : http; const t0 = Date.now();
-    const rq = lib.request(u, { method, headers: Object.assign({}, headers, body ? { "content-length": body.length } : {}) }, (res) => {
+    const proxy = proxyFor(u);
+    const rq = lib.request(u, { method, agent: proxy ? tunnelAgent(u, proxy) : undefined, headers: Object.assign({}, headers, body ? { "content-length": body.length } : {}) }, (res) => {
       const headersMs = Date.now() - t0; const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, headersMs, totalMs: Date.now() - t0, body: Buffer.concat(chunks) }));
@@ -197,7 +223,9 @@ export function createProbe({ direct, worker, token, outDir = path.join(here, "o
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [mode, name] = process.argv.slice(2);
-  const direct = (process.env.HWAKE_DIRECT || "").replace(/\/$/, ""), worker = (process.env.HWAKE_WORKER || "").replace(/\/$/, ""), token = process.env.HWAKE_TOKEN || "";
+  const tokFile = path.join(here, "out/pilot-token");
+  const direct = (process.env.HWAKE_DIRECT || "").replace(/\/$/, ""), worker = (process.env.HWAKE_WORKER || "").replace(/\/$/, "");
+  const token = process.env.HWAKE_TOKEN || (fs.existsSync(tokFile) ? fs.readFileSync(tokFile, "utf8").trim() : "");
   const p = createProbe({ direct, worker, token });
   const need = () => { if (!direct || !worker || !token) { console.error("Faltan HWAKE_DIRECT, HWAKE_WORKER o HWAKE_TOKEN"); process.exit(2); } };
   (async () => {
