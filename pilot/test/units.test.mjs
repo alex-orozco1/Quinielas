@@ -68,6 +68,7 @@ test("R1 / página: sólo consulta GET /api/health; no hay formularios ni otras 
   assert.ok(html.includes('"healthUrl":"/api/health"'));
   assert.ok(/method: "GET", cache: "no-store"/.test(html), "GET sin caché");
   assert.ok(!/XMLHttpRequest|sendBeacon|WebSocket|EventSource/.test(html));
+  assert.ok(!/document\.cookie|localStorage/.test(html), "sin cookies ni almacenamiento persistente (sólo sessionStorage de la pestaña)");
   assert.ok(!/"method"\s*:\s*"(POST|PUT|PATCH|DELETE)"|method: "(POST|PUT|PATCH|DELETE)"/.test(html));
   assert.ok(html.includes("Esta pantalla no envía ni modifica tus pronósticos."));
   assert.ok(html.includes("Estamos abriendo tu quiniela"));

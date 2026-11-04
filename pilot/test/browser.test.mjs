@@ -58,3 +58,36 @@ test("pantalla en el navegador: misma URL al abrir, sólo GET /api/health sin ca
     await browser.close(); svc.wake(); await emu.close(); await svc.close();
   }
 });
+
+test("pantalla en el navegador: /api/health responde pero la página no abre → como mucho 3 recargas y botón", { skip: !chromium && "sin Playwright" }, async () => {
+  const svc = createWakeService({ holdPages: true });
+  const originPort = await svc.listen();
+  const emu = createEmulator({ origin: `http://127.0.0.1:${originPort}`, timeoutMs: 500 });
+  const port = await emu.listen();
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const docs = [], health = [];
+    page.on("request", (r) => {
+      if (r.resourceType() === "document") docs.push(r.url());
+      else if (r.url().includes("/api/health")) health.push(Date.now());
+    });
+    const target = `http://127.0.0.1:${port}/q/demo?x=1#f`;
+    await page.goto(target);
+    await page.waitForSelector("#again", { timeout: 30000 });
+    assert.equal(await page.locator("h1").textContent(), "QRACKS ya responde, pero la página no terminó de abrir");
+    assert.equal(docs.length, 4, "la carga inicial + 3 recargas automáticas");
+    assert.ok(docs.every((u) => u === target.replace("#f", "")), "siempre la misma URL");
+    const h = health.length, d = docs.length;
+    await page.waitForTimeout(6000);
+    assert.equal(health.length, h, "ya no consulta");
+    assert.equal(docs.length, d, "ya no recarga sola");
+    // Sólo la persona vuelve a intentarlo; ahora la página sí abre.
+    svc.holdPages(false);
+    await page.click("#again");
+    await page.waitForSelector("#app", { timeout: 15000 });
+    assert.equal(page.url(), target);
+  } finally {
+    await browser.close(); svc.holdPages(false); await emu.close(); await svc.close();
+  }
+});

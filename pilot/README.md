@@ -1,7 +1,7 @@
 # UX-INFRA-001 · Piloto de la pantalla de carga (preparación local)
 
 **Estado:** código y pruebas **locales**. No se creó ningún recurso externo ni se desplegó nada. Tampoco hubo cambios de DNS, infraestructura, producción ni pagos.
-**Base:** `main` en `9164bac`, con la propuesta v3 y los ajustes de la revisión de GPT.
+**Base:** `main` en `9164bac`, con la propuesta v3 y los ajustes de la revisión de GPT. Incluye las correcciones de la revisión de GPT sobre `84ddb70` (ver «Correcciones tras la revisión de 84ddb70»).
 
 **Fuentes de evidencia:**
 - **[Claude]**: ejecutado o leído en el código.
@@ -37,16 +37,29 @@ La prueba de navegador usa Playwright si está instalado (`NODE_PATH=/opt/node22
    - Con la pestaña oculta o sin red se pausan. Al volver sólo siguen si queda plazo: ocultar la pestaña no lo reinicia.
    - Sólo «Reintentar», que pulsa la persona, abre un plazo nuevo.
    - Así la pantalla **no mantiene despierto Render indefinidamente**: como mucho hace unas 18 consultas por pestaña.
-3. **Al estar lista, la página se recarga** (`location.reload()`) en la **misma URL**, con ruta, parámetros y fragmento, sin añadir una entrada al historial.
+3. **Al estar lista, la página se recarga** (como mucho 3 veces seguidas y dentro del mismo plazo de 120 s; ver la decisión 7) (`location.reload()`) en la **misma URL**, con ruta, parámetros y fragmento, sin añadir una entrada al historial.
    - [Claude] La prueba local encontró que `location.replace(location.href)` falla cuando la URL tiene un `#fragmento`: lo trata como un cambio dentro del mismo documento y no vuelve a pedir la página.
 4. **El Worker nunca intercepta** la API, los webhooks, los archivos (rutas con extensión) ni `POST`/`PUT`/`PATCH`/`DELETE`.
    - Esas peticiones se reenvían una sola vez y sin reintentos. Si el origen falla, el error llega tal cual.
    - Las redirecciones del origen se entregan sin seguirlas.
 5. **H-WAKE:** cómo distinguir la página de arranque de Render queda **sin definir** (`isRenderWakePage` devuelve `false`) hasta medirla en el piloto externo.
 6. **Textos sólo por destino**, sin cookies. Nada de la URL se imprime en la página.
+7. **Límite de recargas automáticas.** Si `/api/health` responde pero la página no termina de abrir, el Worker vuelve a servir la pantalla tras cada recarga.
+   - Una recarga automática **continúa el mismo plazo** de 120 s y hay **como mucho 3**. Después aparece «QRACKS ya responde, pero la página no terminó de abrir» con el botón «Abrir de nuevo».
+   - Sólo una acción de la persona («Reintentar» o «Abrir de nuevo») abre un plazo nuevo.
+   - El registro vive en `sessionStorage` de la pestaña (no es una cookie ni viaja al servidor), por ruta y parámetros. Sólo vale si el navegador marca la carga como recarga y la anterior fue hace menos de 10 min. Una navegación nueva siempre empieza de cero.
+   - Sin `sessionStorage` no hay recarga automática: sólo el botón.
+
+## Correcciones tras la revisión de 84ddb70
+1. **[GPT] reprodujo; [Claude] reprodujo con pruebas nuevas y corrigió:** al cancelar o reiniciar con una consulta en curso, la continuación antigua podía limpiar el tiempo máximo del intento nuevo y volver a programar, con dos consultas a la vez.
+   - Ahora cada ciclo e intento lleva una generación; cancelar la sube y las continuaciones antiguas se descartan. Cada intento sólo limpia su propio temporizador.
+2. **[GPT] reprodujo; [Claude] reprodujo y corrigió:** el plazo de 120 s no cortaba una consulta ya iniciada, y una respuesta válida a los 122 s abría la página.
+   - Ahora el tiempo máximo de cada intento nunca pasa del plazo (se aborta al vencer) y cualquier respuesta en o después del plazo se rechaza.
+3. **[GPT] lo señaló como riesgo, sin reproducirlo; [Claude] lo comprobó localmente:** con `/api/health` bien y la navegación lenta, la recarga reiniciaba el plazo y el ciclo podía no terminar. Ver la decisión 7.
 
 ## Qué demuestran las pruebas locales [Claude]
-Corrida en Node 22.22.0: `# tests 27 · # pass 27 · # fail 0`.
+Corrida en Node 22.22.0: `# tests 39 · # pass 39 · # fail 0 · # skipped 0`.
+Las regresiones 1a, 1b, 1c, 2 y 2b (más la de `startedAt`) **fallan con el `waker.mjs` de 84ddb70** (`# tests 16 · # pass 10 · # fail 6`) y pasan con la corrección.
 
 **Unitarias:**
 - **Salud:** sólo el contrato actual cuenta como «listo». No bastan un 200 en HTML, un JSON sin `ok`, una fecha inválida ni un estado que no sea 200.
@@ -65,6 +78,14 @@ Corrida en Node 22.22.0: `# tests 27 · # pass 27 · # fail 0`.
 - Al salir de la página se cancela también la consulta en curso.
 - Sin red se pausa y sigue al volver la conexión.
 - «Reintentar» abre un plazo nuevo.
+- «Reintentar» u ocultar y volver con una consulta en curso, incluso si el aborto rechaza tarde: nunca dos consultas vivas, un solo programa, y el tiempo máximo del intento nuevo sigue en pie.
+- Una consulta empezada a los 116 s se aborta a los 120 s exactos y su respuesta «lista» de los 123 s no abre la página; una que llega justo a los 120 s tampoco.
+
+**Recargas** (reloj simulado, `pilot/test/reload.test.mjs`):
+- Con `/api/health` bien y cada recarga devolviendo la pantalla: 1 carga + 3 recargas, todas en el mismo plazo, y luego el botón.
+- Si cada recarga tarda 50 s o 70 s, el plazo compartido se agota y termina en error, sin más recargas.
+- Sin `sessionStorage` (bloqueado o con error): ninguna recarga automática.
+- Un registro viejo, corrupto o de una navegación nueva no recorta el plazo.
 
 **Worker contra el servicio mínimo local** (el «arranque en frío» se simula reteniendo respuestas):
 - **Origen despierto:** la página pasa intacta (estado, dos `Set-Cookie`, cuerpo), y el origen recibe la misma ruta y los mismos parámetros, incluida una «ñ».
@@ -83,6 +104,7 @@ Corrida en Node 22.22.0: `# tests 27 · # pass 27 · # fail 0`.
 - La pantalla sólo hizo `GET /api/health`. Cada consulta llegó al origen, así que ninguna salió de caché.
 - Tras abrir la página no hay más consultas.
 - En «Mientras tanto», la pausa funciona con teclado: Enter pausa y el beneficio no cambia en 8 s; Espacio reanuda.
+- Con un origen que responde `/api/health` pero retiene las páginas: 4 documentos pedidos (la carga y 3 recargas), siempre la misma URL. Aparece «Abrir de nuevo» y en 6 s no hay más consultas ni recargas. Al pulsarlo, con el origen ya sirviendo páginas, abre la app en la misma URL con su fragmento.
 
 > **Estas pruebas NO aprueban H-WAKE, H-IP ni H-TLS.** Usan un origen local que *simula* el arranque reteniendo respuestas, sin Cloudflare ni Render.
 
@@ -93,6 +115,7 @@ Corrida en Node 22.22.0: `# tests 27 · # pass 27 · # fail 0`.
   - **(b) Limitador real validado:** sólo con la app completa. Hay que comprobar que los intentos de PIN se cuentan por visitante, sin mezclar a dos personas ni dejar que una evite el límite.
 - **H-TLS:** emitir el certificado de Render con el registro sin proxy y luego activar el proxy en «Full (strict)» ([GPT/Doc]: Render documenta ese orden). La **renovación** no se puede observar en un piloto corto, así que queda como riesgo con un plan.
 - **H-DNS:** importar en Cloudflare **todos** los registros de GoDaddy y compararlos antes de cambiar los nameservers.
+- **Recargas con Render real:** si la navegación lenta tras un `/api/health` sano ocurre de verdad, y con qué frecuencia. El límite está probado sólo localmente y en Chromium; Safari y Firefox no se probaron.
 - **Con la app completa:** `/q`, `/a` y `/crear` reales (incluidas las vistas previas OG de `/q`), sesiones y permisos tras la recarga, el retorno de Stripe y el webhook a través del proxy, y el tiempo real de arranque con base de datos.
 
 ## Reversión (para cuando haya Worker)

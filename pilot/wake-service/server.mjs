@@ -15,10 +15,11 @@ import crypto from "node:crypto";
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-export function createWakeService({ asleep = false } = {}) {
+export function createWakeService({ asleep = false, holdPages = false } = {}) {
   const requests = [];
-  let waiting = [];
-  let sleeping = asleep;
+  let waiting = [], heldPages = [];
+  let sleeping = asleep, holding = holdPages;
+  // `holdPages`: /api/* responde, pero las páginas quedan retenidas (navegación lenta).
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
@@ -27,7 +28,10 @@ export function createWakeService({ asleep = false } = {}) {
       requests.push({ method: req.method, url: req.url, headers: req.headers, bytes: body.length,
         sha256: crypto.createHash("sha256").update(body).digest("hex") });
       const respond = () => route(req, res, body);
-      if (sleeping) waiting.push(respond); else respond();
+      const isPage = (req.method === "GET" || req.method === "HEAD") && !req.url.startsWith("/api/");
+      if (sleeping) waiting.push(respond);
+      else if (holding && isPage) heldPages.push(respond);
+      else respond();
     });
   });
   function route(req, res, body) {
@@ -60,8 +64,9 @@ export function createWakeService({ asleep = false } = {}) {
     server, requests,
     sleep() { sleeping = true; },
     wake() { sleeping = false; const w = waiting; waiting = []; w.forEach((f) => f()); },
+    holdPages(v) { holding = v; if (!v) { const h = heldPages; heldPages = []; h.forEach((f) => f()); } },
     listen(port = 0) { return new Promise((r) => server.listen(port, "127.0.0.1", () => r(server.address().port))); },
-    close() { this.wake(); return new Promise((r) => server.close(() => r())); },
+    close() { this.wake(); this.holdPages(false); return new Promise((r) => server.close(() => r())); },
   };
 }
 

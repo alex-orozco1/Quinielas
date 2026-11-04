@@ -3,7 +3,7 @@
 // hace la página es GET /api/health (requisito R1: no envía ni modifica pronósticos).
 
 import { destinationFor, TITLES, TEXT, tipsFor } from "./copy.mjs";
-import { isHealthyPayload, createWaker, WAKE_DEFAULTS } from "./waker.mjs";
+import { isHealthyPayload, createWaker, createReloadGuard, WAKE_DEFAULTS, RELOAD_DEFAULTS } from "./waker.mjs";
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -16,7 +16,7 @@ export function renderLoadingPage(requestUrl) {
   if (fromPayment) text.payment = payment;
   const cfg = {
     title: TITLES[dest], text, tips: tipsFor(dest), payment: fromPayment,
-    wake: WAKE_DEFAULTS,
+    wake: WAKE_DEFAULTS, reload: RELOAD_DEFAULTS,
   };
   const cfgJson = JSON.stringify(cfg).replace(/</g, "\\u003c");
   return `<!doctype html>
@@ -76,16 +76,24 @@ h1{font-size:24px;line-height:1.2;margin:0 0 10px}p{margin:0 0 12px;line-height:
   var CFG = ${cfgJson};
   var isHealthyPayload = ${isHealthyPayload.toString()};
   var createWaker = ${createWaker.toString()};
+  var createReloadGuard = ${createReloadGuard.toString()};
   var T = CFG.text, $ = function(id){ return document.getElementById(id); };
   var e = function(s){ return String(s).replace(/[&<>"']/g, function(c){ return ({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"})[c]; }); };
   var brand = '<div class="brand"><span class="mark" aria-hidden="true">Q</span><span class="word">QRACKS</span></div>';
   var note = CFG.payment ? '<div class="note">' + e(T.payment) + '</div>' : '';
   var safe = '<p class="safe">' + e(T.safe) + '</p>';
-  var current = { state: "waiting", elapsed: 0 }, shownAt = Date.now();
+  // Límite de recargas: una recarga automática continúa el MISMO plazo (no lo reinicia).
+  var store = null; try { store = window.sessionStorage; } catch (x) { store = null; }
+  var navType = ""; try { var nav = performance.getEntriesByType("navigation")[0]; navType = nav ? nav.type : ""; } catch (x) {}
+  var guard = createReloadGuard({ isReload: navType === "reload", storage: store, key: CFG.reload.keyPrefix + location.pathname + location.search,
+    now: function(){ return Date.now(); }, maxReloads: CFG.reload.maxReloads, windowS: CFG.reload.windowS });
+  var cycle = guard.begin();
+  var current = { state: "waiting", elapsed: 0 }, shownAt = cycle.startedAt;
   function paint(){
     var s = current, h;
     var secs = Math.floor((Date.now() - shownAt) / 1000);
-    if (s.state === "error") h = '<div class="err">' + brand + '<h1>' + e(T.errorTitle) + '</h1><button class="btn" id="retry" type="button">' + e(T.retry) + '</button>' + safe + '</div>';
+    if (s.state === "stuck") h = brand + '<h1>' + e(T.stuckTitle) + '</h1><p>' + e(T.stuckBody) + '</p><button class="btn" id="again" type="button">' + e(T.openAgain) + '</button>' + safe;
+    else if (s.state === "error") h = '<div class="err">' + brand + '<h1>' + e(T.errorTitle) + '</h1><button class="btn" id="retry" type="button">' + e(T.retry) + '</button>' + safe + '</div>';
     else if (s.state === "offline") h = brand + '<h1>' + e(T.offlineTitle) + '</h1><p>' + e(T.offlineBody) + '</p><button class="btn" id="retry" type="button">' + e(T.retryNow) + '</button>' + safe;
     else {
       var slow = s.state === "slow";
@@ -95,7 +103,9 @@ h1{font-size:24px;line-height:1.2;margin:0 0 10px}p{margin:0 0 12px;line-height:
     }
     var html = h + note;
     if ($("status").innerHTML !== html) $("status").innerHTML = html;
-    var r = $("retry"); if (r && !r.onclick) r.onclick = function(){ shownAt = Date.now(); w.retry(); };
+    // Sólo una acción de la persona abre un plazo nuevo y repone el cupo de recargas.
+    var r = $("retry"); if (r && !r.onclick) r.onclick = function(){ guard.reset(); w.retry(); cycle = { startedAt: w.startedAt, reloads: 0 }; shownAt = cycle.startedAt; };
+    var a = $("again"); if (a && !a.onclick) a.onclick = function(){ guard.reset(); window.location.reload(); };
   }
   var w = createWaker({
     fetch: window.fetch.bind(window), setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
@@ -109,14 +119,18 @@ h1{font-size:24px;line-height:1.2;margin:0 0 10px}p{margin:0 0 12px;line-height:
     // Recarga la MISMA URL (ruta, parámetros y fragmento) sin entrada nueva en el historial.
     // No location.replace(href): con un #fragmento sería una navegación dentro del mismo
     // documento y no volvería a pedir la página (encontrado en la prueba local).
-    onReady: function(){ window.location.reload(); }
+    // Sólo si queda cupo de recargas automáticas y se pudo registrar; si no, botón.
+    onReady: function(){
+      if (guard.tryReload(cycle.startedAt)) { window.location.reload(); return; }
+      current = { state: "stuck" }; paint();
+    }
   });
   document.addEventListener("visibilitychange", function(){ w.onVisibilityChange(); });
   window.addEventListener("online", function(){ w.onOnline(); });
   window.addEventListener("offline", function(){ w.onOffline(); });
   window.addEventListener("pagehide", function(){ w.stop(); });
   setInterval(paint, 500);
-  w.start();
+  w.start(cycle.startedAt);
 
   // «Mientras tanto»: a los 5 s, 7 s visibles por beneficio; pausa con ratón, toque o teclado.
   var tips = CFG.tips, idx = 0, visible = 0, hover = false, paused = false, last = Date.now(), shown = false;
@@ -130,8 +144,8 @@ h1{font-size:24px;line-height:1.2;margin:0 0 10px}p{margin:0 0 12px;line-height:
   setInterval(function(){
     var now = Date.now(), dt = now - last; last = now;
     var st = current.state;
-    if (!shown && now - shownAt >= 5000 && st !== "error" && st !== "offline") { shown = true; $("card").classList.add("withTips"); tip(); }
-    if (shown && (st === "error" || st === "offline")) { shown = false; $("card").classList.remove("withTips"); }
+    if (!shown && now - shownAt >= 5000 && st !== "error" && st !== "offline" && st !== "stuck") { shown = true; $("card").classList.add("withTips"); tip(); }
+    if (shown && (st === "error" || st === "offline" || st === "stuck")) { shown = false; $("card").classList.remove("withTips"); }
     if (shown && !hover && !paused) { visible += dt; if (visible >= 7000) { visible = 0; idx = (idx + 1) % tips.length; tip(); } }
   }, 250);
 })();
