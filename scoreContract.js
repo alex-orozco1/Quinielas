@@ -214,8 +214,22 @@ function buildScoreContract({ lines, regulationComplete } = {}) {
     else reasons.add(REASONS.REGULATION_NOT_PROVEN);
   }
 
+  // LIGUILLA (sprint de liguilla). La regla aprobada es «marcador final con
+  // prórroga, sin la tanda». Mientras no se pueda DEMOSTRAR que un marcador
+  // de prórroga excluye la tanda, sólo se acepta el caso en que no hubo ni
+  // prórroga ni penales: el proveedor afirma que terminó en los 90, no hay
+  // rastro de tiempo extra ni de tanda, nada ambiguo, y hay marcador de
+  // regulación. En ese caso el marcador final ES el de los 90. Cualquier otro
+  // caso devuelve null y el Admin captura a mano.
+  const finalWithoutShootout = (
+    regulation && regulationComplete === true && !hasExtraTimeRecords && !hasPenaltyRecords &&
+    !ambiguous && !contradiction &&
+    (!finalOut.score || (finalOut.score.home === regulation.home && finalOut.score.away === regulation.away))
+  ) ? regulation : null;
+
   return Object.freeze({
     regulation,
+    finalWithoutShootout,
     final: finalOut.score,
     penalty: penaltyOut.score,
     extraTime: extraTimeOut.score,

@@ -17,7 +17,12 @@
 function isRoundEligibleForAutoResults(round, nowMs) {
   const now = nowMs != null ? nowMs : Date.now();
   if (round.published === false) return false;
-  if (round.resultsPublished) return false;
+  // Liguilla (D2): una jornada con resultados parciales sigue buscando los
+  // partidos que quedaron pendientes o aplazados.
+  if (round.resultsPublished) {
+    const st = round.stage === "liguilla" && round.matchStatus && typeof round.matchStatus === "object" ? round.matchStatus : null;
+    if (!st || !Object.values(st).some((v) => v === "pending" || v === "postponed")) return false;
+  }
   const deadline = new Date(round.deadline).getTime();
   if (!Number.isFinite(deadline)) return false; // no usable deadline — don't guess
   return now > deadline; // "reasonably closed" — same definition already used client-side (isRoundLocked)

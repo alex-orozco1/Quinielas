@@ -30,7 +30,12 @@ function byId(items) {
 }
 
 const TOP = { rounds: "list", customBets: "list", auditLog: "list", settings: "object", paymentPenalty: "object", golScorerBet: "object" };
-const ROUND = { matches: "requiredList", results: "object", customBetResults: "object", draftResults: "object" };
+// Liguilla: marcadores, estados de partido y fase son objetos (liguillaRules.js
+// revisa su contenido).
+const ROUND = {
+  matches: "requiredList", results: "object", customBetResults: "object", draftResults: "object",
+  scores: "object", draftScores: "object", matchStatus: "object", draftMatchStatus: "object", phase: "object", scoring: "object",
+};
 const PARTICIPANT = { customBetAnswers: "object", penalizedRounds: "object" };
 
 // Pure. `{ ok: true }`, o `{ ok: false, reason: "invalid_value", field }` con el
