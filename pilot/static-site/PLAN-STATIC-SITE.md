@@ -54,11 +54,18 @@ Fuentes: **[Claude]** ejecutado o leído en el código · **[GPT]** revisado por
 |---|---|---|---|
 | M1 | **Tú** | Después de crear R-B y R-C, cuando te dé el host real de R-B | Dashboard → `qracks-ss-pilot-web` → **Redirects/Rewrites**, en este orden: (1) *Rewrite* `/api/*` → `https://<host real de R-B>/api/*`; (2) *Rewrite* `/*` → `/index.html` |
 | M2 | **Tú** | Antes de medir | Edit cloud environment → Network access → Custom, con la lista por defecto, y **sólo** los dos hosts `*.onrender.com` reales. **No** `*.onrender.com`. |
-| M3 | **Tú** | Durante la prueba 1 | Abrir `https://<R-C>/ip.html?directo=https://<R-B>` desde **dos redes distintas** (wifi y datos móviles) y decirme si dice «Coinciden» o «NO coinciden». No hace falta que me pases tus IP. |
+| M3 | **Tú** | Durante la prueba 1 | Abrir `https://<R-C>/ip.html?directo=https://<R-B>` con **wifi**, y después, en el mismo navegador, quitar el wifi, usar **datos móviles** y recargar. Me dices tres cosas: (a) «Coinciden» con wifi; (b) «Coinciden» con datos; (c) en la segunda carga, «Clave distinta» a la de la visita anterior. Si alguna sale «NO coinciden», «Inconcluso» o «Misma clave», la prueba 1 no pasa. No hace falta que me pases tus IP ni las claves. |
 | M4 | **Tú (obligatorio para apagar)** | Al terminar | Dashboard → R-C y R-B → Settings → **Delete**. Yo verifico con `list_services` que esos dos ids ya no existen, borro la rama R-A y tú retiras los dos hosts de la red. |
 
 ## 4. Pruebas: `pilot/measure/static-probe.mjs`
 Cada prueba guarda su resultado en `pilot/measure/out/static/` como **PASA** o **FALLA**. **Si alguna falla, te informo del bloqueo antes de adaptar la app.**
+
+**Regla de aprobación:** lo ausente, mal formado o inconcluso **nunca** dice PASA.
+- Una respuesta sólo cuenta con estado 200, `Content-Type` JSON y el esquema esperado.
+- Una IP sólo cuenta si es una clave válida de `clientIp.js` (IPv4 o `/64` de IPv6), nunca `unknown`.
+- Un conteo sólo cuenta si es un entero que coincide con los registros del servicio para ese `probe`, y ese registro trae un `startedAt` válido.
+- Un caso **en frío** sólo aprueba si la propiedad pasa **y** el frío está confirmado: ≥ 16 min sin peticiones, sin `--forzar`, y un `startedAt` distinto del de la línea base. Con `--forzar` se mide la propiedad, pero el caso nunca aprueba.
+- Además, cruzo `startedAt` con `list_logs` [Render API] antes de dar el frío por confirmado en el informe.
 
 **1. IP por visitante y cabeceras falsificadas (`ip`, más M3):**
 - La IP que decidiría la app (`clientIp.js`) al llegar por el sitio estático debe ser **la misma** que al llegar directo, y no puede ser `unknown`.
@@ -92,6 +99,10 @@ Cada prueba guarda su resultado en `pilot/measure/out/static/` como **PASA** o *
 
 ## 5. Pruebas locales de las herramientas [Claude] (no son el piloto)
 - `pilot/test/static.test.mjs` corre todas las pruebas contra un emulador local de reescrituras.
+- **Regresiones negativas** (falso positivo de `0520f3f`, reproducido por GPT):
+  - con `/api/health` correcto y HTML 503 en la IP y en el registro, `ip` y `dormido-post` daban PASA con `0520f3f`; ahora dan FALLA;
+  - también fallan una IP vacía, `unknown`, no válida o servida como texto;
+  - y un registro con conteo nulo, en texto, que no cuadra con la lista, sin `startedAt` o de otro `probe`.
 - Las pruebas también detectan fallos:
   - con un servicio que confía en `X-Forwarded-For` falsificado, `ip` → **FALLA**;
   - con un proxy que quita `Set-Cookie`, `cookies-http` → **FALLA**.

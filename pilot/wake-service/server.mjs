@@ -30,13 +30,13 @@ const IP_HEADERS = ["cf-connecting-ip", "x-forwarded-for", "true-client-ip", "x-
 const COOKIE_SESSION = "qracks_session_piloto", COOKIE_VISIBLE = "qz_piloto_visible";
 function parseCookies(h) { const out = {}; String(h || "").split(";").forEach((p) => { const i = p.indexOf("="); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); }); return out; }
 
-const STARTED_AT = new Date().toISOString(); // cambia en cada arranque: delata un arranque en frío
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 export function createWakeService({ asleep = false, holdPages = false } = {}) {
   const requests = [];
   let waiting = [], heldPages = [];
   let sleeping = asleep, holding = holdPages;
+  let startedAt = new Date().toISOString(); // cambia en cada arranque de proceso: delata un arranque en frío
   // `holdPages`: /api/* responde, pero las páginas quedan retenidas (navegación lenta).
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -60,7 +60,7 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
     if (req.method === "GET" && p === "/api/pilot-log") {
       const id = url.searchParams.get("probe") || "";
       const seen = id ? requests.filter((r) => { const q = new URL(r.url, "http://local"); return q.pathname !== "/api/pilot-log" && q.searchParams.get("probe") === id; }) : [];
-      return json(res, 200, { probe: id, startedAt: STARTED_AT, count: seen.length,
+      return json(res, 200, { probe: id, startedAt, count: seen.length,
         requests: seen.map((r) => ({ method: r.method, url: r.url, bytes: r.bytes, sha256: r.sha256, signature: Boolean(r.headers["stripe-signature"]), at: r.at })) });
     }
     if (req.method === "GET" && p === "/api/eco-ip") return json(res, 200, {
@@ -97,7 +97,7 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
       res.setHeader("set-cookie", [`${COOKIE_SESSION}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`, `${COOKIE_VISIBLE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`]);
       return json(res, 200, { cleared: true });
     }
-    if (req.method === "GET" && p === "/api/pilot-app") return json(res, 200, { seen: url.searchParams.get("path") || null, startedAt: STARTED_AT });
+    if (req.method === "GET" && p === "/api/pilot-app") return json(res, 200, { seen: url.searchParams.get("path") || null, startedAt });
     if (req.method === "GET" && p === "/files/app.js") {
       res.writeHead(200, { "content-type": "application/javascript", "cache-control": "public, max-age=3600" });
       return res.end("console.log('app');");
@@ -114,6 +114,9 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
     server, requests,
     sleep() { sleeping = true; },
     wake() { sleeping = false; const w = waiting; waiting = []; w.forEach((f) => f()); },
+    get startedAt() { return startedAt; },
+    // SÓLO pruebas locales: simula un proceso nuevo (en Render lo da el arranque real).
+    restart() { startedAt = new Date(Date.now() + 1).toISOString(); },
     holdPages(v) { holding = v; if (!v) { const h = heldPages; heldPages = []; h.forEach((f) => f()); } },
     listen(port = 0) { return new Promise((r) => server.listen(port, "127.0.0.1", () => r(server.address().port))); },
     close() { this.wake(); this.holdPages(false); return new Promise((r) => server.close(() => r())); },
@@ -124,5 +127,5 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const svc = createWakeService();
   const port = Number(process.env.PORT || 3000);
-  svc.server.listen(port, () => console.log(`wake-pilot listening on ${port} startedAt=${STARTED_AT}`));
+  svc.server.listen(port, () => console.log(`wake-pilot listening on ${port} startedAt=${svc.startedAt}`));
 }

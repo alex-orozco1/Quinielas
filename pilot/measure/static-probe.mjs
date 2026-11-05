@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import net from "node:net";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { rawRequest } from "./probe.mjs";
@@ -34,6 +35,27 @@ const JSONH = { accept: "application/json", "user-agent": "qracks-static-probe" 
 const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
 const payload = (kb) => Buffer.from(JSON.stringify({ id: "evt_piloto", type: "pilot.eco", data: { x: "ñ".repeat(Math.max(1, Math.floor((kb * 1024) / 2))) } }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── Validación: lo ausente, mal formado o inconcluso NUNCA aprueba ─────────────
+const isJsonResp = (r) => Boolean(r && r.status === 200 && /^application\/json\b/i.test(String(r.headers && r.headers["content-type"] || "")) && r.json && typeof r.json === "object");
+// Una clave de IP como la de clientIp.js: IPv4, o el /64 de una IPv6 ("a:b:c:d::/64").
+export function isValidIpKey(ip) {
+  if (typeof ip !== "string" || !ip || ip === "unknown") return false;
+  return net.isIP(ip) === 4 || /^[0-9a-f]{1,4}(:[0-9a-f]{1,4}){3}::\/64$/.test(ip);
+}
+const VIA = new Set(["cf-connecting-ip", "xff-3rd-from-right", "socket"]);
+// Respuesta de /api/client-ip válida: 200, JSON, decided.ip válida y una regla conocida.
+export function validClientIp(r) {
+  return isJsonResp(r) && r.json.decided && isValidIpKey(r.json.decided.ip) && (VIA.has(r.json.decided.via) || /^xff-\d+-from-right$/.test(r.json.decided.via)) ? r.json.decided : null;
+}
+// Registro de /api/pilot-log válido para ESTE probe: 200, JSON, count entero = requests.length y startedAt fecha.
+export function validPilotLog(r, id) {
+  if (!isJsonResp(r)) return null;
+  const j = r.json;
+  if (j.probe !== id || !Number.isInteger(j.count) || j.count < 0 || !Array.isArray(j.requests) || j.requests.length !== j.count) return null;
+  if (typeof j.startedAt !== "string" || !Number.isFinite(Date.parse(j.startedAt))) return null;
+  return j;
+}
 
 export function createStaticProbe({ staticBase, direct, outDir = path.join(here, "out", "static"), log = console.log, chromium = null }) {
   const statePath = path.join(outDir, "estado.json");
@@ -64,16 +86,24 @@ export function createStaticProbe({ staticBase, direct, outDir = path.join(here,
     }
     return { awakeAfterMs: null, tries };
   }
-  const pilotLog = async (id) => (await req(`registro ${id}`, `${direct}/api/pilot-log?probe=${id}`, { headers: JSONH })).json || null;
+  const pilotLog = async (id) => validPilotLog(await req(`registro ${id}`, `${direct}/api/pilot-log?probe=${id}`, { headers: JSONH }), id);
+  // Línea base del proceso actual (antes de dejarlo dormir): sin ella, ningún caso en frío aprueba.
+  async function baseline() { const lg = await pilotLog("base"); if (lg) { const s = readState(); s.serviceStartedAt = lg.startedAt; writeState(s); } return lg; }
   function coldGate(force) {
     const st = readState(); const idle = st.lastRequestAt ? Date.now() - st.lastRequestAt : Infinity;
     if (!force && idle < MIN_IDLE_MS) throw new Error(`sólo ${Math.round(idle / 60000)} min sin peticiones; hacen falta 16 (o --forzar)`);
-    return { st, idleMin: idle === Infinity ? null : Math.round(idle / 60000) };
+    return { st, idleMin: idle === Infinity ? null : Math.round(idle / 60000), idleConfirmed: idle !== Infinity && idle >= MIN_IDLE_MS, forced: Boolean(force) };
   }
-  async function confirmCold(st, out) {
-    const lg = await pilotLog("x");
+  // Frío confirmado = (a) ≥ 16 min sin peticiones, sin --forzar, y (b) startedAt nuevo respecto
+  // a una línea base válida. La tercera señal (logs de Render) la revisa Claude con list_logs.
+  async function confirmCold(gate, out) {
+    const lg = await pilotLog("frio");
     out.serviceStartedAt = lg ? lg.startedAt : null;
-    out.coldStartConfirmed = lg && st.serviceStartedAt ? lg.startedAt !== st.serviceStartedAt : null;
+    out.previousStartedAt = gate.st.serviceStartedAt || null;
+    out.startedAtChanged = Boolean(lg && gate.st.serviceStartedAt && lg.startedAt !== gate.st.serviceStartedAt);
+    out.idleConfirmed = gate.idleConfirmed; out.forced = gate.forced;
+    out.cold = Boolean(out.startedAtChanged && gate.idleConfirmed && !gate.forced);
+    out.renderLogs = "pendiente: Claude cruza startedAt con list_logs [Render API]";
     const s = readState(); if (lg) s.serviceStartedAt = lg.startedAt; writeState(s);
   }
   function save(name, data) {
@@ -89,23 +119,24 @@ export function createStaticProbe({ staticBase, direct, outDir = path.join(here,
 
   const tests = {
     async ip() {
-      await untilAwake(direct);
-      const r = {};
+      await untilAwake(direct); await baseline();
+      const raw = {};
       for (const [who, base] of [["estatico", staticBase], ["directo", direct]]) {
-        r[who] = (await req(`${who} client-ip`, `${base}/api/client-ip`, { headers: JSONH })).json;
-        r[who + "Falsificado"] = (await req(`${who} client-ip falsificado`, `${base}/api/client-ip`, { headers: { ...JSONH, ...SPOOF } })).json;
+        raw[who] = await req(`${who} client-ip`, `${base}/api/client-ip`, { headers: JSONH });
+        raw[who + "Falsificado"] = await req(`${who} client-ip falsificado`, `${base}/api/client-ip`, { headers: { ...JSONH, ...SPOOF } });
       }
-      const ipOf = (x) => x && x.decided && x.decided.ip;
-      const forged = (ip) => /^203\.0\.113\./.test(String(ip));
-      const out = { test: "ip", ...r,
-        sameAsDirect: ipOf(r.estatico) === ipOf(r.directo) && ipOf(r.directo) !== "unknown",
-        spoofIgnored: [r.estaticoFalsificado, r.directoFalsificado].every((x) => !forged(ipOf(x)) && ipOf(x) === ipOf(r.directo)) };
-      out.pass = Boolean(out.sameAsDirect && out.spoofIgnored);
-      out.note = "Una sola red de origen (la de esta sesión). «Por visitante» exige además abrir /ip.html desde dos redes distintas.";
+      const d = Object.fromEntries(Object.entries(raw).map(([k, r]) => [k, validClientIp(r)]));
+      const out = { test: "ip", responses: Object.fromEntries(Object.entries(raw).map(([k, r]) => [k, { status: r.status, contentType: r.headers && r.headers["content-type"], json: r.json || null, error: r.error }])), decided: d };
+      out.allValid = Object.values(d).every(Boolean);
+      const forged = (ip) => /^203\.0\.113\./.test(ip);
+      out.sameAsDirect = out.allValid && d.estatico.ip === d.directo.ip;
+      out.spoofIgnored = out.allValid && [d.estaticoFalsificado, d.directoFalsificado].every((x) => !forged(x.ip) && x.ip === d.directo.ip);
+      out.pass = Boolean(out.allValid && out.sameAsDirect && out.spoofIgnored);
+      out.note = "Una sola red de origen (la de esta sesión). «Por visitante» exige además M3: «Coinciden» en dos redes y una clave de visitante distinta entre ellas.";
       return save("ip", out);
     },
     async cuerpo() {
-      await untilAwake(direct); const id = crypto.randomBytes(6).toString("hex"); const checks = [];
+      await untilAwake(direct); await baseline(); const id = crypto.randomBytes(6).toString("hex"); const checks = [];
       const cases = [
         ["POST", "/api/eco", payload(20), "application/json; charset=utf-8", {}],
         ["PUT", "/api/eco", payload(20), "application/json", {}],
@@ -115,31 +146,37 @@ export function createStaticProbe({ staticBase, direct, outDir = path.join(here,
         ["POST", "/api/payments/stripe/webhook", payload(20), "application/json; charset=utf-8", { "stripe-signature": SIGNATURE }],
       ];
       for (const [base, via] of [[staticBase, "estatico"], [direct, "directo"]]) {
-        for (const [i, [method, p, body, ct, extra]] of cases.entries()) {
-          const q = `?probe=${id}&via=${via}&n=${i}&%C3%B1=1`;
+        for (const [n, [method, p, body, ct, extra]] of cases.entries()) {
+          const q = `?probe=${id}&via=${via}&n=${n}&%C3%B1=1`;
           const r = await req(`${via} ${method} ${p} ${Math.round(body.length / 1024)} KB`, base + p + q, { method, body, headers: { ...JSONH, "content-type": ct, ...extra } });
-          const j = r.json || {};
-          checks.push({ via, method, path: p, kb: Math.round(body.length / 1024), status: r.status,
-            method_ok: j.method === method, query_ok: j.query === q, contentType_ok: j.contentType === ct, bytes_ok: j.bytes === body.length,
-            sha_ok: j.sha256 === sha(body), signature_ok: extra["stripe-signature"] ? j.signature === SIGNATURE : j.signature === null });
+          const ok = isJsonResp(r); const j = ok ? r.json : {};
+          checks.push({ via, n, method, path: p, kb: Math.round(body.length / 1024), status: r.status, validResponse: ok,
+            method_ok: ok && j.method === method, path_ok: ok && j.path === p, query_ok: ok && j.query === q, contentType_ok: ok && j.contentType === ct,
+            bytes_ok: ok && j.bytes === body.length, sha_ok: ok && j.sha256 === sha(body),
+            signature_ok: ok && (extra["stripe-signature"] ? j.signature === SIGNATURE : j.signature === null), expectSha: sha(body) });
         }
       }
       const lg = await pilotLog(id);
-      const counts = {}; (lg ? lg.requests : []).forEach((q) => { const k = new URL(q.url, "http://x").searchParams; const key = k.get("via") + ":" + k.get("n"); counts[key] = (counts[key] || 0) + 1; });
-      checks.forEach((c, i) => { c.receivedTimes = counts[`${c.via}:${i % cases.length}`] || 0; });
-      const pass = checks.every((c) => c.status === 200 && c.method_ok && c.query_ok && c.contentType_ok && c.bytes_ok && c.sha_ok && c.signature_ok && c.receivedTimes === 1);
-      return save("cuerpo", { test: "cuerpo", probe: id, checks, pass });
+      for (const c of checks) {
+        const recs = lg ? lg.requests.filter((q) => { const k = new URL(q.url, "http://x").searchParams; return k.get("via") === c.via && k.get("n") === String(c.n); }) : null;
+        c.receivedTimes = recs ? recs.length : null;   // null = sin registro válido: nunca aprueba
+        c.originIntact = Boolean(recs && recs.length === 1 && recs[0].method === c.method && recs[0].sha256 === c.expectSha);
+      }
+      const pass = Boolean(lg) && checks.every((c) => c.status === 200 && c.validResponse && c.method_ok && c.path_ok && c.query_ok && c.contentType_ok && c.bytes_ok && c.sha_ok && c.signature_ok && c.receivedTimes === 1 && c.originIntact);
+      return save("cuerpo", { test: "cuerpo", probe: id, logValid: Boolean(lg), checks, pass });
     },
     async "cookies-http"() {
       await untilAwake(direct);
       const set = await req("estatico POST cookie/set", `${staticBase}/api/pilot-cookie/set`, { method: "POST", headers: JSONH });
+      const token = isJsonResp(set) && /^[0-9a-f]{24}$/.test(String(set.json.token)) ? set.json.token : null;
       const sc = set.setCookie || [];
-      const attrs = (c) => ({ httpOnly: /;\s*HttpOnly/i.test(c), secure: /;\s*Secure/i.test(c), lax: /;\s*SameSite=Lax/i.test(c), path: /;\s*Path=\//i.test(c), maxAge: /;\s*Max-Age=31536000/i.test(c), domain: /;\s*Domain=/i.test(c) });
+      const attrs = (c) => ({ name: c.split("=")[0], httpOnly: /;\s*HttpOnly/i.test(c), secure: /;\s*Secure/i.test(c), lax: /;\s*SameSite=Lax/i.test(c), path: /;\s*Path=\//i.test(c), maxAge: /;\s*Max-Age=31536000/i.test(c), domain: /;\s*Domain=/i.test(c) });
       const cookieHeader = sc.map((c) => c.split(";")[0]).join("; ");
       const echo = await req("estatico GET cookie/echo", `${staticBase}/api/pilot-cookie/echo`, { headers: { ...JSONH, cookie: cookieHeader } });
-      const a = sc.map(attrs);
-      const out = { test: "cookies-http", setCookieCount: sc.length, attributes: a, echo: echo.json,
-        pass: sc.length === 2 && a[0].httpOnly && a.every((x) => x.secure && x.lax && x.path && x.maxAge && !x.domain) && echo.json && set.json && echo.json.session === set.json.token };
+      const a = sc.map(attrs); const sess = a.find((x) => x.name === "qracks_session_piloto"); const vis = a.find((x) => x.name === "qz_piloto_visible");
+      const out = { test: "cookies-http", status: set.status, tokenValid: Boolean(token), setCookieCount: sc.length, attributes: a, echo: isJsonResp(echo) ? echo.json : null };
+      out.pass = Boolean(token && sc.length === 2 && sess && vis && sess.httpOnly && !vis.httpOnly && a.every((x) => x.secure && x.lax && x.path && x.maxAge && !x.domain)
+        && out.echo && out.echo.session === token && out.echo.visible === "1");
       return save("cookies-http", out);
     },
     async "cookies-navegador"() {
@@ -147,49 +184,64 @@ export function createStaticProbe({ staticBase, direct, outDir = path.join(here,
       const b = await browser(); const out = { test: "cookies-navegador" };
       try {
         const ctx = await b.newContext(); const page = await ctx.newPage();
-        await page.goto(`${staticBase}/q/demo`);
-        const call = (u, m) => page.evaluate(([u, m]) => fetch(u, { method: m, credentials: "same-origin", cache: "no-store" }).then((r) => r.json()), [u, m]);
+        out.pageStatus = (await page.goto(`${staticBase}/q/demo`)).status();
+        const call = (u, m) => page.evaluate(([u, m]) => fetch(u, { method: m, credentials: "same-origin", cache: "no-store" })
+          .then((r) => r.text().then((t) => { let j = null; try { j = JSON.parse(t); } catch (e) {} return { status: r.status, type: r.headers.get("content-type"), json: j }; })), [u, m]);
+        const ok = (x) => x && x.status === 200 && /^application\/json\b/i.test(String(x.type)) && x.json && typeof x.json === "object";
         const set = await call("/api/pilot-cookie/set", "POST");
+        const token = ok(set) && /^[0-9a-f]{24}$/.test(String(set.json.token)) ? set.json.token : null;
+        out.tokenValid = Boolean(token);
         out.documentCookie = await page.evaluate(() => document.cookie);
-        out.echo1 = await call("/api/pilot-cookie/echo", "GET");
+        const e1 = await call("/api/pilot-cookie/echo", "GET");
         const host = new URL(staticBase).hostname;
         out.stored = (await ctx.cookies()).filter((c) => c.name.startsWith("qracks_") || c.name.startsWith("qz_")).map((c) => ({ name: c.name, domain: c.domain, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite, path: c.path }));
-        await page.reload(); out.echo2 = await call("/api/pilot-cookie/echo", "GET");
-        await call("/api/pilot-cookie/clear", "POST"); out.echo3 = await call("/api/pilot-cookie/echo", "GET");
+        await page.reload(); const e2 = await call("/api/pilot-cookie/echo", "GET");
+        const cl = await call("/api/pilot-cookie/clear", "POST"); const e3 = await call("/api/pilot-cookie/echo", "GET");
+        out.echo = [e1, e2, e3].map((x) => (ok(x) ? x.json : null)); out.clearOk = ok(cl);
         const sess = out.stored.find((c) => c.name === "qracks_session_piloto");
-        out.pass = Boolean(!out.documentCookie.includes("qracks_session_piloto") && out.documentCookie.includes("qz_piloto_visible=1")
-          && out.echo1.session === set.token && out.echo2.session === set.token && out.echo3.session === null
+        out.pass = Boolean(token && out.pageStatus === 200 && out.echo.every(Boolean) && out.clearOk
+          && !out.documentCookie.includes("qracks_session_piloto") && out.documentCookie.includes("qz_piloto_visible=1")
+          && out.echo[0].session === token && out.echo[1].session === token && out.echo[2].session === null
           && sess && sess.httpOnly && sess.secure && sess.sameSite === "Lax" && sess.domain === host);
       } finally { await b.close(); }
       return save("cookies-navegador", out);
     },
     async "dormido-http"(force) {
-      const { st, idleMin } = coldGate(force); const id = crypto.randomBytes(6).toString("hex");
-      const out = { test: "dormido-http", idleMinBefore: idleMin, probe: id };
+      const gate = coldGate(force); const id = crypto.randomBytes(6).toString("hex");
+      const out = { test: "dormido-http", idleMinBefore: gate.idleMin, probe: id };
       out.page = await req("estatico GET /q/demo (página)", `${staticBase}/q/demo?probe=${id}`, { headers: NAV });
       out.firstApi = await req("estatico GET /api/health (dormido)", `${staticBase}/api/health?probe=${id}`, { headers: JSONH, timeoutMs: 120_000 });
       out.wake = await untilAwake(staticBase);
-      const lg = await pilotLog(id); out.originReceivedFirstApi = lg ? lg.count : null;
-      await confirmCold(st, out);
-      out.pass = Boolean(out.page.status === 200 && out.wake.awakeAfterMs !== null && out.originReceivedFirstApi <= 1);
+      const lg = await pilotLog(id);
+      out.logValid = Boolean(lg);
+      out.originReceivedFirstApi = lg ? lg.count : null;
+      await confirmCold(gate, out);
+      out.propertyPass = Boolean(out.page.status === 200 && out.wake.awakeAfterMs !== null && lg && Number.isInteger(lg.count) && lg.count <= 1);
+      out.pass = Boolean(out.propertyPass && out.cold);
       return save("dormido-http", out);
     },
     async "dormido-post"(force) {
-      const { st, idleMin } = coldGate(force); const id = crypto.randomBytes(6).toString("hex"); const body = payload(20);
-      const out = { test: "dormido-post", idleMinBefore: idleMin, probe: id };
+      const gate = coldGate(force); const id = crypto.randomBytes(6).toString("hex"); const body = payload(20);
+      const out = { test: "dormido-post", idleMinBefore: gate.idleMin, probe: id };
       out.first = await req("estatico POST webhook (dormido)", `${staticBase}/api/payments/stripe/webhook?probe=${id}`, { method: "POST", body, headers: { ...JSONH, "content-type": "application/json", "stripe-signature": SIGNATURE }, timeoutMs: 120_000 });
       out.wake = await untilAwake(direct);
-      const lg = await pilotLog(id); out.originReceived = lg ? lg.count : null; out.originRequests = lg ? lg.requests : null;
-      await confirmCold(st, out);
-      const j = out.first.json || {};
-      out.intactIfAnswered = out.first.status === 200 ? j.sha256 === sha(body) && j.signature === SIGNATURE : null;
-      out.pass = Boolean(out.originReceived <= 1 && (out.first.status !== 200 || out.intactIfAnswered) && (!lg || lg.requests.every((q) => q.sha256 === sha(body) && q.signature)));
+      const lg = await pilotLog(id);
+      out.logValid = Boolean(lg);
+      out.originReceived = lg ? lg.count : null; out.originRequests = lg ? lg.requests : null;
+      await confirmCold(gate, out);
+      const answered = isJsonResp(out.first);
+      out.answeredByOrigin = answered;
+      out.intactInResponse = answered ? out.first.json.sha256 === sha(body) && out.first.json.signature === SIGNATURE && out.first.json.method === "POST" : null;
+      out.intactAtOrigin = lg ? lg.requests.every((q) => q.method === "POST" && q.sha256 === sha(body) && q.signature === true) : false;
+      out.lost = lg ? lg.count === 0 : null;   // observación: el webhook no llegó (Stripe reintentaría)
+      out.propertyPass = Boolean(lg && lg.count <= 1 && out.intactAtOrigin && (answered ? out.intactInResponse && lg.count === 1 : true));
+      out.pass = Boolean(out.propertyPass && out.cold);
       return save("dormido-post", out);
     },
     async "dormido-navegador"(force, { appTimeoutMs = 180_000, quietMs = 5_000 } = {}) {
-      const { st, idleMin } = coldGate(force); const id = crypto.randomBytes(6).toString("hex");
+      const gate = coldGate(force); const id = crypto.randomBytes(6).toString("hex");
       const pathQuery = `/a/mi-q?qz_pago=pi_1&qz_sess=cs_2&%C3%B1=1&probe=${id}`; const target = `${staticBase}${pathQuery}#arriba`;
-      const out = { test: "dormido-navegador", idleMinBefore: idleMin, probe: id, target: pathQuery + "#arriba" };
+      const out = { test: "dormido-navegador", idleMinBefore: gate.idleMin, probe: id, target: pathQuery + "#arriba" };
       const b = await browser(); const t0 = Date.now(); const ev = [];
       try {
         const page = await b.newPage({ viewport: { width: 390, height: 844 } });
@@ -210,16 +262,17 @@ export function createStaticProbe({ staticBase, direct, outDir = path.join(here,
         out.otherRequests = ev.filter((x) => x.k === "req" && x.type !== "document" && !x.u.startsWith("/api/health") && !x.u.startsWith("/api/pilot-app")).map((x) => x.m + " " + x.u);
         fs.mkdirSync(outDir, { recursive: true }); out.screenshot = path.join(outDir, `navegador-${id}.png`); await page.screenshot({ path: out.screenshot }).catch(() => { out.screenshot = null; });
       } finally { await b.close(); }
-      await confirmCold(st, out);
-      out.pass = Boolean(out.first.status === 200 && out.first.h1 === "Estamos abriendo la administración de tu quiniela" && out.appAfterMs && out.sameUrl && out.originGotSameUrl
+      await confirmCold(gate, out);
+      out.propertyPass = Boolean(out.first.status === 200 && out.first.h1 === "Estamos abriendo la administración de tu quiniela" && out.appAfterMs && out.sameUrl && out.originGotSameUrl
         && out.navigationType === "navigate" && out.documents === 1 && out.requestsAfterApp === 0 && out.otherRequests.length === 0);
+      out.pass = Boolean(out.propertyPass && out.cold);
       return save("dormido-navegador", out);
     },
   };
   function summary() {
     if (!fs.existsSync(outDir)) return 0;
     const files = fs.readdirSync(outDir).filter((f) => f.endsWith(".json") && f !== "estado.json").sort();
-    for (const f of files) { const d = JSON.parse(fs.readFileSync(path.join(outDir, f), "utf8")); log(`${f}: ${d.test} · ${d.pass ? "PASA" : "FALLA"}${d.coldStartConfirmed != null ? " · en frío " + d.coldStartConfirmed : ""}`); }
+    for (const f of files) { const d = JSON.parse(fs.readFileSync(path.join(outDir, f), "utf8")); log(`${f}: ${d.test} · ${d.pass ? "PASA" : "FALLA"}${d.cold !== undefined ? " · propiedad " + d.propertyPass + " · frío " + d.cold + (d.forced ? " (forzado: nunca aprueba)" : "") : ""}`); }
     return files.length;
   }
   return { tests, summary, untilAwake };
