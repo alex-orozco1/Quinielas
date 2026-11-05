@@ -7,7 +7,11 @@ import { isHealthyPayload, createWaker, createReloadGuard, WAKE_DEFAULTS, RELOAD
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-export function renderLoadingPage(requestUrl) {
+// opts.static: versión para un SITIO ESTÁTICO (alternativa Render Static Site). Se genera
+// una sola vez y sirve cualquier ruta: el texto del destino y el aviso de pago se eligen
+// en el navegador (sólo entre textos fijos), y al estar listo NO recarga: continúa
+// pidiendo `continueUrl` (en la app real sería seguir con boot()).
+export function renderLoadingPage(requestUrl, opts = {}) {
   const url = new URL(requestUrl);
   const dest = destinationFor(url.pathname);
   const fromPayment = url.searchParams.has("qz_pago") && !url.searchParams.has("qz_pago_cancelado");
@@ -18,6 +22,11 @@ export function renderLoadingPage(requestUrl) {
     title: TITLES[dest], text, tips: tipsFor(dest), payment: fromPayment,
     wake: WAKE_DEFAULTS, reload: RELOAD_DEFAULTS,
   };
+  if (opts.static) {
+    Object.assign(cfg, { static: true, continueUrl: opts.continueUrl || "/api/pilot-app", titles: TITLES,
+      tipsByDest: { inicio: tipsFor("inicio"), crear: tipsFor("crear"), q: tipsFor("q"), a: tipsFor("a") } });
+    cfg.text = Object.assign({}, TEXT); cfg.payment = false;
+  }
   const cfgJson = JSON.stringify(cfg).replace(/</g, "\\u003c");
   return `<!doctype html>
 <html lang="es">
@@ -78,6 +87,14 @@ h1{font-size:24px;line-height:1.2;margin:0 0 10px}p{margin:0 0 12px;line-height:
   var createWaker = ${createWaker.toString()};
   var createReloadGuard = ${createReloadGuard.toString()};
   var T = CFG.text, $ = function(id){ return document.getElementById(id); };
+  if (CFG.static) {
+    // Sitio estático: el destino y el aviso de pago salen de la URL, pero sólo eligen textos fijos.
+    var destinationFor = ${destinationFor.toString()};
+    var dest = destinationFor(location.pathname), qs = new URLSearchParams(location.search);
+    CFG.title = CFG.titles[dest]; CFG.tips = CFG.tipsByDest[dest];
+    CFG.payment = qs.has("qz_pago") && !qs.has("qz_pago_cancelado");
+    $("title").textContent = CFG.title;
+  }
   var e = function(s){ return String(s).replace(/[&<>"']/g, function(c){ return ({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"})[c]; }); };
   var brand = '<div class="brand"><span class="mark" aria-hidden="true">Q</span><span class="word">QRACKS</span></div>';
   var note = CFG.payment ? '<div class="note">' + e(T.payment) + '</div>' : '';
@@ -121,11 +138,21 @@ h1{font-size:24px;line-height:1.2;margin:0 0 10px}p{margin:0 0 12px;line-height:
     // documento y no volvería a pedir la página (encontrado en la prueba local).
     // Sólo si queda cupo de recargas automáticas y se pudo registrar; si no, botón.
     onReady: function(){
+      if (CFG.static) { continueApp(); return; }
       if (guard.tryReload(cycle.startedAt)) { window.location.reload(); return; }
       current = { state: "stuck" }; paint();
     }
   });
-  document.addEventListener("visibilitychange", function(){ w.onVisibilityChange(); });
+${cfg.static ? `  // Sitio estático: sin recarga. Una sola petición GET de continuación con la ruta y los
+  // parámetros actuales; la URL de la barra no cambia.
+  function continueApp(){
+    var ctl = new AbortController(); var t = setTimeout(function(){ ctl.abort(); }, 15000);
+    fetch(CFG.continueUrl + "?path=" + encodeURIComponent(location.pathname + location.search), { method: "GET", cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
+      .then(function(r){ if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function(j){ clearTimeout(t); document.body.innerHTML = '<main id="app"><h1>app</h1><pre id="seen">' + e(j.seen == null ? "" : j.seen) + '</pre></main>'; })
+      .catch(function(){ clearTimeout(t); current = { state: "error" }; paint(); });
+  }
+` : ""}  document.addEventListener("visibilitychange", function(){ w.onVisibilityChange(); });
   window.addEventListener("online", function(){ w.onOnline(); });
   window.addEventListener("offline", function(){ w.onOffline(); });
   window.addEventListener("pagehide", function(){ w.stop(); });

@@ -76,7 +76,7 @@ Fuentes: **[Claude]** ejecutado o leído en el código · **[GPT]** revisado por
 
 | Campo | Valor |
 |---|---|
-| Código | `pilot/measure/dist/worker.mjs` (sha256 `458876f4…de948`) |
+| Código | `pilot/measure/dist/worker.mjs` (el sha256 lo imprime `node pilot/dev/bundle.mjs`) |
 | `ORIGIN` | El host real de R-B; el script rechaza cualquier origen que no sea `*.onrender.com` |
 | `PILOT_TOKEN` | Aleatorio, generado por `cloudflare.mjs`. Sólo vive en el Worker y en `pilot/measure/out/pilot-token` (0600, fuera de git) |
 | Rutas | Ninguna en `qracks.net` |

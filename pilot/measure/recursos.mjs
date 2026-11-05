@@ -17,7 +17,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-export const KINDS = Object.freeze(["cloudflare-worker", "render-service", "git-branch"]);
+export const KINDS = Object.freeze(["cloudflare-worker", "render-service", "render-static-site", "git-branch"]);
 
 export function createRegistry({ outDir = path.join(here, "out"), now = () => new Date().toISOString() } = {}) {
   const file = path.join(outDir, "recursos.json");

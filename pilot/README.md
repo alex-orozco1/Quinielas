@@ -21,6 +21,7 @@
 | `test/*.test.mjs` | Las pruebas locales. |
 | `measure/` | H-WAKE: Worker de medición (`probe-worker.mjs`, bundle en `dist/worker.mjs`), `probe.mjs` (HTTP), `browser-probe.mjs` (navegador real), `cloudflare.mjs` (API de Cloudflare, con protección y registro), `recursos.mjs` (registro de lo creado) y el plan `PLAN-H-WAKE.md`. |
 | `dev/bundle.mjs` | Genera el Worker en un solo archivo. |
+| `static-site/` | Alternativa Render Static Site: sitio de prueba (`dist/`), generador y plan `PLAN-STATIC-SITE.md`; pruebas en `measure/static-probe.mjs`. |
 
 **No se tocan** la app (`server.js`, `public/`), `render.yaml`, `package.json` ni la suite principal (`test/`).
 

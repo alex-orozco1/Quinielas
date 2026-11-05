@@ -5,6 +5,10 @@
 //   POST /api/eco      → bytes y sha256 del cuerpo recibido (comprueba que nadie lo toca)
 //   POST /api/payments/stripe/webhook → igual que /api/eco (sólo simula la ruta)
 //   GET  /files/app.js → un archivo estático
+//   GET  /api/client-ip → la IP que decidiría la app (clientIp.js) y las cabeceras de IP recibidas
+//   POST /api/pilot-cookie/set · GET /api/pilot-cookie/echo · POST /api/pilot-cookie/clear
+//   GET  /api/pilot-app?path=… → «continuación» de la app tras despertar (la pantalla estática)
+//   POST|PUT|PATCH|DELETE /api/eco → método, ruta, query, tipo, bytes, sha256 y firma recibidos
 //   GET  /api/pilot-log?probe=<id> → qué peticiones con ese `probe` llegaron (método, ruta,
 //        bytes, sha256, si traía firma). Para contar que una API/POST llegó UNA sola vez.
 //   GET  cualquier otra ruta → HTML que muestra la ruta y los parámetros recibidos (escapados)
@@ -14,6 +18,17 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
+import { createRequire } from "node:module";
+
+// La MISMA decisión de IP que la app (clientIp.js de la raíz del repo). En Render,
+// RENDER=true elige la fuente «render»: CF-Connecting-IP y, si falta, la entrada
+// tercera desde la derecha de X-Forwarded-For.
+const clientIp = createRequire(import.meta.url)("../../clientIp.js");
+const IP_SOURCE = clientIp.resolveSource(process.env);
+const IP_HEADERS = ["cf-connecting-ip", "x-forwarded-for", "true-client-ip", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "via"];
+// Cookies de prueba con los MISMOS atributos que la sesión de la app (server.js:183).
+const COOKIE_SESSION = "qracks_session_piloto", COOKIE_VISIBLE = "qz_piloto_visible";
+function parseCookies(h) { const out = {}; String(h || "").split(";").forEach((p) => { const i = p.indexOf("="); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); }); return out; }
 
 const STARTED_AT = new Date().toISOString(); // cambia en cada arranque: delata un arranque en frío
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -54,10 +69,35 @@ export function createWakeService({ asleep = false, holdPages = false } = {}) {
       trueClientIp: req.headers["true-client-ip"] || null,
       remoteAddress: req.socket.remoteAddress,
     });
-    if (req.method === "POST" && (p === "/api/eco" || p === "/api/payments/stripe/webhook")) return json(res, 200, {
+    if ((p === "/api/eco" && ["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) || (req.method === "POST" && p === "/api/payments/stripe/webhook")) return json(res, 200, {
+      method: req.method, path: p, query: url.search, contentType: req.headers["content-type"] || null,
+      contentEncoding: req.headers["content-encoding"] || null,
       bytes: body.length, sha256: crypto.createHash("sha256").update(body).digest("hex"),
       signature: req.headers["stripe-signature"] || null,
     });
+    if (req.method === "GET" && p === "/api/client-ip") {
+      // CORS sólo aquí, sin credenciales: la página de IP compara esta ruta directa con la del sitio estático.
+      res.setHeader("access-control-allow-origin", "*");
+      const seen = {}; IP_HEADERS.forEach((h) => { if (req.headers[h] != null) seen[h] = req.headers[h]; });
+      return json(res, 200, { decided: clientIp.clientIpInfo(req, IP_SOURCE), source: IP_SOURCE, headers: seen, remoteAddress: req.socket.remoteAddress });
+    }
+    if (req.method === "POST" && p === "/api/pilot-cookie/set") {
+      const token = crypto.randomBytes(12).toString("hex");
+      res.setHeader("set-cookie", [
+        `${COOKIE_SESSION}=${token}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`,
+        `${COOKIE_VISIBLE}=1; Path=/; Max-Age=31536000; Secure; SameSite=Lax`,
+      ]);
+      return json(res, 200, { set: [COOKIE_SESSION, COOKIE_VISIBLE], token });
+    }
+    if (req.method === "GET" && p === "/api/pilot-cookie/echo") {
+      const c = parseCookies(req.headers.cookie);
+      return json(res, 200, { session: c[COOKIE_SESSION] || null, visible: c[COOKIE_VISIBLE] || null, names: Object.keys(c).sort() });
+    }
+    if (req.method === "POST" && p === "/api/pilot-cookie/clear") {
+      res.setHeader("set-cookie", [`${COOKIE_SESSION}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`, `${COOKIE_VISIBLE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`]);
+      return json(res, 200, { cleared: true });
+    }
+    if (req.method === "GET" && p === "/api/pilot-app") return json(res, 200, { seen: url.searchParams.get("path") || null, startedAt: STARTED_AT });
     if (req.method === "GET" && p === "/files/app.js") {
       res.writeHead(200, { "content-type": "application/javascript", "cache-control": "public, max-age=3600" });
       return res.end("console.log('app');");
