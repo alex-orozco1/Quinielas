@@ -6784,12 +6784,28 @@ const KNOWN_EVENTS = new Set([
   // Sprint 15.1 — S15-3/S15-4: lifecycle del organizador (resultado
   // publicado) y del participante/organizador (regreso real a la tabla).
   "result_published",
-  "standings_viewed"
+  "standings_viewed",
+  // ONB-14 — la demo «Ver cómo se juega»: conteos anónimos (ver DEMO_EVENTS).
+  "demo_started",
+  "demo_completed"
 ]);
+// ONB-14 — los eventos de la demo son conteos de eventos, no de personas: el
+// servidor guarda sólo el nombre y el origen «demo» y descarta cualquier
+// identificador que llegue (dispositivo, quiniela, participante, usuario
+// nuevo). Los demás eventos se tratan exactamente igual que antes.
+const DEMO_EVENTS = new Set(["demo_started", "demo_completed"]);
 app.post("/api/track-event", rateLimit("track-event"), async (req, res) => {
   try {
     const { event, competitionSlug, participantId, isNewUser, deviceId, source } = req.body || {};
     if (!KNOWN_EVENTS.has(event)) return res.status(400).json({ error: "unknown_event" });
+    if (DEMO_EVENTS.has(event)) {
+      await pool.query(
+        `INSERT INTO analytics_events (event_name, competition_slug, participant_id, is_new_user, device_id, source)
+         VALUES ($1, NULL, NULL, NULL, NULL, 'demo')`,
+        [event]
+      );
+      return res.json({ ok: true });
+    }
     await pool.query(
       `INSERT INTO analytics_events (event_name, competition_slug, participant_id, is_new_user, device_id, source)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -6980,6 +6996,14 @@ function injectMeta(html, { title, description, url }) {
 // MON-003 · retorno a /a/: la misma aplicación, abierta en el panel de Admin. No
 // es una página pública: ni se cachea ni se indexa, y no concede nada — el
 // acceso de admin lo sigue decidiendo la sesión.
+// ONB-14 · «Ver cómo se juega»: la misma aplicación, en su página de demo. Sin
+// indexar (y fuera del sitemap). No lee ni escribe ninguna quiniela.
+app.get("/demo", (req, res) => {
+  res.set("Cache-Control", "no-cache");
+  res.set("X-Robots-Tag", "noindex, nofollow");
+  res.sendFile(INDEX_HTML_PATH);
+});
+
 app.get("/a/:slug", (req, res) => {
   res.set("Cache-Control", "no-store");
   res.set("X-Robots-Tag", "noindex, nofollow");
