@@ -1,5 +1,10 @@
 # UX-INFRA-001 · Piloto de la pantalla de carga (preparación local)
 
+> **Estado (2026-11-05): APARCADO, BLOQUEADO.** El Founder mantiene $0 y ninguna cuenta nueva.
+> - Cloudflare Worker: requiere una cuenta nueva y mover los nameservers.
+> - Render Static Site: el piloto externo falló en la IP por visitante (ver `static-site/RESULTADOS-PILOTO.md`).
+> - Se conservan el informe y el código de preparación. Retomar sólo con una decisión nueva sobre coste o cuentas.
+
 **Estado:** código y pruebas **locales**. No se creó ningún recurso externo ni se desplegó nada. Tampoco hubo cambios de DNS, infraestructura, producción ni pagos.
 **Base:** `main` en `9164bac`, con la propuesta v3 y los ajustes de la revisión de GPT. Incluye las correcciones de la revisión de GPT sobre `84ddb70` (ver «Correcciones tras la revisión de 84ddb70»).
 
