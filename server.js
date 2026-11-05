@@ -22,7 +22,6 @@ const {
 } = require("./planLimits");
 const competitionCoverage = require("./competitionCoverage");
 const { outcomeFromRegulation } = require("./scoreContract");
-const liguillaScoring = require("./liguillaScoring");
 const liguillaRules = require("./liguillaRules");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
