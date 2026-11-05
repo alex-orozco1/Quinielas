@@ -38,6 +38,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Validación: lo ausente, mal formado o inconcluso NUNCA aprueba ─────────────
 const isJsonResp = (r) => Boolean(r && r.status === 200 && /^application\/json\b/i.test(String(r.headers && r.headers["content-type"] || "")) && r.json && typeof r.json === "object");
+// Query: compara parámetros, valores y multiplicidad. «identica» (mismo texto), «reordenada»
+// (mismos pares nombre=valor con la misma multiplicidad, otro orden) o «cambiada» (falta,
+// sobra o cambia algún par). Sólo «cambiada» es pérdida o cambio de datos.
+export function compareQuery(sent, received) {
+  if (typeof received !== "string") return { verdict: "cambiada", reason: "sin query recibida" };
+  if (sent === received) return { verdict: "identica" };
+  const pairs = (q) => [...new URLSearchParams(q)].map(([k, v]) => JSON.stringify([k, v]));
+  const count = (list) => list.reduce((m, x) => m.set(x, (m.get(x) || 0) + 1), new Map());
+  const a = count(pairs(sent)), b = count(pairs(received));
+  const missing = [...a].filter(([k, n]) => (b.get(k) || 0) < n).map(([k]) => JSON.parse(k));
+  const extra = [...b].filter(([k, n]) => (a.get(k) || 0) < n).map(([k]) => JSON.parse(k));
+  return missing.length || extra.length ? { verdict: "cambiada", missing, extra } : { verdict: "reordenada" };
+}
+
 // Una clave de IP como la de clientIp.js: IPv4, o el /64 de una IPv6 ("a:b:c:d::/64").
 export function isValidIpKey(ip) {
   if (typeof ip !== "string" || !ip || ip === "unknown") return false;
@@ -151,19 +165,21 @@ export function createStaticProbe({ staticBase, direct, outDir = path.join(here,
           const r = await req(`${via} ${method} ${p} ${Math.round(body.length / 1024)} KB`, base + p + q, { method, body, headers: { ...JSONH, "content-type": ct, ...extra } });
           const ok = isJsonResp(r); const j = ok ? r.json : {};
           checks.push({ via, n, method, path: p, kb: Math.round(body.length / 1024), status: r.status, validResponse: ok,
-            method_ok: ok && j.method === method, path_ok: ok && j.path === p, query_ok: ok && j.query === q, contentType_ok: ok && j.contentType === ct,
+            method_ok: ok && j.method === method, path_ok: ok && j.path === p, query: ok ? compareQuery(q, j.query) : { verdict: "cambiada", reason: "respuesta no válida" }, contentType_ok: ok && j.contentType === ct,
             bytes_ok: ok && j.bytes === body.length, sha_ok: ok && j.sha256 === sha(body),
             signature_ok: ok && (extra["stripe-signature"] ? j.signature === SIGNATURE : j.signature === null), expectSha: sha(body) });
         }
       }
       const lg = await pilotLog(id);
       for (const c of checks) {
+        c.query_ok = c.query.verdict !== "cambiada";
         const recs = lg ? lg.requests.filter((q) => { const k = new URL(q.url, "http://x").searchParams; return k.get("via") === c.via && k.get("n") === String(c.n); }) : null;
         c.receivedTimes = recs ? recs.length : null;   // null = sin registro válido: nunca aprueba
         c.originIntact = Boolean(recs && recs.length === 1 && recs[0].method === c.method && recs[0].sha256 === c.expectSha);
       }
       const pass = Boolean(lg) && checks.every((c) => c.status === 200 && c.validResponse && c.method_ok && c.path_ok && c.query_ok && c.contentType_ok && c.bytes_ok && c.sha_ok && c.signature_ok && c.receivedTimes === 1 && c.originIntact);
-      return save("cuerpo", { test: "cuerpo", probe: id, logValid: Boolean(lg), checks, pass });
+      const queryVerdicts = checks.reduce((m, c) => { m[c.via + ":" + c.query.verdict] = (m[c.via + ":" + c.query.verdict] || 0) + 1; return m; }, {});
+      return save("cuerpo", { test: "cuerpo", probe: id, logValid: Boolean(lg), queryVerdicts, checks, pass });
     },
     async "cookies-http"() {
       await untilAwake(direct);

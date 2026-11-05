@@ -135,3 +135,16 @@ for (const logMode of ["nullcount", "stringcount", "mismatch", "nostart", "other
 test("negativa: cookies con JSON vacío y sin Set-Cookie → cookies-http NO pasa", async () => {
   await withFake({ ip: "html503", log: "html503" }, async (p) => { const d = (await p.tests["cookies-http"]()).data; assert.equal(d.tokenValid, false); assert.equal(d.pass, false); });
 });
+
+test("query: distingue reordenación de pérdida o cambio (parámetros, valores y multiplicidad)", async () => {
+  const { compareQuery } = await import("../measure/static-probe.mjs");
+  assert.equal(compareQuery("?a=1&b=2", "?a=1&b=2").verdict, "identica");
+  assert.equal(compareQuery("?probe=abc&via=e&n=0&%C3%B1=1", "?n=0&probe=abc&via=e&%C3%B1=1").verdict, "reordenada", "lo observado en Render");
+  assert.equal(compareQuery("?a=1&a=2", "?a=2&a=1").verdict, "reordenada");
+  assert.equal(compareQuery("?a=1&b=2", "?a=1").verdict, "cambiada", "falta un parámetro");
+  assert.equal(compareQuery("?a=1", "?a=1&b=2").verdict, "cambiada", "sobra un parámetro");
+  assert.equal(compareQuery("?a=1&a=1", "?a=1").verdict, "cambiada", "cambia la multiplicidad");
+  assert.equal(compareQuery("?%C3%B1=1", "?%C3%B1=2").verdict, "cambiada", "cambia un valor");
+  assert.equal(compareQuery("?x=%C3%B1", "?x=n").verdict, "cambiada", "cambia la codificación del valor");
+  assert.equal(compareQuery("?a=1", undefined).verdict, "cambiada");
+});
