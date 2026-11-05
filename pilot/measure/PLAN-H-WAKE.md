@@ -13,10 +13,10 @@ Fuentes: **[Claude]** ejecutado o leído en el código · **[GPT]** revisado por
 | 1 | Tú | Cuenta de Cloudflare (crearla si no existe) y **token de API acotado como secreto de red** (§2.1) | La cuenta es tuya |
 | 2 | Tú | Autorizar R-A, R-B y R-C (§3) y el apagado (§5) | **Sí** |
 | 3 | Claude | `cloudflare.mjs comprobar`: token válido, cuenta y subdominio de `workers.dev` | — |
-| 4 | Claude | Crear R-A (rama), R-B (Render, con el conector) y R-C (Worker, con la API). Te doy los **dos hosts reales**: el que devuelve Render y el de `workers.dev`. | **Sí** |
+| 4 | Claude | Crear R-A (rama), R-B (Render, con el conector) y R-C (Worker, con la API), cada uno sólo si su nombre no existe ya. Cada recurso creado se anota en `pilot/measure/out/recursos.json`. Te doy los **dos hosts reales**: el que devuelve Render y el de `workers.dev`. | **Sí** |
 | 5 | Tú | **Red:** añadir exactamente esos dos hosts (§2.2). Se aplica a esta sesión en ~1 min [Doc]. | Es tuyo |
 | 6 | Claude | Medición (§4), unas 3,5 h. Entre ciclos me programo un aviso para continuar. | Incluida en el paso 2 |
-| 7 | Claude + tú | Apagado (§5) | Incluido en el paso 2 |
+| 7 | Claude + **tú (borrado manual en Render)** | Apagado (§5), sólo sobre los recursos registrados | Incluido en el paso 2 |
 
 ## 2. Accesos mínimos
 
@@ -55,6 +55,11 @@ Fuentes: **[Claude]** ejecutado o leído en el código · **[GPT]** revisado por
 | R-A | Rama `ux-infra/piloto-hwake` | Copia de `ux-infra/piloto-pantalla-carga` en el SHA aprobado. Nunca `main` ni `mon001a-plan-limits-enforcement`. |
 | R-B | Servicio web de Render `qracks-hwake-pilot` | Ver la tabla siguiente. |
 | R-C | Worker `qracks-hwake-pilot` en `workers.dev` | Ver la tabla siguiente. |
+
+**Regla común a los tres:** sólo se crea un recurso si se confirma que su nombre **no existe**. Si ya existe, o la consulta falla o es inconclusa, me detengo sin tocar nada y te lo reporto. Cada recurso creado se anota en `pilot/measure/out/recursos.json` con su id, la cuenta o el servicio y su estado; nunca se anota uno que ya existía.
+- **R-A:** `git ls-remote` debe confirmar que la rama no existe; luego `recursos.mjs anotar git-branch …`.
+- **R-B:** `list_services` [Render API] debe confirmar que no hay ningún servicio con ese nombre; luego `recursos.mjs anotar render-service <srv-…>` con la URL real.
+- **R-C:** lo hace `cloudflare.mjs desplegar`, que se detiene sin PUT si la lista de Workers no es concluyente (HTTP 200, `success:true`, lista completa) o si el nombre ya existe. Registra el Worker **antes** de crearlo («creando») y lo pasa a «creado» o «incierto» según la respuesta.
 
 **R-B · Servicio web de Render:**
 
@@ -120,15 +125,17 @@ Si alguna señal no cuadra, el caso se reporta como **no confirmado** y no se us
 - **Riesgo por observar** [Doc]: `waitUntil` dura como mucho 30 s tras la respuesta. Si Render tarda más en despertar, la petición mantenida puede cancelarse. `worker-nav` mide si llega al origen.
 
 ## 5. Apagado (requiere autorización junto con la creación)
+**Sólo se actúa sobre lo registrado en `recursos.json`.** Un recurso con el mismo nombre que no esté registrado queda fuera.
 
 | # | Quién | Acción | Verificación |
 |---|---|---|---|
-| A1 | Claude | `cloudflare.mjs borrar` | `cloudflare.mjs estado` dice «no existe», y el host de `workers.dev` deja de servir el Worker |
-| A2 | **Tú** | Render → `qracks-hwake-pilot` → Settings → **Delete Web Service**. El conector no puede suspender ni borrar. | Claude, con `list_services` [Render API]: el servicio ya no aparece |
-| A3 | Claude | Borrar la rama R-A (`git push --delete`), después de A2 | `git ls-remote` |
-| A4 | Tú | Borrar el secreto de red y revocar el token, o dejar que venza su TTL. Volver la red a su nivel anterior. | — |
+| A1 | Claude | `cloudflare.mjs borrar`: sólo los Workers registrados en esa cuenta. Antes y después del DELETE comprueba la lista; si la consulta es inconclusa, se detiene. Si el Worker ya no existe, no envía DELETE. | `cloudflare.mjs estado` dice «no existe» y el registro dice «borrado» |
+| A2 | **Tú, a mano (obligatorio)** | Render → el servicio registrado (su `srv-…`, que te daré) → Settings → **Delete Web Service**. El conector no puede suspender ni borrar servicios. | Claude, con `list_services` [Render API]: ese `srv-…` ya no aparece. Hasta entonces el piloto **no** está apagado. |
+| A3 | Claude | Borrar la rama registrada (`git push --delete`), después de A2 | `git ls-remote` |
+| A4 | Tú | Retirar los **accesos**: borrar el secreto de red, revocar el token y volver la red a su nivel anterior | — |
 
-- **Sin A2 inmediato:** un servicio dormido no consume horas [Doc]. Sólo gastaría si alguien pide su URL.
+- **A4 no apaga recursos.** Que el token venza o se revoque sólo me quita el acceso a la API de Cloudflare. El Worker seguiría existiendo, y el servicio de Render no depende del token. Por eso A1 se hace **antes** de A4.
+- **Si A2 se retrasa:** un servicio dormido no consume horas [Doc]. Sólo gastaría si alguien pide su URL. Aun así, el piloto no se da por apagado hasta verificar A2.
 - **Alternativa descartada:** que Claude borre R-B con la API de Render exigiría una API key **de cuenta completa**, con acceso a producción y a sus variables. No la recomiendo.
 - Si la medición se alarga o falla, se apaga igual al terminar la sesión, y los casos pendientes se reportan como **no medidos**.
 
