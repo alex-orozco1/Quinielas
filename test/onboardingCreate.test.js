@@ -94,7 +94,7 @@ test("CA-6 / UX-PIN-001: path B (first PIN from the names, admin or participant)
   assert.ok(!login.includes('toast("PIN configurado ✅'), "the toast the render wiped is gone");
   assert.ok(login.includes('afterEntry = "✅ PIN guardado. Entras como " + p.name + " con esos 4 números.";'));
   assert.ok(login.indexOf('afterEntry = "✅ PIN guardado.') < login.indexOf("await render();\n        if(afterEntry) toast(afterEntry, 5000);"));
-  const toastFn = extractFunction(indexSrc, "function toast(msg, ms)");
+  const toastFn = extractFunction(indexSrc, "function toast(msg, ms, opts)");
   assert.ok(toastFn.includes("ms || 2200") && toastFn.includes('t.setAttribute("role", "status");'));
 });
 

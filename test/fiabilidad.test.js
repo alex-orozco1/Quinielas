@@ -46,6 +46,25 @@ test("AUD-01 · mezcla: las respuestas de la jornada (__extra) se mezclan pregun
   assert.deepEqual(c.conflicts, [{ roundId: "r1", field: "__extra.q1" }]);
 });
 
+test("AUD-01 · mezcla sin base (pestaña de antes del despliegue): aplica lo que trae campo por campo y nunca borra (Technical QA, H2)", () => {
+  const stored = { r1: { m1: "A", m2: "D" } };
+  assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: { m1: "B", m3: "A" } }, base: undefined }).value, { r1: { m1: "B", m2: "D", m3: "A" } });
+  assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: {} }, base: undefined }).value, stored);
+});
+
+test("AUD-01 · mezcla: un __extra que no es objeto o una clave «__extra.x» no reemplazan las respuestas (Technical QA, H4)", () => {
+  const stored = { r1: { __extra: { q1: "Pumas", q2: "3" } } };
+  assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: { __extra: "x" } }, base: stored }).value, stored);
+  assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: { "__extra.q1": "Tigres", __extra: { q1: "Pumas", q2: "3" } } }, base: stored }).value, stored);
+});
+
+test("AUD-01 · navegador: una respuesta perdida no se vuelve «otra pestaña»; tras un conflicto, lo no tocado toma lo guardado (Technical QA, H1)", () => {
+  const now = fn("async function savePicksNow(pid, data)");
+  assert.ok(now.includes("picksUnconfirmed.docs = picksUnconfirmed.docs.concat([sent]).slice(-10);"));
+  assert.ok(now.includes("if(ours) return;"));
+  assert.ok(now.includes("adoptServerPicks(oldBase, r.value)"));
+});
+
 test("AUD-01 · mezcla: claves peligrosas no entran", () => {
   const v = mergePicksWrite({ stored: {}, incoming: JSON.parse('{"__proto__":{"x":1},"r1":{"__proto__":"A","m1":"A"}}'), base: {} }).value;
   assert.deepEqual(v, { r1: { m1: "A" } });
@@ -65,21 +84,40 @@ test("AUD-01 · navegador: un guardado a la vez, con su base; una lectura fallid
   // La jornada lo dice y no deja elegir hasta cargarlos.
   const vote = fn("function renderRoundVoting(box, round, isHeroRound)");
   assert.ok(vote.includes("No pudimos cargar tus pronósticos guardados."));
-  assert.ok(vote.includes('data-val="A" ${myPicksLoadFailed ? "disabled" : ""}'));
+  assert.ok(vote.includes(`data-val="A" \${myPicksLoadFailed ? 'aria-disabled="true"' : ""}`));
+  assert.ok(vote.includes('toast("Primero carga tus pronósticos guardados.", 3000);'), "tocar un partido bloqueado responde");
+  assert.ok(vote.includes("Todavía no puedes elegir: primero carga tus pronósticos guardados."));
 });
 
 test("AUD-01 · «Pronóstico guardado» sólo tras la respuesta del servidor; error y pendiente quedan escritos", () => {
   const save = fn("async function attemptSavePicks(statusEl, round, onSuccess, suppressLoadingAndSuccess, onManualRetry)");
   const okBranch = save.slice(save.indexOf("if(result.ok){"), save.indexOf('}else if(result.error === "round_locked"){'));
   assert.ok(okBranch.includes("✅ Pronóstico guardado"));
-  assert.ok(okBranch.includes('toast("Pronóstico guardado", 1800);'));
+  assert.ok(okBranch.includes('toast("Pronóstico guardado", 1800, { silent: true });'), "no se anuncia dos veces al lector");
+  assert.ok(save.includes("No se guardó tu pronóstico: sin conexión. Toca «Reintentar» abajo de los partidos."), "el error también se ve sin bajar");
   assert.equal((save.match(/Pronóstico guardado/g) || []).length, 3, "sólo en la rama de éxito (y su comentario)");
   // Con conflicto, lo elegido aquí no se guardó: no se dice «Pronóstico guardado».
   const conflictPart = okBranch.slice(okBranch.indexOf("if(conflictNote){"), okBranch.indexOf("} else if(!suppressLoadingAndSuccess){"));
-  assert.ok(conflictPart.includes('toast("Revisa tus pronósticos: uno cambió en otra pestaña o dispositivo.", 4000);') && !conflictPart.includes("✅"));
+  assert.ok(conflictPart.includes('toast("Revisa tus pronósticos: uno cambió en otra pestaña o dispositivo.", 4000, { silent: true });') && !conflictPart.includes("✅"));
   assert.ok(save.indexOf("const result = await setPicksWithError(") < save.indexOf("if(result.ok){"));
   assert.ok(save.includes("No guardamos este cambio: no pudimos cargar tus pronósticos guardados"));
   assert.ok(!/qzConfirm|qzAlert/.test(save), "nunca pide «Aceptar»");
+});
+
+test("AUD-01 · «Cambiar usuario» espera los guardados normales y avisa si algo queda sin guardar (Product QA, H1)", () => {
+  const sw = fn("async function lgBeforeSwitch()");
+  assert.ok(sw.includes("|| picksPendingCount > 0;"), "espera también la cola de pronósticos normales");
+  assert.ok(sw.includes("const unsaved = lgUnsaved + regular;"));
+  const set = fn("function setPicksWithError(pid, data)");
+  assert.ok(set.includes("picksPendingCount += 1;") && set.includes(".finally(() => { picksPendingCount -= 1; });"));
+});
+
+test("AUD-01 · pregunta de jornada: en conflicto muestra lo guardado; con la lectura fallida no se edita (Product QA, H2/H3)", () => {
+  const now = fn("async function savePicksNow(pid, data)");
+  assert.ok(now.includes('const input = document.getElementById("qz-cbj-" + c.roundId + "-" + betId);'));
+  assert.ok(now.includes('if(input) input.value = v == null ? "" : String(v);'));
+  const vote = fn("function renderRoundVoting(box, round, isHeroRound)");
+  assert.ok(vote.includes(`placeholder="Escribe tu respuesta" value="\${esc(draft != null ? draft : (extra[bet.id] || ''))}" \${myPicksLoadFailed ? "disabled" : ""}>`));
 });
 
 // ---------------------------------------------------------------- AUD-03

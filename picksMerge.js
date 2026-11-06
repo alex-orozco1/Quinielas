@@ -24,9 +24,9 @@
 // Con un conflicto no se escribe nada: 409 con lo guardado, para que la
 // pantalla lo muestre y la persona decida. Nunca una pérdida en silencio.
 //
-// Sin `base` (un cliente anterior) se toma la base vacía: lo que no trae se
-// conserva y lo que trae distinto de lo guardado es un conflicto. Un documento
-// vacío nunca es una instrucción de borrar.
+// Sin `base` (una pestaña abierta antes de esta regla) lo que trae se aplica
+// campo por campo y lo que no trae se conserva: nunca borra, y esa pestaña
+// sigue pudiendo guardar. Un documento vacío nunca es una instrucción de borrar.
 //
 // Las jornadas de liguilla se guardan partido a partido en su propio endpoint
 // (liguillaRules.applyMatchPick); aquí sus campos de partido siguen la misma
@@ -48,9 +48,11 @@ function fieldsOf(roundDoc) {
   if (!isObj(roundDoc)) return out;
   Object.keys(roundDoc).forEach((k) => {
     if (!SAFE_KEY(k)) return;
-    if (k === "__extra" && isObj(roundDoc.__extra)) {
-      Object.keys(roundDoc.__extra).forEach((b) => { if (SAFE_KEY(b)) out.set("__extra." + b, roundDoc.__extra[b]); });
-    } else {
+    if (k === "__extra") {
+      // Sólo un objeto dice algo de las preguntas; cualquier otra cosa se
+      // ignora (no puede reemplazar todas las respuestas de golpe).
+      if (isObj(roundDoc.__extra)) Object.keys(roundDoc.__extra).forEach((b) => { if (SAFE_KEY(b)) out.set("__extra." + b, roundDoc.__extra[b]); });
+    } else if (!k.startsWith("__extra.")) {
       out.set(k, roundDoc[k]);
     }
   });
@@ -68,13 +70,27 @@ function setField(roundDoc, field, value) {
 }
 
 /**
+ * `base` undefined = un cliente anterior a esta regla (una pestaña abierta
+ * antes del despliegue): cada campo que trae distinto de lo guardado se
+ * aplica, y lo que no trae se conserva — nunca borra. Así esa pestaña sigue
+ * pudiendo guardar (antes de la regla, su documento entero pisaba todo).
  * @returns {{ ok: true, value: object, changed: boolean } |
  *           { ok: false, conflicts: Array<{roundId, field}> }}
  */
 function mergePicksWrite({ stored, incoming, base }) {
+  const legacy = base === undefined;
   const s = isObj(stored) ? stored : {};
-  const i = isObj(incoming) ? incoming : {};
   const b = isObj(base) ? base : {};
+  // Un __extra que no es un objeto no dice nada de las preguntas: se toma
+  // como si trajera exactamente lo que el navegador dice haber visto.
+  const i = isObj(incoming) ? { ...incoming } : {};
+  Object.keys(i).forEach((rid) => {
+    if (!isObj(i[rid]) || !own(i[rid], "__extra") || isObj(i[rid].__extra)) return;
+    const copy = { ...i[rid] };
+    const seen = isObj(val(b, rid)) && isObj(b[rid].__extra) ? b[rid].__extra : (legacy && isObj(val(s, rid)) && isObj(s[rid].__extra) ? s[rid].__extra : undefined);
+    if (seen) copy.__extra = { ...seen }; else delete copy.__extra;
+    i[rid] = copy;
+  });
   const result = JSON.parse(JSON.stringify(s));
   const conflicts = [];
   let changed = false;
@@ -84,6 +100,13 @@ function mergePicksWrite({ stored, incoming, base }) {
     const fields = new Set([...sf.keys(), ...inf.keys(), ...bf.keys()]);
     for (const f of fields) {
       const sv = sf.get(f), iv = inf.get(f), bv = bf.get(f);
+      if (legacy) {
+        if (iv === undefined || iv === null || same(sv, iv)) continue;
+        if (!isObj(result[rid])) result[rid] = {};
+        setField(result[rid], f, iv);
+        changed = true;
+        continue;
+      }
       if (same(iv, bv)) continue;              // el navegador no lo tocó: queda lo guardado
       if (same(sv, iv)) continue;              // ya está así
       if (!same(sv, bv)) { conflicts.push({ roundId: rid, field: f }); continue; }

@@ -131,6 +131,14 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "A" } });
   });
 
+  itest("AUD-01 f · una pestaña de antes del despliegue (sin base) sigue guardando: cambia un pronóstico y no borra los demás (Technical QA, H2)", async () => {
+    const q = await withOpenRound("a01f");
+    await putPicks(q, q.beto.id, { r1: { "r1-m1": "A", "r1-m2": "D" } });
+    const old = await savePicks(q, q.beto, { r1: { "r1-m1": "B", "r1-m2": "D", "r1-m3": "A" } });
+    assert.equal(old.status, 200, JSON.stringify(old.body));
+    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "B", "r1-m2": "D", "r1-m3": "A" } });
+  });
+
   // ---------------------------------------------------------------- AUD-02
   // Una jornada jugada (r1, resultados publicados) con pronósticos de los dos.
   async function playedTournament(tag, { penalty } = {}) {
@@ -200,6 +208,20 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     assert.deepEqual((await storedMeta(q)).pastTournaments || [], []);
   });
 
+  itest("AUD-02 g · lo archivado usa los nombres guardados: una fila no se cae por un nombre raro y el campeón es el primero (Technical QA, H3)", async () => {
+    const q = await playedTournament("a02g");
+    const m = await storedMeta(q);
+    m.participants.find((p) => p.id === q.beto.id).name = "   ";
+    await putMeta(q, m);
+    const snap = await snapshot(q);
+    const standings = [{ id: q.beto.id, name: "   ", pts: 2 }, { id: q.ana.id, name: "Ana", pts: 0 }];
+    const r = await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const archive = (await storedMeta(q)).pastTournaments.at(-1);
+    assert.equal(archive.standings.length, 2, "nadie se cae");
+    assert.deepEqual(archive.champion, { name: "Sin nombre", pts: 2 });
+  });
+
   itest("AUD-02 e · una quiniela donde nadie pronosticó (carga vacía válida) sí se cierra", async () => {
     const q = await quiniela("a02e");
     const snap = await snapshot(q);
@@ -242,6 +264,20 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     assert.ok(wrote.status < 500);
     const beto = (await storedMeta(q)).participants.find((p) => p.id === q.beto.id);
     assert.deepEqual(beto.penalizedRounds, { r2: 2 }, "sólo el descuento del torneo nuevo, una vez");
+  });
+
+  itest("AUD-03 c · una quiniela cerrada antes de la corrección: el descuento heredado sale del torneo en curso y pasa al historial (Product QA, H4)", async () => {
+    const q = await quiniela("a03c");
+    const m = await storedMeta(q);
+    m.pastTournaments = [{ closedAt: inDays(-10), champion: null, standings: [], rounds: [{ id: "old1", number: 1 }], cycle: 1 }];
+    m.rounds = [];
+    m.participants.find((p) => p.id === q.beto.id).penalizedRounds = { old1: 2 };
+    await putMeta(q, m);
+    const view = (await call("GET", kvPath(q.slug), { headers: ownerHeaders(q) })).body.value;
+    assert.equal((await call("POST", kvPath(q.slug), { headers: ownerHeaders(q), body: { value: view } })).status, 200);
+    const after = await storedMeta(q);
+    assert.deepEqual(after.participants.find((p) => p.id === q.beto.id).penalizedRounds, {});
+    assert.deepEqual(after.pastTournaments[0].penalties, { [q.beto.id]: { old1: 2 } }, "se mueve al historial, no se tira");
   });
 
   // ---------------------------------------------------------------- AUD-04

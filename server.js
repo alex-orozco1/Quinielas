@@ -1403,16 +1403,29 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   // no vuelve al torneo en curso, venga de una pestaña abierta antes del
   // cierre o de una quiniela que se cerró antes de esta corrección. El
   // historial lo conserva en pastTournaments[].penalties.
-  const archivedRoundIds = new Set();
-  (Array.isArray(merged.pastTournaments) ? merged.pastTournaments : []).forEach((t) => {
-    (t && Array.isArray(t.rounds) ? t.rounds : []).forEach((r) => { if (r && r.id != null) archivedRoundIds.add(String(r.id)); });
+  // Se mueven, no se tiran: si el torneo archivado todavía no los tenía
+  // (se cerró antes de esta corrección), pasan a su pastTournaments[].penalties.
+  const archivedRoundIds = new Map();   // id de jornada -> índice del torneo archivado
+  (Array.isArray(merged.pastTournaments) ? merged.pastTournaments : []).forEach((t, ti) => {
+    (t && Array.isArray(t.rounds) ? t.rounds : []).forEach((r) => { if (r && r.id != null) archivedRoundIds.set(String(r.id), ti); });
   });
   if (archivedRoundIds.size && Array.isArray(merged.participants)) {
     const liveRoundIds = new Set((Array.isArray(merged.rounds) ? merged.rounds : []).map((r) => r && String(r.id)));
+    let past = null;
     merged.participants.forEach((p) => {
-      if (!p || !p.penalizedRounds || typeof p.penalizedRounds !== "object") return;
+      if (!p || p.id == null || !p.penalizedRounds || typeof p.penalizedRounds !== "object") return;
+      // Copia propia: la fila guardada (oldValue) nunca se toca aquí.
+      if (Object.keys(p.penalizedRounds).some((rid) => archivedRoundIds.has(rid) && !liveRoundIds.has(rid))) p.penalizedRounds = { ...p.penalizedRounds };
       Object.keys(p.penalizedRounds).forEach((rid) => {
-        if (archivedRoundIds.has(rid) && !liveRoundIds.has(rid)) delete p.penalizedRounds[rid];
+        if (!archivedRoundIds.has(rid) || liveRoundIds.has(rid)) return;
+        if (!past) { past = JSON.parse(JSON.stringify(merged.pastTournaments)); merged.pastTournaments = past; }
+        const t = past[archivedRoundIds.get(rid)];
+        if (t && typeof t === "object") {
+          if (!t.penalties || typeof t.penalties !== "object") t.penalties = {};
+          if (!t.penalties[p.id] || typeof t.penalties[p.id] !== "object") t.penalties[p.id] = {};
+          if (!(rid in t.penalties[p.id])) t.penalties[p.id][rid] = p.penalizedRounds[rid];
+        }
+        delete p.penalizedRounds[rid];
       });
     });
   }
@@ -2484,10 +2497,14 @@ app.post("/api/kv/:key", async (req, res) => {
         // campo por campo con lo guardado (leído bajo lock), según lo que el
         // navegador dice haber visto (`base`): un envío viejo, otra pestaña o
         // una lectura fallida ya no borran pronósticos confirmados.
-        const rawBase = req.body ? req.body.base : undefined;
+        // Sin `base` (una pestaña de antes de esta regla): se aplica lo que
+        // trae, campo por campo, sin borrar nada. Una base que no es objeto
+        // se toma como vacía.
+        const hasBase = !!req.body && Object.prototype.hasOwnProperty.call(req.body, "base");
+        const rawBase = hasBase ? req.body.base : undefined;
         const merged = mergePicksWrite({
           stored: oldPicks, incoming: value,
-          base: rawBase && typeof rawBase === "object" && !Array.isArray(rawBase) ? rawBase : {},
+          base: !hasBase ? undefined : (rawBase && typeof rawBase === "object" && !Array.isArray(rawBase) ? rawBase : {}),
         });
         if (!merged.ok) {
           // Un documento que pisaría un partido de liguilla se rechaza con el
@@ -3658,6 +3675,13 @@ function closeStandingsProblem(meta, standings) {
   return null;
 }
 
+function archivedCloseSummary(meta, standings) {
+  const names = new Map((Array.isArray(meta && meta.participants) ? meta.participants : [])
+    .filter((p) => p && p.id != null).map((p) => [p.id, typeof p.name === "string" ? p.name.trim().slice(0, 80) : ""]));
+  const rows = standings.slice(0, MAX_ARCHIVED_STANDINGS).map((r) => ({ name: names.get(r.id) || "Sin nombre", pts: r.pts }));
+  return { standings: rows, champion: rows.length ? { ...rows[0] } : null };
+}
+
 // Lectura completa para el Admin: meta (vista de admin) + pronósticos de todos
 // (vista de admin: en jornadas abiertas sólo «ya pronosticó», nunca qué) + la
 // huella de esa lectura. La usan el cierre del torneo y el respaldo.
@@ -3686,11 +3710,20 @@ app.post("/api/quinielas/:slug/admin-snapshot", async (req, res) => {
       const info = { kind: "picks", metaKey, participantId: p.id, slug };
       picks[p.id] = rows[p.id] === undefined ? {} : await filterPicksForRequest(req, info, rows[p.id], meta, identity);
     }
+    const shownMeta = stripQuinielaSecrets(meta, true, null);
+    // Igual que GET de la meta: el candado de liguilla del torneo en curso,
+    // calculado, nunca guardado (la pantalla que adopta esta lectura lo usa).
+    if (Array.isArray(shownMeta.liguillaLocks) && shownMeta.liguillaLocks.length) {
+      const idx = await getRow("platform_index");
+      const entry = idx && Array.isArray(idx.quinielas) ? idx.quinielas.find((q) => q.slug === slug) : null;
+      const scopeId = entry && entry.tournamentScope ? entry.tournamentScope.id : null;
+      shownMeta.liguillaLock = liguillaRules.lockFor(shownMeta.liguillaLocks, scopeId || liguillaRules.LEGACY_SCOPE);
+    }
     return res.json({
       ok: true,
       readAt: new Date().toISOString(),
       basis: closeBasisOf(meta, rows),
-      meta: stripQuinielaSecrets(meta, true, null),
+      meta: shownMeta,
       picks,
       participantCount: Object.keys(picks).length,
     });
@@ -3735,7 +3768,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "invalid_expected_cycle" });
     }
-    const summary = sanitizeCloseSummary(body);
+    let summary = sanitizeCloseSummary(body);
     if (!summary) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "invalid_close_summary" });
@@ -3792,6 +3825,10 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       await client.query("ROLLBACK");
       return res.status(400).json({ error: standingsProblem });
     }
+    // Lo que se archiva sale de la tabla ya validada (cada participante una
+    // vez, en orden) con los NOMBRES guardados, leídos bajo lock: una fila
+    // nunca se cae por un nombre raro y el campeón es siempre el primero.
+    summary = archivedCloseSummary(metaBefore, body.standings);
 
     const now = new Date().toISOString();
     const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
