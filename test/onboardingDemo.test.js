@@ -210,10 +210,20 @@ test("ONB · cierre: tarjeta antes de los partidos; cronómetro del mismo campo 
   const now = Date.parse("2026-11-06T18:00:00Z");
   const local = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
   assert.match(t(local(now + (2 * 86400 + 3 * 3600 + 5 * 60) * 1000), now), /^Faltan 2 d 03 h 05 min 00 s para el cierre: .+\.$/);
-  assert.match(t(local(now - 3600 * 1000), now), /^Ese cierre \(.+\) ya pasó\. Elige una fecha y hora a partir de ahora\.$/);
+  assert.match(t(local(now - 3600 * 1000), now), /^Ese cierre \(.+\) ya pasó\.$/);
   assert.ok(!t(local(now - 3600 * 1000), now).includes("-"), "nunca una cuenta negativa");
   assert.equal(t("", now), "Elige la fecha y hora de cierre para ver cuánto falta.");
   assert.ok(fn("function renderSetupFlow()").includes("stopSetupCountdown();"), "el temporizador no sobrevive a otro paso");
+  // Un año de 6 cifras que el navegador deja teclear no rompe el paso 3.
+  assert.equal(t("220000-01-02T20:30", now), "Elige la fecha y hora de cierre para ver cuánto falta.");
+  const iso = new Function(`${fn("function setupDeadlineIsoOrNull(value)")} return setupDeadlineIsoOrNull;`)();
+  assert.equal(iso("220000-01-02T20:30"), null);
+  assert.equal(iso(""), null);
+  assert.equal(iso("2026-11-07T20:30"), new Date("2026-11-07T20:30").toISOString());
+  assert.ok(form.includes("tzShortName(setupDeadlineIsoOrNull(rows.deadline))"));
+  assert.ok(form.includes('max="9999-12-31T23:59"'));
+  assert.ok(form.includes('countdownEl.classList.toggle("qz-wz-countdown-empty"'), "sin fecha, la instrucción no parece un estado");
+  assert.ok(form.includes("aunque puede coincidir con la del primero."), "no contradice el cierre sugerido a la hora del primer partido");
 });
 
 test("ONB · contraseña y publicación: dos pasos para quien crea; co-admin y contraseña existente sin invitación a crear otra", () => {
@@ -222,6 +232,7 @@ test("ONB · contraseña y publicación: dos pasos para quien crea; co-admin y c
   assert.ok(steps.includes("Después toca <strong>«Publicar jornada ${esc(number)}»</strong>."));
   assert.ok(steps.includes("Tú no necesitas crear otra."));
   assert.ok(steps.includes("Toca <strong>«Publicar jornada ${esc(number)}»</strong> para abrir la jornada a tus amigos."));
+  assert.ok(steps.includes("meta && meta.ownerPasswordSet && meta.creatorId"), "sólo promete la contraseña cuando de verdad se pedirá");
   const sum = fn("function renderSetupResumen(main)");
   assert.ok(sum.includes('<details class="qz-pubinfo" id="qz-wz-pubinfo">') && sum.includes("<summary>Qué pasa al publicar</summary>"));
   assert.ok(sum.indexOf("Vas a publicar la Jornada ${esc(number)}") < sum.indexOf("<details"), "jornada y cierre siempre visibles");

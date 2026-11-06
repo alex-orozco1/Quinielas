@@ -1558,6 +1558,7 @@
   #quiniela-root .qz-wz-money p + p{ margin-top:4px; color:var(--ink-soft); font-size:13.5px; }
   /* ONB · cierre: el cronómetro sale del campo y del reloj de la app */
   #quiniela-root .qz-wz-countdown{ font-weight:700; color:var(--pitch-dark); background:#EEF6F0; border-radius:8px; padding:6px 10px; margin:6px 0; font-size:14px; overflow-wrap:anywhere; }
+  #quiniela-root .qz-wz-countdown.qz-wz-countdown-empty{ font-weight:400; color:var(--ink-soft); background:none; padding:0; }
   /* ONB · qué pasa al publicar: desplegable que crece hacia abajo */
   #quiniela-root .qz-pub-close{ margin:2px 0 8px; font-size:14px; overflow-wrap:anywhere; }
   #quiniela-root .qz-pubinfo summary{ cursor:pointer; font-weight:800; font-size:14px; min-height:44px; display:flex; align-items:center; gap:6px; color:var(--pitch-light); }
@@ -4866,6 +4867,13 @@
   }
   // The time zone the screen writes times in (this device's), as fmtWhenTz
   // names it: «GMT-6». Taken at that instant, in case it changes with DST.
+  // The deadline field's value, or null when the browser let through a date
+  // that is not one (a 6-digit year): the label then falls back to «now».
+  function setupDeadlineIsoOrNull(value){
+    if(!value) return null;
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  }
   function tzShortName(iso){
     const d = new Date(iso || serverNow());
     try{
@@ -6060,10 +6068,10 @@
       ${skipped ? `<p class="qz-wz-warn">La Jornada ${esc(skipped.number)} ya empezó (${esc(skipped.started)} ${skipped.started === 1 ? "partido ya inició" : "partidos ya iniciaron"}), así que te sugerimos la Jornada ${esc(number)}, la próxima que todavía se puede jugar completa.</p>` : ``}
       ${numberCardHtml}
       <section class="card qz-wz-card qz-wz-close-card" aria-labelledby="qz-wz-deadline-l">
-        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos de la Jornada ${esc(number)} · hora de este dispositivo (${esc(tzShortName(rows.deadline ? new Date(rows.deadline).toISOString() : null))})</label>
-          <input type="datetime-local" id="qz-wz-deadline" value="${esc(rows.deadline)}" min="${esc(minDeadline)}" aria-describedby="qz-wz-close-help qz-wz-countdown"></div>
+        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos de la Jornada ${esc(number)} · hora de este dispositivo (${esc(tzShortName(setupDeadlineIsoOrNull(rows.deadline)))})</label>
+          <input type="datetime-local" id="qz-wz-deadline" value="${esc(rows.deadline)}" min="${esc(minDeadline)}" max="9999-12-31T23:59" aria-describedby="qz-wz-close-help qz-wz-countdown"></div>
         <p class="qz-wz-countdown" id="qz-wz-countdown"></p>
-        <p class="muted qz-tight" id="qz-wz-close-help">Hasta este momento tus amigos pueden elegir o cambiar sus pronósticos. Todos los partidos de la Jornada ${esc(number)} comparten este cierre. ${imported ? "Es distinto de la hora de inicio que ves junto a cada partido." : "Es distinto de la hora en que empieza cada partido."}</p>
+        <p class="muted qz-tight" id="qz-wz-close-help">Hasta este momento tus amigos pueden elegir o cambiar sus pronósticos. Todos los partidos de la Jornada ${esc(number)} comparten este cierre. ${imported ? "Es distinto de la hora de inicio que ves junto a cada partido, aunque puede coincidir con la del primero." : "Es distinto de la hora en que empieza cada partido, aunque puede coincidir con la del primero."}</p>
         <p class="muted qz-tight" id="qz-wz-first"></p>
         ${tournamentQs.length ? `<p class="qz-wz-note">Tus ${esc(tournamentQs.length)} ${tournamentQs.length === 1 ? "pregunta del torneo también cierra" : "preguntas del torneo también cierran"} en este momento.</p>` : ``}
         <p class="qz-field-error" id="qz-wz-deadline-err" role="alert" hidden></p>
@@ -6131,6 +6139,8 @@
     const paintCountdown = () => {
       if(!countdownEl || !countdownEl.isConnected){ stopSetupCountdown(); return; }
       countdownEl.textContent = setupCountdownText(deadlineEl.value, serverNow());
+      // Sin fecha es una instrucción, no un estado: sin la caja del cronómetro.
+      countdownEl.classList.toggle("qz-wz-countdown-empty", !Number.isFinite(new Date(deadlineEl.value).getTime()));
     };
     stopSetupCountdown();
     paintCountdown();
@@ -6164,7 +6174,7 @@
     const ms = new Date(inputValue).getTime();
     if(!Number.isFinite(ms)) return "Elige la fecha y hora de cierre para ver cuánto falta.";
     const when = fmtWhenTz(new Date(ms).toISOString());
-    if(ms <= nowMs) return `Ese cierre (${when}) ya pasó. Elige una fecha y hora a partir de ahora.`;
+    if(ms <= nowMs) return `Ese cierre (${when}) ya pasó.`;
     let diff = ms - nowMs;
     const d = Math.floor(diff / 86400000); diff -= d * 86400000;
     const h = Math.floor(diff / 3600000); diff -= h * 3600000;
@@ -6334,7 +6344,7 @@
       const creator = creatorOfMeta();
       return `<p class="qz-wz-note qz-pub-steps" id="qz-wz-pw-line">Antes de publicar la primera jornada, ${creator ? `${esc(creator.name)} (quien creó la quiniela)` : "quien creó la quiniela"} tiene que configurar la contraseña de administrador. Tú no necesitas crear otra.</p>`;
     }
-    const pwLine = meta && meta.ownerPasswordSet
+    const pwLine = meta && meta.ownerPasswordSet && meta.creatorId
       ? (changesProtected && !ownerPasswordCache
         ? " Como cambiaste los puntos o la cuota, al publicar te pediremos la contraseña de administrador (no es el PIN); también podrás dejarlos como están."
         : "")
