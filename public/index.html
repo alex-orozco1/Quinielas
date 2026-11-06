@@ -6315,15 +6315,16 @@
     // Sólo quien creó la quiniela crea la contraseña: a un co-admin no se le
     // invita a crear otra; su botón publica (y el aviso de siempre le dice
     // quién falta). Con la contraseña ya configurada, el botón publica.
-    const label = needsPassword && isCreator(currentUser) ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;
+    setupSummaryOffersPassword = !!(needsPassword && isCreator(currentUser));
+    const label = setupSummaryOffersPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;
     setupBar("jornada", label, (btn) => setupPublishClick(btn), { summary: true, disabled: !!(roundProblem || payProblem) });
   }
-  // «puntos por acierto, preguntas extra, cuota y penalización»: what this
+  // «puntos por acierto, preguntas extra y cuota con penalización»: what this
   // publish stores, as plain text.
   function setupRulesSavedList(d, questionCount){
     const parts = ["puntos por acierto"];
     if(d.extrasOn && questionCount) parts.push("preguntas extra");
-    if(d.payOn) parts.push(d.penOn ? "cuota y penalización" : "cuota");
+    if(d.payOn) parts.push(d.penOn ? "cuota con penalización" : "cuota");
     return joinEs(parts);
   }
   // ONB · Junto al botón: qué falta para publicar. La contraseña de
@@ -6468,6 +6469,10 @@
     try{ await setupPublishClickNow(btn); }
     finally{ setupClickPending = false; }
   }
+  // Product QA: lo que el resumen en pantalla prometió. Si invitaba a crear
+  // la contraseña («crearla no publica nada») y otra pestaña ya la creó, ese
+  // toque no publica: se repinta con «Publicar jornada N».
+  let setupSummaryOffersPassword = false;
   async function setupPublishClickNow(btn){
     const flow = setupFlow;
     // A new try: what the previous one said (its card above the round, or
@@ -6528,6 +6533,13 @@
         ? `La pregunta «${esc(dup)}» ya está guardada en tu quiniela (la añadió otra persona o pestaña). Quítala de «Tu liga y forma de jugar» o cámbiala. No se publicó nada.`
         : "Cambiaron las preguntas guardadas en tu quiniela desde otra pestaña o dispositivo. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada." };
       renderSetupFlow();
+      return;
+    }
+    if(setupSummaryOffersPassword && !needsAdminPasswordToPublish()){
+      renderSetupFlow();
+      setupPublishMessage("ok", `Esta quiniela ya tiene contraseña de administrador (se creó en otra pestaña o dispositivo). No se publicó nada: toca «Publicar jornada ${esc(setupPublishNumber())}» para publicar.`);
+      const next = document.getElementById("qz-setup-next");
+      if(next) next.focus();
       return;
     }
     // Onboarding B: without an admin password nothing is published. The

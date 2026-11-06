@@ -233,6 +233,17 @@ test("ONB · contraseña y publicación: dos pasos para quien crea; co-admin y c
   assert.ok(steps.includes("Tú no necesitas crear otra."));
   assert.ok(steps.includes("Toca <strong>«Publicar jornada ${esc(number)}»</strong> para abrir la jornada a tus amigos."));
   assert.ok(steps.includes("meta && meta.ownerPasswordSet && meta.creatorId"), "sólo promete la contraseña cuando de verdad se pedirá");
+  // Pestaña desactualizada: el resumen invitaba a crear la contraseña y otra
+  // pestaña ya la creó; ese toque no publica, repinta con «Publicar jornada N».
+  const click = fn("async function setupPublishClickNow(btn)");
+  const guard = click.indexOf("if(setupSummaryOffersPassword && !needsAdminPasswordToPublish()){");
+  assert.ok(guard > click.indexOf("await refreshSetupMeta();"), "decide con la meta recién leída del servidor");
+  assert.ok(guard < click.indexOf("const number = setupPublishNumber();"), "antes de cualquier escritura");
+  assert.ok(click.includes("No se publicó nada: toca «Publicar jornada ${esc(setupPublishNumber())}» para publicar."));
+  assert.ok(fn("function renderSetupResumen(main)").includes("setupSummaryOffersPassword = !!(needsPassword && isCreator(currentUser));"));
+  const saved = new Function(`const joinEs = (a) => a.length < 2 ? a.join("") : a.slice(0, -1).join(", ") + " y " + a[a.length - 1];
+    ${fn("function setupRulesSavedList(d, questionCount)")} return setupRulesSavedList;`)();
+  assert.equal(saved({ payOn: true, penOn: true }, 0), "puntos por acierto y cuota con penalización");
   const sum = fn("function renderSetupResumen(main)");
   assert.ok(sum.includes('<details class="qz-pubinfo" id="qz-wz-pubinfo">') && sum.includes("<summary>Qué pasa al publicar</summary>"));
   assert.ok(sum.indexOf("Vas a publicar la Jornada ${esc(number)}") < sum.indexOf("<details"), "jornada y cierre siempre visibles");

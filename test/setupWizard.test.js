@@ -329,7 +329,7 @@ test("contraseña · sin ella no se publica; guardarla vuelve al resumen sin pub
   const resumen = fn("function renderSetupResumen(main)");
   // ONB: sólo quien creó la quiniela recibe «Crear contraseña»; un co-admin no
   // es invitado a crear otra (su botón publica y el aviso de siempre lo explica).
-  assert.ok(resumen.includes('const label = needsPassword && isCreator(currentUser) ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;'));
+  assert.ok(resumen.includes("setupSummaryOffersPassword = !!(needsPassword && isCreator(currentUser));") && resumen.includes('const label = setupSummaryOffersPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;'));
 });
 
 test("invitación · popup con WhatsApp, copiar, añadir, ver y cerrar; copiar o añadir no se presentan como que alguien entró", () => {
