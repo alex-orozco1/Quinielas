@@ -327,7 +327,9 @@ test("contraseña · sin ella no se publica; guardarla vuelve al resumen sin pub
     "los puntos y la cuota sólo se guardan con la contraseña: se pide antes, nunca se publica a medias");
   assert.ok(click.includes("verifyOwnerPasswordResult(pw)"));
   const resumen = fn("function renderSetupResumen(main)");
-  assert.ok(resumen.includes('const label = needsPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;'));
+  // ONB: sólo quien creó la quiniela recibe «Crear contraseña»; un co-admin no
+  // es invitado a crear otra (su botón publica y el aviso de siempre lo explica).
+  assert.ok(resumen.includes("setupSummaryOffersPassword = !!(needsPassword && isCreator(currentUser));") && resumen.includes('const label = setupSummaryOffersPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;'));
 });
 
 test("invitación · popup con WhatsApp, copiar, añadir, ver y cerrar; copiar o añadir no se presentan como que alguien entró", () => {
@@ -358,7 +360,7 @@ test("textos · la especificación usa «pronósticos»; el cierre de las pregun
   assert.ok(!indexSrc.includes("antes de que inicie la Jornada"), "el cierre es el de la jornada, no su inicio");
   assert.ok(!indexSrc.includes("Se cierra antes de que inicie la jornada"));
   assert.ok(fn("function fmtWhenTz(iso)").includes('timeZoneName: "short"'));
-  assert.ok(fn("function renderSetupRoundForm(main)").includes("Hasta esta hora tus amigos pueden elegir y cambiar sus pronósticos."));
+  assert.ok(fn("function renderSetupRoundForm(main)").includes("Hasta este momento tus amigos pueden elegir o cambiar sus pronósticos."));
   assert.ok(indexSrc.includes("Tus pronósticos de partidos se guardan solos apenas los eliges."), "y no promete guardar solas las respuestas escritas");
   assert.ok(indexSrc.includes("Lo que escribes aquí no se guarda solo: toca «Guardar respuestas»."));
 });
@@ -634,7 +636,7 @@ test("horarios · cada hora dice qué es: «Inicio del partido», «Cierre de pr
   assert.ok(sum.includes("<p>Cierre de pronósticos para todos los partidos: <strong>"));
   assert.ok(!sum.includes("<p>Cierre: <strong>"));
   assert.ok(fn("function wzMatchRowHtml(m, imported, n)").includes("Inicio del partido: ${esc(fmtKickoff(m.kickoffAt))}"));
-  assert.ok(fn("function renderSetupRoundForm(main)").includes(">Cierre de pronósticos para todos los partidos (${esc(tzShortName("));
+  assert.ok(fn("function renderSetupRoundForm(main)").includes(">Cierre de pronósticos de la Jornada ${esc(number)} · hora de este dispositivo (${esc(tzShortName("));
   // La zona que se nombra para los partidos es la misma con la que se escribe el cierre.
   const t = new Function("serverNowMs", `const serverNow = () => serverNowMs; ${fn("function fmtWhenTz(iso)")} ${fn("function tzShortName(iso)")} return { fmtWhenTz, tzShortName };`)(NOW);
   for (const at of [iso(72), iso(24 * 200)]) {
@@ -725,7 +727,10 @@ test("numeración · una tarjeta en el flujo, encima de la jornada, dice el núm
   // Encima de la sección de la jornada, en el paso 3 y en el resumen; el
   // encabezado, el resumen y el botón usan el mismo número.
   const form = fn("function renderSetupRoundForm(main)");
-  assert.ok(form.includes("${numberCardHtml}\n      <section class=\"card qz-wz-card\" aria-labelledby=\"qz-wz-round-t\">"));
+  // ONB: la tarjeta sigue encima de la jornada; entre ambas va el cierre, que
+  // ahora se ve antes de los partidos.
+  assert.ok(form.includes("${numberCardHtml}\n      <section class=\"card qz-wz-card qz-wz-close-card\" aria-labelledby=\"qz-wz-deadline-l\">"));
+  assert.ok(form.indexOf("${numberCardHtml}") < form.indexOf('aria-labelledby="qz-wz-round-t"'));
   assert.ok(form.includes("const numberCardHtml = imported ? \"\" : setupManualNumberCardHtml(number);"));
   const sum = fn("function renderSetupResumen(main)");
   assert.ok(sum.includes("${noticeHtml}\n          ${numberCardHtml}\n          <section class=\"card qz-wz-card qz-sum-section\" aria-labelledby=\"qz-sum-3\">"));

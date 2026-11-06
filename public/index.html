@@ -1476,21 +1476,116 @@
   #quiniela-root .qz-sum-matches-head{ display:flex; justify-content:space-between; gap:10px; margin-top:8px; padding-bottom:4px; border-bottom:1px solid var(--line); font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); }
   #quiniela-root .qz-sum-matches li{ display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:6px 0; border-bottom:1px solid var(--line); font-weight:600; }
   #quiniela-root .qz-infocard ul{ margin:4px 0 0; padding-left:18px; font-size:14px; line-height:1.5; }
+  #quiniela-root .qz-crear-demo{ font-size:14px; margin:0 0 12px; text-align:center; }
+  #quiniela-root .qz-crear-demo a{ font-weight:800; color:var(--pitch-light); text-decoration:underline; text-underline-offset:3px; display:inline-block; min-height:32px; line-height:32px; }
+  /* ONB-14 · «Ver cómo se juega» (/demo) */
+  #quiniela-root .qz-demo-bar{ position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; background:#FFF9EC; border-bottom:1px solid #F0D79A; padding:10px 16px; font-size:14px; color:#3F2D00; }
+  #quiniela-root .qz-demo-bar p{ margin:0; flex:1 1 220px; min-width:0; overflow-wrap:anywhere; }
+  #quiniela-root .qz-demo-exit{ font-weight:800; color:var(--pitch-dark); text-decoration:underline; text-underline-offset:3px; min-height:44px; display:inline-flex; align-items:center; padding:0 4px; }
+  #quiniela-root .qz-demo-exit:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; border-radius:4px; }
+  #quiniela-root .qz-demo-wrap{ max-width:720px; margin:0 auto; padding:16px 16px 40px; }
+  #quiniela-root .qz-demo-brand{ display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-weight:800; font-size:12px; letter-spacing:0.1em; color:var(--gold-dim); margin-bottom:10px; }
+  #quiniela-root .qz-demo-brand img{ border-radius:4px; }
+  #quiniela-root .qz-demo-brand .muted{ letter-spacing:0; font-weight:600; font-size:13px; }
+  #quiniela-root .qz-demo-card{ padding:18px 16px; }
+  #quiniela-root .qz-demo-title{ font-size:26px; line-height:1.15; margin:0 0 8px; }
+  #quiniela-root .qz-demo-title:focus{ outline:none; }
+  #quiniela-root .qz-demo-lead{ font-size:15.5px; margin:0 0 8px; }
+  #quiniela-root .qz-demo-close{ font-size:13.5px; background:var(--chalk); border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin:8px 0 12px; }
+  #quiniela-root .qz-demo-matches{ display:flex; flex-direction:column; gap:12px; }
+  #quiniela-root .qz-demo-match{ border:1.5px solid var(--line); border-radius:12px; padding:10px 12px 12px; margin:0; min-width:0; }
+  #quiniela-root .qz-demo-match.is-missing{ border:2.5px solid var(--red); }
+  #quiniela-root .qz-demo-match legend{ font-weight:800; font-size:15px; padding:0 4px; overflow-wrap:anywhere; }
+  #quiniela-root .qz-demo-opts{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; margin-top:4px; }
+  #quiniela-root .qz-demo-opt{ position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; min-height:56px; padding:8px 6px; border:1.5px solid var(--line); border-radius:10px; text-align:center; cursor:pointer; text-transform:none; letter-spacing:0; font-size:14px; color:var(--ink); font-weight:700; overflow-wrap:anywhere; }
+  #quiniela-root .qz-demo-opt input{ position:absolute; opacity:0; width:1px; height:1px; }
+  #quiniela-root .qz-demo-opt-mark{ display:none; font-size:12px; font-weight:800; color:#1B4332; }
+  #quiniela-root .qz-demo-opt:has(input:checked){ border:2.5px solid var(--pitch-light); background:#F2F8F4; padding:7px 5px; }
+  #quiniela-root .qz-demo-opt:has(input:checked) .qz-demo-opt-mark{ display:block; }
+  #quiniela-root .qz-demo-opt:has(input:focus-visible){ outline:3px solid var(--gold); outline-offset:2px; }
+  #quiniela-root .qz-demo-missing{ color:var(--red); font-weight:700; font-size:14px; margin:10px 0 0; }
+  #quiniela-root .qz-demo-hint{ margin:8px 0 0; }
+  #quiniela-root .qz-demo-actions{ display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+  #quiniela-root .qz-demo-actions .btn{ min-height:48px; display:inline-flex; align-items:center; justify-content:center; text-decoration:none; }
+  #quiniela-root .qz-demo-results{ list-style:none; margin:8px 0 0; padding:0; display:flex; flex-direction:column; gap:10px; }
+  #quiniela-root .qz-demo-result{ border:1px solid var(--line); border-radius:12px; padding:10px 12px; overflow-wrap:anywhere; }
+  #quiniela-root .qz-demo-result p{ margin:2px 0; font-size:14px; }
+  #quiniela-root .qz-demo-result-title{ font-weight:800; font-size:15px !important; }
+  #quiniela-root .qz-demo-verdict{ font-weight:800; }
+  #quiniela-root .qz-demo-verdict.is-hit{ color:#1B4332; }
+  #quiniela-root .qz-demo-verdict.is-miss{ color:#7A2E1A; }
+  #quiniela-root .qz-demo-sum{ font-size:16px; margin:14px 0 4px; }
+  #quiniela-root .qz-demo-explain{ background:#EEF6F0; border-radius:8px; padding:8px 12px; font-size:14px; font-weight:600; margin:8px 0 0; }
+  #quiniela-root .qz-demo-move{ font-size:17px; font-weight:800; color:var(--pitch-dark); margin:0 0 10px; }
+  #quiniela-root .qz-demo-table-wrap{ max-width:100%; }
+  #quiniela-root .qz-demo-table{ width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
+  #quiniela-root .qz-demo-table th, #quiniela-root .qz-demo-table td{ padding:8px 4px; border-bottom:1px solid var(--line); text-align:center; overflow-wrap:anywhere; }
+  #quiniela-root .qz-demo-table th[scope="row"]{ text-align:left; font-weight:700; text-transform:none; letter-spacing:0; font-size:14px; color:var(--ink); }
+  #quiniela-root .qz-demo-table thead th{ font-size:11.5px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); }
+  #quiniela-root .qz-demo-table thead th{ overflow-wrap:normal; word-break:normal; hyphens:none; vertical-align:bottom; }
+  #quiniela-root .qz-demo-table thead th:nth-child(1){ width:15%; }
+  #quiniela-root .qz-demo-table thead th:nth-child(2){ text-align:left; width:35%; }
+  #quiniela-root .qz-demo-table thead th:nth-child(3){ width:15%; }
+  #quiniela-root .qz-demo-table thead th:nth-child(4){ width:20%; }
+  #quiniela-root .qz-demo-table thead th:nth-child(5){ width:15%; }
+  #quiniela-root .qz-demo-table tr.is-you{ background:#FFF9EC; }
+  #quiniela-root .qz-demo-table tr.is-you th[scope="row"]{ font-weight:900; }
+  #quiniela-root .qz-demo-move-short{ display:block; font-size:12px; font-weight:700; color:var(--ink-soft); }
+  #quiniela-root .qz-demo-moves{ margin:10px 0 6px; padding-left:18px; font-size:13.5px; }
+  @media (max-width:360px){
+    #quiniela-root .qz-demo-opts{ grid-template-columns:minmax(0, 1fr); }
+    #quiniela-root .qz-demo-table{ font-size:13px; }
+    #quiniela-root .qz-demo-table thead th{ font-size:10px; letter-spacing:0; }
+    #quiniela-root .qz-demo-table th, #quiniela-root .qz-demo-table td{ padding:8px 2px; }
+  }
+  @media (min-width:901px){
+    #quiniela-root .qz-demo-wrap{ padding:28px 24px 48px; }
+    #quiniela-root .qz-demo-card{ padding:28px 32px; }
+    #quiniela-root .qz-demo-title{ font-size:32px; }
+  }
+  /* ONB · calendario o a mano: dos opciones fijas; la elegida lo dice con texto */
+  #quiniela-root .qz-mode{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; margin:8px 0 12px; }
+  #quiniela-root .qz-mode-btn{ display:flex; flex-direction:column; align-items:flex-start; gap:2px; min-height:56px; padding:10px 12px; border:1.5px solid var(--line); border-radius:10px; background:var(--paper); color:var(--ink); text-align:left; font:inherit; cursor:pointer; }
+  #quiniela-root .qz-mode-btn.is-on{ border:2.5px solid var(--pitch-light); background:#F2F8F4; padding:9px 11px; }
+  #quiniela-root .qz-mode-btn:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; }
+  #quiniela-root .qz-mode-label{ font-weight:800; font-size:14.5px; line-height:1.25; }
+  #quiniela-root .qz-mode-state{ font-size:12.5px; font-weight:700; color:var(--ink-soft); }
+  #quiniela-root .qz-mode-btn.is-on .qz-mode-state{ color:#1B4332; }
+  @media (max-width:420px){ #quiniela-root .qz-mode{ grid-template-columns:minmax(0, 1fr); } }
+  /* ONB · el dinero de la quiniela, visible aunque el registro esté apagado */
+  #quiniela-root .qz-wz-money{ background:#EEF6F0; border:1px solid #BFDFCB; border-radius:10px; padding:10px 12px; margin:0 0 12px; font-size:14px; line-height:1.45; }
+  #quiniela-root .qz-wz-money p{ margin:0; }
+  #quiniela-root .qz-wz-money p + p{ margin-top:4px; color:var(--ink-soft); font-size:13.5px; }
+  /* ONB · cierre: el cronómetro sale del campo y del reloj de la app */
+  #quiniela-root .qz-wz-countdown{ font-weight:700; color:var(--pitch-dark); background:#EEF6F0; border-radius:8px; padding:6px 10px; margin:6px 0; font-size:14px; overflow-wrap:anywhere; }
+  #quiniela-root .qz-wz-countdown.qz-wz-countdown-empty{ font-weight:400; color:var(--ink-soft); background:none; padding:0; }
+  /* ONB · qué pasa al publicar: desplegable que crece hacia abajo */
+  #quiniela-root .qz-pub-close{ margin:2px 0 8px; font-size:14px; overflow-wrap:anywhere; }
+  #quiniela-root .qz-pubinfo summary{ cursor:pointer; font-weight:800; font-size:14px; min-height:44px; display:flex; align-items:center; gap:6px; color:var(--pitch-light); }
+  #quiniela-root .qz-pubinfo summary::after{ content:"▾"; color:var(--ink-soft); }
+  #quiniela-root .qz-pubinfo[open] summary::after{ content:"▴"; }
+  #quiniela-root .qz-pubinfo summary:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; border-radius:6px; }
+  #quiniela-root .qz-pub-steps p{ margin:0; }
+  #quiniela-root .qz-pub-steps ol{ margin:6px 0 0; padding-left:20px; }
+  #quiniela-root .qz-pub-steps li{ margin-bottom:4px; }
   @media (min-width:901px){
     #quiniela-root .qz-setup-wrap{ padding:24px 24px 0; }
     #quiniela-root .qz-setup-top{ flex-direction:row; align-items:flex-end; justify-content:space-between; }
     #quiniela-root .qz-steps-wrap{ min-width:520px; }
-    #quiniela-root .qz-setup-grid{ grid-template-columns:minmax(0, 640px) 340px; justify-content:center; gap:32px; }
+    /* ONB · the bar lives in the main column (row 2), right after the
+       content: a tall side card never leaves a gap under a short step. The
+       extra height of the side card goes to row 2 (1fr), below the bar. */
+    #quiniela-root .qz-setup-grid{ grid-template-columns:minmax(0, 640px) 340px; grid-template-rows:auto 1fr; justify-content:center; column-gap:32px; row-gap:0; }
     #quiniela-root .qz-setup-grid-summary{ grid-template-columns:minmax(0, 1012px); }
-    #quiniela-root .qz-setup-aside{ display:block; position:sticky; top:16px; align-self:start; }
+    #quiniela-root .qz-setup-main{ grid-column:1; grid-row:1; padding-bottom:16px; }
+    #quiniela-root .qz-setup-aside{ display:block; grid-column:2; grid-row:1 / span 2; position:sticky; top:16px; align-self:start; }
     #quiniela-root .qz-setup-aside[hidden]{ display:none; }
-    #quiniela-root .qz-setup-main{ padding-bottom:24px; }
-    #quiniela-root .qz-setup-bar{ position:static; background:transparent; border-top:none; padding:0 24px 40px; }
-    #quiniela-root .qz-setup-bar-inner{ max-width:1012px; }
-    #quiniela-root .qz-setup-grid:not(.qz-setup-grid-summary) + .qz-setup-bar .qz-setup-bar-inner{ max-width:1012px; padding-right:372px; }
+    #quiniela-root .qz-setup-bar{ grid-column:1; grid-row:2; align-self:start; position:static; background:transparent; border-top:none; padding:0 0 40px; }
+    #quiniela-root .qz-setup-bar-inner{ max-width:none; margin:0; }
     #quiniela-root .qz-setup-next{ flex:0 0 auto; min-width:220px; }
     #quiniela-root .qz-sum-grid{ grid-template-columns:minmax(0, 1fr) 340px; gap:24px; align-items:start; }
-    #quiniela-root .qz-sum-side{ position:sticky; top:16px; }
+    /* not sticky: «Qué pasa al publicar» grows down and must stay reachable */
+    #quiniela-root .qz-sum-side{ position:static; }
     #quiniela-root .qz-wz-title{ font-size:32px; }
   }
   /* the invitation sheet: a bottom sheet on a phone, a centered card on a laptop */
@@ -1561,6 +1656,8 @@
   else if(pathParts[0] === "a" && pathParts[1]){ ROUTE = "quiniela"; SLUG = decodeURIComponent(pathParts[1]); ADMIN_ENTRY = true; }
   else if(pathParts[0] === "crear"){ ROUTE = "crear"; }
   else if(pathParts[0] === "panel-plataforma"){ ROUTE = "platform"; }
+  // ONB-14 · «Ver cómo se juega»: una página propia, sin indexar.
+  else if(pathParts[0] === "demo" && pathParts.length === 1){ ROUTE = "demo"; }
   else { ROUTE = "unknown"; }
 
   // Una vuelta del pago que entró por la ruta antigua (/q/…?qz_pago=…, de un
@@ -4770,6 +4867,13 @@
   }
   // The time zone the screen writes times in (this device's), as fmtWhenTz
   // names it: «GMT-6». Taken at that instant, in case it changes with DST.
+  // The deadline field's value, or null when the browser let through a date
+  // that is not one (a 6-digit year): the label then falls back to «now».
+  function setupDeadlineIsoOrNull(value){
+    if(!value) return null;
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  }
   function tzShortName(iso){
     const d = new Date(iso || serverNow());
     try{
@@ -5122,6 +5226,7 @@
   }
   function renderSetupFlow(){
     if(!setupFlow) return;
+    stopSetupCountdown();
     const step = setupFlow.d.step;
     root.innerHTML = `
       <div class="qz-setup-wrap">
@@ -5132,8 +5237,8 @@
         <div class="qz-setup-grid ${step === "resumen" ? "qz-setup-grid-summary" : ""}">
           <main class="qz-setup-main" id="qz-setup-main"></main>
           <aside class="qz-setup-aside" id="qz-setup-aside" aria-label="Tu configuración"></aside>
+          <div class="qz-setup-bar" id="qz-setup-bar"></div>
         </div>
-        <div class="qz-setup-bar" id="qz-setup-bar"></div>
       </div>
     `;
     const main = document.getElementById("qz-setup-main");
@@ -5496,6 +5601,38 @@
     say("Pregunta añadida");
     return true;
   }
+  // ONB · Dos opciones que no cambian de etiqueta: «Usar el calendario de la
+  // liga» y «Armar los partidos a mano». La elegida se dice con texto y con
+  // aria-pressed, no sólo con color. Cambiar de opción sólo cambia este
+  // borrador: no guarda, no publica, no desvincula ni cambia la liga ya
+  // vinculada, y conserva la liga elegida (leaguePick) y los partidos escritos
+  // a mano (su borrador «new» de #35), por si se vuelve a la otra opción.
+  const SETUP_MODE_LABELS = Object.freeze({ cal: "Usar el calendario de la liga", manual: "Armar los partidos a mano" });
+  function setupModeChoiceHtml(manual){
+    const opt = (key, on) => `
+      <button type="button" class="qz-mode-btn${on ? " is-on" : ""}" id="qz-wz-mode-${key}" data-wz-mode="${key}" aria-pressed="${on ? "true" : "false"}">
+        <span class="qz-mode-label">${esc(SETUP_MODE_LABELS[key])}</span>
+        <span class="qz-mode-state" aria-hidden="true">${on ? "✓ Elegida" : "No elegida"}</span>
+      </button>`;
+    return `
+      <div class="qz-mode" role="group" aria-label="Cómo armar los partidos de tu primera jornada">
+        ${opt("cal", !manual)}${opt("manual", !!manual)}
+      </div>`;
+  }
+  function wireSetupModeChoice(d){
+    document.querySelectorAll("[data-wz-mode]").forEach(btn => btn.addEventListener("click", () => {
+      const toManual = btn.dataset.wzMode === "manual";
+      // Pulsar la opción ya elegida no hace nada.
+      if(toManual === !!d.manual) return;
+      d.manual = toManual;
+      setSetupCal(null);
+      setupPersist();
+      renderSetupFlow();
+      // El foco se queda en el control pulsado (su etiqueta no cambió).
+      const same = document.getElementById("qz-wz-mode-" + (toManual ? "manual" : "cal"));
+      if(same) same.focus();
+    }));
+  }
   function renderSetupLiga(main){
     const d = setupFlow.d;
     const leagueId = setupLeagueId();
@@ -5512,16 +5649,16 @@
       ${setupHeadHtml("liga", "Elige tu liga y cuántos puntos vale cada acierto. Lo demás es opcional.")}
       <section class="card qz-wz-card" aria-labelledby="qz-wz-liga-t">
         <div class="eyebrow" id="qz-wz-liga-t">Tu liga</div>
-        ${leagueId ? `
+        ${setupModeChoiceHtml(d.manual)}
+        ${leagueId ? (d.manual ? `
+          <p class="qz-wz-value">${esc(leagueLabel || "Liga guardada")}</p>
+          <p class="muted">Tu quiniela sigue ligada a ${esc(leagueLabel || "esta liga")}; sólo esta primera jornada la armas a mano. Si vuelves al calendario, tus partidos escritos se conservan en este borrador.</p>
+        ` : `
           <p class="qz-wz-value">${esc(leagueLabel || "Liga guardada")}</p>
           <p class="muted">Con ella preparamos el calendario y te sugerimos tu primera jornada. Tu quiniela ya quedó ligada a esta liga.</p>
-          ${d.manual
-            ? `<p class="qz-wz-note">Esta primera jornada la vas a armar a mano.</p><button class="qz-linkbtn" id="qz-wz-use-cal">Mejor usar el calendario de ${esc(leagueLabel || "la liga")}</button>`
-            : `<button class="qz-linkbtn" id="qz-wz-manual">Prefiero armar los partidos a mano</button>`}
-        ` : d.manual ? `
-          <p class="qz-wz-value">Partidos a mano</p>
+        `) : d.manual ? `
           <p class="muted">Tú escribes los partidos de cada jornada.</p>
-          <button class="btn btn-ghost btn-sm" id="qz-wz-pick-league">Elegir una liga</button>
+          ${d.leaguePick ? `<p class="muted qz-tight">Tu elección de ${esc(setupLeagueLabel(d.leaguePick) || "liga")} se conserva por si vuelves al calendario. No se guarda ni se vincula mientras armes los partidos a mano.</p>` : ``}
         ` : `
           <div class="field qz-field-select"><label for="qz-wz-league">Liga o competencia</label>
             <select id="qz-wz-league">
@@ -5530,7 +5667,6 @@
             </select>
           </div>
           <p class="muted">La usamos para traer el calendario y sugerirte los partidos de tu primera jornada. Una vez elegida, tu quiniela queda ligada a esa liga.</p>
-          <button class="qz-linkbtn" id="qz-wz-manual">Prefiero armar los partidos a mano</button>
         `}
         <p class="qz-field-error" id="qz-wz-liga-err" role="alert" hidden></p>
       </section>
@@ -5546,9 +5682,9 @@
         <div class="qz-switch-row">
           <div>
             <div class="qz-switch-title" id="qz-wz-extras-t">Preguntas y puntos extra</div>
-            <p class="muted qz-tight">Opcional. Tus amigos responden además de los partidos y tú calificas a mano quién acertó.</p>
+            <p class="muted qz-tight" id="qz-wz-extras-help">Opcional. Puedes añadirlas ahora o después en Admin → Tus reglas. Tus amigos las responden además de los partidos y tú marcas quién acertó.</p>
           </div>
-          <button type="button" class="qz-switch" role="switch" aria-checked="${d.extrasOn ? "true" : "false"}" aria-labelledby="qz-wz-extras-t" id="qz-wz-extras-sw"><span></span></button>
+          <button type="button" class="qz-switch" role="switch" aria-checked="${d.extrasOn ? "true" : "false"}" aria-labelledby="qz-wz-extras-t" aria-describedby="qz-wz-extras-help" id="qz-wz-extras-sw"><span></span></button>
         </div>
         ${d.extrasOn ? `<div id="qz-wz-extras-panel" class="qz-wz-extras-panel">${extrasPanelHtml()}</div>` : ``}
       </section>
@@ -5568,15 +5704,7 @@
     });
     const leagueSel = document.getElementById("qz-wz-league");
     if(leagueSel) leagueSel.addEventListener("change", () => { d.leaguePick = leagueSel.value; setupPersist(); setupFieldError("qz-wz-liga-err", ""); });
-    // The link that had the focus is replaced by its opposite: the focus goes
-    // there (or to «Elegir una liga»), never back to the page.
-    const focusFirst = (...ids) => { for(const id of ids){ const el = document.getElementById(id); if(el){ el.focus(); return; } } };
-    const manualBtn = document.getElementById("qz-wz-manual");
-    if(manualBtn) manualBtn.addEventListener("click", () => { d.manual = true; d.leaguePick = ""; setSetupCal(null); setupPersist(); renderSetupFlow(); focusFirst("qz-wz-use-cal", "qz-wz-pick-league", "qz-wz-title"); });
-    const useCal = document.getElementById("qz-wz-use-cal");
-    if(useCal) useCal.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); focusFirst("qz-wz-manual", "qz-wz-title"); });
-    const pickLeague = document.getElementById("qz-wz-pick-league");
-    if(pickLeague) pickLeague.addEventListener("click", () => { d.manual = false; setSetupCal(null); setupPersist(); renderSetupFlow(); const s = document.getElementById("qz-wz-league"); if(s) s.focus(); });
+    wireSetupModeChoice(d);
     document.getElementById("qz-wz-extras-sw").addEventListener("click", async () => {
       if(d.extrasOn && d.questions.length){
         const ok = await qzConfirm(`Tus ${d.questions.length} ${d.questions.length === 1 ? "pregunta se queda" : "preguntas se quedan"} en este borrador, pero no se publicarán.`,
@@ -5630,7 +5758,7 @@
     if(!setupLeagueId() && !d.manual){
       const pick = d.leaguePick;
       if(!pick){
-        setupFieldError("qz-wz-liga-err", "Elige una liga o toca «Prefiero armar los partidos a mano».", document.getElementById("qz-wz-league"));
+        setupFieldError("qz-wz-liga-err", "Elige una liga o toca «Armar los partidos a mano».", document.getElementById("qz-wz-league"));
         return;
       }
       const label = setupLeagueLabel(pick);
@@ -5668,6 +5796,10 @@
     main.innerHTML = `
       ${setupHeadHtml("pagos", "Opcional. Si juegan con cuota, aquí llevas el registro.")}
       <section class="card qz-wz-card" aria-labelledby="qz-wz-pay-t">
+        <div class="qz-wz-money" id="qz-wz-money">
+          <p><strong>QRACKS no recibe ni guarda el dinero de tu quiniela. Aquí sólo anotas la cuota y marcas quién ya te pagó.</strong></p>
+          <p>Estas cuotas son entre tú y tus amigos; no tienen relación con el plan Plus de QRACKS.</p>
+        </div>
         <div class="qz-switch-row">
           <div>
             <div class="qz-switch-title" id="qz-wz-pay-t">Llevar registro de pagos</div>
@@ -5679,7 +5811,7 @@
           <div class="qz-wz-sub-block">
             <div class="field qz-field-narrow"><label for="qz-wz-fee">Cuota por participante (MXN)</label>
               <div class="qz-money"><span aria-hidden="true">$</span><input type="text" inputmode="decimal" id="qz-wz-fee" value="${esc(d.fee != null ? d.fee : "")}" placeholder="Ej. 100" autocomplete="off"></div></div>
-            <p class="muted qz-tight">Cada persona te paga esta cantidad directamente a ti. QRACKS no cobra ni guarda dinero: sólo lleva el registro.</p>
+            <p class="muted qz-tight">Cada persona te paga esta cantidad directamente a ti.</p>
             <p class="qz-field-error" id="qz-wz-fee-err" role="alert" hidden></p>
             <div class="qz-infobox">
               <strong>¿Dónde marcas «Pagó»?</strong>
@@ -5697,7 +5829,7 @@
               <div class="row2 qz-row-narrow">
                 <div class="field"><label for="qz-wz-pen-points">Puntos que se restan por jornada</label>
                   <input type="text" inputmode="numeric" id="qz-wz-pen-points" value="${esc(d.penPoints)}" autocomplete="off"></div>
-                <div class="field"><label for="qz-wz-pen-from">Empieza en la jornada</label>
+                <div class="field"><label for="qz-wz-pen-from">Empiezan a restarse puntos en la jornada</label>
                   <input type="text" inputmode="numeric" id="qz-wz-pen-from" value="${esc(fromValue)}" placeholder="Ej. 12" autocomplete="off"></div>
               </div>
               <p class="qz-field-error" id="qz-wz-pen-err" role="alert" hidden></p>
@@ -5935,6 +6067,15 @@
       ${setupHeadHtml("jornada", imported ? "Ésta es la próxima jornada que todavía se puede jugar." : "Agrega los partidos que van a jugar.")}
       ${skipped ? `<p class="qz-wz-warn">La Jornada ${esc(skipped.number)} ya empezó (${esc(skipped.started)} ${skipped.started === 1 ? "partido ya inició" : "partidos ya iniciaron"}), así que te sugerimos la Jornada ${esc(number)}, la próxima que todavía se puede jugar completa.</p>` : ``}
       ${numberCardHtml}
+      <section class="card qz-wz-card qz-wz-close-card" aria-labelledby="qz-wz-deadline-l">
+        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos de la Jornada ${esc(number)} · hora de este dispositivo (${esc(tzShortName(setupDeadlineIsoOrNull(rows.deadline)))})</label>
+          <input type="datetime-local" id="qz-wz-deadline" value="${esc(rows.deadline)}" min="${esc(minDeadline)}" max="9999-12-31T23:59" aria-describedby="qz-wz-close-help qz-wz-countdown"></div>
+        <p class="qz-wz-countdown" id="qz-wz-countdown"></p>
+        <p class="muted qz-tight" id="qz-wz-close-help">Hasta este momento tus amigos pueden elegir o cambiar sus pronósticos. Todos los partidos de la Jornada ${esc(number)} comparten este cierre. ${imported ? "Es distinto de la hora de inicio que ves junto a cada partido, aunque puede coincidir con la del primero." : "Es distinto de la hora en que empieza cada partido, aunque puede coincidir con la del primero."}</p>
+        <p class="muted qz-tight" id="qz-wz-first"></p>
+        ${tournamentQs.length ? `<p class="qz-wz-note">Tus ${esc(tournamentQs.length)} ${tournamentQs.length === 1 ? "pregunta del torneo también cierra" : "preguntas del torneo también cierran"} en este momento.</p>` : ``}
+        <p class="qz-field-error" id="qz-wz-deadline-err" role="alert" hidden></p>
+      </section>
       <section class="card qz-wz-card" aria-labelledby="qz-wz-round-t">
         <div class="qz-wz-round-head">
           <h2 class="qz-wz-h2" id="qz-wz-round-t">Jornada ${esc(number)}</h2>
@@ -5949,14 +6090,6 @@
         <button class="btn btn-ghost btn-sm" id="qz-wz-add-match">+ Agregar partido</button>
         <p class="qz-field-error" id="qz-wz-rows-err" role="alert" hidden></p>
         ${!imported && setupLeagueId() ? `<p><button class="qz-linkbtn" id="qz-wz-try-cal">Probar de nuevo con el calendario de ${esc(leagueLabel || "tu liga")}</button></p>` : ``}
-      </section>
-      <section class="card qz-wz-card" aria-labelledby="qz-wz-deadline-l">
-        <div class="field qz-field-date"><label for="qz-wz-deadline" id="qz-wz-deadline-l">Cierre de pronósticos para todos los partidos (${esc(tzShortName(rows.deadline || null))})</label>
-          <input type="datetime-local" id="qz-wz-deadline" value="${esc(rows.deadline)}" min="${esc(minDeadline)}"></div>
-        <p class="muted qz-tight">Hasta esta hora tus amigos pueden elegir y cambiar sus pronósticos. Todos los partidos de la Jornada ${esc(number)} comparten este cierre.</p>
-        <p class="muted qz-tight" id="qz-wz-first"></p>
-        ${tournamentQs.length ? `<p class="qz-wz-note">Tus ${esc(tournamentQs.length)} ${tournamentQs.length === 1 ? "pregunta del torneo también cierra" : "preguntas del torneo también cierran"} en este momento.</p>` : ``}
-        <p class="qz-field-error" id="qz-wz-deadline-err" role="alert" hidden></p>
       </section>
     `;
     const rowsEl = document.getElementById("qz-wz-rows");
@@ -6000,8 +6133,21 @@
       const inp = rowsEl.querySelector(`.qz-wz-match[data-mid="${m.id}"] input`);
       if(inp) inp.focus();
     });
+    // El cronómetro sale del mismo valor del campo y del reloj ajustado de la
+    // app (serverNow). Sin aria-live: el lector lo lee al llegar, no cada segundo.
+    const countdownEl = document.getElementById("qz-wz-countdown");
+    const paintCountdown = () => {
+      if(!countdownEl || !countdownEl.isConnected){ stopSetupCountdown(); return; }
+      countdownEl.textContent = setupCountdownText(deadlineEl.value, serverNow());
+      // Sin fecha es una instrucción, no un estado: sin la caja del cronómetro.
+      countdownEl.classList.toggle("qz-wz-countdown-empty", !Number.isFinite(new Date(deadlineEl.value).getTime()));
+    };
+    stopSetupCountdown();
+    paintCountdown();
+    setupCountdownTimer = setInterval(paintCountdown, 1000);
     const onDeadline = () => {
       changed();
+      paintCountdown();
       setupFieldError("qz-wz-deadline-err", setupDeadlineProblem(deadlineEl.value, rows.matches, serverNow()));
     };
     deadlineEl.addEventListener("input", onDeadline);
@@ -6021,6 +6167,24 @@
       setupGo("resumen");
     });
   }
+  // Pure: the line under the close field, from the field's own value and the
+  // app's clock. Never a negative count: a past close says so instead.
+  function setupCountdownText(inputValue, nowMs){
+    if(!inputValue) return "Elige la fecha y hora de cierre para ver cuánto falta.";
+    const ms = new Date(inputValue).getTime();
+    if(!Number.isFinite(ms)) return "Elige la fecha y hora de cierre para ver cuánto falta.";
+    const when = fmtWhenTz(new Date(ms).toISOString());
+    if(ms <= nowMs) return `Ese cierre (${when}) ya pasó.`;
+    let diff = ms - nowMs;
+    const d = Math.floor(diff / 86400000); diff -= d * 86400000;
+    const h = Math.floor(diff / 3600000); diff -= h * 3600000;
+    const m = Math.floor(diff / 60000); diff -= m * 60000;
+    const s = Math.floor(diff / 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `Faltan ${d > 0 ? `${d} d ` : ""}${pad(h)} h ${pad(m)} min ${pad(s)} s para el cierre: ${when}.`;
+  }
+  let setupCountdownTimer = null;
+  function stopSetupCountdown(){ if(setupCountdownTimer){ clearInterval(setupCountdownTimer); setupCountdownTimer = null; } }
   // The round as it would be published. { clean, deadline } or a problem.
   function setupRoundProblem(){
     const rows = setupFlow.rows;
@@ -6071,6 +6235,8 @@
     const editBtn = (step) => `<button class="btn btn-ghost btn-sm" data-wz-edit="${step}">Editar</button>`;
     // Built by its own function, which escapes what it paints.
     const numberCardHtml = imported ? "" : setupManualNumberCardHtml(number);
+    // Built by its own function, which escapes what it paints.
+    const publishStepsHtml = setupPublishStepsHtml(number, needsPassword, setupChangesProtectedRules(setupTargetRules(number)));
     // flow.notice.html is built here from fixed text and esc() values.
     const notice = setupFlow.notice;
     const noticeHtml = notice
@@ -6112,15 +6278,20 @@
         </div>
         <div class="qz-sum-side">
           <section class="card qz-wz-card qz-infocard" aria-labelledby="qz-sum-4">
-            <h2 class="qz-wz-h2" id="qz-sum-4">Qué pasa al publicar</h2>
-            <ul>
-              <li>La Jornada ${esc(number)} se abre y tus amigos pueden pronosticar hasta ${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "el cierre que elijas"}.</li>
-              <li>${imported ? "Las demás jornadas del calendario siguen preparadas; las publicas tú, cuando quieras." : "Después podrás crear más jornadas en Admin → Jornadas."}</li>
-              <li>Tus reglas (puntos, preguntas, cuota y penalización) quedan guardadas desde ahora. Las cambias en Admin → Tus reglas.</li>
-              <li>Cuando termine la jornada, tú capturas los resultados en Admin → Resultados: al publicarlos se suman los puntos de los partidos. Las preguntas extra suman cuando marcas quién acertó.</li>
-            </ul>
+            <h2 class="qz-wz-h2" id="qz-sum-4">Vas a publicar la Jornada ${esc(number)}</h2>
+            <p class="qz-pub-close">Cierre de pronósticos: <strong>${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "sin elegir"}</strong></p>
+            <details class="qz-pubinfo" id="qz-wz-pubinfo">
+              <summary>Qué pasa al publicar</summary>
+              <ul>
+                <li>Se abre la Jornada ${esc(number)} y tus amigos pueden pronosticar hasta ${deadlineIso ? esc(fmtWhenTz(deadlineIso)) : "el cierre que elijas"}.</li>
+                <li>${imported ? "Las demás jornadas del calendario siguen preparadas; las publicas tú, cuando quieras." : "Después podrás crear más jornadas en Admin → Jornadas."}</li>
+                <li>Se guardan tus reglas: ${esc(setupRulesSavedList(d, qs.length + keptQs.length))}. Las cambias en Admin → Tus reglas.</li>
+                <li>Los puntos de los partidos se suman cuando capturas y publicas sus resultados en Admin → Resultados.</li>
+                ${qs.length || keptQs.length ? `<li>Las preguntas extra las calificas a mano: suman cuando marcas quién acertó.</li>` : ``}
+              </ul>
+            </details>
           </section>
-          ${needsPassword ? `<p class="qz-wz-note" id="qz-wz-pw-line">Para publicar necesitas una contraseña de administrador. Se crea en el siguiente paso y no publica nada por sí sola.</p>` : ``}
+          ${publishStepsHtml}
           <div id="qz-wz-publish-msg"></div>
         </div>
       </div>
@@ -6141,8 +6312,45 @@
       setupFlow.notice.seen = true;
       if(typeof noticeEl.scrollIntoView === "function") noticeEl.scrollIntoView({ block: "center" });
     }
-    const label = needsPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;
+    // Sólo quien creó la quiniela crea la contraseña: a un co-admin no se le
+    // invita a crear otra; su botón publica (y el aviso de siempre le dice
+    // quién falta). Con la contraseña ya configurada, el botón publica.
+    setupSummaryOffersPassword = !!(needsPassword && isCreator(currentUser));
+    const label = setupSummaryOffersPassword ? "Crear contraseña de administrador" : `Publicar jornada ${number}`;
     setupBar("jornada", label, (btn) => setupPublishClick(btn), { summary: true, disabled: !!(roundProblem || payProblem) });
+  }
+  // «puntos por acierto, preguntas extra y cuota con penalización»: what this
+  // publish stores, as plain text.
+  function setupRulesSavedList(d, questionCount){
+    const parts = ["puntos por acierto"];
+    if(d.extrasOn && questionCount) parts.push("preguntas extra");
+    if(d.payOn) parts.push(d.penOn ? "cuota con penalización" : "cuota");
+    return joinEs(parts);
+  }
+  // ONB · Junto al botón: qué falta para publicar. La contraseña de
+  // administrador no es el PIN y crearla no publica; quien ya la tiene o es
+  // co-admin no recibe una invitación a crear otra.
+  function setupPublishStepsHtml(number, needsPassword, changesProtected){
+    if(needsPassword && isCreator(currentUser)){
+      return `
+        <div class="qz-wz-note qz-pub-steps" id="qz-wz-pw-line">
+          <p><strong>Para publicar, dos pasos:</strong></p>
+          <ol>
+            <li>Crea tu contraseña de administrador. Sirve para cambiar las reglas y para recuperar tu acceso si olvidas tu PIN. <strong>No es tu PIN</strong> y crearla no publica nada.</li>
+            <li>Después toca <strong>«Publicar jornada ${esc(number)}»</strong>.</li>
+          </ol>
+        </div>`;
+    }
+    if(needsPassword){
+      const creator = creatorOfMeta();
+      return `<p class="qz-wz-note qz-pub-steps" id="qz-wz-pw-line">Antes de publicar la primera jornada, ${creator ? `${esc(creator.name)} (quien creó la quiniela)` : "quien creó la quiniela"} tiene que configurar la contraseña de administrador. Tú no necesitas crear otra.</p>`;
+    }
+    const pwLine = meta && meta.ownerPasswordSet && meta.creatorId
+      ? (changesProtected && !ownerPasswordCache
+        ? " Como cambiaste los puntos o la cuota, al publicar te pediremos la contraseña de administrador (no es el PIN); también podrás dejarlos como están."
+        : "")
+      : "";
+    return `<p class="qz-wz-note qz-pub-steps" id="qz-wz-pw-line">Toca <strong>«Publicar jornada ${esc(number)}»</strong> para abrir la jornada a tus amigos.${pwLine}</p>`;
   }
   function setupPublishMessage(kind, html, retry){
     const box = document.getElementById("qz-wz-publish-msg");
@@ -6261,6 +6469,10 @@
     try{ await setupPublishClickNow(btn); }
     finally{ setupClickPending = false; }
   }
+  // Product QA: lo que el resumen en pantalla prometió. Si invitaba a crear
+  // la contraseña («crearla no publica nada») y otra pestaña ya la creó, ese
+  // toque no publica: se repinta con «Publicar jornada N».
+  let setupSummaryOffersPassword = false;
   async function setupPublishClickNow(btn){
     const flow = setupFlow;
     // A new try: what the previous one said (its card above the round, or
@@ -6321,6 +6533,13 @@
         ? `La pregunta «${esc(dup)}» ya está guardada en tu quiniela (la añadió otra persona o pestaña). Quítala de «Tu liga y forma de jugar» o cámbiala. No se publicó nada.`
         : "Cambiaron las preguntas guardadas en tu quiniela desde otra pestaña o dispositivo. Revisa el resumen y vuelve a tocar «Publicar». No se publicó nada." };
       renderSetupFlow();
+      return;
+    }
+    if(setupSummaryOffersPassword && !needsAdminPasswordToPublish()){
+      renderSetupFlow();
+      setupPublishMessage("ok", `Esta quiniela ya tiene contraseña de administrador (se creó en otra pestaña o dispositivo). No se publicó nada: toca «Publicar jornada ${esc(setupPublishNumber())}» para publicar.`);
+      const next = document.getElementById("qz-setup-next");
+      if(next) next.focus();
       return;
     }
     // Onboarding B: without an admin password nothing is published. The
@@ -13600,6 +13819,268 @@
   function joinEs(items){
     return items.length <= 1 ? (items[0] || "") : items.slice(0, -1).join(", ") + " y " + items[items.length - 1];
   }
+  // ==========================================================================
+  // ONB-14 · «Ver cómo se juega» (/demo)
+  //
+  // Una simulación local, para quien está por organizar su quiniela: cinco
+  // participantes ficticios (incluido «Tú (demo)»), tres partidos ficticios
+  // (uno empate) y 1 punto por acierto. Todo vive en memoria de esta página:
+  // no crea grupos, sesiones, PIN ni pronósticos, no lee ninguna quiniela, no
+  // escribe en sessionStorage ni consume el plan. Recargar la reinicia.
+  //
+  // La única escritura al servidor son dos conteos anónimos (demo_started y
+  // demo_completed), sin credenciales ni identificadores; si fallan, la demo
+  // sigue igual.
+  // ==========================================================================
+  const DEMO_MATCHES = Object.freeze([
+    Object.freeze({ id: "p1", home: "Halcones", away: "Toros", goalsHome: 2, goalsAway: 1 }),
+    Object.freeze({ id: "p2", home: "Lobos", away: "Águilas", goalsHome: 1, goalsAway: 1 }),
+    Object.freeze({ id: "p3", home: "Coyotes", away: "Jaguares", goalsHome: 0, goalsAway: 2 }),
+  ]);
+  const DEMO_POINTS_PER_HIT = 1;
+  const DEMO_YOU = "you";
+  // Inscription order (the table keeps it among equal points, as the app's).
+  const DEMO_PEOPLE = Object.freeze([
+    Object.freeze({ id: "ana", name: "Ana", before: 12, picks: Object.freeze({ p1: "L", p2: "L", p3: "L" }) }),
+    Object.freeze({ id: "beto", name: "Beto", before: 11, picks: Object.freeze({ p1: "L", p2: "E", p3: "V" }) }),
+    Object.freeze({ id: "caro", name: "Caro", before: 10, picks: Object.freeze({ p1: "V", p2: "E", p3: "L" }) }),
+    Object.freeze({ id: "dani", name: "Dani", before: 8, picks: Object.freeze({ p1: "L", p2: "E", p3: "E" }) }),
+    Object.freeze({ id: DEMO_YOU, name: "Tú (demo)", before: 9, picks: null }),
+  ]);
+  // Pure: "L" (gana local), "E" (empate) or "V" (gana visita).
+  function demoOutcome(m){ return m.goalsHome > m.goalsAway ? "L" : m.goalsHome < m.goalsAway ? "V" : "E"; }
+  function demoPickLabel(m, pick){ return pick === "L" ? "Gana " + m.home : pick === "V" ? "Gana " + m.away : pick === "E" ? "Empate" : "Sin elegir"; }
+  // Pure: how many of these picks hit.
+  function demoHits(picks){
+    return DEMO_MATCHES.reduce((n, m) => n + (picks && picks[m.id] === demoOutcome(m) ? 1 : 0), 0);
+  }
+  // Pure: rows sorted by `key` (desc, stable: inscription order among equals)
+  // with the app's dense positions (computeDenseRanks: equal points share).
+  function demoRank(rows, key){
+    const sorted = rows.slice().sort((a, b) => b[key] - a[key]);
+    const ranks = computeDenseRanks(sorted.map(r => ({ pts: r[key] })));
+    const byId = {};
+    sorted.forEach((r, i) => { byId[r.id] = ranks[i]; });
+    return { sorted, byId };
+  }
+  // Pure: the whole table after this round, for everyone. Each row: points
+  // before, this round, total, positions before and after.
+  function demoStandings(yourPicks){
+    const rows = DEMO_PEOPLE.map(p => {
+      const hits = demoHits(p.id === DEMO_YOU ? yourPicks : p.picks);
+      const round = hits * DEMO_POINTS_PER_HIT;
+      return { id: p.id, name: p.name, before: p.before, hits, round, total: p.before + round };
+    });
+    const before = demoRank(rows, "before");
+    const after = demoRank(rows, "total");
+    return after.sorted.map(r => ({ ...r, rankBefore: before.byId[r.id], rankAfter: after.byId[r.id] }));
+  }
+  // «1.er», «2.º», «3.er», «4.º», «5.º» (before «lugar»).
+  function demoOrdinal(n){ return n === 1 || n === 3 ? n + ".er" : n + ".º"; }
+  // Pure: the message for one row, computed from its positions and ties.
+  function demoMoveText(row, table, self){
+    const tiedRows = table.filter(r => r.id !== row.id && r.rankAfter === row.rankAfter);
+    const others = tiedRows.filter(r => r.id !== DEMO_YOU).map(r => r.name);
+    const withYou = tiedRows.some(r => r.id === DEMO_YOU);
+    const tie = !tiedRows.length ? ""
+      : withYou && !others.length ? ", en empate contigo"
+      : `, en empate con ${joinEs(withYou ? [...others, "contigo"] : others)}`;
+    const a = row.rankBefore, b = row.rankAfter;
+    const who = self ? "" : row.name + " ";
+    if(b < a) return `${self ? "Subiste" : who + "sube"} del ${demoOrdinal(a)} al ${demoOrdinal(b)} lugar${tie}.`;
+    if(b > a) return `${self ? "Bajaste" : who + "baja"} del ${demoOrdinal(a)} al ${demoOrdinal(b)} lugar${tie}.`;
+    return `${self ? "Te mantienes" : who + "se mantiene"} en el ${demoOrdinal(b)} lugar${tie}.`;
+  }
+  function demoMoveShort(row){
+    const d = row.rankBefore - row.rankAfter;
+    return d > 0 ? `▲ Sube ${d}` : d < 0 ? `▼ Baja ${-d}` : "= Igual";
+  }
+
+  // ---- medición anónima (excepción explícita a la simulación local) ----------
+  // Una vez por entrada a la página: «Probar otra vez» no la repite. Sólo el
+  // evento y su origen; sin credenciales (ni cookies), sin dispositivo,
+  // participante, quiniela ni elecciones. Sin reintentos: si falla, se pierde.
+  const demoEventsSent = new Set();
+  function trackDemoEvent(name){
+    if(demoEventsSent.has(name)) return;
+    demoEventsSent.add(name);
+    try{
+      const ctl = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = ctl ? setTimeout(() => ctl.abort(), 5000) : null;
+      fetch("/api/track-event", {
+        method: "POST", credentials: "omit", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: name, source: "demo" }),
+        signal: ctl ? ctl.signal : undefined,
+      }).catch(() => {}).finally(() => { if(timer) clearTimeout(timer); });
+    }catch(e){ /* la demo no depende de la medición */ }
+  }
+
+  // ---- pintar --------------------------------------------------------------
+  let demoState = null;
+  function demoOrigin(){
+    const from = new URLSearchParams(window.location.search).get("desde");
+    return from === "crear" ? { href: "/crear", label: "Volver a Crear" } : { href: "/", label: "Volver al inicio" };
+  }
+  function renderDemo(){
+    document.title = "Cómo se juega · QRACKS";
+    // No indexar (el servidor también envía X-Robots-Tag).
+    if(!document.querySelector('meta[name="robots"]')){
+      const m = document.createElement("meta");
+      m.name = "robots"; m.content = "noindex, nofollow";
+      document.head.appendChild(m);
+    }
+    demoState = { step: 1, picks: {}, missing: [] };
+    paintDemo(false);
+  }
+  function demoBarHtml(origin){
+    return `
+      <div class="qz-demo-bar" role="note">
+        <p><strong>Demo con datos ficticios.</strong> Tus pronósticos no se envían ni se guardan.</p>
+        <a href="${esc(origin.href)}" class="qz-demo-exit" id="qz-demo-exit">Salir</a>
+      </div>`;
+  }
+  function paintDemo(focusTitle){
+    const st = demoState;
+    const origin = demoOrigin();
+    const brand = `<div class="qz-demo-brand"><img src="${QRACKS_ICON_SRC}" alt="" width="16" height="16"><span>QRACKS</span><span class="muted">· Cómo se juega · Paso ${esc(st.step)} de 4</span></div>`;
+    let body = "";
+    if(st.step === 1){
+      body = `
+        <h1 class="qz-demo-title display" id="qz-demo-title" tabindex="-1">Así se juega una quiniela en QRACKS</h1>
+        <p class="qz-demo-lead">Ésta es <strong>La Oficina (demo)</strong>, una quiniela de ejemplo con 5 participantes. Elige quién gana 3 partidos y mira cómo se convierten en puntos y en lugares de la tabla.</p>
+        <p class="muted">Los equipos y los participantes son inventados. En este ejemplo, cada acierto vale ${esc(DEMO_POINTS_PER_HIT)} punto.</p>
+        <div class="qz-demo-actions"><button class="btn btn-primary" id="qz-demo-start">Empezar</button></div>`;
+    } else if(st.step === 2){
+      const missing = st.missing || [];
+      body = `
+        <h1 class="qz-demo-title display" id="qz-demo-title" tabindex="-1">Jornada 7 · tus pronósticos</h1>
+        <p class="qz-demo-lead">Elige un resultado en cada partido. Un acierto es elegir bien quién gana o si es empate, y vale ${esc(DEMO_POINTS_PER_HIT)} punto.</p>
+        <p class="qz-demo-close">Cierre (ejemplo): en una quiniela real, todos los partidos de la jornada comparten un cierre y después ya no se pueden cambiar los pronósticos. En esta demo no hay fecha real.</p>
+        <div class="qz-demo-matches">
+          ${DEMO_MATCHES.map((m, i) => `
+            <fieldset class="qz-demo-match${missing.includes(m.id) ? " is-missing" : ""}" id="qz-demo-m-${esc(m.id)}" ${missing.includes(m.id) ? `aria-describedby="qz-demo-missing"` : ``}>
+              <legend>Partido ${i + 1}: ${esc(m.home)} vs ${esc(m.away)}</legend>
+              <div class="qz-demo-opts">
+                ${["L", "E", "V"].map(k => `
+                  <label class="qz-demo-opt">
+                    <input type="radio" name="qz-demo-${esc(m.id)}" value="${esc(k)}" ${st.picks[m.id] === k ? "checked" : ""}>
+                    <span class="qz-demo-opt-text">${esc(demoPickLabel(m, k))}</span>
+                    <span class="qz-demo-opt-mark" aria-hidden="true">✓ Elegido</span>
+                  </label>`).join("")}
+              </div>
+            </fieldset>`).join("")}
+        </div>
+        <p class="qz-demo-missing" id="qz-demo-missing" role="alert" ${missing.length ? "" : "hidden"}>${missing.length ? esc("Te falta elegir: " + joinEs(missing.map(id => { const m = DEMO_MATCHES.find(x => x.id === id); return `Partido ${DEMO_MATCHES.indexOf(m) + 1} (${m.home} vs ${m.away})`; })) + ".") : ""}</p>
+        <p class="muted qz-demo-hint">Elige los 3 partidos para ver los resultados.</p>
+        <div class="qz-demo-actions"><button class="btn btn-primary" id="qz-demo-results">Ver resultados</button></div>`;
+    } else if(st.step === 3){
+      const hits = demoHits(st.picks);
+      const pts = hits * DEMO_POINTS_PER_HIT;
+      body = `
+        <h1 class="qz-demo-title display" id="qz-demo-title" tabindex="-1">Así quedaron los partidos</h1>
+        <ul class="qz-demo-results">
+          ${DEMO_MATCHES.map((m, i) => {
+            const mine = st.picks[m.id];
+            const hit = mine === demoOutcome(m);
+            const got = hit ? DEMO_POINTS_PER_HIT : 0;
+            return `
+            <li class="qz-demo-result">
+              <p class="qz-demo-result-title">Partido ${i + 1}: ${esc(m.home)} vs ${esc(m.away)}</p>
+              <p>Tu elección: <strong>${esc(demoPickLabel(m, mine))}</strong></p>
+              <p>Resultado (ficticio): <strong>${esc(m.home)} ${esc(m.goalsHome)}–${esc(m.goalsAway)} ${esc(m.away)}</strong> · ${esc(demoPickLabel(m, demoOutcome(m)))}</p>
+              <p class="qz-demo-verdict ${hit ? "is-hit" : "is-miss"}">${hit ? "✓ Acertaste" : "✗ No acertaste"} · ${got > 0 ? "+" : ""}${esc(got)} ${esc(pointsWord(got))}</p>
+            </li>`; }).join("")}
+        </ul>
+        <p class="qz-demo-sum" role="status">${pts > 0 ? `Sumaste <strong>${esc(pts)} ${esc(pointsWord(pts))}</strong> en esta jornada.` : "No sumaste puntos en esta jornada."}</p>
+        <p class="qz-demo-explain">Los puntos de los partidos se suman cuando el organizador publica sus resultados.</p>
+        <div class="qz-demo-actions"><button class="btn btn-primary" id="qz-demo-table">Ver la tabla</button></div>`;
+    } else {
+      const table = demoStandings(st.picks);
+      const me = table.find(r => r.id === DEMO_YOU);
+      body = `
+        <h1 class="qz-demo-title display" id="qz-demo-title" tabindex="-1">Tu lugar en la tabla</h1>
+        <p class="qz-demo-move" role="status">${esc(demoMoveText(me, table, true))}</p>
+        <div class="qz-demo-table-wrap">
+          <table class="qz-demo-table">
+            <caption class="qz-sr">Tabla de La Oficina (demo) después de la Jornada 7</caption>
+            <thead><tr><th scope="col">Lugar</th><th scope="col">Participante</th><th scope="col">Antes</th><th scope="col">Esta jornada</th><th scope="col">Total</th></tr></thead>
+            <tbody>
+              ${table.map(r => `
+                <tr class="${r.id === DEMO_YOU ? "is-you" : ""}">
+                  <td>${esc(demoOrdinal(r.rankAfter))}</td>
+                  <th scope="row">${esc(r.name)}<span class="qz-demo-move-short">${esc(demoMoveShort(r))}</span></th>
+                  <td>${esc(r.before)}</td>
+                  <td>+${esc(r.round)}</td>
+                  <td><strong>${esc(r.total)}</strong></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        <ul class="qz-demo-moves">
+          ${table.filter(r => r.id !== DEMO_YOU).map(r => `<li>${esc(demoMoveText(r, table, false))}</li>`).join("")}
+        </ul>
+        <p class="muted">Con la misma puntuación se comparte el lugar. Los puntos de los partidos se suman cuando el organizador publica sus resultados.</p>
+        <div class="qz-demo-actions">
+          <a class="btn btn-gold" href="/crear" id="qz-demo-create">Crear mi quiniela</a>
+          <button class="btn btn-ghost" id="qz-demo-again">Probar otra vez</button>
+          <a class="btn btn-ghost" href="${esc(origin.href)}" id="qz-demo-back">${esc(origin.label)}</a>
+        </div>`;
+    }
+    root.innerHTML = `
+      ${demoBarHtml(origin)}
+      <div class="qz-demo-wrap">
+        ${brand}
+        <main class="card qz-demo-card" id="qz-demo-main">${body}</main>
+      </div>`;
+    wireDemo();
+    if(focusTitle){
+      try{ window.scrollTo({ top: 0 }); }catch(e){}
+      const h = document.getElementById("qz-demo-title");
+      if(h) h.focus();
+    }
+  }
+  function demoGo(step){
+    demoState.step = step;
+    paintDemo(true);
+  }
+  function wireDemo(){
+    const st = demoState;
+    const on = (id, fn) => { const el = document.getElementById(id); if(el) el.addEventListener("click", fn); };
+    on("qz-demo-start", () => { trackDemoEvent("demo_started"); st.picks = {}; st.missing = []; demoGo(2); });
+    document.querySelectorAll('.qz-demo-match input[type="radio"]').forEach(r => r.addEventListener("change", () => {
+      const id = r.name.replace("qz-demo-", "");
+      st.picks[id] = r.value;
+      if(st.missing.includes(id)){
+        st.missing = st.missing.filter(x => x !== id);
+        const fs = document.getElementById("qz-demo-m-" + id);
+        if(fs){ fs.classList.remove("is-missing"); fs.removeAttribute("aria-describedby"); }
+        const msg = document.getElementById("qz-demo-missing");
+        if(msg){
+          if(st.missing.length){
+            msg.textContent = "Te falta elegir: " + joinEs(st.missing.map(x => { const m = DEMO_MATCHES.find(y => y.id === x); return `Partido ${DEMO_MATCHES.indexOf(m) + 1} (${m.home} vs ${m.away})`; })) + ".";
+          } else { msg.textContent = ""; msg.hidden = true; }
+        }
+      }
+    }));
+    on("qz-demo-results", () => {
+      const missing = DEMO_MATCHES.filter(m => !st.picks[m.id]).map(m => m.id);
+      if(missing.length){
+        st.missing = missing;
+        paintDemo(false);
+        const first = document.querySelector(`#qz-demo-m-${missing[0]} input`);
+        if(first) first.focus();
+        return;
+      }
+      st.missing = [];
+      demoGo(3);
+    });
+    on("qz-demo-table", () => { trackDemoEvent("demo_completed"); demoGo(4); });
+    // «Probar otra vez»: un escenario coherente desde los pronósticos, sin
+    // repetir la medición de esta entrada.
+    on("qz-demo-again", () => { st.picks = {}; st.missing = []; demoGo(2); });
+  }
+
   async function renderCrear(){
     trackEvent("create_started", { source: "create_flow" });
     const draft = renderCrear._draft || loadCrearDraft();
@@ -13611,6 +14092,7 @@
           <div class="login-title display">Crea tu quiniela</div>
           <p class="login-sub qz-crear-value">Comparte un link y tus amigos eligen sus resultados antes del cierre de cada jornada. QRACKS cuenta los puntos y arma la tabla.</p>
           <p class="muted qz-crear-next">Tú armas las jornadas y publicas los resultados. Después de crearla: tu PIN y tu primera jornada.</p>
+          <p class="qz-crear-demo">¿Primero quieres ver cómo se juega? <a href="/demo?desde=crear" id="qz-c-demo">Ver la demo</a> <span class="muted">(lo que escribas aquí se conserva)</span></p>
           <div class="field"><label for="qz-c-name">Nombre de tu quiniela</label><input type="text" id="qz-c-name" placeholder="Ej. Quiniela de la oficina" value="${esc(draft.groupName)}"></div>
           <div class="field">
             <label for="qz-c-creator">Tu nombre</label>
@@ -14409,6 +14891,7 @@
               <p class="qz-hero-sub">Crea o únete a una quiniela, invita a tus amigos y deja que QRACKS se encargue del resto.</p>
               <div class="qz-hero-ctas">
                 <a href="/crear" class="btn btn-gold">Crear mi quiniela</a>
+                <a href="/demo" class="qz-hero-btn-ghost-dark" id="qz-hero-demo">Ver cómo se juega</a>
                 <a href="#qz-hero-invite-note" class="qz-hero-btn-ghost-dark">Ya tengo una invitación</a>
               </div>
             </div>
@@ -14608,6 +15091,7 @@
   async function boot(attempt){
     attempt = attempt || 1;
 
+    if(ROUTE === "demo"){ renderDemo(); return; }
     if(ROUTE === "crear"){ renderCrear(); return; }
     if(ROUTE === "unknown"){ renderUnknownRoute(); return; }
     if(ROUTE === "platform"){ renderPlatformDashboard(); return; }

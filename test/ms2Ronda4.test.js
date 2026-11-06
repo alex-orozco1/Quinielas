@@ -345,10 +345,12 @@ test("ningún manejador usa event.currentTarget después de un await (ahí ya es
   assert.ok(/qz-r-pen-save"\)\.addEventListener\("click", async \(e\) => \{\s*\/\/[^\n]*\n\s*const btn = e\.currentTarget;/.test(reglas));
 });
 
-test("P3 · bloque 1: «Prefiero armar los partidos a mano» y «Mejor usar el calendario» dejan el foco en su contraparte, no en la página", () => {
+test("P3 · bloque 1 (ONB): calendario y a mano son dos opciones fijas; el foco se queda en el control pulsado, no en la página", () => {
   const liga = fn("function renderSetupLiga(main)");
-  assert.ok(liga.includes('renderSetupFlow(); focusFirst("qz-wz-use-cal", "qz-wz-pick-league", "qz-wz-title"); });'));
-  assert.ok(liga.includes('renderSetupFlow(); focusFirst("qz-wz-manual", "qz-wz-title"); });'));
+  assert.ok(liga.includes("${setupModeChoiceHtml(d.manual)}") && liga.includes("wireSetupModeChoice(d);"));
+  const wire = fn("function wireSetupModeChoice(d)");
+  assert.ok(wire.includes("if(toManual === !!d.manual) return;"), "pulsar la opción ya elegida no hace nada");
+  assert.ok(wire.includes('const same = document.getElementById("qz-wz-mode-" + (toManual ? "manual" : "cal"));') && wire.includes("if(same) same.focus();"));
 });
 
 // ---- Hallazgos de la revisión de UX de esta ronda ------------------------------
@@ -371,7 +373,9 @@ test("UX · la hoja de invitación con reglas pendientes ofrece «Revisar mis re
 test("UX · «ya estaba en tu quiniela» (no «ya guardada», que se leía como publicada) y quién suma los puntos", () => {
   assert.ok(!indexSrc.includes("· ya guardada"));
   assert.ok(fn("function keptQuestionsListHtml(kept)").includes(" · ya estaba en tu quiniela</span>"));
-  assert.ok(fn("function renderSetupResumen(main)").includes("<li>Cuando termine la jornada, tú capturas los resultados en Admin → Resultados: al publicarlos se suman los puntos de los partidos. Las preguntas extra suman cuando marcas quién acertó.</li>"));
+  const sum = fn("function renderSetupResumen(main)");
+  assert.ok(sum.includes("<li>Los puntos de los partidos se suman cuando capturas y publicas sus resultados en Admin → Resultados.</li>"));
+  assert.ok(sum.includes("<li>Las preguntas extra las calificas a mano: suman cuando marcas quién acertó.</li>"));
 });
 
 // ---- Hallazgos de Technical QA de esta ronda ----------------------------------
