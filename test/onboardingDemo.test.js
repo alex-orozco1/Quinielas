@@ -211,7 +211,8 @@ test("ONB · cierre: tarjeta antes de los partidos; cronómetro del mismo campo 
   const local = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
   assert.match(t(local(now + (2 * 86400 + 3 * 3600 + 5 * 60) * 1000), now), /^Faltan 2 d 03 h 05 min 00 s para el cierre: .+\.$/);
   assert.match(t(local(now - 3600 * 1000), now), /^Ese cierre \(.+\) ya pasó\.$/);
-  assert.ok(!t(local(now - 3600 * 1000), now).includes("-"), "nunca una cuenta negativa");
+  // Un número negativo, no cualquier guion: la zona puede ser «GMT-6».
+  assert.ok(!/(^|[\s(])-\s?\d/.test(t(local(now - 3600 * 1000), now)), "nunca una cuenta negativa");
   assert.equal(t("", now), "Elige la fecha y hora de cierre para ver cuánto falta.");
   assert.ok(fn("function renderSetupFlow()").includes("stopSetupCountdown();"), "el temporizador no sobrevive a otro paso");
   // Un año de 6 cifras que el navegador deja teclear no rompe el paso 3.
@@ -232,7 +233,7 @@ test("ONB · contraseña y publicación: dos pasos para quien crea; co-admin y c
   assert.ok(steps.includes("Después toca <strong>«Publicar jornada ${esc(number)}»</strong>."));
   assert.ok(steps.includes("Tú no necesitas crear otra."));
   assert.ok(steps.includes("Toca <strong>«Publicar jornada ${esc(number)}»</strong> para abrir la jornada a tus amigos."));
-  assert.ok(steps.includes("meta && meta.ownerPasswordSet && meta.creatorId"), "sólo promete la contraseña cuando de verdad se pedirá");
+  assert.ok(steps.includes("const pwLine = meta && meta.ownerPasswordSet\n"), "sólo promete la contraseña cuando de verdad se pedirá");
   // Pestaña desactualizada: el resumen invitaba a crear la contraseña y otra
   // pestaña ya la creó; ese toque no publica, repinta con «Publicar jornada N».
   const click = fn("async function setupPublishClickNow(btn)");

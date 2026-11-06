@@ -323,7 +323,7 @@ test("contraseña · sin ella no se publica; guardarla vuelve al resumen sin pub
   assert.ok(click.includes("Sin contraseña no se puede publicar. Tu configuración sigue aquí."));
   const gateBlock = click.slice(click.indexOf("if(needsAdminPasswordToPublish()){"), click.indexOf("const number = setupPublishNumber();"));
   assert.ok(!gateBlock.includes("setupPublish("), "guardar la contraseña nunca publica");
-  assert.ok(click.indexOf("if(meta.creatorId && !ownerPasswordCache && setupChangesProtectedRules(rules)){") < click.indexOf("await setupPublish("),
+  assert.ok(click.indexOf("if((meta.creatorId || meta.ownerPasswordSet) && !ownerPasswordCache && setupChangesProtectedRules(rules)){") < click.indexOf("await setupPublish("),
     "los puntos y la cuota sólo se guardan con la contraseña: se pide antes, nunca se publica a medias");
   assert.ok(click.includes("verifyOwnerPasswordResult(pw)"));
   const resumen = fn("function renderSetupResumen(main)");

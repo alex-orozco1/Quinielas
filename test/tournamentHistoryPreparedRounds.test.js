@@ -169,9 +169,14 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
 
 // ---- Payment Penalty untouched ----
 
-test("this fix does not reference penalizedRounds/reconcilePenaltyLedger/penaltyPointsFor anywhere in the close endpoint -- Payment Penalty logic is completely untouched", () => {
+// AUD-03 changed one thing on purpose: the close now ARCHIVES each
+// participant's penalty ledger with the tournament and starts the next one
+// without it. The penalty rules themselves (reconcile / points) stay client
+// logic the close never runs.
+test("the close archives the penalty ledger and never runs the penalty rules (reconcilePenaltyLedger / penaltyPointsFor)", () => {
   const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
   assert.ok(!handlerBody.includes("penaltyPointsFor"));
-  assert.ok(!handlerBody.includes(".penalizedRounds"));
+  assert.ok(handlerBody.includes("archivedPenalties[p.id] = JSON.parse(JSON.stringify(p.penalizedRounds));"));
+  assert.ok(handlerBody.includes('if ("penalizedRounds" in p) p.penalizedRounds = {};'));
 });
