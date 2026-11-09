@@ -1,7 +1,9 @@
 # Límites de intentos fallidos de credenciales
 
-Estado: implementado en la rama `security/credential-bruteforce-limits`. Por credencial se aplica una
-**espera progresiva** (§5), elegida por el dueño del producto el 2026-10-03 en lugar del bloqueo duro.
+Estado: en `main` desde alex-orozco1/Quinielas#28 (merge `747576c`, 2026-10-03); «¿Olvidaste tu PIN?» (§5.2)
+desde alex-orozco1/Quinielas#29 (`4e5cbec`). Por credencial se aplica una **espera progresiva** (§5),
+elegida por el dueño del producto el 2026-10-03 en lugar del bloqueo duro. Este documento es la fuente de
+verdad de los límites; el resto de la documentación lo enlaza ([docs/README.md](README.md)).
 
 ## 1. Qué se protege
 
@@ -66,7 +68,10 @@ Espera progresiva por credencial (`target`, una credencial desde cualquier red; 
   que caben.
 - Respuesta cuando hay que esperar: `429 {"error":"too_many_attempts","retryAfterSeconds":N}` y
   `Retry-After: N`, con el tiempo que realmente falta. La pantalla dice "Intenta de nuevo en N s/min".
-  Las lecturas (`GET`) no responden 429: tratan la credencial como no enviada (vista pública).
+  Las lecturas de la quiniela por `/api/kv` (meta y pronósticos) no responden 429: tratan la credencial
+  como no enviada (vista pública). Las lecturas que exigen admin o plataforma (el plan, el estado de una
+  compra, las sugerencias de resultados, el libro y los intentos de pago, los diagnósticos de plataforma)
+  sí responden 429 si la credencial está en espera.
 
 Ritmo máximo para un atacante contra **un** PIN de 4 dígitos, con IPs ilimitadas: ~96 valores por día
 (uno cada 15 min, más los 10 libres tras cada olvido de 24 h) → la mitad del espacio en ~52 días.
@@ -228,7 +233,10 @@ intentos en 4 h alrededor del corte de 24 h) sin cambiar el promedio diario.
 contador se olvida tras 24 h sin fallos. Ambas conservan los límites por red y la exención de
 dispositivos de confianza.
 
-| | Bloqueo duro (implementado) | Espera progresiva (propuesta) |
+Tabla de la evaluación del 2026-10-03, cuando el bloqueo duro era lo implementado; ganó la espera progresiva, que es
+lo que hay hoy.
+
+| | Bloqueo duro (descartado) | Espera progresiva (implementada) |
 |---|---|---|
 | Atacante sostenido, IPs ilimitadas | 150 adivinanzas/día | **96/día** |
 | 50 % de probabilidad de dar con un PIN de 4 dígitos | ~33 días | **~52 días** |
@@ -261,7 +269,8 @@ estos son los cambios y lo que el dueño del producto tiene que decidir:
    reautenticación y primer PIN de admin).
 2. **"¿Olvidaste tu PIN?" tras 5 fallos**, ofreciendo sólo salidas que existen hoy: "Pide a otro admin
    que lo resetee". **No** "usa la contraseña de administrador": hoy esa contraseña sólo se pide dentro
-   de Ajustes, con sesión abierta (ver pendiente abajo).
+   de Ajustes, con sesión abierta (ver pendiente abajo). *Superado:* desde #29 el admin sí recupera su PIN con
+   la contraseña de administrador (§5.2).
 3. Reglas a fijar antes de implementar:
    - un intento hecho durante la espera se rechaza **sin** contar como fallo y **sin** alargar la espera
      (como hoy los bloqueados);
