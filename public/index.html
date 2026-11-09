@@ -1558,6 +1558,11 @@
   #quiniela-root .qz-wz-money p + p{ margin-top:4px; color:var(--ink-soft); font-size:13.5px; }
   /* ONB · cierre: el cronómetro sale del campo y del reloj de la app */
   #quiniela-root .qz-wz-countdown{ font-weight:700; color:var(--pitch-dark); background:#EEF6F0; border-radius:8px; padding:6px 10px; margin:6px 0; font-size:14px; overflow-wrap:anywhere; }
+  #quiniela-root .pick-btn.qz-pick-blocked{ opacity:.45; cursor:not-allowed; }
+  #quiniela-root .qz-picks-loadfail{ border:1px solid var(--red); background:#FDF1F0; border-radius:10px; padding:10px 12px; margin:0 0 12px; text-align:left; }
+  #quiniela-root .qz-picks-loadfail p{ margin:0 0 8px; }
+  #quiniela-root .qz-picks-conflict{ display:inline-block; margin-top:4px; color:var(--ink); font-weight:600; }
+  #quiniela-root .qz-backup-note{ font-size:13px; }
   #quiniela-root .qz-wz-countdown.qz-wz-countdown-empty{ font-weight:400; color:var(--ink-soft); background:none; padding:0; }
   /* ONB · qué pasa al publicar: desplegable que crece hacia abajo */
   #quiniela-root .qz-pub-close{ margin:2px 0 8px; font-size:14px; overflow-wrap:anywhere; }
@@ -2004,6 +2009,13 @@
     league_change_blocked: "Ya no puedes cambiar la liga: esta quiniela ya empezó a jugar.",
     invalid_grant_id: "No se pudo registrar el cambio de plan. Vuelve a intentarlo.",
     stale_tournament_cycle: "El torneo ya cambió. Actualizamos la pantalla.",
+    // AUD-02: el cierre exige una tabla armada con TODOS los pronósticos vigentes.
+    close_basis_stale: "Algo cambió mientras preparabas el cierre (un pronóstico, un resultado o un pago). No se cerró nada: vuelve a tocar «Cerrar torneo» para armar la tabla con lo último.",
+    close_basis_required: "Esta pantalla quedó desactualizada. No se cerró nada: recarga la página y vuelve a cerrar el torneo.",
+    close_standings_incomplete: "La tabla final no incluía a todos los participantes. No se cerró nada: vuelve a intentarlo.",
+    close_standings_unordered: "La tabla final no estaba en orden. No se cerró nada: vuelve a intentarlo.",
+    picks_conflict: "Tus pronósticos cambiaron en otra pestaña o dispositivo.",
+    picks_not_loaded: "No pudimos cargar tus pronósticos guardados; no guardamos nada para no borrar ninguno.",
     invalid_close_intent: "No pudimos identificar ese cierre. Recarga la página e intenta de nuevo.",
     invalid_close_summary: "No pudimos leer la tabla final. Recarga la página e intenta de nuevo.",
     unknown_result: "No pudimos confirmar si el torneo se cerró. Verifica el estado antes de intentar otra vez.",
@@ -2155,14 +2167,21 @@
   }
   // KV writes keep the server's structured error so callers can explain
   // why a save failed instead of treating every refusal as a boolean.
-  async function kvSetWithError(key, value, creds){
+  // `opts.timeoutMs`: a request that never answers ends as network_error
+  // instead of waiting forever (used by the picks queue: one hung save must
+  // not stop every later one, Technical QA de ec81210).
+  async function kvSetWithError(key, value, creds, extra, opts){
     const headers = { "Content-Type": "application/json" };
     setAuthHeaders(headers, creds && creds.owner);
     if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
+    const timeoutMs = opts && opts.timeoutMs;
+    const ctrl = timeoutMs && typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try{
       const res = await fetch("/api/kv/" + encodeURIComponent(key), {
         method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ value })
+        body: JSON.stringify({ ...(extra || {}), value }),
+        ...(ctrl ? { signal: ctrl.signal } : {})
       });
       if(res.ok) return { ok: true, ...(await res.json().catch(() => ({}))) };
       const data = await res.json().catch(() => ({}));
@@ -2172,7 +2191,9 @@
       // .error) rather than discarding everything but the error code.
       return { ok: false, ...data, error: data.error };
     }catch(e){
-      return { ok: false, error: "network_error" };
+      return { ok: false, error: "network_error", ...(ctrl && ctrl.signal.aborted ? { timedOut: true } : {}) };
+    }finally{
+      if(timer) clearTimeout(timer);
     }
   }
 
@@ -2421,14 +2442,35 @@
     return Array.from(b).map(x => x.toString(16).padStart(2, "0")).join("");
   }
 
-  async function apiCloseTournament({ intentId, expectedCycle, standings }){
+  // AUD-02 / AUD-05: una lectura completa del servidor — la meta y los
+  // pronósticos de TODOS, leídos juntos — con su huella (`basis`). null si
+  // falló o llegó incompleta: quien llama no sigue con datos a medias (un
+  // «nadie pronosticó» inventado armaba un campeón equivocado o un respaldo
+  // vacío que se anunciaba como bueno).
+  async function loadAdminSnapshot(){
+    try{
+      if(!SLUG) return null;
+      const headers = { "Content-Type": "application/json" };
+      setAuthHeaders(headers, adminOrOwnerCred());
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/admin-snapshot", {
+        method: "POST", headers, credentials: "same-origin", body: "{}"
+      });
+      if(!res.ok) return null;
+      const data = await res.json();
+      if(!data || !data.ok || typeof data.basis !== "string" || !data.meta || !data.picks || !Array.isArray(data.meta.participants)) return null;
+      if(data.meta.participants.some(p => !Object.prototype.hasOwnProperty.call(data.picks, p.id))) return null;
+      return data;
+    }catch(e){ console.error("admin snapshot failed", e); return null; }
+  }
+
+  async function apiCloseTournament({ intentId, expectedCycle, standings, basis, standingsAt }){
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
       setAuthHeaders(headers, cred);
       const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/close", {
         method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings })
+        body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings, basis, standingsAt })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, ...data };
@@ -2447,34 +2489,226 @@
   // can see in-progress predictions early. Pass `asAdmin: true` when loading
   // picks for people other than the current user (Tabla/Historial/Participación
   // only ever need closed-round data anyway, which the safe view already has).
+  // `strict`: a failed read returns null instead of {} — «no pude leer» is
+  // not «no hay nada» (AUD-01).
   async function getPicks(pid, opts){
     try{
       const isOwnPicks = currentUser && pid === currentUser.id;
       const creds = { owner: isOwnPicks ? currentUserPinCache : ((opts && opts.asAdmin) ? adminOrOwnerCred() : null) };
       const r = await kvGet(currentPicksKey(pid), creds);
       return r.found ? r.value : {};
-    }catch(e){ console.error("getPicks failed", e); return {}; }
+    }catch(e){ console.error("getPicks failed", e); return opts && opts.strict ? null : {}; }
   }
-  async function setPicksWithError(pid, data){
-    try{
-      const creds = { owner: currentUserPinCache };
-      const first = await kvSetWithError(currentPicksKey(pid), data, creds);
-      // Liguilla: sus partidos se guardan uno por uno. Si otra sesión guardó
-      // uno antes, este documento traía una copia vieja: se toma lo guardado
-      // para las jornadas de liguilla (nunca se pisa) y se reintenta una vez.
-      if(first.ok || first.error !== "liguilla_pick_conflict") return first;
-      const fresh = await getPicks(pid);
-      // Las respuestas a las preguntas de la jornada (__extra) son lo que se
-      // está guardando: se conservan aunque el servidor no tenga todavía esa
-      // jornada (Technical QA de 6e12f12, H1).
-      meta.rounds.filter(isLg).forEach(r => {
-        const extra = data[r.id] && data[r.id].__extra ? { __extra: data[r.id].__extra } : null;
-        if(fresh[r.id]) data[r.id] = { ...fresh[r.id], ...(extra || {}) };
-        else if(extra) data[r.id] = extra;
-        else delete data[r.id];
+  // ---- AUD-01 · guardar pronósticos sin pisar nada ---------------------------
+  //
+  // Cada guardado lleva lo último que el servidor confirmó de MIS pronósticos
+  // (myPicksBase). El servidor mezcla partido por partido contra lo guardado:
+  // lo que esta pestaña no cambió se queda como está guardado, lo que cambió
+  // se aplica, y si otra pestaña o dispositivo cambió ESE partido distinto,
+  // responde 409 con lo guardado y no escribe nada (picksMerge.js).
+  // - Si la lectura inicial falló, myPicksBase es null y no se manda nada: un
+  //   documento sin lo guardado ya no puede borrarlo, y la pantalla lo dice.
+  // - Un guardado a la vez: el siguiente sale cuando contesta el anterior, con
+  //   la base que éste dejó y lo último elegido. Un envío viejo ya no llega
+  //   después de uno nuevo.
+  // - Las jornadas de liguilla se guardan partido a partido (lg*): en este
+  //   documento sólo viajan sus respuestas a las preguntas (__extra).
+  let myPicksBase = null;
+  let myPicksBaseOwner = null;
+  let myPicksLoadFailed = false;
+  const picksJson = (v) => JSON.stringify(v === undefined ? null : v);
+  function picksOwnerKey(pid){ return (SLUG || "") + "|" + pid; }
+  function adoptPicksBase(pid, doc){
+    myPicksBase = JSON.parse(JSON.stringify(doc || {}));
+    myPicksBaseOwner = picksOwnerKey(pid);
+    myPicksLoadFailed = false;
+  }
+  function failPicksBase(pid){
+    myPicksBase = null;
+    myPicksBaseOwner = picksOwnerKey(pid);
+    myPicksLoadFailed = true;
+  }
+  function picksDocForSave(doc){
+    const out = {};
+    Object.keys(doc || {}).forEach(rid => {
+      const round = meta.rounds.find(r => r.id === rid);
+      const rp = doc[rid];
+      if(!rp || typeof rp !== "object") return;
+      if(round && isLg(round)){
+        if(rp.__extra && typeof rp.__extra === "object") out[rid] = { __extra: { ...rp.__extra } };
+        return;
+      }
+      out[rid] = JSON.parse(JSON.stringify(rp));
+    });
+    return out;
+  }
+  // Los campos de una jornada normal: cada partido y cada pregunta (__extra.id).
+  function picksFields(rp){
+    const out = {};
+    Object.keys(rp || {}).forEach(k => {
+      if(k === "__extra" && rp.__extra && typeof rp.__extra === "object") Object.keys(rp.__extra).forEach(b => { out["__extra." + b] = rp.__extra[b]; });
+      else if(k !== "__score") out[k] = rp[k];
+    });
+    return out;
+  }
+  function setPicksField(rp, f, v){
+    if(f.startsWith("__extra.")){
+      const b = f.slice(8);
+      if(v === undefined){ if(rp.__extra) delete rp.__extra[b]; }
+      else { rp.__extra = rp.__extra || {}; rp.__extra[b] = v; }
+    } else if(v === undefined) delete rp[f]; else rp[f] = v;
+  }
+  // Lo que el servidor guardó entra a myPicks sólo donde esta pestaña no
+  // cambió nada desde que lo envió (`sent`): así aparece lo que eligió otra
+  // pestaña, y nunca se pierde lo que se eligió mientras tanto.
+  function adoptServerPicks(sent, server){
+    const changed = [];
+    const rids = new Set([...Object.keys(sent || {}), ...Object.keys(server || {})]);
+    rids.forEach(rid => {
+      const round = meta.rounds.find(r => r.id === rid);
+      if(round && isLg(round)) return;
+      const sf = picksFields((sent || {})[rid]), vf = picksFields((server || {})[rid]);
+      const cur = myPicks[rid] || {};
+      const cf = picksFields(cur);
+      new Set([...Object.keys(sf), ...Object.keys(vf)]).forEach(f => {
+        if(picksJson(cf[f]) !== picksJson(sf[f])) return;      // cambió aquí después de enviarlo
+        if(picksJson(cf[f]) === picksJson(vf[f])) return;
+        const rp = myPicks[rid] = myPicks[rid] || {};
+        setPicksField(rp, f, vf[f]);
+        changed.push({ roundId: rid, field: f });
       });
-      return await kvSetWithError(currentPicksKey(pid), data, creds);
-    }catch(e){ console.error("save picks failed", e); return { ok: false, error: "network_error" }; }
+    });
+    return changed;
+  }
+  // Pinta, sin redibujar la jornada, la selección de los partidos de una
+  // jornada normal tal como está en myPicks.
+  function paintRegularPicks(roundId){
+    const rp = myPicks[roundId] || {};
+    const box = document.getElementById("qz-matches-" + roundId);
+    if(!box) return;
+    box.querySelectorAll(".pick-row").forEach(row => {
+      row.querySelectorAll(".pick-btn").forEach(b => b.classList.toggle("selected", rp[row.dataset.match] === b.dataset.val));
+    });
+  }
+  function conflictNoteFor(conflicts){
+    const lines = [];
+    (conflicts || []).forEach(c => {
+      const round = meta.rounds.find(r => r.id === c.roundId);
+      if(!round) return;
+      if(String(c.field).startsWith("__extra.")){
+        const bet = (meta.customBets || []).find(b => b.id === String(c.field).slice(8));
+        lines.push("la pregunta «" + (bet ? bet.label : "de la jornada") + "»" + (c.value != null && c.value !== "" ? ", que quedó «" + String(c.value) + "»" : ""));
+        return;
+      }
+      const m = (round.matches || []).find(x => x.id === c.field);
+      if(m) lines.push(m.teamA + " vs " + m.teamB);
+    });
+    if(!lines.length) return "";
+    // Texto plano: quien lo pinta lo pasa por esc().
+    return (lines.length === 1 ? "Un pronóstico cambió" : "Algunos pronósticos cambiaron") + " en otra pestaña o dispositivo (" + joinEs(lines) + ") y lo dejamos como quedó guardado. Si quieres otro, elígelo de nuevo.";
+  }
+  // Lo enviado cuya respuesta se perdió (network_error): pudo guardarse. Si
+  // luego el servidor dice «conflicto» justo con ese valor, era de esta misma
+  // pestaña (Technical QA, H1): se toma como base y se reenvía sin alarma.
+  let picksUnconfirmed = { owner: null, docs: [] };
+  // Un guardado sin respuesta en este tiempo se da por fallido (se dice, con
+  // «Reintentar») y la cola sigue: nunca «Guardando…» para siempre.
+  const PICKS_SAVE_TIMEOUT_MS = 15000;
+  // `job`: el trabajo con la identidad capturada al crearlo (FIA-GPT-02):
+  // participante, PIN y sesión (lgGen). Si la sesión ya no es la actual, no se
+  // envía; y si cambia mientras espera respuesta, la respuesta no toca nada.
+  async function savePicksNow(job){
+    const { pid, data, creds, gen } = job;
+    const live = () => gen === lgGen && myPicksBaseOwner === picksOwnerKey(pid);
+    if(gen !== lgGen) return { ok: false, error: "session_changed" };
+    if(myPicksBase === null || myPicksBaseOwner !== picksOwnerKey(pid)) return { ok: false, error: "picks_not_loaded" };
+    const unconfirmedKey = picksOwnerKey(pid) + "#" + gen;
+    if(picksUnconfirmed.owner !== unconfirmedKey) picksUnconfirmed = { owner: unconfirmedKey, docs: [] };
+    let conflicts = [];
+    for(let attempt = 0; attempt < 3; attempt++){
+      const sent = picksDocForSave(data);
+      const r = await kvSetWithError(currentPicksKey(pid), sent, creds, { base: picksDocForSave(myPicksBase) }, { timeoutMs: PICKS_SAVE_TIMEOUT_MS });
+      if(!live()) return { ok: false, error: "session_changed" };
+      if(r.ok){
+        picksUnconfirmed.docs = [];
+        if(r.value && typeof r.value === "object"){
+          // Lo que el servidor guardó es la base del próximo guardado.
+          adoptPicksBase(pid, r.value);
+          adoptServerPicks(sent, r.value).forEach(c => paintRegularPicks(c.roundId));
+        }
+        return { ...r, conflicts };
+      }
+      if(r.error === "network_error"){
+        picksUnconfirmed.docs = picksUnconfirmed.docs.concat([sent]).slice(-10);
+        return r;
+      }
+      if(r.error !== "picks_conflict" || !r.value) return r;
+      const oldBase = myPicksBase;
+      const storedField = (c) => picksFields((r.value || {})[c.roundId])[c.field];
+      (r.conflicts || []).forEach(c => {
+        const v = storedField(c);
+        const ours = picksUnconfirmed.docs.some(u => picksJson(picksFields((u || {})[c.roundId])[c.field]) === picksJson(v));
+        if(ours) return;   // lo guardó esta pestaña: lo de ahora se reenvía encima
+        // Otra pestaña cambió ESE partido: se queda lo guardado y se muestra.
+        conflicts.push({ ...c, value: v });
+        const rp = myPicks[c.roundId] = myPicks[c.roundId] || {};
+        setPicksField(rp, c.field, v);
+        paintRegularPicks(c.roundId);
+        // Una pregunta de la jornada: el campo muestra lo que quedó guardado
+        // (Product QA, H2), y su borrador ya no aplica.
+        if(String(c.field).startsWith("__extra.")){
+          const betId = String(c.field).slice(8);
+          const input = document.getElementById("qz-cbj-" + c.roundId + "-" + betId);
+          if(input) input.value = v == null ? "" : String(v);
+          if(typeof setAnswerDraft === "function") setAnswerDraft("j:" + c.roundId + ":" + betId, null);
+        }
+      });
+      // Lo que esta pestaña no tocó toma lo guardado (otra pudo cambiarlo): así
+      // el reenvío sobre la base nueva nunca devuelve un valor viejo.
+      adoptServerPicks(oldBase, r.value).forEach(c => paintRegularPicks(c.roundId));
+      myPicksBase = JSON.parse(JSON.stringify(r.value));
+    }
+    return { ok: false, error: "picks_conflict", conflicts };
+  }
+  // Pronósticos de jornadas normales elegidos aquí que el servidor todavía no
+  // confirmó (distintos de la base).
+  function regularUnsavedCount(){
+    if(!currentUser || myPicksBase === null || myPicksBaseOwner !== picksOwnerKey(currentUser.id)) return 0;
+    let n = 0;
+    const mine = picksDocForSave(myPicks), base = picksDocForSave(myPicksBase);
+    new Set([...Object.keys(mine), ...Object.keys(base)]).forEach(rid => {
+      const round = meta.rounds.find(r => r.id === rid);
+      if(round && isLg(round)) return;
+      const a = picksFields(mine[rid]), b = picksFields(base[rid]);
+      new Set([...Object.keys(a), ...Object.keys(b)]).forEach(f => { if(picksJson(a[f]) !== picksJson(b[f])) n += 1; });
+    });
+    return n;
+  }
+  // Una cola y un contador por sesión (FIA-GPT-02). Dentro de una sesión,
+  // un guardado a la vez (un envío viejo no llega después de uno nuevo).
+  // «Cambiar usuario» sube lgGen (lgResetSession): la sesión nueva tiene su
+  // propia cola y no espera una petición de la anterior que no responde; lo
+  // que la anterior dejó en cola sin enviar ya no sale. «Cambiar usuario»
+  // espera la cola de la sesión que termina y, si algo queda sin guardar, lo
+  // pregunta (Product QA, H1).
+  const picksChains = new Map();    // lgGen -> última promesa de su cola
+  const picksPending = new Map();   // lgGen -> guardados en cola o en camino
+  function picksPendingFor(gen){ return picksPending.get(gen) || 0; }
+  function setPicksWithError(pid, data){
+    const job = { pid, data, gen: lgGen, creds: { owner: currentUserPinCache } };
+    picksPending.set(job.gen, picksPendingFor(job.gen) + 1);
+    const prev = picksChains.get(job.gen) || Promise.resolve();
+    const run = prev.then(() => savePicksNow(job)).catch(e => {
+      console.error("save picks failed", e);
+      return { ok: false, error: "network_error" };
+    }).finally(() => {
+      const n = picksPendingFor(job.gen) - 1;
+      if(n > 0) picksPending.set(job.gen, n); else picksPending.delete(job.gen);
+    });
+    picksChains.set(job.gen, run.then(() => {}, () => {}));
+    // Las colas de sesiones terminadas no se vuelven a usar.
+    [...picksChains.keys()].forEach(g => { if(g !== lgGen) picksChains.delete(g); });
+    return run;
   }
   // UX-011: one shared implementation of Guardando/Guardado/Error+Reintentar,
   // used by every place that saves picks — local selections are never touched
@@ -2497,6 +2731,35 @@
   // slot) is captured up front and re-checked before touching the DOM or
   // firing onSuccess — a response only ever applies to the exact session
   // that started it.
+  // AUD-01: vuelve a leer los pronósticos propios después de una lectura
+  // fallida. Hasta que se lean, no se guarda nada.
+  function wirePicksReload(scope){
+    (scope || document).querySelectorAll("[data-picks-reload]").forEach(btn => btn.addEventListener("click", async () => {
+      if(!currentUser || btn.disabled) return;
+      btn.disabled = true;
+      const label = btn.textContent;
+      btn.textContent = "Cargando…";
+      const who = currentUser.id;
+      const fresh = await lgReadPicks(who);
+      if(!currentUser || currentUser.id !== who) return;
+      if(myPicksLoadFailed){
+        btn.disabled = false; btn.textContent = label;
+        btn.focus();
+        toast("Todavía no pudimos cargarlos. Revisa tu conexión e intenta de nuevo.", 4000);
+        return;
+      }
+      myPicks = fresh;
+      toast("Listo: ya están tus pronósticos guardados.");
+      const main = document.getElementById("qz-main");
+      if(main){
+        const y = window.scrollY;
+        await renderJornada(main);
+        window.scrollTo(0, y);
+        const first = main.querySelector(".pick-row .pick-btn");
+        if(first) first.focus({ preventScroll: true });
+      }
+    }));
+  }
   const saveSequence = {};
   // Sprint 13.6.3 — guarda de secuencia independiente para el estado visual
   // del botón "Guardar mis picks" (Guardando.../✓ Pronósticos guardados/error).
@@ -2507,6 +2770,9 @@
     const seqKey = statusEl.id;
     const mySeq = (saveSequence[seqKey] = (saveSequence[seqKey] || 0) + 1);
     const context = { participantId: currentUser.id, slug: SLUG, roundId: round.id, seqKey };
+    // Quien tocó «Reintentar» (dentro de la línea) no pierde el foco al
+    // repintarla.
+    const hadFocus = !!(document.activeElement && statusEl.contains(document.activeElement));
     if(!suppressLoadingAndSuccess) statusEl.innerHTML = `<span class="muted">Guardando…</span>`;
     const result = await setPicksWithError(context.participantId, myPicks);
     const contextStillValid = saveSequence[seqKey] === mySeq
@@ -2514,8 +2780,21 @@
       && SLUG === context.slug;
     if(!contextStillValid) return result.ok; // stale response, or the session/participant changed since — never touch the screen
     const liveEl = document.getElementById(seqKey) || statusEl;
+    // AUD-01: lo que otra pestaña dejó guardado y se respetó, dicho y visible.
+    const conflictNote = conflictNoteFor(result.conflicts);
     if(result.ok){
-      if(!suppressLoadingAndSuccess) liveEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Guardado</span>`;
+      if(conflictNote){
+        // Lo elegido aquí para ESE partido no se guardó (quedó lo de la otra
+        // pestaña): no se dice «Pronóstico guardado», se dice lo que pasó.
+        liveEl.innerHTML = `<span class="qz-picks-conflict">${esc(conflictNote)}</span>`;
+        toast("Revisa tus pronósticos: uno cambió en otra pestaña o dispositivo.", 4000, { silent: true });
+      } else if(!suppressLoadingAndSuccess){
+        liveEl.innerHTML = `<span style="color:var(--pitch-light);font-weight:600;">✅ Pronóstico guardado</span>`;
+        // Confirmación breve, sin bloquear ni pedir «Aceptar»: un solo aviso
+        // que se reemplaza a sí mismo (toast). La línea de estado de arriba
+        // sigue diciendo lo que pasó cuando el aviso se va.
+        toast("Pronóstico guardado", 1800, { silent: true });
+      }
       if(onSuccess) onSuccess();
       trackOnceConfirmed(
         "first_pick_" + context.participantId,
@@ -2537,6 +2816,15 @@
       }
     }else if(result.error === "round_locked"){
       liveEl.innerHTML = `<span style="color:var(--red);">La jornada ya cerró. Ya no es posible modificar estos pronósticos.</span>`;
+    }else if(result.error === "picks_not_loaded"){
+      // AUD-01: sin la lectura de lo guardado no se manda nada (no se borra
+      // nada). Se dice, y se ofrece leerlos de nuevo.
+      liveEl.innerHTML = `<span style="color:var(--red);">No guardamos este cambio: no pudimos cargar tus pronósticos guardados y no queremos borrar ninguno.</span> <button class="btn btn-ghost btn-sm" data-picks-reload style="margin-left:8px;padding:3px 10px;">Cargar mis pronósticos</button>`;
+      wirePicksReload(liveEl);
+    }else if(result.error === "picks_conflict"){
+      liveEl.innerHTML = `<span style="color:var(--red);">${esc(conflictNote || "Tus pronósticos cambiaron en otra pestaña o dispositivo.")} No se guardó lo demás todavía.</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${esc(round.id)}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
+      const retryBtn = document.getElementById("qz-retry-picks-" + round.id);
+      if(retryBtn) retryBtn.addEventListener("click", onManualRetry || (() => attemptSavePicks(liveEl, round, onSuccess, suppressLoadingAndSuccess)));
     }else{
       liveEl.innerHTML = `<span style="color:var(--red);">${esc(humanizeError(result.error, result))}</span> <button class="btn btn-ghost btn-sm" id="qz-retry-picks-${esc(round.id)}" style="margin-left:8px;padding:3px 10px;">Reintentar</button>`;
       const retryBtn = document.getElementById("qz-retry-picks-" + round.id);
@@ -2549,6 +2837,15 @@
         else retryBtn.addEventListener("click", () => attemptSavePicks(liveEl, round, onSuccess, suppressLoadingAndSuccess));
       }
     }
+    // AUD-01 (UX): un error no depende de ver la línea de estado (en una
+    // jornada larga queda fuera de pantalla): también un aviso, más largo. Lo
+    // anuncia la línea (aria-live), así que el aviso no se repite al lector.
+    if(!result.ok && result.error !== "session_changed"){
+      toast(result.error === "network_error"
+        ? "No se guardó tu pronóstico: sin conexión. Toca «Reintentar» abajo de los partidos."
+        : "No se guardó tu pronóstico. Mira el aviso abajo de los partidos.", 6000, { silent: true });
+    }
+    if(hadFocus){ liveEl.setAttribute("tabindex", "-1"); liveEl.focus({ preventScroll: true }); }
     return result.ok;
   }
 
@@ -3173,7 +3470,10 @@
 
   // `ms`: how long it stays (default 2.2 s; longer for a message that
   // confirms something the person has to remember).
-  function toast(msg, ms){
+  // `opts.silent`: el mismo hecho ya lo anuncia una región aria-live en la
+  // pantalla (la línea de estado de los pronósticos): el aviso no se repite
+  // para el lector de pantalla.
+  function toast(msg, ms, opts){
     let t = document.getElementById("qz-toast");
     if(!t){
       t = document.createElement("div");
@@ -3185,6 +3485,7 @@
       root.appendChild(t);
     }
     t.textContent = msg;
+    if(opts && opts.silent) t.setAttribute("aria-hidden", "true"); else t.removeAttribute("aria-hidden");
     t.classList.add("show");
     clearTimeout(t._h);
     t._h = setTimeout(()=> t.classList.remove("show"), ms || 2200);
@@ -4133,8 +4434,15 @@
     });
     // A round could be deleted after being resolved -- its outcome still
     // counts even though it no longer appears in meta.rounds at all.
+    // AUD-03: except a round of a CLOSED tournament (archived in
+    // pastTournaments). Its discount belongs to that tournament's history and
+    // never subtracts in the current one -- also for quinielas closed before
+    // the close started archiving the ledger.
     if(cutoffRoundNumber == null){
+      const archived = new Set();
+      (meta.pastTournaments || []).forEach(t => ((t && t.rounds) || []).forEach(r => { if(r && r.id != null) archived.add(String(r.id)); }));
       Object.keys(ledger).forEach(roundId => {
+        if(archived.has(String(roundId))) return;
         if(!meta.rounds.some(r => r.id === roundId)) total += ledger[roundId];
       });
     }
@@ -6345,7 +6653,8 @@
       const creator = creatorOfMeta();
       return `<p class="qz-wz-note qz-pub-steps" id="qz-wz-pw-line">Antes de publicar la primera jornada, ${creator ? `${esc(creator.name)} (quien creó la quiniela)` : "quien creó la quiniela"} tiene que configurar la contraseña de administrador. Tú no necesitas crear otra.</p>`;
     }
-    const pwLine = meta && meta.ownerPasswordSet && meta.creatorId
+    // AUD-04: también sin creatorId, si ya hay contraseña: el servidor la exige igual.
+    const pwLine = meta && meta.ownerPasswordSet
       ? (changesProtected && !ownerPasswordCache
         ? " Como cambiaste los puntos o la cuota, al publicar te pediremos la contraseña de administrador (no es el PIN); también podrás dejarlos como están."
         : "")
@@ -6567,7 +6876,8 @@
     // With a creator, the points and the fee only change with the admin
     // password (the server keeps the stored ones otherwise): asked now, so
     // the publish never goes out half-applied.
-    if(meta.creatorId && !ownerPasswordCache && setupChangesProtectedRules(rules)){
+    // AUD-04: una quiniela sin creatorId que ya tiene contraseña también la pide.
+    if((meta.creatorId || meta.ownerPasswordSet) && !ownerPasswordCache && setupChangesProtectedRules(rules)){
       // Only the creator sets that password: a co-admin is told whose it is,
       // and either of them can go on without changing the points or the fee.
       const mine = isCreator(currentUser);
@@ -7372,6 +7682,9 @@
   }
 
   function pendingPicksInfo(){
+    // AUD-01: sin la lectura de lo guardado no se sabe qué falta; no se
+    // inventa «te faltan N».
+    if(myPicksLoadFailed) return null;
     const openRounds = visibleRounds().filter(r => classifyRound(r) === "porjugar");
     for(const r of openRounds){
       const picks = myPicks[r.id] || {};
@@ -7800,9 +8113,14 @@
         <div class="clock-label">${isHeroRound || lg ? "Cierre de quiniela" : `Jornada ${esc(round.number)} · cierre de quiniela`}</div>
         <div id="qz-clockbody-${esc(round.id)}">${clockDigitsHtml(round.deadline)}</div>
       </div>
+      ${!lg && myPicksLoadFailed ? `
+        <div class="qz-picks-loadfail" role="alert">
+          <p><strong>No pudimos cargar tus pronósticos guardados.</strong> Para no borrar ninguno, podrás elegir en cuanto se carguen.</p>
+          <button class="btn btn-gold btn-sm" data-picks-reload>Cargar mis pronósticos</button>
+        </div>` : ``}
       <div id="qz-matches-${esc(round.id)}"></div>
-      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;">${lg ? (lgRules && lgRules.capture === "score" ? "Cada partido se guarda solo cuando tiene los dos goles. «✓ Guardado» aparece cuando de verdad quedó guardado." : "Cada pronóstico se guarda solo al elegirlo. «✓ Guardado» aparece cuando de verdad quedó guardado.") : "Tus pronósticos de partidos se guardan solos apenas los eliges."}</p>
-      ${lg ? `` : `<button class="btn btn-primary" data-save="${esc(round.id)}" style="width:100%;padding:14px;font-size:15px;">Guardar mis picks</button>`}
+      <p class="muted" id="qz-savestatus-${esc(round.id)}" style="text-align:center;" role="status" aria-live="polite">${lg ? (lgRules && lgRules.capture === "score" ? "Cada partido se guarda solo cuando tiene los dos goles. «✓ Guardado» aparece cuando de verdad quedó guardado." : "Cada pronóstico se guarda solo al elegirlo. «✓ Guardado» aparece cuando de verdad quedó guardado.") : (myPicksLoadFailed ? "Todavía no puedes elegir: primero carga tus pronósticos guardados." : "Tus pronósticos de partidos se guardan solos apenas los eliges. «Pronóstico guardado» aparece cuando el servidor lo confirma.")}</p>
+      ${lg ? `` : `<button class="btn btn-primary" data-save="${esc(round.id)}" style="width:100%;padding:14px;font-size:15px;" ${myPicksLoadFailed ? "disabled" : ""}>Guardar mis picks</button>`}
       ${jornadaBets.length ? `
         <div class="card" style="margin-top:14px;">
           <div class="eyebrow">🎯 Preguntas de esta jornada</div>
@@ -7813,12 +8131,12 @@
             return `
               <div class="field">
                 <label for="qz-cbj-${esc(round.id)}-${esc(bet.id)}">${esc(bet.label)} (+${esc(bet.points)} ${esc(pointsWord(bet.points))})</label>
-                <input type="text" id="qz-cbj-${esc(round.id)}-${esc(bet.id)}" data-cb-jornada="${esc(bet.id)}" maxlength="200" placeholder="Escribe tu respuesta" value="${esc(draft != null ? draft : (extra[bet.id] || ''))}">
+                <input type="text" id="qz-cbj-${esc(round.id)}-${esc(bet.id)}" data-cb-jornada="${esc(bet.id)}" maxlength="200" placeholder="Escribe tu respuesta" value="${esc(draft != null ? draft : (extra[bet.id] || ''))}" ${myPicksLoadFailed ? "disabled" : ""}>
               </div>
             `;
           }).join("")}
           <p class="muted qz-tight">Lo que escribes aquí no se guarda solo: toca «Guardar respuestas».</p>
-          <button class="btn btn-gold" id="qz-cb-jornada-save-${esc(round.id)}" style="width:100%;padding:10px;">Guardar respuestas</button>
+          <button class="btn btn-gold" id="qz-cb-jornada-save-${esc(round.id)}" style="width:100%;padding:10px;" ${myPicksLoadFailed ? "disabled" : ""}>Guardar respuestas</button>
           <p class="muted" id="qz-cb-jornada-status-${esc(round.id)}" style="text-align:center;margin-top:6px;" role="status" aria-live="polite">${roundDraftsPending ? "Cambios sin guardar." : Object.values(roundPicks.__extra || {}).some(v => v) ? "✅ Respuestas guardadas." : ""}</p>
         </div>
       ` : ``}
@@ -7831,13 +8149,14 @@
         <div class="match-card">
           ${matchTeamsHtml(m)}
           <div class="pick-row" data-match="${esc(m.id)}">
-            <button class="pick-btn ${pick==='A'?'selected':''}" data-val="A">${esc(m.teamA)}</button>
-            <button class="pick-btn ${pick==='D'?'selected':''}" data-val="D">Empate</button>
-            <button class="pick-btn ${pick==='B'?'selected':''}" data-val="B">${esc(m.teamB)}</button>
+            <button class="pick-btn ${pick==='A'?'selected':''} ${myPicksLoadFailed ? "qz-pick-blocked" : ""}" data-val="A" ${myPicksLoadFailed ? 'aria-disabled="true"' : ""}>${esc(m.teamA)}</button>
+            <button class="pick-btn ${pick==='D'?'selected':''} ${myPicksLoadFailed ? "qz-pick-blocked" : ""}" data-val="D" ${myPicksLoadFailed ? 'aria-disabled="true"' : ""}>Empate</button>
+            <button class="pick-btn ${pick==='B'?'selected':''} ${myPicksLoadFailed ? "qz-pick-blocked" : ""}" data-val="B" ${myPicksLoadFailed ? 'aria-disabled="true"' : ""}>${esc(m.teamB)}</button>
           </div>
         </div>
       `;
     }).join("");
+    wirePicksReload(box);
     const jornadaSaveBtn = document.getElementById("qz-cb-jornada-save-" + round.id);
     box.querySelectorAll("[data-cb-jornada]").forEach(inp => inp.addEventListener("input", () => {
       const saved = ((myPicks[round.id] || {}).__extra || {})[inp.dataset.cbJornada] || "";
@@ -7872,6 +8191,14 @@
       row.querySelectorAll(".pick-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
           if(isRoundLocked(round)){ toast("Se cerró la quiniela justo ahora ⏱️"); renderJornada(document.getElementById("qz-main")); return; }
+          // AUD-01 (UX): sin la lectura de lo guardado no se elige; el toque
+          // lleva al aviso y a su botón en vez de no hacer nada.
+          if(myPicksLoadFailed){
+            const reload = box.querySelector("[data-picks-reload]");
+            if(reload){ reload.scrollIntoView({ block: "center" }); reload.focus({ preventScroll: true }); }
+            toast("Primero carga tus pronósticos guardados.", 3000);
+            return;
+          }
           const matchId = row.dataset.match;
           if(!myPicks[round.id]) myPicks[round.id] = {};
           myPicks[round.id][matchId] = btn.dataset.val;
@@ -8705,7 +9032,12 @@
   // una relectura más nueva (por una respuesta tardía), manda esa.
   async function lgReadPicks(pid){
     const since = ++lgSeq;
-    const fresh = await getPicks(pid);
+    const read = await getPicks(pid, { strict: true });
+    // AUD-01: una lectura fallida no es «no hay nada». La pantalla lo dice y
+    // no se guarda nada hasta leerlos (myPicksBase null).
+    if(read === null){ failPicksBase(pid); return {}; }
+    adoptPicksBase(pid, read);
+    const fresh = read;
     const last = lgRefreshed[SLUG + "|" + pid];
     if(last && last.seq > since) lgMergeServer(fresh, last.picks, last.seq);
     return fresh;
@@ -8763,7 +9095,7 @@
     try{
       const gen = lgGen;
       const flushTimers = () => Object.keys(lgTimers).forEach(k => { const t = lgTimers[k]; clearTimeout(t.t); delete lgTimers[k]; t.go(); });
-      const busy = () => lgQueue.size || Object.keys(lgTimers).length || [...lgInFlightJobs].some(j => j.gen === gen);
+      const busy = () => lgQueue.size || Object.keys(lgTimers).length || [...lgInFlightJobs].some(j => j.gen === gen) || picksPendingFor(gen) > 0;
       flushTimers();
       if(busy()) toast(WAIT, 6500);
       const until = Date.now() + 6000;
@@ -8773,10 +9105,13 @@
       }
       const t = document.getElementById("qz-toast");
       if(t){ clearTimeout(t._h); t.classList.remove("show"); }
-      const unsaved = lgUnsavedKeys().size;
+      const lgUnsaved = lgUnsavedKeys().size;
+      const regular = picksPendingFor(gen) > 0 ? Math.max(1, regularUnsavedCount()) : regularUnsavedCount();
+      const unsaved = lgUnsaved + regular;
       if(!unsaved) return true;
       const one = unsaved === 1;
-      return await qzConfirm(`Tienes ${unsaved} pronóstico${one ? "" : "s"} de liguilla que todavía no ${one ? "queda" : "quedan"} guardado${one ? "" : "s"} (enviándose, sin conexión, a medias o en conflicto). Si cambias de usuario ahora, ${one ? "se pierde" : "se pierden"}.`,
+      const kind = regular ? "" : " de liguilla";
+      return await qzConfirm(`Tienes ${unsaved} pronóstico${one ? "" : "s"}${kind} que todavía no ${one ? "queda" : "quedan"} guardado${one ? "" : "s"} (enviándose, sin conexión, a medias o en conflicto). Si cambias de usuario ahora, ${one ? "se pierde" : "se pierden"}.`,
         { title: "¿Cambiar de usuario?", confirmLabel: "Cambiar de todos modos", cancelLabel: "Quedarme y revisar", destructive: true });
     } finally { lgSwitching = false; }
   }
@@ -11137,7 +11472,7 @@
         if(fresh) adoptFreshMeta(meta, fresh);
         ownerUnlocked = false; ownerPasswordCache = null;
         repaint();
-        toast("No se guardó: hace falta la contraseña de administrador.", 5000);
+        toast("No se guardó: hace falta la contraseña de administrador. Si no la tienes, pídesela a quien la configuró.", 6000);
         return false;
       }
       toast(okMsg);
@@ -13294,7 +13629,8 @@
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:18px;">Acciones del torneo</span></div>
         <div class="eyebrow">Respaldo de esta quiniela</div>
-        <p class="muted">Descarga todo — participantes, jornadas, resultados, y los picks de cada quien — en un archivo. Guárdalo por si acaso.</p>
+        <p class="muted">Descarga en un archivo los participantes, las jornadas, los resultados, tus reglas y los pronósticos de cada quien. Guárdalo por si acaso.</p>
+        <p class="muted qz-backup-note">De las jornadas que siguen abiertas, de los demás sólo se guarda si ya pronosticaron, no qué eligieron: eso se ve cuando cierra la jornada. Si no podemos cargar todo, no se descarga nada y te lo decimos.</p>
         <button class="btn btn-ghost" id="qz-export-backup">⬇ Descargar respaldo (.json)</button>
         <div class="divider"></div>
         ${(() => {
@@ -13341,11 +13677,28 @@
       const originalText = btn.textContent;
       btn.textContent = "Preparando…";
       try{
-        await ensureAllPicksLoaded();
+        // AUD-05: el respaldo sale de UNA lectura completa del servidor. Si
+        // falla o llega incompleta, no se genera ningún archivo ni se anuncia
+        // éxito.
+        const snap = await loadAdminSnapshot();
+        if(!snap){
+          toast("No se generó el respaldo: no pudimos cargar todos los pronósticos. No se descargó nada; intenta de nuevo.", 6000);
+          btn.disabled = false;
+          btn.textContent = originalText;
+          btn.focus();
+          return;
+        }
         const backup = {
+          formato: "qracks-respaldo-2",
           exportedAt: new Date().toISOString(),
-          meta,
-          picks: allPicksCache
+          leidoDelServidor: snap.readAt,
+          contenido: "Participantes, jornadas, resultados, reglas y los pronósticos de cada participante, leídos juntos del servidor en el mismo momento. "
+            + "Jornadas cerradas: los pronósticos completos de todos. Jornadas abiertas: de los demás sólo se registra que ya pronosticaron (true), no qué eligieron, porque eso se ve hasta que cierra la jornada. "
+            + "No incluye contraseñas ni PIN.",
+          participantes: snap.meta.participants.length,
+          pronosticosLeidosDe: Object.keys(snap.picks).length,
+          meta: snap.meta,
+          picks: snap.picks
         };
         const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -13413,7 +13766,7 @@
           ownerUnlocked = false;
           saveBtn.disabled = false;
           saveBtn.textContent = originalLabel;
-          toast("No se guardó el nombre: hace falta la contraseña de administrador.", 5000);
+          toast("No se guardó el nombre: hace falta la contraseña de administrador. Si no la tienes, pídesela a quien la configuró.", 6000);
           renderAdminOwner(body);
           return;
         }
@@ -13484,6 +13837,13 @@
         return;
       }
       clearCloseIntent();
+      // AUD-02: un cierre rechazado por datos incompletos o viejos se dice en
+      // un aviso que no desaparece solo: nada se cerró y hay que volver a cerrar.
+      if(typeof r.error === "string" && r.error.startsWith("close_")){
+        renderAdmin(document.getElementById("qz-main"));
+        qzAlert(ERROR_MESSAGES[r.error] || "No se cerró el torneo. Vuelve a intentarlo.", { title: "No se cerró el torneo" });
+        return;
+      }
       toast(ERROR_MESSAGES[r.error] || "No se pudo cerrar el torneo, intenta de nuevo");
     }
 
@@ -13502,6 +13862,8 @@
           intentId: pending.intentId,
           expectedCycle: pending.expectedCycle,
           standings: pending.standings || [],
+          basis: pending.basis,
+          standingsAt: pending.standingsAt,
         });
         verifyBtn.disabled = false;
         if(r.ok) return finishClose(r);
@@ -13558,11 +13920,20 @@
       if(!playedRounds.length){
         if(!(await qzConfirm("Todavía no hay jornadas con resultados.", { title: "¿De todos modos quieres cerrar y limpiar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
       }
-      await ensureAllPicksLoaded();
+      // AUD-02: la tabla final sale de UNA lectura completa del servidor. Si
+      // falla, no se arma ninguna tabla ni se cierra nada.
+      const snap = await loadAdminSnapshot();
+      if(!snap){
+        await qzAlert("No pudimos cargar todos los pronósticos, así que no podemos armar la tabla final. No se cerró nada. Revisa tu conexión e intenta de nuevo.", { title: "No se cerró el torneo" });
+        return;
+      }
+      adoptFreshMeta(meta, snap.meta);
+      allPicksCache = snap.picks;
       // La tabla final es dato de PANTALLA: el servidor la guarda como
       // historial, la acota y saca al campeón de ella misma, pero ninguna
-      // decisión comercial la lee.
-      const finalStandings = standingsList().map(p => ({ name: p.name, pts: p.pts }));
+      // decisión comercial la lee. Lleva el id de cada quien para que el
+      // servidor compruebe que están todos, y la huella de la lectura.
+      const finalStandings = standingsList().map(p => ({ id: p.id, name: p.name, pts: p.pts }));
       const champion = finalStandings.length ? finalStandings[0] : null;
       const planNow = await loadPlan();
       const losingPlus = !!(planNow && planNow.plan && planNow.plan !== "FREE");
@@ -13583,7 +13954,7 @@
       // El token se guarda ANTES de mandar nada. Si el navegador se cae entre
       // el envío y la respuesta, al volver sigue existiendo la intención y se
       // puede preguntar por ella en vez de adivinar.
-      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, startedAt: Date.now() };
+      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, basis: snap.basis, standingsAt: snap.readAt, startedAt: Date.now() };
       writeCloseIntent(intent);
 
       const r = await apiCloseTournament(intent);

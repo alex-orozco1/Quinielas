@@ -30,10 +30,8 @@ const campeon = (closesAtRound) => ({ id: BET, label: "¿Qué equipo será campe
 async function closeTournament(q) {
   const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
   const entry = idx.quinielas.find((x) => x.slug === q.slug);
-  return call("POST", `/api/quinielas/${q.slug}/tournament/close`, {
-    headers: { "X-Qracks-Auth": q.owner },
-    body: { expectedCycle: entry.tournamentScope.editionSeq, closeIntentId: "d4close" + Date.now().toString(36), standings: [] },
-  });
+  return require("./helpers/realServer").closeWithSnapshot(q.slug, { "X-Qracks-Auth": q.owner },
+    { expectedCycle: entry.tournamentScope.editionSeq, closeIntentId: "d4close" + Date.now().toString(36) });
 }
 
 // Una pregunta NUEVA (creada por la API, con su cierre propio) que ya cerró con

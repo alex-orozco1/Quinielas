@@ -121,10 +121,8 @@ test.describe("liguilla en el servidor real", () => {
     assert.equal((await publicar(q, "r_lgcierre")).status, 200);
     const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
     const entry = idx.quinielas.find((x) => x.slug === q.slug);
-    const close = await call("POST", `/api/quinielas/${q.slug}/tournament/close`, {
-      headers: { "X-Qracks-Auth": q.owner },
-      body: { expectedCycle: entry.tournamentScope.editionSeq, closeIntentId: "lgclose" + Date.now().toString(36), standings: [] },
-    });
+    const close = await require("./helpers/realServer").closeWithSnapshot(q.slug, { "X-Qracks-Auth": q.owner },
+      { expectedCycle: entry.tournamentScope.editionSeq, closeIntentId: "lgclose" + Date.now().toString(36) });
     assert.equal(close.status, 200, JSON.stringify(close.body));
     const v = await read(q);
     assert.equal(v.rounds.length, 0, "cerrar despeja el tablero");

@@ -32,7 +32,15 @@ const blockEnd = html.indexOf("  // ---- participante: votar", blockStart);
 assert.ok(blockStart > 0 && blockEnd > blockStart, "bloque de liguilla");
 const BLOCK = html.slice(blockStart, blockEnd);
 const SET_AUTH = sliceFn(html, "function setAuthHeaders(headers, cred, bindTo)");
-const SET_PICKS = sliceFn(html, "async function setPicksWithError(pid, data)");
+// AUD-01: el guardado de pronósticos es un bloque (base, cola, mezcla): se
+// toma entero, desde su encabezado hasta setPicksWithError.
+const SET_PICKS = (() => {
+  const start = html.indexOf("  // ---- AUD-01 · guardar pronósticos sin pisar nada");
+  assert.ok(start > 0, "bloque AUD-01");
+  const fnStart = html.indexOf("  function setPicksWithError(pid, data)", start);
+  assert.ok(fnStart > start, "setPicksWithError");
+  return html.slice(start, fnStart) + sliceFn(html.slice(fnStart), "function setPicksWithError(pid, data)");
+})();
 
 // Arma un «navegador» con el bloque real y un fetch controlable.
 function harness(opts = {}) {
@@ -55,10 +63,10 @@ function harness(opts = {}) {
   // «Servidor»: lo que una lectura de pronósticos devuelve. La carga al entrar
   // puede usar un cargador propio (una sola vez); las relecturas leen esto.
   env.server = opts.server || {};
-  env.getPicks = async (pid) => {
+  env.getPicks = async (pid, o) => {
     if (env.loader) { const l = env.loader; env.loader = null; return l(pid); }
     if (opts.getPicks) return opts.getPicks(pid);
-    if (env.failReads) return {};                       // como la real: un error se vuelve {}
+    if (env.failReads) return o && o.strict ? null : {}; // como la real: estricta, un error es null
     return JSON.parse(JSON.stringify(env.server[pid] || {}));
   };
   env.toasts = [];
@@ -78,13 +86,13 @@ function harness(opts = {}) {
     let currentUser = null, currentUserPinCache = null, ownerPasswordCache = null, myPicks = {}, meta = { rounds: env.rounds || [], settings: {} };
     let SLUG = "lg-demo", activeTab = "otra", jornadaFilter = "porjugar";
     const toast = (m) => env.toasts.push(m), renderJornada = () => {}, serverNow = () => Date.now(), isRoundLocked = () => false;
-    const esc = (s) => String(s), humanizeError = (c) => String(c);
+    const esc = (s) => String(s), humanizeError = (c) => String(c), joinEs = (a) => a.join(", ");
     ${SET_AUTH}
     const currentPicksKey = (pid) => "quiniela:" + SLUG + ":picks:" + pid;
     ${SET_PICKS}
     ${BLOCK}
     return {
-      as(user, pin, picks){ currentUser = user; currentUserPinCache = pin; myPicks = picks || {}; },
+      as(user, pin, picks){ currentUser = user; currentUserPinCache = pin; myPicks = picks || {}; adoptPicksBase(user.id, myPicks); },
       // «Cambiar usuario»: lo que hace el botón de la app antes de volver al login.
       switchUser(){ if (typeof lgResetSession === "function") lgResetSession(); currentUser = null; currentUserPinCache = null; },
       // El botón real: primero lgBeforeSwitch (si existe); si se cancela, no cambia.
@@ -111,6 +119,8 @@ function harness(opts = {}) {
       picks(){ return myPicks; },
       setRounds(rs){ meta.rounds = rs; },
       setPicksWithError,
+      base(){ return myPicksBase; },
+      pending(){ return picksPendingFor(lgGen); },
       lgEnqueue, lgRetryAll, lgSt, lgDraft, lgSetDraft, lgSetSt,
     };
   `);
@@ -364,18 +374,27 @@ test("ENTRADA · H4: lo aplicado con A dentro no revive en una entrada posterior
   assert.deepEqual(app.picks().r_lg.__score.m1, { a: 1, b: 1 });
 });
 
-test("GUARDAR · H1: el reintento tras liguilla_pick_conflict conserva las respuestas de la jornada (__extra)", async () => {
+test("GUARDAR · H1 (AUD-01): de una jornada de liguilla el documento sólo lleva las respuestas de la jornada (__extra); sus partidos los guarda su endpoint", async () => {
   const sent = [];
   const { app } = harness({
-    kvSet: async (key, value) => { sent.push(JSON.parse(JSON.stringify(value))); return sent.length === 1 ? { ok: false, error: "liguilla_pick_conflict" } : { ok: true }; },
-    getPicks: async () => ({}),                        // el servidor aún no tiene esa jornada
+    kvSet: async (key, value, creds, extra) => { sent.push({ value: JSON.parse(JSON.stringify(value)), base: extra && extra.base }); return { ok: true, value: { r_lg: { __extra: { q1: "Sí" } } } }; },
   });
   app.setRounds([ROUND]);
   app.as(A, "1111");
   const r = await app.setPicksWithError(A.id, { r_lg: { m1: "A", __extra: { q1: "Sí" } } });
   assert.equal(r.ok, true);
-  assert.equal(sent.length, 2);
-  assert.deepEqual(sent[1], { r_lg: { __extra: { q1: "Sí" } } }, "la respuesta extra sigue; el partido lo decide el servidor");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].value, { r_lg: { __extra: { q1: "Sí" } } }, "la respuesta extra sí; el partido lo decide su propio endpoint");
+  assert.deepEqual(sent[0].base, {}, "con la base que el servidor confirmó");
+});
+
+test("GUARDAR · AUD-01: sin la lectura de lo guardado no se manda nada", async () => {
+  const sent = [];
+  const { app } = harness({ kvSet: async (key, value) => { sent.push(value); return { ok: true }; } });
+  app.setRounds([ROUND]);
+  await app.login(A, "1111", async () => null);        // la lectura inicial falló
+  const r = await app.setPicksWithError(A.id, { r_x: { m1: "A" } });
+  assert.deepEqual([r.ok, r.error, sent.length], [false, "picks_not_loaded", 0]);
 });
 
 // ---- Technical QA de f7d4098 ------------------------------------------------
@@ -771,3 +790,69 @@ for (const [name, start] of [["K2: campo vacío", { value: "", s: 0, e: 0 }], ["
   });
 }
 
+
+// ---- FIA-GPT-02: la cola de pronósticos normales es de cada sesión ----------
+// Con las funciones reales de cola (setPicksWithError) y de cambio de sesión
+// (lgResetSession): una petición de A que nunca responde no detiene los
+// guardados de B; los trabajos de A que no salieron no salen nunca; y una
+// respuesta tardía de A no toca base, pantalla ni contadores de B.
+function deferredKv() {
+  const calls = [];
+  const kvSet = (key, value, creds, extra) => new Promise((resolve) => { calls.push({ key, value, creds, base: extra && extra.base, resolve }); });
+  return { calls, kvSet };
+}
+const R1 = { id: "r1", number: 1, published: true, deadline: "2099-01-01T00:00:00Z", matches: [{ id: "m1" }, { id: "m2" }] };
+
+test("FIA-GPT-02 · A→B: una petición de A sin respuesta no detiene el guardado de B", async () => {
+  const kv = deferredKv();
+  const { app } = harness({ kvSet: kv.kvSet });
+  app.setRounds([R1]);
+  app.as(A, "1111", {});
+  const aSave = app.setPicksWithError(A.id, { r1: { m1: "A" } });
+  await tick();
+  assert.equal(kv.calls.length, 1, "sale la de A");
+  app.switchUser();
+  await app.login(B, "2222", async () => ({}));
+  const bSave = app.setPicksWithError(B.id, { r1: { m1: "B" } });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(kv.calls.length, 2, "la de B sale aunque A siga colgada");
+  assert.ok(kv.calls[1].key.endsWith(":picks:" + B.id) && kv.calls[1].creds.owner === "2222");
+  kv.calls[1].resolve({ ok: true, value: { r1: { m1: "B" } } });
+  assert.equal((await bSave).ok, true);
+  // La respuesta tardía de A llega con B dentro: no toca nada de B.
+  kv.calls[0].resolve({ ok: true, value: { r1: { m1: "A" } } });
+  const late = await aSave;
+  assert.equal(late.ok, false);
+  assert.equal(late.error, "session_changed");
+  assert.deepEqual(app.base(), { r1: { m1: "B" } }, "la base sigue siendo la de B");
+  assert.equal(app.pending(), 0, "los contadores de B no cuentan lo de A");
+});
+
+test("FIA-GPT-02 · A→B→A: lo que A dejó en cola no sale después; la A nueva guarda en seguida", async () => {
+  const kv = deferredKv();
+  const { app } = harness({ kvSet: kv.kvSet });
+  app.setRounds([R1]);
+  app.as(A, "1111", {});
+  const first = app.setPicksWithError(A.id, { r1: { m1: "A" } });     // en camino, nunca responde
+  const queued = app.setPicksWithError(A.id, { r1: { m1: "D" } });    // en cola detrás
+  await tick();
+  assert.equal(kv.calls.length, 1);
+  app.switchUser();
+  await app.login(B, "2222", async () => ({}));
+  app.switchUser();
+  await app.login(A, "1111", async () => ({ r1: { m1: "A" } }));
+  const fresh = app.setPicksWithError(A.id, { r1: { m1: "B" } });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(kv.calls.length, 2, "la A nueva sale; la vieja en cola no");
+  assert.deepEqual(kv.calls[1].value, { r1: { m1: "B" } });
+  assert.deepEqual(kv.calls[1].base, { r1: { m1: "A" } }, "con la base que leyó esta entrada");
+  kv.calls[1].resolve({ ok: true, value: { r1: { m1: "B" } } });
+  assert.equal((await fresh).ok, true);
+  kv.calls[0].resolve({ ok: true, value: { r1: { m1: "A" } } });
+  assert.equal((await first).error, "session_changed");
+  const q = await queued;
+  assert.deepEqual([q.ok, q.error], [false, "session_changed"], "el trabajo viejo en cola no se envía");
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(kv.calls.length, 2, "nunca salió");
+  assert.deepEqual(app.base(), { r1: { m1: "B" } });
+});

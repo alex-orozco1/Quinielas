@@ -23,6 +23,9 @@ const {
 const competitionCoverage = require("./competitionCoverage");
 const { outcomeFromRegulation } = require("./scoreContract");
 const liguillaRules = require("./liguillaRules");
+const { mergePicksWrite } = require("./picksMerge");
+const liguillaScoringModule = require("./liguillaScoring");
+const { canonical } = require("./roundsConcurrency");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
   applyEntitlementGrant, applyQuinielaSettings,
@@ -1376,8 +1379,14 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   // caller says so. Kept rather than refused, because every Admin save sends
   // the whole document and a tab that loaded before the owner's change must
   // still be able to save a round.
+  //
+  // AUD-04: una quiniela sin creatorId (creada antes de onboarding B) que YA
+  // tiene contraseña de administrador también la protege en el servidor, no
+  // sólo en la pantalla de Ajustes: un PIN de co-admin no cambia nombre, cuota
+  // ni puntos por API. Nadie se infiere creador. Sin contraseña todavía, un
+  // admin con su PIN sigue pudiendo cambiarlos, como siempre.
   let ruleFieldsKept = false;
-  if (guarded && !ownerOrPlatform) {
+  if ((guarded || storedOwnerPw) && !ownerOrPlatform) {
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     if (!same(merged.groupName, oldValue.groupName)) ruleFieldsKept = true;
     if ("groupName" in oldValue) merged.groupName = oldValue.groupName;
@@ -1387,6 +1396,43 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
       if (!same(merged.settings[f], stored)) ruleFieldsKept = true;
       if (oldSettings && f in oldSettings) merged.settings[f] = oldSettings[f];
       else delete merged.settings[f];
+    });
+  }
+
+  // AUD-03: un descuento de una jornada ya archivada (de un torneo cerrado)
+  // no vuelve al torneo en curso, venga de una pestaña abierta antes del
+  // cierre o de una quiniela que se cerró antes de esta corrección. El
+  // historial lo conserva en pastTournaments[].penalties.
+  // Se mueven, no se tiran: si el torneo archivado todavía no los tenía
+  // (se cerró antes de esta corrección), pasan a su pastTournaments[].penalties.
+  const archivedRoundIds = new Map();   // id de jornada -> índice del torneo archivado
+  (Array.isArray(merged.pastTournaments) ? merged.pastTournaments : []).forEach((t, ti) => {
+    (t && Array.isArray(t.rounds) ? t.rounds : []).forEach((r) => { if (r && r.id != null) archivedRoundIds.set(String(r.id), ti); });
+  });
+  if (archivedRoundIds.size && Array.isArray(merged.participants)) {
+    const liveRoundIds = new Set((Array.isArray(merged.rounds) ? merged.rounds : []).map((r) => r && String(r.id)));
+    // Al historial sólo pasa lo que ya estaba en la fila guardada, nunca un
+    // valor que trae la petición (Technical QA, P3 de edd9450).
+    const storedLedger = new Map((oldValue && Array.isArray(oldValue.participants) ? oldValue.participants : [])
+      .filter((p) => p && p.id != null && p.penalizedRounds && typeof p.penalizedRounds === "object")
+      .map((p) => [p.id, p.penalizedRounds]));
+    let past = null;
+    merged.participants.forEach((p) => {
+      if (!p || p.id == null || !p.penalizedRounds || typeof p.penalizedRounds !== "object") return;
+      // Copia propia: la fila guardada (oldValue) nunca se toca aquí.
+      if (Object.keys(p.penalizedRounds).some((rid) => archivedRoundIds.has(rid) && !liveRoundIds.has(rid))) p.penalizedRounds = { ...p.penalizedRounds };
+      Object.keys(p.penalizedRounds).forEach((rid) => {
+        if (!archivedRoundIds.has(rid) || liveRoundIds.has(rid)) return;
+        if (!past) { past = JSON.parse(JSON.stringify(merged.pastTournaments)); merged.pastTournaments = past; }
+        const t = past[archivedRoundIds.get(rid)];
+        const stored = storedLedger.get(p.id);
+        if (t && typeof t === "object" && stored && Object.prototype.hasOwnProperty.call(stored, rid) && Number.isFinite(stored[rid])) {
+          if (!t.penalties || typeof t.penalties !== "object") t.penalties = {};
+          if (!t.penalties[p.id] || typeof t.penalties[p.id] !== "object") t.penalties[p.id] = {};
+          if (!(rid in t.penalties[p.id])) t.penalties[p.id][rid] = stored[rid];
+        }
+        delete p.penalizedRounds[rid];
+      });
     });
   }
 
@@ -2453,7 +2499,45 @@ app.post("/api/kv/:key", async (req, res) => {
         const oldPicks = await getRowLocked(req.params.key, client);
         const nowRow = await client.query("SELECT NOW() as now");
         const dbNowMs = nowRow.rows[0].now.getTime();
-        const deadlineCheck = await validatePicksDeadline(info, oldPicks, value, metaValue, dbNowMs);
+        // AUD-01: el documento que llega no se escribe tal cual. Se mezcla
+        // campo por campo con lo guardado (leído bajo lock), según lo que el
+        // navegador dice haber visto (`base`): un envío viejo, otra pestaña o
+        // una lectura fallida ya no borran pronósticos confirmados.
+        // Sin `base` (una pestaña de antes de esta regla): se aplica lo que
+        // trae, campo por campo, sin borrar nada. Una base que no es objeto
+        // se toma como vacía.
+        const hasBase = !!req.body && Object.prototype.hasOwnProperty.call(req.body, "base");
+        const rawBase = hasBase ? req.body.base : undefined;
+        const merged = mergePicksWrite({
+          stored: oldPicks, incoming: value,
+          base: !hasBase ? undefined : (rawBase && typeof rawBase === "object" && !Array.isArray(rawBase) ? rawBase : {}),
+        });
+        if (!merged.ok) {
+          // Un documento que pisaría un partido de liguilla se rechaza con el
+          // mismo código de siempre (esos partidos se guardan uno por uno).
+          const lgRound = merged.conflicts.map((c) => (metaValue && Array.isArray(metaValue.rounds) ? metaValue.rounds : [])
+            .find((r) => r && String(r.id) === c.roundId && liguillaScoringModule.isLiguillaRound(r) && r.published !== false && !String(c.field).startsWith("__extra.")))
+            .find(Boolean);
+          if (lgRound) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "liguilla_pick_conflict", roundId: lgRound.id });
+          }
+          // FIA-GPT-01: una pestaña de antes del despliegue (sin base) que
+          // cambiaría un pronóstico guardado no puede demostrar qué vio: no se
+          // escribe nada y se pide recargar. Nunca un éxito falso. El código
+          // es uno que ese cliente viejo ya traduce como «…no se guardó nada.
+          // Recarga la página…» (UX de ec81210); el motivo va en `reason`.
+          if (merged.reloadRequired) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "invalid_value", reason: "picks_reload_required", conflicts: merged.conflicts });
+          }
+          // Lo que se habría pisado sigue guardado: no se escribe nada, y la
+          // pantalla recibe lo guardado para mostrarlo.
+          const shown = await filterPicksForRequest(req, info, oldPicks || {}, metaValue);
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "picks_conflict", conflicts: merged.conflicts, value: shown });
+        }
+        const deadlineCheck = await validatePicksDeadline(info, oldPicks, merged.value, metaValue, dbNowMs);
         if (!deadlineCheck.ok) {
           await client.query("ROLLBACK");
           return res.status(403).json({ error: "round_locked" });
@@ -2462,14 +2546,15 @@ app.post("/api/kv/:key", async (req, res) => {
         // /picks/:pid/match). Un documento entero que trae otra cosa para una
         // jornada de liguilla —una pestaña antigua, u otra sesión que guardó
         // antes— se rechaza: nunca se pisa en silencio.
-        const liguillaPicks = liguillaRules.validateLiguillaPicksWrite(metaValue, oldPicks, value);
+        const liguillaPicks = liguillaRules.validateLiguillaPicksWrite(metaValue, oldPicks, merged.value);
         if (!liguillaPicks.ok) {
           await client.query("ROLLBACK");
           return res.status(409).json({ error: "liguilla_pick_conflict", roundId: liguillaPicks.roundId });
         }
-        await putRow(req.params.key, value, client);
+        if (merged.changed || !oldPicks) await putRow(req.params.key, merged.value, client);
         await client.query("COMMIT");
-        return res.json({ key: req.params.key, ok: true });
+        // Lo que quedó guardado: la pantalla lo adopta como su nueva base.
+        return res.json({ key: req.params.key, ok: true, value: merged.value });
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
         throw err;
@@ -3558,6 +3643,149 @@ function sanitizeCloseSummary(body) {
   return { standings, champion };
 }
 
+// ---------- AUD-02 / AUD-05: lo que el Admin leyó, completo ----------
+//
+// EL FALLO: si la lectura de los pronósticos fallaba, la pantalla seguía con
+// un «nadie pronosticó» ({}), y con eso armaba la tabla final (un campeón
+// equivocado quedaba archivado) o un respaldo vacío que anunciaba éxito.
+//
+// La tabla final la sigue calculando la pantalla (es la misma cuenta que la
+// Tabla, con sus desempates), pero ahora a partir de UNA lectura completa del
+// servidor: la meta y los pronósticos de TODOS los participantes, leídos en la
+// misma transacción, con una huella (`basis`) de exactamente esas filas. El
+// cierre exige esa huella y la vuelve a calcular bajo lock: si falta, o si
+// algo cambió desde la lectura (un pronóstico, un resultado, un pago), no se
+// cierra. Y la tabla tiene que listar a cada participante una vez, en orden.
+// La huella se calcula sobre las filas guardadas; nunca sale de aquí nada que
+// el Admin no pudiera ver.
+function closeBasisOf(meta, picksById) {
+  const ids = (Array.isArray(meta && meta.participants) ? meta.participants : []).map((p) => p && p.id).filter((id) => id != null);
+  const picks = {};
+  ids.forEach((id) => { picks[id] = picksById[id] === undefined ? null : picksById[id]; });
+  return crypto.createHash("sha256").update(canonical({ meta, picks })).digest("hex");
+}
+async function readPicksRows(slug, meta, client) {
+  const ids = (Array.isArray(meta && meta.participants) ? meta.participants : []).map((p) => p && p.id).filter((id) => id != null);
+  const keys = ids.map((id) => `quiniela:${slug}:picks:${id}`);
+  const out = {};
+  if (!keys.length) return out;
+  const r = await client.query("SELECT key, value FROM kv WHERE key = ANY($1)", [keys]);
+  const byKey = {};
+  r.rows.forEach((row) => { byKey[row.key] = row.value; });
+  ids.forEach((id) => { const k = `quiniela:${slug}:picks:${id}`; if (k in byKey) out[id] = byKey[k]; });
+  return out;
+}
+// La tabla que se archiva: cada participante una vez, de mayor a menor.
+function closeStandingsProblem(meta, standings) {
+  if (!Array.isArray(standings)) return "close_standings_incomplete";
+  const ids = (Array.isArray(meta && meta.participants) ? meta.participants : []).map((p) => p && p.id).filter((id) => id != null);
+  const seen = new Set();
+  for (const row of standings) {
+    if (!row || typeof row !== "object" || typeof row.id !== "string" || !ids.includes(row.id) || seen.has(row.id)) return "close_standings_incomplete";
+    if (!Number.isFinite(row.pts)) return "close_standings_incomplete";
+    seen.add(row.id);
+  }
+  if (seen.size !== ids.length) return "close_standings_incomplete";
+  for (let i = 1; i < standings.length; i++) if (standings[i].pts > standings[i - 1].pts) return "close_standings_unordered";
+  return null;
+}
+
+// Los descuentos por no pagar que restaron en la tabla final del torneo que
+// se cierra, por participante y jornada. La misma regla que la pantalla
+// (penaltyPointsFor en public/index.html), sin decidir nada nuevo:
+// - con la penalización apagada (o sin jornada de inicio) no resta nada;
+// - lo registrado (penalizedRounds) manda, también 0 (resuelto exento) y
+//   también si su jornada se borró de este torneo; lo de jornadas de torneos
+//   ya archivados no cuenta;
+// - sin registro, una jornada publicada, cerrada y desde la de inicio resta
+//   pointsPerRound a quien no ha pagado (el cálculo en vivo).
+function closePenaltiesOf(meta, nowMs) {
+  const out = {};
+  const penalty = meta && meta.paymentPenalty;
+  if (!penalty || !penalty.enabled || !penalty.startsAtRound) return out;
+  const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+  const archivedBefore = new Set();
+  (Array.isArray(meta.pastTournaments) ? meta.pastTournaments : []).forEach((t) => {
+    (t && Array.isArray(t.rounds) ? t.rounds : []).forEach((r) => { if (r && r.id != null) archivedBefore.add(String(r.id)); });
+  });
+  const rounds = Array.isArray(meta.rounds) ? meta.rounds : [];
+  (Array.isArray(meta.participants) ? meta.participants : []).forEach((p) => {
+    if (!p || p.id == null) return;
+    const ledger = p.penalizedRounds && typeof p.penalizedRounds === "object" ? p.penalizedRounds : {};
+    const entry = {};
+    Object.keys(ledger).forEach((rid) => { if (!archivedBefore.has(rid) && Number.isFinite(ledger[rid])) entry[rid] = ledger[rid]; });
+    if (!p.paid) rounds.forEach((r) => {
+      if (!r || r.published === false || !(r.number >= penalty.startsAtRound)) return;
+      const t = new Date(r.deadline).getTime();
+      if (!(nowMs > t) || String(r.id) in ledger) return;
+      entry[r.id] = perRound;
+    });
+    if (Object.keys(entry).length) out[p.id] = entry;
+  });
+  return out;
+}
+
+function archivedCloseSummary(meta, standings) {
+  const names = new Map((Array.isArray(meta && meta.participants) ? meta.participants : [])
+    .filter((p) => p && p.id != null).map((p) => [p.id, typeof p.name === "string" ? p.name.trim().slice(0, 80) : ""]));
+  const rows = standings.slice(0, MAX_ARCHIVED_STANDINGS).map((r) => ({ name: names.get(r.id) || "Sin nombre", pts: r.pts }));
+  return { standings: rows, champion: rows.length ? { ...rows[0] } : null };
+}
+
+// Lectura completa para el Admin: meta (vista de admin) + pronósticos de todos
+// (vista de admin: en jornadas abiertas sólo «ya pronosticó», nunca qué) + la
+// huella de esa lectura. La usan el cierre del torneo y el respaldo.
+app.post("/api/quinielas/:slug/admin-snapshot", async (req, res) => {
+  const slug = req.params.slug;
+  if (!QUINIELA_SLUG.test(slug)) return res.status(400).json({ error: "invalid_key" });
+  const metaKey = `quiniela:${slug}:meta`;
+  const client = await pool.connect();
+  try {
+    // Una sola foto: la meta y los pronósticos leídos en la misma instantánea.
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const r = await client.query("SELECT value FROM kv WHERE key = $1", [metaKey]);
+    if (!r.rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); }
+    const meta = r.rows[0].value;
+    const identity = computeRequesterIdentity(req, slug, meta);
+    if (!identity.isAdminOrOwner) {
+      await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
+      return res.status(403).json({ error: "forbidden" });
+    }
+    const rows = await readPicksRows(slug, meta, client);
+    await client.query("COMMIT");
+    const picks = {};
+    for (const p of (Array.isArray(meta.participants) ? meta.participants : [])) {
+      if (!p || p.id == null) continue;
+      const info = { kind: "picks", metaKey, participantId: p.id, slug };
+      picks[p.id] = rows[p.id] === undefined ? {} : await filterPicksForRequest(req, info, rows[p.id], meta, identity);
+    }
+    const shownMeta = stripQuinielaSecrets(meta, true, null);
+    // Igual que GET de la meta: el candado de liguilla del torneo en curso,
+    // calculado, nunca guardado (la pantalla que adopta esta lectura lo usa).
+    if (Array.isArray(shownMeta.liguillaLocks) && shownMeta.liguillaLocks.length) {
+      const idx = await getRow("platform_index");
+      const entry = idx && Array.isArray(idx.quinielas) ? idx.quinielas.find((q) => q.slug === slug) : null;
+      const scopeId = entry && entry.tournamentScope ? entry.tournamentScope.id : null;
+      shownMeta.liguillaLock = liguillaRules.lockFor(shownMeta.liguillaLocks, scopeId || liguillaRules.LEGACY_SCOPE);
+    }
+    return res.json({
+      ok: true,
+      readAt: new Date().toISOString(),
+      basis: closeBasisOf(meta, rows),
+      meta: shownMeta,
+      picks,
+      participantCount: Object.keys(picks).length,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("admin snapshot failed", err);
+    return res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async (req, res) => {
   const slug = req.params.slug;
   const metaKey = `quiniela:${slug}:meta`;
@@ -3590,7 +3818,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "invalid_expected_cycle" });
     }
-    const summary = sanitizeCloseSummary(body);
+    let summary = sanitizeCloseSummary(body);
     if (!summary) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "invalid_close_summary" });
@@ -3628,6 +3856,30 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       return res.status(409).json({ error: "stale_tournament_cycle", currentCycle: storedCycle });
     }
 
+    // AUD-02: la tabla final tiene que salir de una lectura completa y vigente
+    // (admin-snapshot). Sin huella no se cierra; con una que ya no coincide
+    // con lo guardado (algo cambió desde que se leyó), tampoco. El lock de la
+    // meta, tomado arriba, detiene los guardados de pronósticos mientras tanto.
+    if (typeof body.basis !== "string" || !/^[a-f0-9]{64}$/.test(body.basis)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "close_basis_required" });
+    }
+    const basisNow = closeBasisOf(metaBefore, await readPicksRows(slug, metaBefore, client));
+    if (basisNow !== body.basis) {
+      await client.query("ROLLBACK");
+      console.log("close refused: stale basis", { slug });
+      return res.status(409).json({ error: "close_basis_stale" });
+    }
+    const standingsProblem = closeStandingsProblem(metaBefore, body.standings);
+    if (standingsProblem) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: standingsProblem });
+    }
+    // Lo que se archiva sale de la tabla ya validada (cada participante una
+    // vez, en orden) con los NOMBRES guardados, leídos bajo lock: una fila
+    // nunca se cae por un nombre raro y el campeón es siempre el primero.
+    summary = archivedCloseSummary(metaBefore, body.standings);
+
     const now = new Date().toISOString();
     const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
 
@@ -3643,6 +3895,25 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // torneo y de jornada) se archivan con sus respuestas y aciertos; el torneo
     // nuevo empieza sin ellas, así que lo que sumaban no pasa a él (betCloses.js).
     const archivedBets = archiveBetsForClose(meta, now, Date.parse(now));
+    // AUD-03: los descuentos por no pagar de ESTE torneo (el registro
+    // penalizedRounds de cada quien) se archivan con él y el torneo nuevo
+    // empieza sin ellos. Antes quedaban en el participante y, como sus
+    // jornadas ya no estaban en el tablero, se seguían restando en el torneo
+    // nuevo.
+    // FIA-GPT-03: se archivan los descuentos que restaron en ESA tabla, con la
+    // misma regla que la pantalla (penaltyPointsFor), también los que se
+    // calculaban en vivo sin registro previo; una sola vez cada uno.
+    // A la hora en que se leyó lo que armó la tabla (admin-snapshot.readAt,
+    // que la pantalla devuelve como standingsAt), no a la del cierre: una
+    // jornada que cierra en medio no agrega un descuento que la tabla no
+    // restó. Sólo se acepta una hora de las últimas 6 h y no futura.
+    const nowMs = Date.parse(now);
+    const askedAt = typeof body.standingsAt === "string" ? Date.parse(body.standingsAt) : NaN;
+    const penaltiesAt = Number.isFinite(askedAt) && askedAt <= nowMs && askedAt >= nowMs - 6 * 3600 * 1000 ? askedAt : nowMs;
+    const archivedPenalties = closePenaltiesOf(meta, penaltiesAt);
+    if (Array.isArray(meta.participants)) meta.participants.forEach((p) => {
+      if (p && "penalizedRounds" in p) p.penalizedRounds = {};
+    });
     meta.pastTournaments = Array.isArray(meta.pastTournaments) ? meta.pastTournaments : [];
     meta.pastTournaments.push({
       closedAt: now,
@@ -3651,6 +3922,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       rounds: archived,
       customBets: archivedBets.customBets,
       betAnswers: archivedBets.betAnswers,
+      ...(Object.keys(archivedPenalties).length ? { penalties: archivedPenalties } : {}),
       ...(archivedBets.legacyScorer ? { legacyScorerBet: archivedBets.legacyScorer } : {}),
       // Which cycle this archive belongs to, and which intention produced it.
       // Both are written by the server; they make a duplicated archive

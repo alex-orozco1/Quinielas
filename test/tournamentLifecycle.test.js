@@ -606,7 +606,12 @@ test("SECURITY: the client never supplies a scope, a sequence or a lifecycle", (
     'app.post("/api/quinielas/:slug/tournament/new-cycle"': ["body.expectedCycle", "body.name"],
     // El cierre agrega la intención (token de correlación). La tabla final
     // entra por sanitizeCloseSummary(), no por el handler — ver abajo.
-    'app.post("/api/quinielas/:slug/tournament/close"': ["body.closeIntentId", "body.expectedCycle", "body.name"],
+    // AUD-02: además la huella de la lectura (`basis`, una precondición que se
+    // compara con lo guardado, como expectedCycle) y la tabla, sólo para
+    // comprobar que lista a cada participante, y su hora de lectura
+    // (standingsAt, acotada) para los descuentos archivados: ninguna elige
+    // ciclo ni scope.
+    'app.post("/api/quinielas/:slug/tournament/close"': ["body.basis", "body.closeIntentId", "body.expectedCycle", "body.name", "body.standings", "body.standingsAt"],
   };
   for (const [marker, allowed] of Object.entries(expected)) {
     const handler = stripComments(blockFrom(serverSrc, marker));
