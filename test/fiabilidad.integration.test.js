@@ -131,12 +131,45 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "A" } });
   });
 
-  itest("AUD-01 f · una pestaña de antes del despliegue (sin base) sigue guardando: cambia un pronóstico y no borra los demás (Technical QA, H2)", async () => {
-    const q = await withOpenRound("a01f");
+  // FIA-GPT-01: una petición sin base (pestaña de antes del despliegue) no
+  // demuestra qué versión vio. Puede AGREGAR pronósticos que no existen, pero
+  // nunca cambiar uno guardado: eso se rechaza (409 picks_reload_required),
+  // sin escribir nada y sin éxito falso.
+  itest("FIA-GPT-01 a · nueva y vieja: la pestaña nueva confirma B; la vieja (sin base) que arrastra A y elige otro partido no la pisa", async () => {
+    const q = await withOpenRound("g01a");
+    await putPicks(q, q.beto.id, { r1: { "r1-m1": "A" } });
+    const fresh = await savePicks(q, q.beto, { r1: { "r1-m1": "B" } }, { r1: { "r1-m1": "A" } });
+    assert.equal(fresh.status, 200);
+    const old = await savePicks(q, q.beto, { r1: { "r1-m1": "A", "r1-m2": "D" } });
+    assert.equal(old.status, 409, JSON.stringify(old.body));
+    assert.equal(old.body.error, "picks_reload_required");
+    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "B" } }, "el B confirmado sigue; nada se escribió");
+  });
+
+  itest("FIA-GPT-01 b · vieja y vieja: cada una agrega partidos nuevos; cambiar uno ya guardado exige recargar", async () => {
+    const q = await withOpenRound("g01b");
+    assert.equal((await savePicks(q, q.beto, { r1: { "r1-m1": "A" } })).status, 200);
+    assert.equal((await savePicks(q, q.beto, { r1: { "r1-m2": "D" } })).status, 200, "la otra pestaña vieja agrega m2 sin borrar m1");
+    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "A", "r1-m2": "D" } });
+    const change = await savePicks(q, q.beto, { r1: { "r1-m1": "B", "r1-m2": "D" } });
+    assert.deepEqual([change.status, change.body.error], [409, "picks_reload_required"]);
+    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "A", "r1-m2": "D" } });
+  });
+
+  itest("FIA-GPT-01 c · vieja fuera de orden: el envío tardío con un valor distinto no pisa el que llegó antes", async () => {
+    const q = await withOpenRound("g01c");
+    assert.equal((await savePicks(q, q.beto, { r1: { "r1-m1": "B" } })).status, 200);
+    const late = await savePicks(q, q.beto, { r1: { "r1-m1": "A" } });
+    assert.deepEqual([late.status, late.body.error], [409, "picks_reload_required"]);
+    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "B" } });
+  });
+
+  itest("FIA-GPT-01 d · una pestaña vieja que sólo agrega (lo demás igual a lo guardado) sí guarda, sin borrar nada", async () => {
+    const q = await withOpenRound("g01d");
     await putPicks(q, q.beto.id, { r1: { "r1-m1": "A", "r1-m2": "D" } });
-    const old = await savePicks(q, q.beto, { r1: { "r1-m1": "B", "r1-m2": "D", "r1-m3": "A" } });
-    assert.equal(old.status, 200, JSON.stringify(old.body));
-    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "B", "r1-m2": "D", "r1-m3": "A" } });
+    const add = await savePicks(q, q.beto, { r1: { "r1-m1": "A", "r1-m3": "B" } });
+    assert.equal(add.status, 200, JSON.stringify(add.body));
+    assert.deepEqual(await storedPicks(q, q.beto.id), { r1: { "r1-m1": "A", "r1-m2": "D", "r1-m3": "B" } });
   });
 
   // ---------------------------------------------------------------- AUD-02
@@ -278,6 +311,66 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     const after = await storedMeta(q);
     assert.deepEqual(after.participants.find((p) => p.id === q.beto.id).penalizedRounds, {});
     assert.deepEqual(after.pastTournaments[0].penalties, { [q.beto.id]: { old1: 2 } }, "se mueve al historial, no se tira");
+  });
+
+  itest("AUD-03 d · al historial sólo pasa lo que ya estaba guardado, nunca un valor que trae la petición", async () => {
+    const q = await quiniela("a03d");
+    const m = await storedMeta(q);
+    m.pastTournaments = [{ closedAt: inDays(-10), champion: null, standings: [], rounds: [{ id: "old1", number: 1 }], cycle: 1 }];
+    m.rounds = [];
+    await putMeta(q, m);
+    const view = (await call("GET", kvPath(q.slug), { headers: ownerHeaders(q) })).body.value;
+    view.participants.find((p) => p.id === q.beto.id).penalizedRounds = { old1: 999 };
+    assert.equal((await call("POST", kvPath(q.slug), { headers: ownerHeaders(q), body: { value: view } })).status, 200);
+    const after = await storedMeta(q);
+    assert.equal(after.pastTournaments[0].penalties, undefined, "el historial no acepta datos de la petición");
+    assert.deepEqual(after.participants.find((p) => p.id === q.beto.id).penalizedRounds, {});
+  });
+
+  // FIA-GPT-03: el cierre archiva los descuentos que restaron en la tabla
+  // final, también los que se calculaban en vivo (sin registro previo), una
+  // sola vez y asociados a su torneo.
+  itest("FIA-GPT-03 a · sin reconciliación previa: el cierre archiva el descuento que la tabla calculaba en vivo", async () => {
+    const q = await playedTournament("g03a");
+    const m = await storedMeta(q);
+    m.paymentPenalty = { enabled: true, startsAtRound: 1, pointsPerRound: 2 };
+    m.participants.forEach((p) => { p.paid = false; delete p.penalizedRounds; });
+    await putMeta(q, m);
+    const snap = await snapshot(q);
+    const standings = [{ id: q.beto.id, name: "Beto", pts: 0 }, { id: q.ana.id, name: "Ana", pts: -2 }];
+    assert.equal((await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis })).status, 200);
+    const after = await storedMeta(q);
+    assert.deepEqual(after.pastTournaments.at(-1).penalties, { [q.beto.id]: { r1: 2 }, [q.ana.id]: { r1: 2 } });
+    after.participants.forEach((p) => assert.deepEqual(p.penalizedRounds || {}, {}, "el torneo nuevo empieza limpio"));
+  });
+
+  itest("FIA-GPT-03 b · exactamente una vez: lo registrado manda (exento 0 sigue en 0), quien pagó no tiene descuento en vivo, y un descuento de jornada borrada del torneo también se archiva", async () => {
+    const q = await playedTournament("g03b");
+    const m = await storedMeta(q);
+    m.paymentPenalty = { enabled: true, startsAtRound: 1, pointsPerRound: 2 };
+    const beto = m.participants.find((p) => p.id === q.beto.id), ana = m.participants.find((p) => p.id === q.ana.id);
+    beto.paid = false; beto.penalizedRounds = { r1: 0, rx: 2 };       // r1 resuelto exento; rx, jornada borrada
+    ana.paid = true; delete ana.penalizedRounds;
+    m.rounds.push({ id: "r2", number: 2, deadline: inDays(-1), published: true, resultsPublished: false, results: {}, matches: matches("r2") });
+    await putMeta(q, m);
+    const snap = await snapshot(q);
+    const standings = [{ id: q.ana.id, name: "Ana", pts: 0 }, { id: q.beto.id, name: "Beto", pts: -2 }];
+    assert.equal((await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis })).status, 200);
+    const arch = (await storedMeta(q)).pastTournaments.at(-1);
+    assert.deepEqual(arch.penalties, { [q.beto.id]: { r1: 0, rx: 2, r2: 2 } }, "r1 como se registró, rx como se registró, r2 en vivo; Ana pagó");
+  });
+
+  itest("FIA-GPT-03 c · penalización apagada: no restaba en la tabla, no se archiva como descuento, y el torneo nuevo empieza limpio", async () => {
+    const q = await playedTournament("g03c", { penalty: true });
+    const m = await storedMeta(q);
+    m.paymentPenalty.enabled = false;
+    await putMeta(q, m);
+    const snap = await snapshot(q);
+    const standings = [{ id: q.ana.id, name: "Ana", pts: 0 }, { id: q.beto.id, name: "Beto", pts: 0 }];
+    assert.equal((await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis })).status, 200);
+    const after = await storedMeta(q);
+    assert.equal(after.pastTournaments.at(-1).penalties, undefined);
+    after.participants.forEach((p) => assert.deepEqual(p.penalizedRounds || {}, {}));
   });
 
   // ---------------------------------------------------------------- AUD-04

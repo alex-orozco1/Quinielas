@@ -119,6 +119,8 @@ function harness(opts = {}) {
       picks(){ return myPicks; },
       setRounds(rs){ meta.rounds = rs; },
       setPicksWithError,
+      base(){ return myPicksBase; },
+      pending(){ return picksPendingFor(lgGen); },
       lgEnqueue, lgRetryAll, lgSt, lgDraft, lgSetDraft, lgSetSt,
     };
   `);
@@ -788,3 +790,69 @@ for (const [name, start] of [["K2: campo vacío", { value: "", s: 0, e: 0 }], ["
   });
 }
 
+
+// ---- FIA-GPT-02: la cola de pronósticos normales es de cada sesión ----------
+// Con las funciones reales de cola (setPicksWithError) y de cambio de sesión
+// (lgResetSession): una petición de A que nunca responde no detiene los
+// guardados de B; los trabajos de A que no salieron no salen nunca; y una
+// respuesta tardía de A no toca base, pantalla ni contadores de B.
+function deferredKv() {
+  const calls = [];
+  const kvSet = (key, value, creds, extra) => new Promise((resolve) => { calls.push({ key, value, creds, base: extra && extra.base, resolve }); });
+  return { calls, kvSet };
+}
+const R1 = { id: "r1", number: 1, published: true, deadline: "2099-01-01T00:00:00Z", matches: [{ id: "m1" }, { id: "m2" }] };
+
+test("FIA-GPT-02 · A→B: una petición de A sin respuesta no detiene el guardado de B", async () => {
+  const kv = deferredKv();
+  const { app } = harness({ kvSet: kv.kvSet });
+  app.setRounds([R1]);
+  app.as(A, "1111", {});
+  const aSave = app.setPicksWithError(A.id, { r1: { m1: "A" } });
+  await tick();
+  assert.equal(kv.calls.length, 1, "sale la de A");
+  app.switchUser();
+  await app.login(B, "2222", async () => ({}));
+  const bSave = app.setPicksWithError(B.id, { r1: { m1: "B" } });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(kv.calls.length, 2, "la de B sale aunque A siga colgada");
+  assert.ok(kv.calls[1].key.endsWith(":picks:" + B.id) && kv.calls[1].creds.owner === "2222");
+  kv.calls[1].resolve({ ok: true, value: { r1: { m1: "B" } } });
+  assert.equal((await bSave).ok, true);
+  // La respuesta tardía de A llega con B dentro: no toca nada de B.
+  kv.calls[0].resolve({ ok: true, value: { r1: { m1: "A" } } });
+  const late = await aSave;
+  assert.equal(late.ok, false);
+  assert.equal(late.error, "session_changed");
+  assert.deepEqual(app.base(), { r1: { m1: "B" } }, "la base sigue siendo la de B");
+  assert.equal(app.pending(), 0, "los contadores de B no cuentan lo de A");
+});
+
+test("FIA-GPT-02 · A→B→A: lo que A dejó en cola no sale después; la A nueva guarda en seguida", async () => {
+  const kv = deferredKv();
+  const { app } = harness({ kvSet: kv.kvSet });
+  app.setRounds([R1]);
+  app.as(A, "1111", {});
+  const first = app.setPicksWithError(A.id, { r1: { m1: "A" } });     // en camino, nunca responde
+  const queued = app.setPicksWithError(A.id, { r1: { m1: "D" } });    // en cola detrás
+  await tick();
+  assert.equal(kv.calls.length, 1);
+  app.switchUser();
+  await app.login(B, "2222", async () => ({}));
+  app.switchUser();
+  await app.login(A, "1111", async () => ({ r1: { m1: "A" } }));
+  const fresh = app.setPicksWithError(A.id, { r1: { m1: "B" } });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(kv.calls.length, 2, "la A nueva sale; la vieja en cola no");
+  assert.deepEqual(kv.calls[1].value, { r1: { m1: "B" } });
+  assert.deepEqual(kv.calls[1].base, { r1: { m1: "A" } }, "con la base que leyó esta entrada");
+  kv.calls[1].resolve({ ok: true, value: { r1: { m1: "B" } } });
+  assert.equal((await fresh).ok, true);
+  kv.calls[0].resolve({ ok: true, value: { r1: { m1: "A" } } });
+  assert.equal((await first).error, "session_changed");
+  const q = await queued;
+  assert.deepEqual([q.ok, q.error], [false, "session_changed"], "el trabajo viejo en cola no se envía");
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(kv.calls.length, 2, "nunca salió");
+  assert.deepEqual(app.base(), { r1: { m1: "B" } });
+});

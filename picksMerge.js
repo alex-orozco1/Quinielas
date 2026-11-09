@@ -24,9 +24,11 @@
 // Con un conflicto no se escribe nada: 409 con lo guardado, para que la
 // pantalla lo muestre y la persona decida. Nunca una pérdida en silencio.
 //
-// Sin `base` (una pestaña abierta antes de esta regla) lo que trae se aplica
-// campo por campo y lo que no trae se conserva: nunca borra, y esa pestaña
-// sigue pudiendo guardar. Un documento vacío nunca es una instrucción de borrar.
+// Sin `base` (una pestaña abierta antes de esta regla) la petición no puede
+// demostrar qué versión vio (FIA-GPT-01): puede AGREGAR pronósticos que no
+// existen, pero nunca cambiar uno guardado — eso devuelve
+// { ok:false, reloadRequired:true } y no se escribe nada. Lo que no trae se
+// conserva. Un documento vacío nunca es una instrucción de borrar.
 //
 // Las jornadas de liguilla se guardan partido a partido en su propio endpoint
 // (liguillaRules.applyMatchPick); aquí sus campos de partido siguen la misma
@@ -71,11 +73,11 @@ function setField(roundDoc, field, value) {
 
 /**
  * `base` undefined = un cliente anterior a esta regla (una pestaña abierta
- * antes del despliegue): cada campo que trae distinto de lo guardado se
- * aplica, y lo que no trae se conserva — nunca borra. Así esa pestaña sigue
- * pudiendo guardar (antes de la regla, su documento entero pisaba todo).
+ * antes del despliegue): sólo agrega; cualquier cambio a un campo guardado es
+ * reloadRequired (una pestaña así arrastra elecciones viejas y no hay forma
+ * de distinguirlas de un cambio real).
  * @returns {{ ok: true, value: object, changed: boolean } |
- *           { ok: false, conflicts: Array<{roundId, field}> }}
+ *           { ok: false, conflicts: Array<{roundId, field}>, reloadRequired?: true }}
  */
 function mergePicksWrite({ stored, incoming, base }) {
   const legacy = base === undefined;
@@ -102,6 +104,7 @@ function mergePicksWrite({ stored, incoming, base }) {
       const sv = sf.get(f), iv = inf.get(f), bv = bf.get(f);
       if (legacy) {
         if (iv === undefined || iv === null || same(sv, iv)) continue;
+        if (sv !== undefined) { conflicts.push({ roundId: rid, field: f }); continue; }
         if (!isObj(result[rid])) result[rid] = {};
         setField(result[rid], f, iv);
         changed = true;
@@ -117,7 +120,7 @@ function mergePicksWrite({ stored, incoming, base }) {
     }
     if (isObj(result[rid]) && !Object.keys(result[rid]).length) { delete result[rid]; changed = changed || own(s, rid); }
   }
-  if (conflicts.length) return { ok: false, conflicts };
+  if (conflicts.length) return legacy ? { ok: false, conflicts, reloadRequired: true } : { ok: false, conflicts };
   return { ok: true, value: changed ? result : s, changed };
 }
 

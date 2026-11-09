@@ -169,14 +169,13 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
 
 // ---- Payment Penalty untouched ----
 
-// AUD-03 changed one thing on purpose: the close now ARCHIVES each
-// participant's penalty ledger with the tournament and starts the next one
-// without it. The penalty rules themselves (reconcile / points) stay client
-// logic the close never runs.
-test("the close archives the penalty ledger and never runs the penalty rules (reconcilePenaltyLedger / penaltyPointsFor)", () => {
+// AUD-03 / FIA-GPT-03 changed one thing on purpose: the close ARCHIVES the
+// discounts that hit the final table — the same rule as the screen's
+// penaltyPointsFor, ledger plus the live ones — and starts the next tournament
+// without a ledger. It never reconciles (that stays a client action).
+test("the close archives the discounts of the final table (closePenaltiesOf) and never reconciles the ledger", () => {
   const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
-  assert.ok(!handlerBody.includes("penaltyPointsFor"));
-  assert.ok(handlerBody.includes("archivedPenalties[p.id] = JSON.parse(JSON.stringify(p.penalizedRounds));"));
-  assert.ok(handlerBody.includes('if ("penalizedRounds" in p) p.penalizedRounds = {};'));
+  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, Date.parse(now));"));
+  assert.ok(handlerBody.includes('if (p && "penalizedRounds" in p) p.penalizedRounds = {};'));
 });

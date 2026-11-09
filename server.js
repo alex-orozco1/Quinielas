@@ -1411,6 +1411,11 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   });
   if (archivedRoundIds.size && Array.isArray(merged.participants)) {
     const liveRoundIds = new Set((Array.isArray(merged.rounds) ? merged.rounds : []).map((r) => r && String(r.id)));
+    // Al historial sólo pasa lo que ya estaba en la fila guardada, nunca un
+    // valor que trae la petición (Technical QA, P3 de edd9450).
+    const storedLedger = new Map((oldValue && Array.isArray(oldValue.participants) ? oldValue.participants : [])
+      .filter((p) => p && p.id != null && p.penalizedRounds && typeof p.penalizedRounds === "object")
+      .map((p) => [p.id, p.penalizedRounds]));
     let past = null;
     merged.participants.forEach((p) => {
       if (!p || p.id == null || !p.penalizedRounds || typeof p.penalizedRounds !== "object") return;
@@ -1420,10 +1425,11 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
         if (!archivedRoundIds.has(rid) || liveRoundIds.has(rid)) return;
         if (!past) { past = JSON.parse(JSON.stringify(merged.pastTournaments)); merged.pastTournaments = past; }
         const t = past[archivedRoundIds.get(rid)];
-        if (t && typeof t === "object") {
+        const stored = storedLedger.get(p.id);
+        if (t && typeof t === "object" && stored && Object.prototype.hasOwnProperty.call(stored, rid) && Number.isFinite(stored[rid])) {
           if (!t.penalties || typeof t.penalties !== "object") t.penalties = {};
           if (!t.penalties[p.id] || typeof t.penalties[p.id] !== "object") t.penalties[p.id] = {};
-          if (!(rid in t.penalties[p.id])) t.penalties[p.id][rid] = p.penalizedRounds[rid];
+          if (!(rid in t.penalties[p.id])) t.penalties[p.id][rid] = stored[rid];
         }
         delete p.penalizedRounds[rid];
       });
@@ -2515,6 +2521,13 @@ app.post("/api/kv/:key", async (req, res) => {
           if (lgRound) {
             await client.query("ROLLBACK");
             return res.status(409).json({ error: "liguilla_pick_conflict", roundId: lgRound.id });
+          }
+          // FIA-GPT-01: una pestaña de antes del despliegue (sin base) que
+          // cambiaría un pronóstico guardado no puede demostrar qué vio: no se
+          // escribe nada y se pide recargar. Nunca un éxito falso.
+          if (merged.reloadRequired) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "picks_reload_required", conflicts: merged.conflicts });
           }
           // Lo que se habría pisado sigue guardado: no se escribe nada, y la
           // pantalla recibe lo guardado para mostrarlo.
@@ -3675,6 +3688,41 @@ function closeStandingsProblem(meta, standings) {
   return null;
 }
 
+// Los descuentos por no pagar que restaron en la tabla final del torneo que
+// se cierra, por participante y jornada. La misma regla que la pantalla
+// (penaltyPointsFor en public/index.html), sin decidir nada nuevo:
+// - con la penalización apagada (o sin jornada de inicio) no resta nada;
+// - lo registrado (penalizedRounds) manda, también 0 (resuelto exento) y
+//   también si su jornada se borró de este torneo; lo de jornadas de torneos
+//   ya archivados no cuenta;
+// - sin registro, una jornada publicada, cerrada y desde la de inicio resta
+//   pointsPerRound a quien no ha pagado (el cálculo en vivo).
+function closePenaltiesOf(meta, nowMs) {
+  const out = {};
+  const penalty = meta && meta.paymentPenalty;
+  if (!penalty || !penalty.enabled || !penalty.startsAtRound) return out;
+  const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
+  const archivedBefore = new Set();
+  (Array.isArray(meta.pastTournaments) ? meta.pastTournaments : []).forEach((t) => {
+    (t && Array.isArray(t.rounds) ? t.rounds : []).forEach((r) => { if (r && r.id != null) archivedBefore.add(String(r.id)); });
+  });
+  const rounds = Array.isArray(meta.rounds) ? meta.rounds : [];
+  (Array.isArray(meta.participants) ? meta.participants : []).forEach((p) => {
+    if (!p || p.id == null) return;
+    const ledger = p.penalizedRounds && typeof p.penalizedRounds === "object" ? p.penalizedRounds : {};
+    const entry = {};
+    Object.keys(ledger).forEach((rid) => { if (!archivedBefore.has(rid) && Number.isFinite(ledger[rid])) entry[rid] = ledger[rid]; });
+    if (!p.paid) rounds.forEach((r) => {
+      if (!r || r.published === false || !(r.number >= penalty.startsAtRound)) return;
+      const t = new Date(r.deadline).getTime();
+      if (!(nowMs > t) || String(r.id) in ledger) return;
+      entry[r.id] = perRound;
+    });
+    if (Object.keys(entry).length) out[p.id] = entry;
+  });
+  return out;
+}
+
 function archivedCloseSummary(meta, standings) {
   const names = new Map((Array.isArray(meta && meta.participants) ? meta.participants : [])
     .filter((p) => p && p.id != null).map((p) => [p.id, typeof p.name === "string" ? p.name.trim().slice(0, 80) : ""]));
@@ -3850,13 +3898,12 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // empieza sin ellos. Antes quedaban en el participante y, como sus
     // jornadas ya no estaban en el tablero, se seguían restando en el torneo
     // nuevo.
-    const archivedPenalties = {};
+    // FIA-GPT-03: se archivan los descuentos que restaron en ESA tabla, con la
+    // misma regla que la pantalla (penaltyPointsFor), también los que se
+    // calculaban en vivo sin registro previo; una sola vez cada uno.
+    const archivedPenalties = closePenaltiesOf(meta, Date.parse(now));
     if (Array.isArray(meta.participants)) meta.participants.forEach((p) => {
-      if (!p || p.id == null) return;
-      if (p.penalizedRounds && typeof p.penalizedRounds === "object" && Object.keys(p.penalizedRounds).length) {
-        archivedPenalties[p.id] = JSON.parse(JSON.stringify(p.penalizedRounds));
-      }
-      if ("penalizedRounds" in p) p.penalizedRounds = {};
+      if (p && "penalizedRounds" in p) p.penalizedRounds = {};
     });
     meta.pastTournaments = Array.isArray(meta.pastTournaments) ? meta.pastTournaments : [];
     meta.pastTournaments.push({

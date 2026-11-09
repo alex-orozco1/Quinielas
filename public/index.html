@@ -2016,6 +2016,7 @@
     close_standings_unordered: "La tabla final no estaba en orden. No se cerró nada: vuelve a intentarlo.",
     picks_conflict: "Tus pronósticos cambiaron en otra pestaña o dispositivo.",
     picks_not_loaded: "No pudimos cargar tus pronósticos guardados; no guardamos nada para no borrar ninguno.",
+    picks_reload_required: "Esta pestaña quedó desactualizada y no guardamos ese cambio para no pisar lo guardado. Recarga la página.",
     invalid_close_intent: "No pudimos identificar ese cierre. Recarga la página e intenta de nuevo.",
     invalid_close_summary: "No pudimos leer la tabla final. Recarga la página e intenta de nuevo.",
     unknown_result: "No pudimos confirmar si el torneo se cerró. Verifica el estado antes de intentar otra vez.",
@@ -2507,7 +2508,6 @@
   let myPicksBase = null;
   let myPicksBaseOwner = null;
   let myPicksLoadFailed = false;
-  let picksSaveChain = Promise.resolve();
   const picksJson = (v) => JSON.stringify(v === undefined ? null : v);
   function picksOwnerKey(pid){ return (SLUG || "") + "|" + pid; }
   function adoptPicksBase(pid, doc){
@@ -2603,15 +2603,21 @@
   // luego el servidor dice «conflicto» justo con ese valor, era de esta misma
   // pestaña (Technical QA, H1): se toma como base y se reenvía sin alarma.
   let picksUnconfirmed = { owner: null, docs: [] };
-  async function savePicksNow(pid, data){
+  // `job`: el trabajo con la identidad capturada al crearlo (FIA-GPT-02):
+  // participante, PIN y sesión (lgGen). Si la sesión ya no es la actual, no se
+  // envía; y si cambia mientras espera respuesta, la respuesta no toca nada.
+  async function savePicksNow(job){
+    const { pid, data, creds, gen } = job;
+    const live = () => gen === lgGen && myPicksBaseOwner === picksOwnerKey(pid);
+    if(gen !== lgGen) return { ok: false, error: "session_changed" };
     if(myPicksBase === null || myPicksBaseOwner !== picksOwnerKey(pid)) return { ok: false, error: "picks_not_loaded" };
-    if(picksUnconfirmed.owner !== picksOwnerKey(pid)) picksUnconfirmed = { owner: picksOwnerKey(pid), docs: [] };
-    const creds = { owner: currentUserPinCache };
+    const unconfirmedKey = picksOwnerKey(pid) + "#" + gen;
+    if(picksUnconfirmed.owner !== unconfirmedKey) picksUnconfirmed = { owner: unconfirmedKey, docs: [] };
     let conflicts = [];
     for(let attempt = 0; attempt < 3; attempt++){
       const sent = picksDocForSave(data);
       const r = await kvSetWithError(currentPicksKey(pid), sent, creds, { base: picksDocForSave(myPicksBase) });
-      if(myPicksBaseOwner !== picksOwnerKey(pid)) return { ok: false, error: "session_changed" };
+      if(!live()) return { ok: false, error: "session_changed" };
       if(r.ok){
         picksUnconfirmed.docs = [];
         if(r.value && typeof r.value === "object"){
@@ -2667,16 +2673,30 @@
     });
     return n;
   }
-  // Guardados normales en cola o en camino: «Cambiar usuario» espera a que
-  // terminen y, si algo queda sin guardar, lo pregunta (Product QA, H1).
-  let picksPendingCount = 0;
+  // Una cola y un contador por sesión (FIA-GPT-02). Dentro de una sesión,
+  // un guardado a la vez (un envío viejo no llega después de uno nuevo).
+  // «Cambiar usuario» sube lgGen (lgResetSession): la sesión nueva tiene su
+  // propia cola y no espera una petición de la anterior que no responde; lo
+  // que la anterior dejó en cola sin enviar ya no sale. «Cambiar usuario»
+  // espera la cola de la sesión que termina y, si algo queda sin guardar, lo
+  // pregunta (Product QA, H1).
+  const picksChains = new Map();    // lgGen -> última promesa de su cola
+  const picksPending = new Map();   // lgGen -> guardados en cola o en camino
+  function picksPendingFor(gen){ return picksPending.get(gen) || 0; }
   function setPicksWithError(pid, data){
-    picksPendingCount += 1;
-    const run = picksSaveChain.then(() => savePicksNow(pid, data)).catch(e => {
+    const job = { pid, data, gen: lgGen, creds: { owner: currentUserPinCache } };
+    picksPending.set(job.gen, picksPendingFor(job.gen) + 1);
+    const prev = picksChains.get(job.gen) || Promise.resolve();
+    const run = prev.then(() => savePicksNow(job)).catch(e => {
       console.error("save picks failed", e);
       return { ok: false, error: "network_error" };
-    }).finally(() => { picksPendingCount -= 1; });
-    picksSaveChain = run.then(() => {}, () => {});
+    }).finally(() => {
+      const n = picksPendingFor(job.gen) - 1;
+      if(n > 0) picksPending.set(job.gen, n); else picksPending.delete(job.gen);
+    });
+    picksChains.set(job.gen, run.then(() => {}, () => {}));
+    // Las colas de sesiones terminadas no se vuelven a usar.
+    [...picksChains.keys()].forEach(g => { if(g !== lgGen) picksChains.delete(g); });
     return run;
   }
   // UX-011: one shared implementation of Guardando/Guardado/Error+Reintentar,
@@ -9064,7 +9084,7 @@
     try{
       const gen = lgGen;
       const flushTimers = () => Object.keys(lgTimers).forEach(k => { const t = lgTimers[k]; clearTimeout(t.t); delete lgTimers[k]; t.go(); });
-      const busy = () => lgQueue.size || Object.keys(lgTimers).length || [...lgInFlightJobs].some(j => j.gen === gen) || picksPendingCount > 0;
+      const busy = () => lgQueue.size || Object.keys(lgTimers).length || [...lgInFlightJobs].some(j => j.gen === gen) || picksPendingFor(gen) > 0;
       flushTimers();
       if(busy()) toast(WAIT, 6500);
       const until = Date.now() + 6000;
@@ -9075,7 +9095,7 @@
       const t = document.getElementById("qz-toast");
       if(t){ clearTimeout(t._h); t.classList.remove("show"); }
       const lgUnsaved = lgUnsavedKeys().size;
-      const regular = picksPendingCount > 0 ? Math.max(1, regularUnsavedCount()) : regularUnsavedCount();
+      const regular = picksPendingFor(gen) > 0 ? Math.max(1, regularUnsavedCount()) : regularUnsavedCount();
       const unsaved = lgUnsaved + regular;
       if(!unsaved) return true;
       const one = unsaved === 1;

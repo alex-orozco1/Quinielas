@@ -30,7 +30,7 @@ test("AUD-01 · mezcla: lo no tocado se conserva, lo cambiado se aplica, lo que 
   assert.deepEqual([same.ok, same.changed], [true, false]);
 });
 
-test("AUD-01 · mezcla: quitar un pronóstico visto lo quita; un documento vacío no borra nada; sin base es base vacía", () => {
+test("AUD-01 · mezcla: quitar un pronóstico visto lo quita; un documento vacío no borra nada, con base o sin ella", () => {
   const stored = { r1: { m1: "A" }, r2: { m1: "D" } };
   assert.deepEqual(mergePicksWrite({ stored, incoming: { r2: { m1: "D" } }, base: stored }).value, { r2: { m1: "D" } });
   assert.deepEqual(mergePicksWrite({ stored, incoming: {}, base: {} }).value, stored);
@@ -46,10 +46,12 @@ test("AUD-01 · mezcla: las respuestas de la jornada (__extra) se mezclan pregun
   assert.deepEqual(c.conflicts, [{ roundId: "r1", field: "__extra.q1" }]);
 });
 
-test("AUD-01 · mezcla sin base (pestaña de antes del despliegue): aplica lo que trae campo por campo y nunca borra (Technical QA, H2)", () => {
+test("FIA-GPT-01 · mezcla sin base (pestaña de antes del despliegue): sólo agrega; cambiar algo guardado pide recargar y no escribe", () => {
   const stored = { r1: { m1: "A", m2: "D" } };
-  assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: { m1: "B", m3: "A" } }, base: undefined }).value, { r1: { m1: "B", m2: "D", m3: "A" } });
+  assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: { m1: "A", m3: "B" } }, base: undefined }).value, { r1: { m1: "A", m2: "D", m3: "B" } });
   assert.deepEqual(mergePicksWrite({ stored, incoming: { r1: {} }, base: undefined }).value, stored);
+  const r = mergePicksWrite({ stored, incoming: { r1: { m1: "B", m3: "A" } }, base: undefined });
+  assert.deepEqual([r.ok, r.reloadRequired, r.conflicts], [false, true, [{ roundId: "r1", field: "m1" }]]);
 });
 
 test("AUD-01 · mezcla: un __extra que no es objeto o una clave «__extra.x» no reemplazan las respuestas (Technical QA, H4)", () => {
@@ -59,7 +61,7 @@ test("AUD-01 · mezcla: un __extra que no es objeto o una clave «__extra.x» no
 });
 
 test("AUD-01 · navegador: una respuesta perdida no se vuelve «otra pestaña»; tras un conflicto, lo no tocado toma lo guardado (Technical QA, H1)", () => {
-  const now = fn("async function savePicksNow(pid, data)");
+  const now = fn("async function savePicksNow(job)");
   assert.ok(now.includes("picksUnconfirmed.docs = picksUnconfirmed.docs.concat([sent]).slice(-10);"));
   assert.ok(now.includes("if(ours) return;"));
   assert.ok(now.includes("adoptServerPicks(oldBase, r.value)"));
@@ -73,8 +75,8 @@ test("AUD-01 · mezcla: claves peligrosas no entran", () => {
 
 test("AUD-01 · navegador: un guardado a la vez, con su base; una lectura fallida no es «no hay nada»", () => {
   const set = fn("function setPicksWithError(pid, data)");
-  assert.ok(set.includes("picksSaveChain.then(() => savePicksNow(pid, data))"), "en cola, uno a la vez");
-  const now = fn("async function savePicksNow(pid, data)");
+  assert.ok(set.includes("const prev = picksChains.get(job.gen) || Promise.resolve();") && set.includes("prev.then(() => savePicksNow(job))"), "en cola por sesión, uno a la vez");
+  const now = fn("async function savePicksNow(job)");
   assert.ok(now.includes('if(myPicksBase === null || myPicksBaseOwner !== picksOwnerKey(pid)) return { ok: false, error: "picks_not_loaded" };'));
   assert.ok(now.includes("{ base: picksDocForSave(myPicksBase) }"));
   const get = fn("async function getPicks(pid, opts)");
@@ -106,14 +108,14 @@ test("AUD-01 · «Pronóstico guardado» sólo tras la respuesta del servidor; e
 
 test("AUD-01 · «Cambiar usuario» espera los guardados normales y avisa si algo queda sin guardar (Product QA, H1)", () => {
   const sw = fn("async function lgBeforeSwitch()");
-  assert.ok(sw.includes("|| picksPendingCount > 0;"), "espera también la cola de pronósticos normales");
+  assert.ok(sw.includes("|| picksPendingFor(gen) > 0;"), "espera también la cola de pronósticos normales de esa sesión");
   assert.ok(sw.includes("const unsaved = lgUnsaved + regular;"));
   const set = fn("function setPicksWithError(pid, data)");
-  assert.ok(set.includes("picksPendingCount += 1;") && set.includes(".finally(() => { picksPendingCount -= 1; });"));
+  assert.ok(set.includes("picksPending.set(job.gen, picksPendingFor(job.gen) + 1);"));
 });
 
 test("AUD-01 · pregunta de jornada: en conflicto muestra lo guardado; con la lectura fallida no se edita (Product QA, H2/H3)", () => {
-  const now = fn("async function savePicksNow(pid, data)");
+  const now = fn("async function savePicksNow(job)");
   assert.ok(now.includes('const input = document.getElementById("qz-cbj-" + c.roundId + "-" + betId);'));
   assert.ok(now.includes('if(input) input.value = v == null ? "" : String(v);'));
   const vote = fn("function renderRoundVoting(box, round, isHeroRound)");
