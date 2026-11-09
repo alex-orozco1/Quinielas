@@ -608,8 +608,10 @@ test("SECURITY: the client never supplies a scope, a sequence or a lifecycle", (
     // entra por sanitizeCloseSummary(), no por el handler — ver abajo.
     // AUD-02: además la huella de la lectura (`basis`, una precondición que se
     // compara con lo guardado, como expectedCycle) y la tabla, sólo para
-    // comprobar que lista a cada participante: ninguna elige ciclo ni scope.
-    'app.post("/api/quinielas/:slug/tournament/close"': ["body.basis", "body.closeIntentId", "body.expectedCycle", "body.name", "body.standings"],
+    // comprobar que lista a cada participante, y su hora de lectura
+    // (standingsAt, acotada) para los descuentos archivados: ninguna elige
+    // ciclo ni scope.
+    'app.post("/api/quinielas/:slug/tournament/close"': ["body.basis", "body.closeIntentId", "body.expectedCycle", "body.name", "body.standings", "body.standingsAt"],
   };
   for (const [marker, allowed] of Object.entries(expected)) {
     const handler = stripComments(blockFrom(serverSrc, marker));

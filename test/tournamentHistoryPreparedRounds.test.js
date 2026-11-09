@@ -176,6 +176,6 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
 test("the close archives the discounts of the final table (closePenaltiesOf) and never reconciles the ledger", () => {
   const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
-  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, Date.parse(now));"));
+  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, penaltiesAt);"));
   assert.ok(handlerBody.includes('if (p && "penalizedRounds" in p) p.penalizedRounds = {};'));
 });

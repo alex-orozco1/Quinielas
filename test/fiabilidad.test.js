@@ -122,6 +122,19 @@ test("AUD-01 · pregunta de jornada: en conflicto muestra lo guardado; con la le
   assert.ok(vote.includes(`placeholder="Escribe tu respuesta" value="\${esc(draft != null ? draft : (extra[bet.id] || ''))}" \${myPicksLoadFailed ? "disabled" : ""}>`));
 });
 
+test("AUD-01 · un guardado colgado termina como error y no detiene la cola (Technical QA de ec81210)", async () => {
+  const kvSet = fn("async function kvSetWithError(key, value, creds, extra, opts)");
+  const calls = [];
+  const realSetTimeout = setTimeout;
+  const f = new Function("fetch", "setAuthHeaders", "AbortController", "setTimeout", "clearTimeout", `${kvSet}; return kvSetWithError;`)(
+    (url, o) => new Promise((resolve, reject) => { calls.push(o); o.signal && o.signal.addEventListener("abort", () => reject(new Error("aborted"))); }),
+    () => {}, AbortController, (cb, ms) => realSetTimeout(cb, 10), clearTimeout);
+  const r = await f("k", {}, {}, {}, { timeoutMs: 15000 });
+  assert.deepEqual([r.ok, r.error, r.timedOut], [false, "network_error", true]);
+  const now = fn("async function savePicksNow(job)");
+  assert.ok(now.includes("{ timeoutMs: PICKS_SAVE_TIMEOUT_MS }"));
+});
+
 // ---------------------------------------------------------------- AUD-03
 function penaltyFor(meta, p) {
   const f = new Function("meta", "serverNow", `

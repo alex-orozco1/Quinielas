@@ -2016,7 +2016,6 @@
     close_standings_unordered: "La tabla final no estaba en orden. No se cerró nada: vuelve a intentarlo.",
     picks_conflict: "Tus pronósticos cambiaron en otra pestaña o dispositivo.",
     picks_not_loaded: "No pudimos cargar tus pronósticos guardados; no guardamos nada para no borrar ninguno.",
-    picks_reload_required: "Esta pestaña quedó desactualizada y no guardamos ese cambio para no pisar lo guardado. Recarga la página.",
     invalid_close_intent: "No pudimos identificar ese cierre. Recarga la página e intenta de nuevo.",
     invalid_close_summary: "No pudimos leer la tabla final. Recarga la página e intenta de nuevo.",
     unknown_result: "No pudimos confirmar si el torneo se cerró. Verifica el estado antes de intentar otra vez.",
@@ -2168,14 +2167,21 @@
   }
   // KV writes keep the server's structured error so callers can explain
   // why a save failed instead of treating every refusal as a boolean.
-  async function kvSetWithError(key, value, creds, extra){
+  // `opts.timeoutMs`: a request that never answers ends as network_error
+  // instead of waiting forever (used by the picks queue: one hung save must
+  // not stop every later one, Technical QA de ec81210).
+  async function kvSetWithError(key, value, creds, extra, opts){
     const headers = { "Content-Type": "application/json" };
     setAuthHeaders(headers, creds && creds.owner);
     if(creds && creds.platform) headers["X-Qracks-Platform-Auth"] = creds.platform;
+    const timeoutMs = opts && opts.timeoutMs;
+    const ctrl = timeoutMs && typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try{
       const res = await fetch("/api/kv/" + encodeURIComponent(key), {
         method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ ...(extra || {}), value })
+        body: JSON.stringify({ ...(extra || {}), value }),
+        ...(ctrl ? { signal: ctrl.signal } : {})
       });
       if(res.ok) return { ok: true, ...(await res.json().catch(() => ({}))) };
       const data = await res.json().catch(() => ({}));
@@ -2185,7 +2191,9 @@
       // .error) rather than discarding everything but the error code.
       return { ok: false, ...data, error: data.error };
     }catch(e){
-      return { ok: false, error: "network_error" };
+      return { ok: false, error: "network_error", ...(ctrl && ctrl.signal.aborted ? { timedOut: true } : {}) };
+    }finally{
+      if(timer) clearTimeout(timer);
     }
   }
 
@@ -2455,14 +2463,14 @@
     }catch(e){ console.error("admin snapshot failed", e); return null; }
   }
 
-  async function apiCloseTournament({ intentId, expectedCycle, standings, basis }){
+  async function apiCloseTournament({ intentId, expectedCycle, standings, basis, standingsAt }){
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
       setAuthHeaders(headers, cred);
       const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/close", {
         method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings, basis })
+        body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings, basis, standingsAt })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, ...data };
@@ -2603,6 +2611,9 @@
   // luego el servidor dice «conflicto» justo con ese valor, era de esta misma
   // pestaña (Technical QA, H1): se toma como base y se reenvía sin alarma.
   let picksUnconfirmed = { owner: null, docs: [] };
+  // Un guardado sin respuesta en este tiempo se da por fallido (se dice, con
+  // «Reintentar») y la cola sigue: nunca «Guardando…» para siempre.
+  const PICKS_SAVE_TIMEOUT_MS = 15000;
   // `job`: el trabajo con la identidad capturada al crearlo (FIA-GPT-02):
   // participante, PIN y sesión (lgGen). Si la sesión ya no es la actual, no se
   // envía; y si cambia mientras espera respuesta, la respuesta no toca nada.
@@ -2616,7 +2627,7 @@
     let conflicts = [];
     for(let attempt = 0; attempt < 3; attempt++){
       const sent = picksDocForSave(data);
-      const r = await kvSetWithError(currentPicksKey(pid), sent, creds, { base: picksDocForSave(myPicksBase) });
+      const r = await kvSetWithError(currentPicksKey(pid), sent, creds, { base: picksDocForSave(myPicksBase) }, { timeoutMs: PICKS_SAVE_TIMEOUT_MS });
       if(!live()) return { ok: false, error: "session_changed" };
       if(r.ok){
         picksUnconfirmed.docs = [];
@@ -13852,6 +13863,7 @@
           expectedCycle: pending.expectedCycle,
           standings: pending.standings || [],
           basis: pending.basis,
+          standingsAt: pending.standingsAt,
         });
         verifyBtn.disabled = false;
         if(r.ok) return finishClose(r);
@@ -13942,7 +13954,7 @@
       // El token se guarda ANTES de mandar nada. Si el navegador se cae entre
       // el envío y la respuesta, al volver sigue existiendo la intención y se
       // puede preguntar por ella en vez de adivinar.
-      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, basis: snap.basis, startedAt: Date.now() };
+      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, basis: snap.basis, standingsAt: snap.readAt, startedAt: Date.now() };
       writeCloseIntent(intent);
 
       const r = await apiCloseTournament(intent);

@@ -2524,10 +2524,12 @@ app.post("/api/kv/:key", async (req, res) => {
           }
           // FIA-GPT-01: una pestaña de antes del despliegue (sin base) que
           // cambiaría un pronóstico guardado no puede demostrar qué vio: no se
-          // escribe nada y se pide recargar. Nunca un éxito falso.
+          // escribe nada y se pide recargar. Nunca un éxito falso. El código
+          // es uno que ese cliente viejo ya traduce como «…no se guardó nada.
+          // Recarga la página…» (UX de ec81210); el motivo va en `reason`.
           if (merged.reloadRequired) {
             await client.query("ROLLBACK");
-            return res.status(409).json({ error: "picks_reload_required", conflicts: merged.conflicts });
+            return res.status(409).json({ error: "invalid_value", reason: "picks_reload_required", conflicts: merged.conflicts });
           }
           // Lo que se habría pisado sigue guardado: no se escribe nada, y la
           // pantalla recibe lo guardado para mostrarlo.
@@ -3901,7 +3903,14 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // FIA-GPT-03: se archivan los descuentos que restaron en ESA tabla, con la
     // misma regla que la pantalla (penaltyPointsFor), también los que se
     // calculaban en vivo sin registro previo; una sola vez cada uno.
-    const archivedPenalties = closePenaltiesOf(meta, Date.parse(now));
+    // A la hora en que se leyó lo que armó la tabla (admin-snapshot.readAt,
+    // que la pantalla devuelve como standingsAt), no a la del cierre: una
+    // jornada que cierra en medio no agrega un descuento que la tabla no
+    // restó. Sólo se acepta una hora de las últimas 6 h y no futura.
+    const nowMs = Date.parse(now);
+    const askedAt = typeof body.standingsAt === "string" ? Date.parse(body.standingsAt) : NaN;
+    const penaltiesAt = Number.isFinite(askedAt) && askedAt <= nowMs && askedAt >= nowMs - 6 * 3600 * 1000 ? askedAt : nowMs;
+    const archivedPenalties = closePenaltiesOf(meta, penaltiesAt);
     if (Array.isArray(meta.participants)) meta.participants.forEach((p) => {
       if (p && "penalizedRounds" in p) p.penalizedRounds = {};
     });
