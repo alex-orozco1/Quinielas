@@ -41,8 +41,8 @@ Screenshots of the released app, using synthetic test data.
 <table>
 <tr>
 <td width="32%" align="center" valign="top">
-<strong>Mobile · Review your matchday</strong><br><br>
-<img src="./docs/images/readme/mobile-jugados.png" alt="Qracks mobile matchday selector, comparing a prediction with the actual score and a postponed match" width="280">
+<strong>Mobile · From predictions to points</strong><br><br>
+<img src="./docs/images/readme/mobile-jugados.png" alt="Qracks mobile demo showing three match predictions, their results and a two-point total" width="280">
 </td>
 <td width="68%" align="center" valign="top">
 <strong>Desktop · Compare the group</strong><br><br>
@@ -51,7 +51,7 @@ Screenshots of the released app, using synthetic test data.
 </tr>
 </table>
 
-Choose a matchday to review your predictions, then compare the group's results without losing the reference row. [View the delivery and validation](https://github.com/alex-orozco1/Quinielas/pull/43).
+Try predictions, results and points in the interactive demo, then compare the group's results in History. [Mobile demo evidence](https://github.com/alex-orozco1/Quinielas/pull/41#issuecomment-6691348168) · [Desktop history evidence](https://github.com/alex-orozco1/Quinielas/pull/43).
 
 ## 🌍 Supported competitions
 
