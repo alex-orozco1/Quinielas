@@ -18,13 +18,22 @@ for (const id of ["qz-p-newpass", "qz-edit-pass"]) {
 }
 
 test("AUD-09 · el componente empieza oculto y el botón no envía formularios", () => {
-  const start = html.indexOf("function passwordFieldHtml(id, extraAttrs){");
+  const start = html.indexOf("function passwordFieldHtml(id, extraAttrs, maxLength = 200){");
   const fn = html.slice(start, html.indexOf("function wirePasswordToggles", start));
   assert.match(fn, /type="password"/);
+  assert.match(fn, /function passwordFieldHtml\(id, extraAttrs, maxLength = 200\)/, "por omisión, el mismo tope de 200 de siempre");
   assert.match(fn, /<button type="button" class="qz-pass-toggle" data-pass-toggle="\$\{id\}" aria-controls="\$\{id\}" aria-pressed="false">Mostrar<\/button>/);
 });
 
 test("AUD-09 · el panel conecta los botones de los dos campos", () => {
   assert.ok(html.includes('wirePasswordToggles(document.getElementById("qz-p-newpass").closest(".field"));'));
   assert.ok(html.includes('if(editPassField) wirePasswordToggles(editPassField.closest(".field"));'));
+});
+
+test("AUD-09 · la contraseña nueva del panel no se corta: su campo de acceso (#qz-p-pass) tampoco tiene tope", () => {
+  assert.match(html, /passwordFieldHtml\("qz-p-newpass", `[^`]*`, null\)/);
+  const login = html.slice(html.indexOf('id="qz-p-pass"') - 200, html.indexOf('id="qz-p-pass"') + 200);
+  assert.doesNotMatch(login, /maxlength/, "si el acceso al panel tuviera tope, el campo nuevo debe tener el mismo");
+  // La contraseña de admin de una quiniela sigue con el tope de 200, igual que todos sus campos.
+  assert.match(html, /passwordFieldHtml\("qz-edit-pass", `[^`]*`\)\}/);
 });

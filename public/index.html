@@ -3121,10 +3121,13 @@
     }catch(e){ console.error("apiSetAdminPassword failed", e); return { ok: false, error: "network_error" }; }
   }
   // «Mostrar / Ocultar»: only what is being typed. It always starts hidden.
-  function passwordFieldHtml(id, extraAttrs){
+  // `maxLength` null: sin tope, para un secreto cuyo campo de acceso tampoco
+  // lo tiene (la contraseña del panel): cortarlo al guardar dejaría fuera a
+  // quien después escribe la contraseña completa para entrar.
+  function passwordFieldHtml(id, extraAttrs, maxLength = 200){
     return `
       <div class="qz-pass-toggle-row">
-        <input class="qz-modal-input" id="${id}" type="password" maxlength="200" ${extraAttrs || ""}>
+        <input class="qz-modal-input" id="${id}" type="password"${maxLength == null ? "" : ` maxlength="${maxLength}"`} ${extraAttrs || ""}>
         <button type="button" class="qz-pass-toggle" data-pass-toggle="${id}" aria-controls="${id}" aria-pressed="false">Mostrar</button>
       </div>`;
   }
@@ -15179,7 +15182,7 @@
         `}
         <div class="card">
           <div class="eyebrow">Acceso al panel</div>
-          <div class="field"><label for="qz-p-newpass">Contraseña del panel</label>${passwordFieldHtml("qz-p-newpass", `placeholder="Dejar en blanco para no cambiarla" autocomplete="new-password"`)}</div>
+          <div class="field"><label for="qz-p-newpass">Contraseña del panel</label>${passwordFieldHtml("qz-p-newpass", `placeholder="Dejar en blanco para no cambiarla" autocomplete="new-password"`, null)}</div>
           <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos la contraseña actual aquí — solo escribe algo si quieres cambiarla.</p>
           <button class="btn btn-primary" id="qz-p-save">Guardar contraseña</button>
         </div>
