@@ -171,6 +171,16 @@ test("JUG-01 · «Cambiar usuario» olvida la jornada elegida por la persona ant
   assert.ok(block.includes("lgResetSession();\n      jugadosRoundId = null;"));
 });
 
-test("HIS-01 · en teléfono horizontal (≤480 px de alto) la cabecera no se fija, para dejar ver a los participantes", () => {
-  assert.match(html, /@media \(max-height:480px\)\{\s*#quiniela-root \.qz-cmp-head\{ position:static; box-shadow:none; \}/);
+test("HIS-01 · en pantallas bajas (≤480 px de alto) la cabecera sigue fija pero compacta", () => {
+  const i = html.indexOf("@media (max-height:480px){");
+  assert.ok(i !== -1);
+  const block = html.slice(i, html.indexOf("}\n  }", i) + 4);
+  assert.ok(!/position:static/.test(block), "no se suelta la cabecera");
+  assert.match(block, /\.qz-cmp-head th, #quiniela-root \.qz-cmp-head td\{ padding-top:2px/);
+});
+
+test("JUG-01 · cambiar de jornada no mueve la página: se repinta, se enfoca sin desplazar y se restaura la posición", () => {
+  const picker = fnSource("function renderJugadosPicker(list, rounds, focusSel){");
+  assert.ok(picker.includes("const y = window.scrollY;") && picker.includes('window.scrollTo({ top: y, behavior: "instant" });'));
+  assert.ok(picker.includes(".focus({ preventScroll: true })"));
 });
