@@ -2488,13 +2488,18 @@ app.post("/api/kv/:key", async (req, res) => {
       try {
         await client.query("BEGIN");
         const metaValue = await getRowLocked(info.metaKey, client);
-        if (metaValue) {
-          const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
-          if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
-            await client.query("ROLLBACK");
-            if (sendIfCredentialThrottled(req, res)) return;
-            return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
-          }
+        // AUD-06: sin quiniela no hay participante que pueda probar quién es,
+        // así que no se escribe nada: ni una fila nueva ni encima de una fila
+        // huérfana que ya existiera. Mismo 404 que /picks/:pid/match.
+        if (!metaValue) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "not_found" });
+        }
+        const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
+        if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
+          await client.query("ROLLBACK");
+          if (sendIfCredentialThrottled(req, res)) return;
+          return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
         }
         const oldPicks = await getRowLocked(req.params.key, client);
         const nowRow = await client.query("SELECT NOW() as now");
