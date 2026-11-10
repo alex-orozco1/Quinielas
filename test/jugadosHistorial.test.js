@@ -151,3 +151,26 @@ test("HIS-01 · la cabecera se fija bajo el menú verde medido en vivo y sincron
   // La fila de lectores de pantalla no ocupa alto.
   assert.match(html, /\.qz-cmp-sr th, #quiniela-root \.qz-cmp-sr td\{ height:0; padding:0 !important;/);
 });
+
+test("JUG-01 · sin la lectura de lo guardado, Jugados no afirma «Sin pronóstico» ni «0 puntos»: ofrece cargarlos", () => {
+  const picker = fnSource("function renderJugadosPicker(list, rounds, focusSel){");
+  const i = picker.indexOf("if(myPicksLoadFailed){");
+  assert.ok(i !== -1);
+  const branch = picker.slice(i, picker.indexOf("return;", i));
+  assert.ok(branch.includes("data-picks-reload") && branch.includes("wirePicksReload(box)"));
+  assert.ok(i < picker.indexOf("renderRoundPlayed)(box, sel)"), "el aviso va antes del desglose");
+  // El selector se conecta antes de pintar la tarjeta: si una falla, se elige otra.
+  assert.ok(picker.indexOf('select.addEventListener("change"') < picker.indexOf("renderRoundPlayed)(box, sel)"));
+  // El aviso para lectores no se recrea en cada cambio.
+  assert.ok(picker.includes('let status = document.getElementById("qz-jpick-status");') && picker.includes("list.after(status)"));
+});
+
+test("JUG-01 · «Cambiar usuario» olvida la jornada elegida por la persona anterior", () => {
+  const i = html.indexOf('document.getElementById("qz-switch-user").addEventListener("click"');
+  const block = html.slice(i, i + 1500);
+  assert.ok(block.includes("lgResetSession();\n      jugadosRoundId = null;"));
+});
+
+test("HIS-01 · en teléfono horizontal (≤480 px de alto) la cabecera no se fija, para dejar ver a los participantes", () => {
+  assert.match(html, /@media \(max-height:480px\)\{\s*#quiniela-root \.qz-cmp-head\{ position:static; box-shadow:none; \}/);
+});

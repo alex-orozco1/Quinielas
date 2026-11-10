@@ -281,7 +281,7 @@
   #quiniela-root .qz-cmp-sr *{ font-size:0 !important; line-height:0 !important; margin:0 !important; padding:0 !important; }
   #quiniela-root .qz-cmp-sr br{ display:none; }
   #quiniela-root table.qz-cmp-reg col.qz-cmp-c-name{ width:140px; }
-  #quiniela-root table.qz-cmp-reg col.qz-cmp-c-cell{ width:104px; }
+  #quiniela-root table.qz-cmp-reg col.qz-cmp-c-cell{ width:100px; }
   #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:56px; }
   #quiniela-root table.qz-cmp-reg th, #quiniela-root table.qz-cmp-reg td{ overflow-wrap:break-word; }
   #quiniela-root table.qz-cmp-reg td{ font-size:12.5px; padding-left:4px; padding-right:4px; }
@@ -296,6 +296,13 @@
     #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:48px; }
     #quiniela-root table.lg-h-table col.qz-cmp-c-name{ width:92px; }
     #quiniela-root table.lg-h-table col.qz-cmp-c-cell{ width:118px; }
+    #quiniela-root table.qz-cmp-reg thead th{ font-size:10px; letter-spacing:0; }
+  }
+  /* Teléfono horizontal (pantalla de 480 px de alto o menos): el menú verde ya
+     ocupa casi la mitad; si además se fijan los encabezados no queda espacio
+     para leer a los participantes (UX H1). Ahí la cabecera vuelve a su lugar. */
+  @media (max-height:480px){
+    #quiniela-root .qz-cmp-head{ position:static; box-shadow:none; }
   }
 
   /* JUG-01: elegir la jornada en Jugados y comparar pronóstico con resultado */
@@ -7643,6 +7650,7 @@
       // persona se quedan con ella; nada de eso se envía ni se ve como de quien
       // entra después.
       lgResetSession();
+      jugadosRoundId = null;
       allPicksCache = {};
       currentUser = null;
       ownerUnlocked = false;
@@ -8392,11 +8400,17 @@
             <button type="button" class="btn btn-ghost qz-jpick-step" data-jpick="newer" aria-label="Jornada siguiente" ${idx === 0 ? "disabled" : ""}>›</button>
           </div>
           <p class="muted qz-jpick-note">${esc(desc.length)} jornadas con resultados. La más reciente va primero.</p>`}
-        <p class="sr-only" aria-live="polite" id="qz-jpick-status"></p>
       </div>
       <div class="card" id="qz-round-${esc(sel.id)}" data-jugados-round="${esc(sel.id)}" style="padding:16px;"></div>`;
-    const box = document.getElementById("qz-round-" + sel.id);
-    (isLg(sel) ? renderLiguillaPlayed : renderRoundPlayed)(box, sel);
+    // El aviso para lectores de pantalla vive fuera de lo que se repinta: así
+    // se anuncia al cambiar de jornada (UX H7).
+    let status = document.getElementById("qz-jpick-status");
+    if(!status){
+      status = document.createElement("p");
+      status.className = "sr-only"; status.id = "qz-jpick-status";
+      status.setAttribute("aria-live", "polite");
+      list.after(status);
+    }
     const go = (round, focus) => {
       jugadosRoundId = round.id;
       renderJugadosPicker(list, rounds, focus);
@@ -8417,6 +8431,26 @@
     if(focusSel){
       const want = focusSel === "select" ? select : list.querySelector(`[data-jpick="${focusSel}"]`);
       (want && !want.disabled ? want : select)?.focus();
+    }
+    // La tarjeta se pinta después de conectar el selector: si una jornada no
+    // se puede pintar, se puede elegir otra.
+    const box = document.getElementById("qz-round-" + sel.id);
+    // Sin la lectura de lo guardado no se sabe qué pronosticó: no se afirma
+    // «Sin pronóstico» ni «0 puntos» (Technical QA H3).
+    if(myPicksLoadFailed){
+      box.innerHTML = `
+        <div class="eyebrow">${esc(roundTitle(sel))}${roundSubtitle(sel) ? ` · ${esc(roundSubtitle(sel))}` : ``}</div>
+        <div class="qz-picks-loadfail" role="alert" style="margin-top:8px;">
+          <p><strong>No pudimos cargar tus pronósticos guardados.</strong> Cuando se carguen verás tus aciertos y puntos de esta jornada.</p>
+          <button class="btn btn-gold btn-sm" data-picks-reload>Cargar mis pronósticos</button>
+        </div>`;
+      wirePicksReload(box);
+      return;
+    }
+    try{ (isLg(sel) ? renderLiguillaPlayed : renderRoundPlayed)(box, sel); }
+    catch(e){
+      console.error("jugados render failed", e);
+      box.innerHTML = `<div class="eyebrow">${esc(roundTitle(sel))}</div><p class="muted">No pudimos mostrar el desglose de esta jornada. Elige otra o vuelve a intentar más tarde.</p>`;
     }
   }
 
@@ -9626,8 +9660,7 @@
       ${lgRulesStripHtml(rules, true)}
       ${round.matches.map((m, i) => {
         const out = res.matches[i];
-        const pickValue = rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
-        const st = LG.matchStatusOf(round, m.id);
+        const pickValue = rules && rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
         const mine = pickValue == null ? "" : lgPickText(round, m, pickValue);
         return `
           <div class="match-card lg-match">
