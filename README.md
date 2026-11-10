@@ -87,9 +87,6 @@ HTML, CSS and JavaScript · Node.js + Express · PostgreSQL on Supabase · Rende
 
 ## 🧩 Feature catalog
 
-<details>
-<summary><strong>Explore all features — participants, organizers and platform</strong></summary>
-
 ### 👥 For participants
 
 | Feature | What it does |
@@ -159,8 +156,6 @@ HTML, CSS and JavaScript · Node.js + Express · PostgreSQL on Supabase · Rende
 | Admin PIN recovery | Recover an administrator PIN by proving the pool's administrator password. |
 | Privacy controls | Enforce visibility rules for unpublished matchdays, private predictions and draft results. |
 | Concurrent-edit protection | Protect saved predictions and matchdays from conflicting updates across tabs and sessions. |
-
-</details>
 
 Qracks charges for its software; it does not hold or distribute pool prize money.
 
