@@ -860,13 +860,16 @@ test("MON003 · 60 — COBERTURA: Plus sin competencia tampoco se corta; el cicl
 
 test("MON003 · 61 — QUICK WIN 2: la Premier ya no lleva una bandera negra", () => {
   const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
-  // La línea de la lista de competencias (la tabla de cobertura de Plus también
-  // nombra la Premier, sin bandera).
-  const line = readme.split("\n").find((l) => l.trim().startsWith("- ") && l.includes("Premier League"));
-  assert.ok(line);
-  assert.ok(!line.includes("\u{1F3F4}"),
-    "U+1F3F4 a secas se pinta como un rectángulo negro en casi todas partes");
-  assert.ok(line.includes("\u{1F1EC}\u{1F1E7}"), "se usa la bandera del Reino Unido, que sí renderiza");
+  // Donde el README presente las competencias (lista o línea con banderas;
+  // el formato puede cambiar), la Premier League va con una bandera delante.
+  // La tabla de cobertura de Plus también la nombra, pero sin bandera.
+  const flagged = [...readme.matchAll(/(\p{Extended_Pictographic}|\p{Regional_Indicator}{2})[\u{E0020}-\u{E007F}\u{FE0F}]*\s*(?:\*\*)?Premier League/gu)];
+  assert.ok(flagged.length >= 1, "el README presenta la Premier League con su bandera");
+  for (const m of flagged) {
+    assert.ok(!m[0].includes("\u{1F3F4}"),
+      "U+1F3F4 a secas se pinta como un rectángulo negro en casi todas partes");
+    assert.equal(m[1], "\u{1F1EC}\u{1F1E7}", "se usa la bandera del Reino Unido, que sí renderiza");
+  }
 });
 
 // ==== 17 · el contrato de reintento con el proveedor =======================
