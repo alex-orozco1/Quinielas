@@ -157,4 +157,31 @@ test.describe("AUD-06b: borrar una quiniela no deja pronósticos legibles (real 
     assert.equal(batch.status, 200, JSON.stringify(batch.body));
     assert.deepEqual(batch.body.picks[q.beto.id], { r2: { "r2-m1": "B" } }, "por lote, igual que anónimo");
   });
+
+  itest("quiniela antigua migrada: sus pronósticos (quiniela_picks_<pid>_v1) dejan de leerse; los de la nueva siguen filtrados", async () => {
+    // Una quiniela de antes de los slugs, con una jornada abierta.
+    const pid = "pleg" + crypto.randomBytes(3).toString("hex");
+    const ownerPw = "legacy-" + crypto.randomBytes(4).toString("hex");
+    const legacyMeta = { groupName: "Antigua", settings: { ownerPassword: ownerPw }, participants: [{ id: pid, name: "Leo", isAdmin: true, paid: false }],
+      rounds: [round("r1", inDays(3))] };
+    await dbQuery("INSERT INTO kv (key, value) VALUES ('quiniela_meta_v1', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [JSON.stringify(legacyMeta)]);
+    const legacyKey = `quiniela_picks_${pid}_v1`;
+    const picks = { r1: { "r1-m1": "A", "r1-m2": "B" } };
+    await dbQuery("INSERT INTO kv (key, value) VALUES ($1, $2)", [legacyKey, JSON.stringify(picks)]);
+    const before = await call("GET", enc(legacyKey), { ip: freshIp() });
+    assert.equal(before.status, 200);
+    assert.deepEqual(before.body.value, {}, "antes de migrar: la jornada abierta no se ve");
+    const toSlug = "migrada-" + crypto.randomBytes(3).toString("hex");
+    const mig = await call("POST", "/api/migrate-quiniela", { ip: freshIp(), headers: { "X-Qracks-Auth": ownerPw }, body: { toSlug } });
+    assert.equal(mig.status, 200, JSON.stringify(mig.body));
+    assert.ok((await row("quiniela_meta_v1")).migratedTo, "la meta antigua queda como { migratedTo }");
+    const after = await call("GET", enc(legacyKey), { ip: freshIp() });
+    assert.equal(after.status, 404, JSON.stringify(after.body));
+    assert.ok(!JSON.stringify(after.body).includes("r1-m1"), "no se filtra ningún pronóstico");
+    assert.deepEqual(await row(legacyKey), picks, "la fila antigua no se borra");
+    // En la quiniela nueva, la jornada abierta sigue oculta para un anónimo.
+    const fresh = await call("GET", enc(picksKey(toSlug, pid)), { ip: freshIp() });
+    assert.equal(fresh.status, 200);
+    assert.deepEqual(fresh.body.value, {});
+  });
 });

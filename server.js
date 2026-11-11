@@ -1577,8 +1577,10 @@ function computeRequesterIdentity(req, slug, meta) {
 async function filterPicksForRequest(req, info, picksValue, preloadedMeta, requesterIdentity) {
   const meta = preloadedMeta || await getRow(info.metaKey);
   // AUD-06b: sin quiniela no hay nadie que pueda ver estos pronósticos (ni su
-  // dueño, que ya no existe en ninguna meta): no se devuelve nada.
-  if (!meta) return {};
+  // dueño, que ya no existe en ninguna meta): no se devuelve nada. Una meta
+  // antigua ya migrada ({ migratedTo }) tampoco es una quiniela: sus jornadas
+  // viven en la nueva, así que aquí todas parecerían cerradas.
+  if (!meta || meta.migratedTo) return {};
   const identity = requesterIdentity || computeRequesterIdentity(req, info.slug, meta);
   const { isAdminOrOwner, selfParticipantIds } = identity;
 
@@ -1774,7 +1776,7 @@ app.get("/api/kv/:key", async (req, res) => {
       // AUD-06b: una fila de pronósticos cuya quiniela no existe (huérfana) se
       // responde igual que una fila que no existe.
       const meta = await getRow(info.metaKey);
-      if (!meta) return res.status(404).json({ error: "not_found" });
+      if (!meta || meta.migratedTo) return res.status(404).json({ error: "not_found" });
       value = await filterPicksForRequest(req, info, value, meta);
     }
     res.json({ key: req.params.key, value });
