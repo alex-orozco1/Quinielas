@@ -360,7 +360,8 @@ test("AUD-10 · el Historial regular cierra con «Total jornada» (puntos) y dej
   // Liguilla: el total de la nombre-celda es el de la jornada, no el de partidos.
   const lgHist = fn("function renderLiguillaHistDetail(detail, round)");
   assert.ok(lgHist.includes('<span class="lg-h-total">${esc(ptsText(t.total))}</span>'));
-  assert.ok(lgHist.includes('"Partidos " + lgPts(t.match.pts)'));
+  assert.ok(lgHist.includes('const parts = t.questions || t.discount ? ["Partidos " + lgPts(t.match.pts)] : [];'));
+  assert.ok(hist.includes('sub("hasta ahora")'), "con partidos sin resultado, el total es «hasta ahora»");
 });
 
 test("Jugados: el subtotal de partidos se llama así y aparte va «Total de esta jornada»", () => {
@@ -431,10 +432,12 @@ test("carga fallida de pronósticos: se marca como fallida (no como cero) y se r
   assert.equal(m.state().allPicksLoadFailed, true);
   // La Tabla y el Historial no pintan puntos con una carga fallida.
   const tabla = fn("async function renderTabla(main)");
-  assert.ok(tabla.indexOf("if(allPicksLoadFailed){") < tabla.indexOf("const list = standingsList();"));
+  const gT = tabla.indexOf("if(allPicksLoadFailed){");
+  assert.ok(gT !== -1 && gT < tabla.indexOf("const list = standingsList();"), "la guarda existe y va antes de calcular");
   assert.ok(tabla.includes("No pudimos cargar los pronósticos para calcular la tabla."));
   const hist = fn("function renderHistDetail(round)");
-  assert.ok(hist.indexOf("if(allPicksLoadFailed){") < hist.indexOf("if(isLg(round)){"));
+  const gH = hist.indexOf("if(allPicksLoadFailed){");
+  assert.ok(gH !== -1 && gH < hist.indexOf("if(isLg(round)){"), "la guarda existe y va antes de pintar");
 });
 
 // ---- Tabla: «Ver desglose» -----------------------------------------------------
@@ -451,4 +454,13 @@ test("Tabla · cada fila tiene «Ver desglose» con aria-expanded/aria-controls 
   assert.ok(!/guess|customBetAnswers|allPicksCache|__extra/.test(bd), "no lee respuestas ni pronósticos");
   const bk = fn("function pointsBreakdown(participantId, participantMap)");
   assert.ok(!/guess|__extra/.test(bk));
+});
+
+test("un id de jornada como «constructor» o «toString» no hereda nada: el total sigue siendo un número", () => {
+  const rounds = ["constructor", "toString"].map((id, i) => ({ id, number: i + 1, deadline: PAST, published: true, resultsPublished: true, matches: [{ id: "a", teamA: "X", teamB: "Y" }], results: { a: "A" } }));
+  const meta = { settings: { pointsPerCorrectPick: 3 }, participants: [{ id: "u", name: "U", paid: true }], rounds, customBets: [] };
+  const picks = { u: { constructor: { a: "A" }, toString: { a: "B" } } };
+  const N = newModel(meta, picks);
+  assert.deepEqual(rounds.map((r) => N.roundTotalParts("u", r, picks.u[r.id]).total), [3, 0]);
+  assert.equal(N.pointsBreakdown("u").total, 3);
 });

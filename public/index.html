@@ -4381,7 +4381,7 @@
   // (byRound, por id de jornada) y las del torneo (temporada). Mismas reglas
   // de siempre; customBetPointsFor() es su suma.
   function customBetParts(participantId, participantMap, cutoffRoundNumber){
-    const parts = { byRound: {}, temporada: 0, total: 0 };
+    const parts = { byRound: Object.create(null), temporada: 0, total: 0 };
     if(!meta.customBets || !meta.customBets.length) return parts;
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     if(!p) return parts;
@@ -4513,7 +4513,7 @@
   // existe (byRound, por id) y los de jornadas eliminadas (deleted). Mismas
   // reglas de siempre; penaltyPointsFor() es su suma.
   function penaltyParts(p, cutoffRoundNumber){
-    const parts = { byRound: {}, deleted: 0, total: 0 };
+    const parts = { byRound: Object.create(null), deleted: 0, total: 0 };
     const penalty = meta.paymentPenalty;
     if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return parts;
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
@@ -8702,8 +8702,8 @@
                 <td style="text-align:center;"><span class="muted" title="${NO_MOVE}">—</span></td>
                 <td class="qz-sticky-col qz-name-cell qz-name-wrap" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}
                   <button type="button" class="qz-bd-btn" data-bd="${i}" aria-expanded="false" aria-controls="qz-bd-${i}">Ver desglose<span class="sr-only"> de ${esc(p.name)}</span></button></td>
-                <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
-                <td style="text-align:center;" class="muted">${esc(i===0 ? "líder" : "−" + (leaderPts - p.pts))}</td>
+                <td style="text-align:center;font-weight:700;">${esc(p.pts < 0 ? "−" + Math.abs(p.pts) : p.pts)}</td>
+                <td style="text-align:center;" class="muted">${esc(i===0 || p.pts === leaderPts ? "líder" : "−" + (leaderPts - p.pts))}</td>
                 ${payTracked ? `<td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>` : ``}
               </tr>
               <tr class="qz-bd-row" id="qz-bd-${i}" hidden><td colspan="${payTracked ? 6 : 5}"><div class="qz-bd" aria-label="Desglose de ${esc(p.name)}" role="group">${breakdownHtml(p)}</div></td></tr>
@@ -8725,6 +8725,14 @@
     document.getElementById("qz-export").addEventListener("click", exportExcel);
     const shareBtn = document.getElementById("qz-share-card");
     if(shareBtn) shareBtn.addEventListener("click", () => shareResultsCard(list));
+    // El menú de arriba es fijo: si el foco (Tab o Shift+Tab) deja el botón
+    // debajo de él, se baja la página lo justo para verlo.
+    main.querySelectorAll("[data-bd]").forEach(btn => btn.addEventListener("focus", () => {
+      const hdr = root.querySelector(".qz-header");
+      const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
+      const top = btn.getBoundingClientRect().top;
+      if(top < hb + 8) window.scrollBy({ top: top - hb - 12, behavior: "instant" });
+    }));
     main.querySelectorAll("[data-bd]").forEach(btn => btn.addEventListener("click", () => {
       const row = document.getElementById("qz-bd-" + btn.dataset.bd);
       if(!row) return;
@@ -8732,6 +8740,13 @@
       row.hidden = !open;
       btn.setAttribute("aria-expanded", open ? "true" : "false");
       btn.firstChild.textContent = open ? "Ocultar desglose" : "Ver desglose";
+      if(open){
+        const r = row.getBoundingClientRect();
+        if(r.bottom > window.innerHeight){
+          const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          row.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+        }
+      }
     }));
     renderProgressChart(list);
   }
@@ -8831,7 +8846,7 @@
       ctx.textAlign = "center";
       ctx.fillStyle = "#F7F5EC";
       ctx.font = `800 26px ${F}`;
-      ctx.fillText(String(p.pts), puntosX, textY);
+      ctx.fillText(p.pts < 0 ? "−" + Math.abs(p.pts) : String(p.pts), puntosX, textY); // el mismo signo que la Tabla
       if(showPayColumn){
         ctx.font = `800 22px ${F}`;
         ctx.fillText(p.paid ? "✅" : "❌", pagoX, textY);
@@ -9149,9 +9164,10 @@
       const t = p.t;
       const extra = t.questions || t.discount;
       const sub = (txt) => `<span class="qz-ht-sub">${esc(txt)}</span>`;
+      const soFar = round.matches.some(m => !(round.results && round.results[m.id])) ? sub("hasta ahora") : "";
       const hitsSub = sub(p.correct + " acierto" + (p.correct === 1 ? "" : "s"));
-      const extraSubs = extra ? sub("Partidos " + t.match.pts) + (t.questions ? sub("Preguntas " + signedPts(t.questions)) : "") + (t.discount ? sub("Descuento " + signedPts(-t.discount)) : "") : "";
-      return `<td style="text-align:center;"><span class="qz-ht-total">${esc(ptsText(t.total))}</span>${hitsSub}${extraSubs}</td>`;
+      const extraSubs = extra ? sub("Partidos " + ptsText(t.match.pts)) + (t.questions ? sub("Preguntas " + signedPts(t.questions)) : "") + (t.discount ? sub("Descuento " + signedPts(-t.discount)) : "") : "";
+      return `<td style="text-align:center;"><span class="qz-ht-total">${esc(ptsText(t.total))}</span>${soFar}${hitsSub}${extraSubs}</td>`;
     };
     const perParticipant = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const picks = (allPicksCache[p.id] || {})[round.id] || {};
@@ -9194,6 +9210,7 @@
       ` : ``}
       <div class="card">
         <h3>Jornada ${esc(round.number)} — detalle</h3>
+        <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido y, al final, el «Total jornada» de cada quien; el nombre se queda fijo.</p>
         ${tableHtml}
       </div>
     `;
@@ -9882,7 +9899,7 @@
       // El total de la jornada incluye sus preguntas y descuentos; el de
       // partidos se nombra aparte (AUD-10).
       const t = roundTotalParts(p.id, round, rp, participantMap);
-      const parts = ["Partidos " + lgPts(t.match.pts)];
+      const parts = t.questions || t.discount ? ["Partidos " + lgPts(t.match.pts)] : [];
       if(t.questions) parts.push("Preguntas " + signedPts(t.questions));
       if(t.discount) parts.push("Descuento " + signedPts(-t.discount));
       const cells = round.matches.map((m, i) => {
@@ -9890,10 +9907,10 @@
         const v = rules && rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
         return `<td class="lg-h-cell">${lgHistCellHtml(round, m, out, v)}</td>`;
       }).join("");
-      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(ptsText(t.total))}</span><span class="lg-h-sum">${esc(parts.join(" · "))}</span><span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
+      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(ptsText(t.total))}</span>${parts.length ? `<span class="lg-h-sum">${esc(parts.join(" · "))}</span>` : ``}<span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
     }).join("");
     const headRows = `
-      <tr><th scope="col" class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Total de la jornada</span></th>${round.matches.map(m=>`<th scope="col" class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr>
+      <tr><th scope="col" class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Total jornada</span></th>${round.matches.map(m=>`<th scope="col" class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr>
       <tr class="lg-h-real"><th scope="row" class="qz-sticky-col lg-h-name"><strong>Resultado real</strong></th>${round.matches.map(m => `<td class="lg-h-cell"><strong>${esc(lgResultText(round, m))}</strong></td>`).join("")}</tr>`;
     const tableHtml = stickyCompareHtml({
       tableCls: "lg-h-table",
