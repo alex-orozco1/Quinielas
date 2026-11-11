@@ -109,7 +109,9 @@ function extractFunctionBody(source, signature) {
 }
 
 function runCustomBetPointsFor(meta, participantId, cutoffRoundNumber) {
-  const fnSrc = extractFunctionBody(indexSrc, "function customBetPointsFor(participantId, participantMap, cutoffRoundNumber)");
+  // customBetPointsFor() suma customBetParts() (claridad de puntos): las dos van juntas.
+  const fnSrc = extractFunctionBody(indexSrc, "function customBetParts(participantId, participantMap, cutoffRoundNumber)") + "\n"
+    + extractFunctionBody(indexSrc, "function customBetPointsFor(participantId, participantMap, cutoffRoundNumber)");
   const wrapped = new Function("meta", "participantId", "participantMap", "cutoffRoundNumber", `${fnSrc}\nreturn customBetPointsFor(participantId, participantMap, cutoffRoundNumber);`);
   return wrapped(meta, participantId, null, cutoffRoundNumber);
 }

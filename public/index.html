@@ -282,7 +282,7 @@
   #quiniela-root .qz-cmp-sr br{ display:none; }
   #quiniela-root table.qz-cmp-reg col.qz-cmp-c-name{ width:140px; }
   #quiniela-root table.qz-cmp-reg col.qz-cmp-c-cell{ width:100px; }
-  #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:56px; }
+  #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:92px; }
   #quiniela-root table.qz-cmp-reg th, #quiniela-root table.qz-cmp-reg td{ overflow-wrap:break-word; }
   #quiniela-root table.qz-cmp-reg td{ font-size:12.5px; padding-left:4px; padding-right:4px; }
   #quiniela-root table.qz-cmp-reg thead th{ letter-spacing:0.01em; padding-left:4px; padding-right:4px; }
@@ -293,7 +293,7 @@
   @media (max-width:360px){
     #quiniela-root table.qz-cmp-reg col.qz-cmp-c-name{ width:104px; }
     #quiniela-root table.qz-cmp-reg col.qz-cmp-c-cell{ width:96px; }
-    #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:48px; }
+    #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:80px; }
     #quiniela-root table.lg-h-table col.qz-cmp-c-name{ width:92px; }
     #quiniela-root table.lg-h-table col.qz-cmp-c-cell{ width:118px; }
     #quiniela-root table.qz-cmp-reg thead th{ font-size:10px; letter-spacing:0; }
@@ -1387,6 +1387,20 @@
   #quiniela-root .qz-name-cell.qz-name-wrap{ white-space:normal; overflow:visible; min-width:120px; max-width:200px; }
   #quiniela-root .qz-name-wrap .badge{ display:inline-block; margin-top:2px; }
   #quiniela-root tr.me .qz-sticky-col{ background:#FBF3DE; }
+  /* Claridad de puntos: «Ver desglose» en la Tabla y totales de jornada */
+  #quiniela-root .qz-bd-btn{ display:block; margin-top:6px; min-height:32px; padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:var(--paper); color:var(--pitch-light); font:inherit; font-size:12px; font-weight:700; cursor:pointer; white-space:nowrap; }
+  #quiniela-root .qz-bd-btn[aria-expanded="true"]{ background:var(--chalk); }
+  #quiniela-root .qz-bd-btn:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; }
+  #quiniela-root tr.qz-bd-row > td{ padding:0 0 10px; background:var(--chalk); }
+  #quiniela-root .qz-bd{ position:sticky; left:0; box-sizing:border-box; width:min(420px, calc(100vw - 72px)); padding:10px 12px; }
+  #quiniela-root .qz-bd-line{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:3px 0; font-size:13px; }
+  #quiniela-root .qz-bd-line strong{ white-space:nowrap; }
+  #quiniela-root .qz-bd-note{ display:block; font-size:11.5px; color:var(--ink-soft); font-weight:400; }
+  #quiniela-root .qz-bd-total{ border-top:1px solid var(--line); margin-top:4px; padding-top:6px; font-weight:800; }
+  #quiniela-root .qz-rt{ border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin:8px 0 12px; background:var(--chalk); }
+  #quiniela-root .qz-rt .qz-bd-line{ font-size:13.5px; }
+  #quiniela-root .qz-ht-total{ display:block; font-weight:800; font-size:15px; }
+  #quiniela-root .qz-ht-sub{ display:block; font-size:11px; font-weight:500; color:var(--ink-soft); white-space:nowrap; }
   #quiniela-root .qz-next{ border-color:var(--gold); background:#FFF9EC; }
   #quiniela-root .qz-next .qz-wz-actions{ margin-top:6px; }
   #quiniela-root .qz-rules-grid{ display:grid; grid-template-columns:minmax(0, 1fr); gap:0 20px; }
@@ -3489,6 +3503,9 @@
   let currentUser = null; // participant object (from meta.participants) for this session
   let myPicks = {};       // { roundId: { matchId: 'A'|'D'|'B' } }
   let allPicksCache = {}; // { participantId: picksObj } - loaded on demand for standings/history/export
+  // La última carga de allPicksCache falló: sin pronósticos, los puntos de la
+  // Tabla y del Historial no se conocen (no son cero).
+  let allPicksLoadFailed = false;
   let activeTab = "jornada";
   let adminSubTab = "rondas";
   let ownerUnlocked = false;
@@ -4268,10 +4285,13 @@
           method: "POST", headers, credentials: "same-origin",
           body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
         });
-        allPicksCache = res.ok ? (await res.json()).picks || {} : {};
+        if(!res.ok) throw new Error("picks-batch " + res.status);
+        allPicksCache = (await res.json()).picks || {};
+        allPicksLoadFailed = false;
       }catch(e){
         console.error("ensureAllPicksLoaded (batch) failed", e);
         allPicksCache = {};
+        allPicksLoadFailed = true;
       }
     })();
     try{
@@ -4357,11 +4377,14 @@
     return betCloseInfo(bet).closed;
   }
 
-  function customBetPointsFor(participantId, participantMap, cutoffRoundNumber){
-    let pts = 0;
-    if(!meta.customBets || !meta.customBets.length) return pts;
+  // Claridad de puntos: las preguntas separadas en las de cada jornada
+  // (byRound, por id de jornada) y las del torneo (temporada). Mismas reglas
+  // de siempre; customBetPointsFor() es su suma.
+  function customBetParts(participantId, participantMap, cutoffRoundNumber){
+    const parts = { byRound: {}, temporada: 0, total: 0 };
+    if(!meta.customBets || !meta.customBets.length) return parts;
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    if(!p) return pts;
+    if(!p) return parts;
     // "temporada" bets have no round of their own, so they can't be placed on
     // any specific past jornada. They must never leak backwards into earlier
     // chart points (that would let a bet graded today rewrite what J1's real
@@ -4374,7 +4397,7 @@
       if(bet.scope === "temporada"){
         if(!includeTemporadaBets) return;
         const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
-        if(ans && ans.correct === true) pts += bet.points;
+        if(ans && ans.correct === true){ parts.temporada += bet.points; parts.total += bet.points; }
       } else if(bet.scope === "jornada"){
         meta.rounds.forEach(r => {
           // AUTO-001 HOTFIX: unlike per-match points (which can only exist
@@ -4387,11 +4410,17 @@
           if(r.published === false) return;
           if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
           const res = r.customBetResults && r.customBetResults[bet.id];
-          if(res && res[participantId] === true) pts += bet.points;
+          if(res && res[participantId] === true){
+            parts.byRound[r.id] = (parts.byRound[r.id] || 0) + bet.points;
+            parts.total += bet.points;
+          }
         });
       }
     });
-    return pts;
+    return parts;
+  }
+  function customBetPointsFor(participantId, participantMap, cutoffRoundNumber){
+    return customBetParts(participantId, participantMap, cutoffRoundNumber).total;
   }
 
   // Payment-penalty persistence (P1, QA-corrected model): a penalty is
@@ -4480,12 +4509,16 @@
       });
     });
   }
-  function penaltyPointsFor(p, cutoffRoundNumber){
+  // Claridad de puntos: los descuentos separados en los de cada jornada que
+  // existe (byRound, por id) y los de jornadas eliminadas (deleted). Mismas
+  // reglas de siempre; penaltyPointsFor() es su suma.
+  function penaltyParts(p, cutoffRoundNumber){
+    const parts = { byRound: {}, deleted: 0, total: 0 };
     const penalty = meta.paymentPenalty;
-    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return 0;
+    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return parts;
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
     const ledger = p.penalizedRounds || {};
-    let total = 0;
+    const add = (roundId, n) => { parts.byRound[roundId] = (parts.byRound[roundId] || 0) + n; parts.total += n; };
     // Permanent ledger entries always count exactly as resolved (0 for
     // exempt, perRound-at-the-time for penalized) -- this is what survives
     // reopening/deadline edits/round deletion/later paid toggles. The round
@@ -4493,7 +4526,7 @@
     // outcome already frozen in.
     meta.rounds.forEach(r => {
       if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-      if(r.id in ledger) total += ledger[r.id];
+      if(r.id in ledger) add(r.id, ledger[r.id]);
     });
     // A round could be deleted after being resolved -- its outcome still
     // counts even though it no longer appears in meta.rounds at all.
@@ -4506,7 +4539,7 @@
       (meta.pastTournaments || []).forEach(t => ((t && t.rounds) || []).forEach(r => { if(r && r.id != null) archived.add(String(r.id)); }));
       Object.keys(ledger).forEach(roundId => {
         if(archived.has(String(roundId))) return;
-        if(!meta.rounds.some(r => r.id === roundId)) total += ledger[roundId];
+        if(!meta.rounds.some(r => r.id === roundId)){ parts.deleted += ledger[roundId]; parts.total += ledger[roundId]; }
       });
     }
     // Live top-up: only for rounds that have NEVER been resolved before
@@ -4517,28 +4550,45 @@
     if(!p.paid){
       meta.rounds.forEach(r => {
         if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in ledger)) total += perRound;
+        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in ledger)) add(r.id, perRound);
       });
     }
-    return total;
+    return parts;
+  }
+  function penaltyPointsFor(p, cutoffRoundNumber){
+    return penaltyParts(p, cutoffRoundNumber).total;
+  }
+
+  // Puntos por PARTIDOS de una jornada (sin preguntas ni descuentos). Sólo
+  // cuentan con resultados publicados. Regular: aciertos × puntos por acierto;
+  // liguilla: base + bono con las reglas de ESA jornada (liguillaScoring.js).
+  function roundMatchScore(r, roundPicks){
+    const lg = isLg(r);
+    if(!r.resultsPublished) return { pts: 0, played: 0, hits: 0, exact: 0, base: 0, bonus: 0, lg, scored: false };
+    if(lg){
+      const sr = LG.scoreRound(r, roundPicks);
+      return { pts: sr.total, played: sr.scored, hits: sr.resultHits, exact: sr.exactHits, base: sr.base, bonus: sr.bonus, lg, scored: true };
+    }
+    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
+    let pts = 0, played = 0, hits = 0;
+    r.matches.forEach(m => {
+      const result = r.results ? r.results[m.id] : null;
+      if(!result) return;
+      played++;
+      const pick = roundPicks ? roundPicks[m.id] : null;
+      if(pick && pick === result){ pts += perPick; hits++; }
+    });
+    return { pts, played, hits, exact: 0, base: pts, bonus: 0, lg, scored: true };
   }
 
   function pointsFor(participantId, participantMap, cutoffRoundNumber){
     const picks = allPicksCache[participantId] || {};
-    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
     let pts = 0, played = 0;
     meta.rounds.forEach(r => {
       if(!r.resultsPublished) return;
       if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-      // Liguilla: base + bono con las reglas de ESA jornada (liguillaScoring.js).
-      if(isLg(r)){ const sr = LG.scoreRound(r, picks[r.id]); pts += sr.total; played += sr.scored; return; }
-      r.matches.forEach(m => {
-        const result = r.results ? r.results[m.id] : null;
-        if(!result) return;
-        played++;
-        const pick = picks[r.id] ? picks[r.id][m.id] : null;
-        if(pick && pick === result) pts += perPick;
-      });
+      const sm = roundMatchScore(r, picks[r.id]);
+      pts += sm.pts; played += sm.played;
     });
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     pts += customBetPointsFor(participantId, participantMap, cutoffRoundNumber);
@@ -4550,6 +4600,46 @@
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     return penaltyPointsFor(p, null);
   }
+
+  // ---------- claridad de puntos: de dónde sale cada número ----------
+  // Las mismas partes que suma pointsFor() (sin corte: la Tabla de hoy),
+  // separadas para explicarlas. Sólo cantidades: nunca un pronóstico ni una
+  // respuesta.
+  function sumValues(o){ return Object.keys(o).reduce((n, k) => n + o[k], 0); }
+  // Total del torneo de una persona, línea por línea (desglose de la Tabla).
+  function pointsBreakdown(participantId, participantMap){
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
+    const picks = allPicksCache[participantId] || {};
+    const out = { base: 0, bonus: 0, matchPts: 0, hits: 0, exact: 0, lgBonusRule: false,
+      roundQuestions: 0, tournamentQuestions: 0, roundDiscounts: 0, deletedDiscounts: 0, total: 0 };
+    meta.rounds.forEach(r => {
+      if(!r.resultsPublished) return;
+      const sm = roundMatchScore(r, picks[r.id]);
+      out.base += sm.base; out.bonus += sm.bonus; out.matchPts += sm.pts; out.hits += sm.hits; out.exact += sm.exact;
+      if(sm.lg){ const rules = LG.roundRules(r); if(rules && rules.exactBonus) out.lgBonusRule = true; }
+    });
+    const bets = customBetParts(participantId, participantMap, null);
+    const pen = penaltyParts(p, null);
+    out.roundQuestions = sumValues(bets.byRound);
+    out.tournamentQuestions = bets.temporada;
+    out.roundDiscounts = sumValues(pen.byRound);
+    out.deletedDiscounts = pen.deleted;
+    out.total = out.matchPts + bets.total - pen.total;
+    return out;
+  }
+  // Total de UNA jornada: sus partidos + sus preguntas − sus descuentos. No
+  // incluye preguntas del torneo ni descuentos de otras jornadas o de
+  // jornadas eliminadas. roundPicks: los pronósticos de esa jornada.
+  function roundTotalParts(participantId, round, roundPicks, participantMap){
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
+    const match = roundMatchScore(round, roundPicks);
+    const questions = customBetParts(participantId, participantMap, null).byRound[round.id] || 0;
+    const discount = penaltyParts(p, null).byRound[round.id] || 0;
+    return { match, questions, discount, total: match.pts + questions - discount };
+  }
+  // «+5», «−1», «0»: con el signo de verdad (U+2212 para restar).
+  function signedPts(n){ return n > 0 ? "+" + n : n < 0 ? "−" + Math.abs(n) : "0"; }
+  function ptsText(n){ return (n < 0 ? "−" + Math.abs(n) : String(n)) + " " + (Math.abs(n) === 1 ? "pt" : "pts"); }
 
   function standingsList(){
     // Built once per call instead of doing a linear .find() per participant
@@ -4576,32 +4666,6 @@
       }
       ranks[i] = currentRank;
     });
-    return ranks;
-  }
-
-  function previousRanks(){
-    const published = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>a.number-b.number);
-    if(published.length < 2) return null;
-    const lastId = published[published.length-1].id;
-    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
-    const prev = meta.participants.map(p => {
-      const picks = allPicksCache[p.id] || {};
-      let pts = 0;
-      published.forEach(r => {
-        if(r.id === lastId) return;
-        if(isLg(r)){ pts += LG.scoreRound(r, picks[r.id]).total; return; }
-        r.matches.forEach(m => {
-          const result = r.results[m.id];
-          if(!result) return;
-          const pick = picks[r.id] ? picks[r.id][m.id] : null;
-          if(pick && pick === result) pts += perPick;
-        });
-      });
-      return { id: p.id, pts };
-    }).sort((a,b) => b.pts - a.pts);
-    const denseRanks = computeDenseRanks(prev);
-    const ranks = {};
-    prev.forEach((p,i) => { ranks[p.id] = denseRanks[i]; });
     return ranks;
   }
 
@@ -8475,6 +8539,27 @@
       <div class="qz-compare-v ${verdictCls || ""}">${verdict}</div>`;
   }
 
+  // Jugados: el subtotal de partidos y el «Total de esta jornada» (sus
+  // partidos + sus preguntas − sus descuentos), cada uno con su nombre. No
+  // entran las preguntas del torneo ni descuentos de otras jornadas.
+  function roundTotalHtml(round, roundPicks, participantId, partial){
+    const t = roundTotalParts(participantId, round, roundPicks);
+    const line = (labelHtml, value) => `<div class="qz-bd-line"><span>${labelHtml}</span><strong>${esc(value)}</strong></div>`;
+    const hits = t.match.hits;
+    const hitsTxt = t.match.lg
+      ? `${hits} partido${hits === 1 ? "" : "s"} acertado${hits === 1 ? "" : "s"}${t.match.exact ? ` (${t.match.exact} exacto${t.match.exact === 1 ? "" : "s"})` : ""}`
+      : `${hits} acierto${hits === 1 ? "" : "s"}`;
+    const hasRoundBets = (meta.customBets || []).some(b => b.scope === "jornada");
+    const matchLine = line(`Partidos · ${esc(hitsTxt)}`, ptsText(t.match.pts));
+    return `
+      <div class="qz-rt" role="group" aria-label="Total de esta jornada">
+        ${matchLine}
+        ${t.questions || hasRoundBets ? line("Preguntas de esta jornada", signedPts(t.questions)) : ``}
+        ${t.discount ? line("Descuento por no pagar", signedPts(-t.discount)) : ``}
+        <div class="qz-bd-line qz-bd-total"><span>Total de esta jornada${partial ? " (hasta ahora)" : ""}</span><strong>${esc(ptsText(t.total))}</strong></div>
+      </div>`;
+  }
+
   // "Jugados": results known, show correct/wrong
   function renderRoundPlayed(box, round){
     const roundPicks = myPicks[round.id] || {};
@@ -8503,11 +8588,13 @@
       `;
     }).join("");
     const pts = correct * perPick;
+    const roundTotal = roundTotalHtml(round, roundPicks, currentUser.id, waiting > 0);
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
         <span>Jornada ${esc(round.number)}</span>
-        <span class="badge paid">${correct}/${total} aciertos · ${esc(pts)} ${esc(pointsWord(pts))}</span>
+        <span class="badge paid">${correct}/${total} aciertos · ${esc(pts)} ${esc(pointsWord(pts))} por partidos</span>
       </div>
+      ${roundTotal}
       ${waiting ? `<p class="muted qz-tight">Faltan por calificar ${waiting} partido${waiting === 1 ? "" : "s"}. No cuentan como fallo; los puntos se actualizan cuando el admin publique su resultado.</p>` : ``}
       ${matchesHtml}
       ${roundBetAnswersHtml(round, true)}
@@ -8542,17 +8629,44 @@
     await ensureAllPicksLoaded();
     // The participant moved to another tab meanwhile: this panel is gone.
     if(!main.isConnected) return;
+    // Sin los pronósticos no se conocen los puntos: no se pinta una tabla en
+    // ceros como si lo fuera.
+    if(allPicksLoadFailed){
+      main.innerHTML = `
+        ${screenHeaderHtml("tabla", "Tabla de posiciones")}
+        <div class="card"><div class="qz-picks-loadfail" role="alert">
+          <p><strong>No pudimos cargar los pronósticos para calcular la tabla.</strong> Los puntos no se muestran hasta que se carguen.</p>
+          <button class="btn btn-gold btn-sm" id="qz-tabla-retry">Volver a intentar</button>
+        </div></div>`;
+      wireScreenHeader(main, "tabla");
+      document.getElementById("qz-tabla-retry").addEventListener("click", () => renderTabla(main));
+      return;
+    }
     const list = standingsList();
     const ranks = computeDenseRanks(list);
-    const prevRanks = previousRanks();
     const leaderPts = list.length ? list[0].pts : 0;
     const medal = (rank) => rank===1 ? "🥇" : rank===2 ? "🥈" : rank===3 ? "🥉" : null;
-    function movementHtml(p, rank){
-      if(!prevRanks || prevRanks[p.id] == null) return `<span class="muted">–</span>`;
-      const prev = prevRanks[p.id];
-      if(prev === rank) return `<span class="muted">–</span>`;
-      if(prev > rank) return `<span style="color:var(--pitch-light);font-weight:700;">▲${prev - rank}</span>`;
-      return `<span style="color:var(--red);font-weight:700;">▼${rank - prev}</span>`;
+    // AUD-11: la comparación con la jornada anterior no se puede calcular con
+    // los mismos puntos que la tabla (preguntas y descuentos no tienen fecha
+    // de jornada), así que no se inventa un movimiento.
+    const NO_MOVE = "Comparación con la jornada anterior no disponible";
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
+    const hasRoundBets = (meta.customBets || []).some(b => b.scope === "jornada");
+    const hasSeasonBets = (meta.customBets || []).some(b => b.scope === "temporada");
+    const penaltyOn = !!(meta.paymentPenalty && meta.paymentPenalty.enabled);
+    // Desglose del total del torneo de una persona: sólo cantidades.
+    function breakdownHtml(p){
+      const b = pointsBreakdown(p.id, participantMap);
+      const line = (labelHtml, value, note) => `<div class="qz-bd-line"><span>${labelHtml}${note ? `<span class="qz-bd-note">${esc(note)}</span>` : ``}</span><strong>${esc(value)}</strong></div>`;
+      const hitsTxt = `${b.hits} acierto${b.hits === 1 ? "" : "s"}`;
+      return `
+        ${line(`Puntos base por partidos · ${esc(hitsTxt)}`, signedPts(b.base))}
+        ${b.bonus || b.lgBonusRule ? line(`Bono por marcador exacto · ${esc(b.exact)} exacto${b.exact === 1 ? "" : "s"}`, signedPts(b.bonus)) : ``}
+        ${b.roundQuestions || hasRoundBets ? line("Preguntas de jornada", signedPts(b.roundQuestions)) : ``}
+        ${b.tournamentQuestions || hasSeasonBets ? line("Preguntas del torneo", signedPts(b.tournamentQuestions)) : ``}
+        ${b.roundDiscounts || penaltyOn ? line("Descuentos por no pagar", signedPts(-b.roundDiscounts)) : ``}
+        ${b.deletedDiscounts ? line("Descuentos de jornadas eliminadas", signedPts(-b.deletedDiscounts), "Se aplicaron cuando esas jornadas cerraron; el admin las borró después y el descuento se mantiene.") : ``}
+        <div class="qz-bd-line qz-bd-total"><span>Total del torneo</span><strong>${esc(ptsText(b.total))}</strong></div>`;
     }
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
@@ -8580,23 +8694,25 @@
       <div class="card" style="padding:8px 12px;">
         <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th style="text-align:center;">#</th><th></th><th class="qz-sticky-col">Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th>${payTracked ? `<th style="text-align:center;">Pagó</th>` : ``}</tr></thead>
+          <thead><tr><th style="text-align:center;">#</th><th><span class="sr-only">Movimiento</span></th><th class="qz-sticky-col">Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th>${payTracked ? `<th style="text-align:center;">Pagó</th>` : ``}</tr></thead>
           <tbody>
             ${list.map((p,i) => `
               <tr class="${p.id===currentUser.id?'me':''}">
                 <td class="pos ${ranks[i]===1?'top1':''}" style="text-align:center;">${medal(ranks[i]) || ranks[i]}</td>
-                <td style="text-align:center;">${movementHtml(p, ranks[i])}</td>
-                <td class="qz-sticky-col qz-name-cell qz-name-wrap" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}</td>
+                <td style="text-align:center;"><span class="muted" title="${NO_MOVE}">—</span></td>
+                <td class="qz-sticky-col qz-name-cell qz-name-wrap" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}
+                  <button type="button" class="qz-bd-btn" data-bd="${i}" aria-expanded="false" aria-controls="qz-bd-${i}">Ver desglose<span class="sr-only"> de ${esc(p.name)}</span></button></td>
                 <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
                 <td style="text-align:center;" class="muted">${esc(i===0 ? "líder" : "−" + (leaderPts - p.pts))}</td>
                 ${payTracked ? `<td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>` : ``}
               </tr>
+              <tr class="qz-bd-row" id="qz-bd-${i}" hidden><td colspan="${payTracked ? 6 : 5}"><div class="qz-bd" aria-label="Desglose de ${esc(p.name)}" role="group">${breakdownHtml(p)}</div></td></tr>
             `).join("")}
           </tbody>
         </table>
         </div>
       </div>
-      <p class="muted" style="text-align:center;">${payTracked ? (typeof fee === "number" && fee > 0 ? `✅ = pagó su cuota de $${esc(fee)} · ❌ = pendiente · ` : `✅ = pagó · ❌ = pendiente · `) : ``}▲▼ = movimiento desde la jornada pasada</p>
+      <p class="muted" style="text-align:center;">${payTracked ? (typeof fee === "number" && fee > 0 ? `✅ = pagó su cuota de $${esc(fee)} · ❌ = pendiente · ` : `✅ = pagó · ❌ = pendiente · `) : ``}— = ${NO_MOVE}</p>
       `}
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Evolución de posiciones</span></div>
@@ -8609,6 +8725,14 @@
     document.getElementById("qz-export").addEventListener("click", exportExcel);
     const shareBtn = document.getElementById("qz-share-card");
     if(shareBtn) shareBtn.addEventListener("click", () => shareResultsCard(list));
+    main.querySelectorAll("[data-bd]").forEach(btn => btn.addEventListener("click", () => {
+      const row = document.getElementById("qz-bd-" + btn.dataset.bd);
+      if(!row) return;
+      const open = btn.getAttribute("aria-expanded") !== "true";
+      row.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.firstChild.textContent = open ? "Ocultar desglose" : "Ver desglose";
+    }));
     renderProgressChart(list);
   }
 
@@ -8654,11 +8778,13 @@
     ctx.lineTo(width - 60, 150);
     ctx.stroke();
 
-    const hasPendingPayments = shown.some(p => !p.paid);
+    // AUD-12: la columna de pago sale igual que en la Tabla: sólo si la
+    // quiniela lleva pagos (paymentsTracked), aunque ya hayan pagado todos.
+    const showPayColumn = paymentsTracked();
     const rightMargin = width - 60; // 740 — mismo margen derecho ya usado por la línea divisoria de arriba
-    const puntosColStart = hasPendingPayments ? 480 : 600; // igual que el encabezado, sin tocarlo
+    const puntosColStart = showPayColumn ? 480 : 600; // igual que el encabezado, sin tocarlo
     const pagoColStart = 650; // igual que el encabezado, sin tocarlo
-    const puntosColEnd = hasPendingPayments ? pagoColStart : rightMargin;
+    const puntosColEnd = showPayColumn ? pagoColStart : rightMargin;
     // Centro real de cada columna: columnStart + columnWidth / 2 — ya no valores fijos aproximados.
     const puntosX = puntosColStart + (puntosColEnd - puntosColStart) / 2;
     const pagoX = pagoColStart + (rightMargin - pagoColStart) / 2;
@@ -8669,7 +8795,7 @@
     ctx.fillText("PARTICIPANTE", 105, 178);
     ctx.textAlign = "center";
     ctx.fillText("PUNTOS", puntosX, 178);
-    if(hasPendingPayments) ctx.fillText("PAGO", pagoX, 178);
+    if(showPayColumn) ctx.fillText("PAGO", pagoX, 178);
 
     const ranks = computeDenseRanks(shown);
     const medalColor = (rank) => rank===1 ? "#D6A73C" : rank===2 ? "#C9CDD3" : rank===3 ? "#B9784A" : null;
@@ -8701,12 +8827,12 @@
       ctx.textAlign = "left";
       ctx.fillStyle = mColor ? mColor : "#F7F5EC";
       ctx.font = `800 24px ${F}`;
-      ctx.fillText(p.name, 105, textY, hasPendingPayments ? 340 : (width - 260));
+      ctx.fillText(p.name, 105, textY, showPayColumn ? 340 : (width - 260));
       ctx.textAlign = "center";
       ctx.fillStyle = "#F7F5EC";
       ctx.font = `800 26px ${F}`;
       ctx.fillText(String(p.pts), puntosX, textY);
-      if(hasPendingPayments){
+      if(showPayColumn){
         ctx.font = `800 22px ${F}`;
         ctx.fillText(p.paid ? "✅" : "❌", pagoX, textY);
       }
@@ -8999,11 +9125,34 @@
 
   function renderHistDetail(round){
     const detail = document.getElementById("qz-hist-detail");
+    // Sin los pronósticos no se conocen aciertos ni puntos: no se muestran en cero.
+    if(allPicksLoadFailed){
+      detail.innerHTML = `<div class="card"><div class="qz-picks-loadfail" role="alert">
+        <p><strong>No pudimos cargar los pronósticos de esta jornada.</strong> Los aciertos y los puntos no se muestran hasta que se carguen.</p>
+        <button class="btn btn-gold btn-sm" id="qz-hist-retry">Volver a intentar</button>
+      </div></div>`;
+      document.getElementById("qz-hist-retry").addEventListener("click", async () => {
+        await ensureAllPicksLoaded();
+        if(detail.isConnected) renderHistDetail(round);
+      });
+      return;
+    }
     if(isLg(round)){
       renderLiguillaHistDetail(detail, round);
       detail.scrollIntoView({ behavior: window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
       return;
     }
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
+    // Última columna: el total de la jornada (partidos + preguntas de esta
+    // jornada − descuentos de esta jornada), con los aciertos aparte (AUD-10).
+    const totalCell = (p) => {
+      const t = p.t;
+      const extra = t.questions || t.discount;
+      const sub = (txt) => `<span class="qz-ht-sub">${esc(txt)}</span>`;
+      const hitsSub = sub(p.correct + " acierto" + (p.correct === 1 ? "" : "s"));
+      const extraSubs = extra ? sub("Partidos " + t.match.pts) + (t.questions ? sub("Preguntas " + signedPts(t.questions)) : "") + (t.discount ? sub("Descuento " + signedPts(-t.discount)) : "") : "";
+      return `<td style="text-align:center;"><span class="qz-ht-total">${esc(ptsText(t.total))}</span>${hitsSub}${extraSubs}</td>`;
+    };
     const perParticipant = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const picks = (allPicksCache[p.id] || {})[round.id] || {};
       let correct = 0;
@@ -9016,18 +9165,18 @@
         // Sin resultado el partido está pendiente: el pronóstico no se pinta como fallo.
         return `<td style="text-align:center;${isCorrect?'color:#1B4332;font-weight:700;':pick && result?'color:#7d251d;':pick?'':'color:var(--ink-soft);'}">${esc(label)}</td>`;
       }).join("");
-      return { id: p.id, name: p.name, correct, cellsHtml: cells };
+      return { id: p.id, name: p.name, correct, cellsHtml: cells, t: roundTotalParts(p.id, round, picks, participantMap) };
     });
     const maxCorrect = Math.max(0, ...perParticipant.map(p => p.correct));
     const mvps = maxCorrect > 0 ? perParticipant.filter(p => p.correct === maxCorrect).map(p => p.name) : [];
-    const rows = perParticipant.map(p => `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col qz-cmp-name">${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</th>${p.cellsHtml}<td style="font-weight:700;text-align:center;">${p.correct}</td></tr>`).join("");
+    const rows = perParticipant.map(p => `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col qz-cmp-name">${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</th>${p.cellsHtml}${totalCell(p)}</tr>`).join("");
     const resultRow = round.matches.map(m => {
       const r = round.results[m.id];
       const label = r==='A'? m.teamA : r==='B'? m.teamB : r==='D'?'Empate':'Pendiente';
       return `<td style="font-weight:700;text-align:center;">${esc(label)}</td>`;
     }).join("");
     const headRows = `
-      <tr><th scope="col" class="qz-sticky-col qz-cmp-name">Participante</th>${round.matches.map(m=>`<th scope="col" style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th scope="col" style="text-align:center;">Pts</th></tr>
+      <tr><th scope="col" class="qz-sticky-col qz-cmp-name">Participante</th>${round.matches.map(m=>`<th scope="col" style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th scope="col" style="text-align:center;">Total jornada</th></tr>
       <tr class="qz-cmp-real"><th scope="row" class="qz-sticky-col qz-cmp-name"><strong>Resultado real</strong></th>${resultRow}<td></td></tr>`;
     const tableHtml = stickyCompareHtml({
       tableCls: "qz-cmp-reg",
@@ -9664,8 +9813,10 @@
     const rp = myPicks[round.id] || {};
     const res = LG.scoreRound(round, rp);
     const partial = res.pending + res.postponed > 0;
+    const roundTotal = roundTotalHtml(round, rp, currentUser.id, partial);
     box.innerHTML = `
-      <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), partial ? "resultados parciales" : "resultados oficiales"].filter(Boolean).join(" · "))}</div></div><span class="badge paid">${esc(lgPts(res.total))}</span></div>
+      <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), partial ? "resultados parciales" : "resultados oficiales"].filter(Boolean).join(" · "))}</div></div><span class="badge paid">${esc(lgPts(res.total))} por partidos</span></div>
+      ${roundTotal}
       ${lgRulesStripHtml(rules, true)}
       ${round.matches.map((m, i) => {
         const out = res.matches[i];
@@ -9724,18 +9875,25 @@
   }
   function renderLiguillaHistDetail(detail, round){
     const rules = lgRulesOf(round);
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
     const rows = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const rp = (allPicksCache[p.id] || {})[round.id] || {};
       const res = LG.scoreRound(round, rp);
+      // El total de la jornada incluye sus preguntas y descuentos; el de
+      // partidos se nombra aparte (AUD-10).
+      const t = roundTotalParts(p.id, round, rp, participantMap);
+      const parts = ["Partidos " + lgPts(t.match.pts)];
+      if(t.questions) parts.push("Preguntas " + signedPts(t.questions));
+      if(t.discount) parts.push("Descuento " + signedPts(-t.discount));
       const cells = round.matches.map((m, i) => {
         const out = res.matches[i];
         const v = rules && rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
         return `<td class="lg-h-cell">${lgHistCellHtml(round, m, out, v)}</td>`;
       }).join("");
-      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(lgPts(res.total))}</span><span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
+      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(ptsText(t.total))}</span><span class="lg-h-sum">${esc(parts.join(" · "))}</span><span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
     }).join("");
     const headRows = `
-      <tr><th scope="col" class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Puntos de la jornada</span></th>${round.matches.map(m=>`<th scope="col" class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr>
+      <tr><th scope="col" class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Total de la jornada</span></th>${round.matches.map(m=>`<th scope="col" class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr>
       <tr class="lg-h-real"><th scope="row" class="qz-sticky-col lg-h-name"><strong>Resultado real</strong></th>${round.matches.map(m => `<td class="lg-h-cell"><strong>${esc(lgResultText(round, m))}</strong></td>`).join("")}</tr>`;
     const tableHtml = stickyCompareHtml({
       tableCls: "lg-h-table",
@@ -9748,7 +9906,7 @@
       <div class="card">
         <h3>${esc(roundTitle(round))}${roundSubtitle(round) ? ` <span class="muted" style="font-weight:500;">· ${esc(roundSubtitle(round))}</span>` : ``}</h3>
         <div class="lg-strip"><strong>Reglas de esta jornada</strong><span>${esc(lgRulesSentence(rules))}</span><span>Cuenta el marcador final con prórroga, sin penales.</span></div>
-        <p class="muted lg-h-help">Cada casilla dice el pronóstico, los puntos que dio y por qué. A la izquierda, el total de la jornada y cuántos partidos acertó cada quien${rules && rules.exactBonus ? "; un exacto también cuenta como partido acertado" : ""}.</p>
+        <p class="muted lg-h-help">Cada casilla dice el pronóstico, los puntos que dio y por qué. A la izquierda, el total de la jornada (partidos, preguntas y descuentos de esta jornada), los puntos por partidos y cuántos partidos acertó cada quien${rules && rules.exactBonus ? "; un exacto también cuenta como partido acertado" : ""}.</p>
         <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido; el nombre y los puntos se quedan fijos.</p>
         ${tableHtml}
       </div>`;
