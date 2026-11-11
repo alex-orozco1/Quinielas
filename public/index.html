@@ -3121,10 +3121,13 @@
     }catch(e){ console.error("apiSetAdminPassword failed", e); return { ok: false, error: "network_error" }; }
   }
   // «Mostrar / Ocultar»: only what is being typed. It always starts hidden.
-  function passwordFieldHtml(id, extraAttrs){
+  // `maxLength` null: sin tope, para un secreto cuyo campo de acceso tampoco
+  // lo tiene (la contraseña del panel): cortarlo al guardar dejaría fuera a
+  // quien después escribe la contraseña completa para entrar.
+  function passwordFieldHtml(id, extraAttrs, maxLength = 200){
     return `
       <div class="qz-pass-toggle-row">
-        <input class="qz-modal-input" id="${id}" type="password" maxlength="200" ${extraAttrs || ""}>
+        <input class="qz-modal-input" id="${id}" type="password"${maxLength == null ? "" : ` maxlength="${maxLength}"`} ${extraAttrs || ""}>
         <button type="button" class="qz-pass-toggle" data-pass-toggle="${id}" aria-controls="${id}" aria-pressed="false">Mostrar</button>
       </div>`;
   }
@@ -15058,7 +15061,7 @@
                 <p class="muted" style="margin-top:-4px;">Para cambiar el plan o los límites de esta quiniela, usa "Activar Plus" o "Ajuste manual" en la tabla.</p>
                 <div class="row2">
                   <div class="field"><label>Nombre de la quiniela</label><input type="text" id="qz-edit-name" value="${esc(q.name)}"></div>
-                  <div class="field"><label>Nueva contraseña de admin (opcional)</label><input type="text" id="qz-edit-pass" placeholder="Dejar en blanco para no cambiar"></div>
+                  <div class="field"><label for="qz-edit-pass">Nueva contraseña de admin (opcional)</label>${passwordFieldHtml("qz-edit-pass", `placeholder="Dejar en blanco para no cambiar" autocomplete="new-password"`)}</div>
                 </div>
                 <p class="muted">El link (/q/${esc(q.slug)}) no se puede cambiar aquí — crear un link nuevo requeriría una quiniela nueva.</p>
                 <div style="display:flex;gap:8px;">
@@ -15179,12 +15182,17 @@
         `}
         <div class="card">
           <div class="eyebrow">Acceso al panel</div>
-          <div class="field"><label>Contraseña del panel</label><input type="text" id="qz-p-newpass" placeholder="Dejar en blanco para no cambiarla" value=""></div>
+          <div class="field"><label for="qz-p-newpass">Contraseña del panel</label>${passwordFieldHtml("qz-p-newpass", `placeholder="Dejar en blanco para no cambiarla" autocomplete="new-password"`, null)}</div>
           <p class="muted" style="margin-top:-8px;">Por seguridad, ya no mostramos la contraseña actual aquí — solo escribe algo si quieres cambiarla.</p>
           <button class="btn btn-primary" id="qz-p-save">Guardar contraseña</button>
         </div>
       </div>
     `;
+    // AUD-09: las contraseñas nuevas empiezan ocultas; «Mostrar» sólo cambia
+    // cómo se ve lo que se escribe.
+    wirePasswordToggles(document.getElementById("qz-p-newpass").closest(".field"));
+    const editPassField = document.getElementById("qz-edit-pass");
+    if(editPassField) wirePasswordToggles(editPassField.closest(".field"));
     document.getElementById("qz-p-save").addEventListener("click", async () => {
       const newPass = document.getElementById("qz-p-newpass").value.trim();
       if(!newPass){ toast("Escribe la contraseña nueva."); return; }

@@ -140,7 +140,7 @@ test("CB-13: the form checks before sending, keeps what was typed, and reads eve
 test("CB-11: «Mostrar / Ocultar» on every password field that lacked it — never on a PIN, always starting hidden", () => {
   const toggle = fn("function wirePasswordToggles(container)");
   assert.ok(toggle.includes('input.type = show ? "text" : "password";') && toggle.includes('btn.setAttribute("aria-pressed", show ? "true" : "false");'));
-  assert.ok(fn("function passwordFieldHtml(id, extraAttrs)").includes('type="password"'));
+  assert.ok(fn("function passwordFieldHtml(id, extraAttrs, maxLength = 200)").includes('type="password"'));
   const prompt = fn("function qzPrompt(message, opts)");
   assert.ok(prompt.includes('${isSecret && !isPin ? `<button type="button" class="qz-pass-toggle" data-pass-toggle="qz-prompt-input"'));
   assert.ok(prompt.includes("wirePasswordToggles(overlay);"));

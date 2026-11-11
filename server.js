@@ -1576,7 +1576,11 @@ function computeRequesterIdentity(req, slug, meta) {
 
 async function filterPicksForRequest(req, info, picksValue, preloadedMeta, requesterIdentity) {
   const meta = preloadedMeta || await getRow(info.metaKey);
-  if (!meta) return picksValue;
+  // AUD-06b: sin quiniela no hay nadie que pueda ver estos pronósticos (ni su
+  // dueño, que ya no existe en ninguna meta): no se devuelve nada. Una meta
+  // antigua ya migrada ({ migratedTo }) tampoco es una quiniela: sus jornadas
+  // viven en la nueva, así que aquí todas parecerían cerradas.
+  if (!meta || meta.migratedTo) return {};
   const identity = requesterIdentity || computeRequesterIdentity(req, info.slug, meta);
   const { isAdminOrOwner, selfParticipantIds } = identity;
 
@@ -1769,7 +1773,11 @@ app.get("/api/kv/:key", async (req, res) => {
         }
       }
     } else if (info.kind === "picks") {
-      value = await filterPicksForRequest(req, info, value);
+      // AUD-06b: una fila de pronósticos cuya quiniela no existe (huérfana) se
+      // responde igual que una fila que no existe.
+      const meta = await getRow(info.metaKey);
+      if (!meta || meta.migratedTo) return res.status(404).json({ error: "not_found" });
+      value = await filterPicksForRequest(req, info, value, meta);
     }
     res.json({ key: req.params.key, value });
   } catch (err) {
@@ -2488,13 +2496,18 @@ app.post("/api/kv/:key", async (req, res) => {
       try {
         await client.query("BEGIN");
         const metaValue = await getRowLocked(info.metaKey, client);
-        if (metaValue) {
-          const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
-          if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
-            await client.query("ROLLBACK");
-            if (sendIfCredentialThrottled(req, res)) return;
-            return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
-          }
+        // AUD-06: sin quiniela no hay participante que pueda probar quién es,
+        // así que no se escribe nada: ni una fila nueva ni encima de una fila
+        // huérfana que ya existiera. Mismo 404 que /picks/:pid/match.
+        if (!metaValue) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "not_found" });
+        }
+        const participant = (metaValue.participants || []).find((p) => p.id === info.participantId);
+        if (!isAuthenticatedAsParticipantReq(req, info.slug, participant)) {
+          await client.query("ROLLBACK");
+          if (sendIfCredentialThrottled(req, res)) return;
+          return res.status(403).json({ error: participant && !participant.pin ? "pin_required" : "unauthorized" });
         }
         const oldPicks = await getRowLocked(req.params.key, client);
         const nowRow = await client.query("SELECT NOW() as now");
@@ -3998,6 +4011,18 @@ function normalizeSlug(raw) {
 // the platform_index entry — all inside one transaction. If anything fails,
 // nothing is left behind: no orphaned meta with no index entry, no orphaned
 // index entry with no meta.
+// AUD-06c: un slug que todavía tiene filas de pronósticos (huérfanas de una
+// quiniela borrada antes del arreglo de AUD-06b) no se puede volver a usar: la
+// quiniela nueva las daría por suyas y las mostraría en jornadas «cerradas».
+// Se pregunta con platform_index ya bloqueado, como todo alta o movimiento de
+// slug, así que ninguna otra alta o borrado del mismo slug corre a la vez; y
+// sin meta nadie puede escribir pronósticos nuevos en ese slug (AUD-06). Sólo
+// mira si existe alguna: no lee su contenido y no borra nada.
+async function slugHasLeftoverPicks(slug, client) {
+  const r = await client.query("SELECT 1 FROM kv WHERE key LIKE $1 LIMIT 1", [`quiniela:${slug}:picks:%`]);
+  return r.rows.length > 0;
+}
+
 app.post("/api/create-quiniela", async (req, res) => {
   const { slug, groupName, creatorName, contact, password, sportsdbLeagueId } = req.body || {};
   const cleanSlug = normalizeSlug(slug) || "quiniela";
@@ -4028,7 +4053,10 @@ app.post("/api/create-quiniela", async (req, res) => {
     const existingMeta = await getRow(`quiniela:${cleanSlug}:meta`, client);
     const idx = (await getRowLocked("platform_index", client)) || { quinielas: [] };
     if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
-    const slugTaken = !!existingMeta || idx.quinielas.some((q) => q.slug === cleanSlug);
+    // AUD-06c: un slug con pronósticos huérfanos tampoco está libre. Mismo
+    // rechazo que un slug ocupado, sin decir por qué: no revela datos viejos.
+    const slugTaken = !!existingMeta || idx.quinielas.some((q) => q.slug === cleanSlug)
+      || await slugHasLeftoverPicks(cleanSlug, client);
     if (slugTaken) {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "slug_taken" });
@@ -4157,7 +4185,8 @@ app.post("/api/migrate-quiniela", async (req, res) => {
     const existing = await getRow(targetKey, client);
     const idx = (await getRowLocked("platform_index", client)) || { quinielas: [] };
     if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
-    if (existing || idx.quinielas.some((q) => q.slug === cleanSlug)) {
+    if (existing || idx.quinielas.some((q) => q.slug === cleanSlug)
+      || await slugHasLeftoverPicks(cleanSlug, client)) {   // AUD-06c
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "slug_taken" });
     }
@@ -4247,12 +4276,20 @@ app.post("/api/delete-quiniela", async (req, res) => {
     await client.query("BEGIN");
     const metaKey = `quiniela:${cleanSlug}:meta`;
 
+    // AUD-06b: los bloqueos primero, en el orden de todo el archivo
+    // (platform_index -> meta). Un guardado de pronósticos bloquea la meta
+    // antes de escribir, así que con la meta bloqueada aquí ninguno puede
+    // colarse entre el borrado de pronósticos y el de la meta: el que llegó
+    // antes ya escribió (y su fila entra en el DELETE de abajo) y el que llega
+    // después encuentra la meta borrada y no escribe (404).
+    const idx = await getRowLocked("platform_index", client);
+    await getRowLocked(metaKey, client);
+
     // Prefix delete — catches picks belonging to participants who may have
     // since been removed from metadata, not just the ones currently listed.
     await client.query("DELETE FROM kv WHERE key LIKE $1", [`quiniela:${cleanSlug}:picks:%`]);
     await client.query("DELETE FROM kv WHERE key = $1", [metaKey]);
 
-    const idx = await getRowLocked("platform_index", client);
     if (idx && Array.isArray(idx.quinielas)) {
       idx.quinielas = idx.quinielas.filter((q) => q.slug !== cleanSlug);
       await putRow("platform_index", idx, client);

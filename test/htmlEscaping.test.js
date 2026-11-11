@@ -143,7 +143,7 @@ function unsafe(src) {
 const PERMITIDAS = [
   // Constantes del propio código.
   { expr: "id", en: 'class="qz-wait-notice" id="${id}"', por: "credentialWaitNoticeHtml sólo recibe ids fijos" },
-  { expr: "id", en: '<input class="qz-modal-input" id="${id}" type="password" maxlength="200"', por: "passwordFieldHtml sólo recibe ids fijos" },
+  { expr: "id", en: '<input class="qz-modal-input" id="${id}" type="password"${maxLength', por: "passwordFieldHtml sólo recibe ids fijos" },
   { expr: "id", en: 'data-pass-toggle="${id}" aria-controls="${id}"', por: "passwordFieldHtml sólo recibe ids fijos" },
   { expr: "label", en: "<span>${label}Demasiados intentos.", por: "ya es esc(opts.label)" },
   { expr: "label", en: "<span>${label}Ya puedes intentarlo de nuevo.", por: "ya es esc(opts.label)" },
