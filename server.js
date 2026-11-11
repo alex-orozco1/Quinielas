@@ -4011,6 +4011,18 @@ function normalizeSlug(raw) {
 // the platform_index entry — all inside one transaction. If anything fails,
 // nothing is left behind: no orphaned meta with no index entry, no orphaned
 // index entry with no meta.
+// AUD-06c: un slug que todavía tiene filas de pronósticos (huérfanas de una
+// quiniela borrada antes del arreglo de AUD-06b) no se puede volver a usar: la
+// quiniela nueva las daría por suyas y las mostraría en jornadas «cerradas».
+// Se pregunta con platform_index ya bloqueado, como todo alta o movimiento de
+// slug, así que ninguna otra alta o borrado del mismo slug corre a la vez; y
+// sin meta nadie puede escribir pronósticos nuevos en ese slug (AUD-06). Sólo
+// mira si existe alguna: no lee su contenido y no borra nada.
+async function slugHasLeftoverPicks(slug, client) {
+  const r = await client.query("SELECT 1 FROM kv WHERE key LIKE $1 LIMIT 1", [`quiniela:${slug}:picks:%`]);
+  return r.rows.length > 0;
+}
+
 app.post("/api/create-quiniela", async (req, res) => {
   const { slug, groupName, creatorName, contact, password, sportsdbLeagueId } = req.body || {};
   const cleanSlug = normalizeSlug(slug) || "quiniela";
@@ -4041,7 +4053,10 @@ app.post("/api/create-quiniela", async (req, res) => {
     const existingMeta = await getRow(`quiniela:${cleanSlug}:meta`, client);
     const idx = (await getRowLocked("platform_index", client)) || { quinielas: [] };
     if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
-    const slugTaken = !!existingMeta || idx.quinielas.some((q) => q.slug === cleanSlug);
+    // AUD-06c: un slug con pronósticos huérfanos tampoco está libre. Mismo
+    // rechazo que un slug ocupado, sin decir por qué: no revela datos viejos.
+    const slugTaken = !!existingMeta || idx.quinielas.some((q) => q.slug === cleanSlug)
+      || await slugHasLeftoverPicks(cleanSlug, client);
     if (slugTaken) {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "slug_taken" });
@@ -4170,7 +4185,8 @@ app.post("/api/migrate-quiniela", async (req, res) => {
     const existing = await getRow(targetKey, client);
     const idx = (await getRowLocked("platform_index", client)) || { quinielas: [] };
     if (!Array.isArray(idx.quinielas)) idx.quinielas = [];
-    if (existing || idx.quinielas.some((q) => q.slug === cleanSlug)) {
+    if (existing || idx.quinielas.some((q) => q.slug === cleanSlug)
+      || await slugHasLeftoverPicks(cleanSlug, client)) {   // AUD-06c
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "slug_taken" });
     }
