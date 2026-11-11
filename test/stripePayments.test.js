@@ -862,11 +862,14 @@ test("MON003 · 61 — QUICK WIN 2: la Premier ya no lleva una bandera negra", (
   const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
   // Donde el README presente las competencias (lista o línea con banderas;
   // el formato puede cambiar), la Premier League va con una bandera delante.
-  // La tabla de cobertura de Plus también la nombra, pero sin bandera.
+  // Si otra parte del README la nombra sin bandera, no cuenta.
   const flagged = [...readme.matchAll(/(\p{Extended_Pictographic}|\p{Regional_Indicator}{2})[\u{E0020}-\u{E007F}\u{FE0F}]*\s*(?:\*\*)?Premier League/gu)];
   assert.ok(flagged.length >= 1, "el README presenta la Premier League con su bandera");
   for (const m of flagged) {
-    assert.ok(!m[0].includes("\u{1F3F4}"),
+    // Toda la línea, no sólo la bandera inmediata: una bandera negra delante
+    // de la británica («🏴 🇬🇧 Premier League») también cuenta.
+    const line = readme.slice(readme.lastIndexOf("\n", m.index) + 1, readme.indexOf("\n", m.index) === -1 ? undefined : readme.indexOf("\n", m.index));
+    assert.ok(!line.includes("\u{1F3F4}"),
       "U+1F3F4 a secas se pinta como un rectángulo negro en casi todas partes");
     assert.equal(m[1], "\u{1F1EC}\u{1F1E7}", "se usa la bandera del Reino Unido, que sí renderiza");
   }
