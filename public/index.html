@@ -1634,6 +1634,7 @@
   #quiniela-root .pick-btn.qz-pick-blocked{ opacity:.45; cursor:not-allowed; }
   #quiniela-root .qz-picks-loadfail{ border:1px solid var(--red); background:#FDF1F0; border-radius:10px; padding:10px 12px; margin:0 0 12px; text-align:left; }
   #quiniela-root .qz-picks-loadfail p{ margin:0 0 8px; }
+  #quiniela-root .qz-chart-note{ margin:8px 0 0; padding:8px 10px; border-left:3px solid var(--gold); background:#FFF9EC; border-radius:6px; font-size:13px; line-height:1.45; color:var(--ink); }
   #quiniela-root .qz-picks-conflict{ display:inline-block; margin-top:4px; color:var(--ink); font-weight:600; }
   #quiniela-root .qz-backup-note{ font-size:13px; }
   #quiniela-root .qz-wz-countdown.qz-wz-countdown-empty{ font-weight:400; color:var(--ink-soft); background:none; padding:0; }
@@ -4273,6 +4274,20 @@
   // Same credential logic as before (own PIN for yourself, admin/owner cred
   // when acting as admin) — the server applies the identical per-participant
   // visibility rules either way, so callers see no difference at all.
+  // Contrato de /api/picks-batch (server.js): { ok:true, picks:{ [id]: objeto } }
+  // con UNA entrada por cada participante pedido que exista en la quiniela
+  // (sin repetidos, hasta 2000). Quien no pronosticó llega como {} y es una
+  // entrada válida; si falta alguien, o la forma no es esa, la carga está
+  // incompleta y no se usa. El servidor ya decide qué se ve de cada quien
+  // (las jornadas abiertas de los demás no vienen): aquí sólo se comprueba.
+  function picksBatchFromResponse(body, requestedIds){
+    const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+    if(!isObj(body) || body.ok !== true || !isObj(body.picks)) return null;
+    for(const id of requestedIds){
+      if(!Object.prototype.hasOwnProperty.call(body.picks, id) || !isObj(body.picks[id])) return null;
+    }
+    return body.picks;
+  }
   async function ensureAllPicksLoaded(){
     if(allPicksLoadInFlight) return allPicksLoadInFlight;
     allPicksLoadInFlight = (async () => {
@@ -4281,12 +4296,15 @@
         const cred = isAdmin ? adminOrOwnerCred() : currentUserPinCache;
         const headers = { "Content-Type": "application/json" };
         setAuthHeaders(headers, cred);
+        const participantIds = meta.participants.map(p => p.id);
         const res = await fetch("/api/picks-batch", {
           method: "POST", headers, credentials: "same-origin",
-          body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
+          body: JSON.stringify({ metaKey: currentMetaKey(), participantIds })
         });
         if(!res.ok) throw new Error("picks-batch " + res.status);
-        allPicksCache = (await res.json()).picks || {};
+        const picks = picksBatchFromResponse(await res.json(), [...new Set(participantIds)].slice(0, 2000));
+        if(!picks) throw new Error("picks-batch incompleto");
+        allPicksCache = picks;
         allPicksLoadFailed = false;
       }catch(e){
         console.error("ensureAllPicksLoaded (batch) failed", e);
@@ -8635,7 +8653,7 @@
       main.innerHTML = `
         ${screenHeaderHtml("tabla", "Tabla de posiciones")}
         <div class="card"><div class="qz-picks-loadfail" role="alert">
-          <p><strong>No pudimos cargar los pronósticos para calcular la tabla.</strong> Los puntos no se muestran hasta que se carguen.</p>
+          <p><strong>No pudimos cargar los pronósticos para calcular la tabla.</strong> Los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
           <button class="btn btn-gold btn-sm" id="qz-tabla-retry">Volver a intentar</button>
         </div></div>`;
       wireScreenHeader(main, "tabla");
@@ -8717,8 +8735,9 @@
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Evolución de posiciones</span></div>
         <p class="muted" style="margin-top:-4px;">Sigue cómo cambió la posición de cada participante después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
+        <p class="qz-chart-note" id="qz-chart-note">Esta gráfica se calcula con los datos actuales y puede no coincidir con la Tabla, sobre todo si hay descuentos de jornadas que el admin eliminó. La clasificación vigente es la de la Tabla de posiciones.</p>
         <div id="qz-chart-legend" style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0;"></div>
-        <div id="qz-chart-svg" style="overflow-x:auto;"></div>
+        <div id="qz-chart-svg" role="group" aria-label="Gráfica de evolución de posiciones" aria-describedby="qz-chart-note" style="overflow-x:auto;"></div>
       </div>
     `;
     wireScreenHeader(main, "tabla");
@@ -9143,7 +9162,7 @@
     // Sin los pronósticos no se conocen aciertos ni puntos: no se muestran en cero.
     if(allPicksLoadFailed){
       detail.innerHTML = `<div class="card"><div class="qz-picks-loadfail" role="alert">
-        <p><strong>No pudimos cargar los pronósticos de esta jornada.</strong> Los aciertos y los puntos no se muestran hasta que se carguen.</p>
+        <p><strong>No pudimos cargar los pronósticos de esta jornada.</strong> Los aciertos y los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
         <button class="btn btn-gold btn-sm" id="qz-hist-retry">Volver a intentar</button>
       </div></div>`;
       document.getElementById("qz-hist-retry").addEventListener("click", async () => {
@@ -14452,14 +14471,24 @@
       return;
     }
     await ensureAllPicksLoaded();
+    // Sin todos los pronósticos el archivo saldría con puntos parciales: no se
+    // genera ni se anuncia nada como listo.
+    if(allPicksLoadFailed){
+      toast("No pudimos cargar todos los pronósticos, así que no se generó el Excel. Vuelve a intentarlo.", 6000);
+      return;
+    }
     const wb = XLSX.utils.book_new();
 
-    // Standings
+    // Standings. «Pagó» sale igual que en la Tabla y en la imagen: sólo si la
+    // quiniela lleva pagos (paymentsTracked), aunque ya hayan pagado todos.
     const standingsSrc = standingsList();
     const standingsRanks = computeDenseRanks(standingsSrc);
-    const standings = standingsSrc.map((p,i) => ({
-      "#": standingsRanks[i], "Participante": p.name, "Puntos": p.pts, "Pagó": p.paid ? "Sí" : "No"
-    }));
+    const payTracked = paymentsTracked();
+    const standings = standingsSrc.map((p,i) => {
+      const row = { "#": standingsRanks[i], "Participante": p.name, "Puntos": p.pts };
+      if(payTracked) row["Pagó"] = p.paid ? "Sí" : "No";
+      return row;
+    });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(standings), "Tabla");
 
     // Jornada detail (matrix)
@@ -15828,6 +15857,26 @@
   async function renderSpectatorView(){
     root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
     await ensureAllPicksLoaded();
+    // Sin todos los pronósticos no se conocen los puntos: aviso y reintento,
+    // nunca una clasificación con datos parciales (igual que la Tabla).
+    if(allPicksLoadFailed){
+      root.innerHTML = `
+        <div class="qz-header">
+          <div class="qz-header-top">
+            <div class="qz-brand"><span class="display">${esc(meta.groupName)}</span><span class="display dot">.</span></div>
+            <div class="qz-user-chip">👁 Solo ver</div>
+          </div>
+        </div>
+        <div class="qz-main">
+          <div class="section-title"><span class="display">Tabla de posiciones</span></div>
+          <div class="card"><div class="qz-picks-loadfail" role="alert">
+            <p><strong>No pudimos cargar los pronósticos para calcular la tabla.</strong> Los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
+            <button class="btn btn-gold btn-sm" id="qz-spectator-retry">Volver a intentar</button>
+          </div></div>
+        </div>`;
+      document.getElementById("qz-spectator-retry").addEventListener("click", () => renderSpectatorView());
+      return;
+    }
     const list = standingsList();
     const spectatorRanks = computeDenseRanks(list);
     const fee = meta.settings.entryFee;
@@ -15858,7 +15907,7 @@
                 <tr>
                   <td class="pos ${spectatorRanks[i]===1?'top1':''}" style="text-align:center;">${spectatorRanks[i]}</td>
                   <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
-                  <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
+                  <td style="text-align:center;font-weight:700;">${esc(p.pts < 0 ? "−" + Math.abs(p.pts) : p.pts)}</td>
                 </tr>
               `).join("")}
             </tbody>

@@ -408,29 +408,86 @@ test("AUD-12 · la imagen compartida sólo muestra pagos si la quiniela lleva pa
   assert.deepEqual(after.filter((x) => /^\d+$/.test(x)), ["1", "6", "1", "6", "2", "3"]);
 });
 
-// ---- una carga fallida no es cero --------------------------------------------
-test("carga fallida de pronósticos: se marca como fallida (no como cero) y se recupera al volver a cargar", async () => {
-  const src = fn("async function ensureAllPicksLoaded()");
-  const make = new Function("fetch", "meta", "console", `
-    let allPicksCache = { viejo: {} }, allPicksLoadFailed = false, allPicksLoadInFlight = null;
+// ---- una carga fallida o incompleta no es cero ---------------------------------
+// ensureAllPicksLoaded() real, con su validador real, y fetch simulado.
+function makeLoader(participants) {
+  const src = fn("function picksBatchFromResponse(body, requestedIds)") + "\n" + fn("async function ensureAllPicksLoaded()");
+  const calls = [];
+  let reply = null;
+  const fetchStub = async (url, opts) => { calls.push(JSON.parse(opts.body)); return reply(); };
+  const m = new Function("fetch", "meta", "console", `
+    let allPicksCache = { viejo: { r1: { a: "A" } } }, allPicksLoadFailed = false, allPicksLoadInFlight = null;
     const currentUser = null, currentUserPinCache = null;
     function adminOrOwnerCred(){ return null; }
     function setAuthHeaders(){}
-    function currentMetaKey(){ return "k"; }
+    function currentMetaKey(){ return "quiniela:x:meta"; }
     ${src}
-    return { run: ensureAllPicksLoaded, state: () => ({ allPicksCache, allPicksLoadFailed }) };`);
-  let mode = "500";
-  const fetchStub = async () => mode === "throw" ? Promise.reject(new Error("red"))
-    : mode === "500" ? { ok: false, status: 500, json: async () => ({}) }
-    : { ok: true, status: 200, json: async () => ({ picks: { u: { r1: { a: "A" } } } }) };
-  const m = make(fetchStub, { participants: [{ id: "u" }] }, { error() {} });
-  await m.run();
-  assert.deepEqual(m.state(), { allPicksCache: {}, allPicksLoadFailed: true });
-  mode = "ok"; await m.run();
-  assert.deepEqual(m.state(), { allPicksCache: { u: { r1: { a: "A" } } }, allPicksLoadFailed: false });
-  mode = "throw"; await m.run();
-  assert.equal(m.state().allPicksLoadFailed, true);
-  // La Tabla y el Historial no pintan puntos con una carga fallida.
+    return { run: ensureAllPicksLoaded, state: () => ({ allPicksCache, allPicksLoadFailed }) };`)(fetchStub, { participants }, { error() {} });
+  return { ...m, calls, set: (fnReply) => { reply = fnReply; } };
+}
+const ok200 = (body) => () => ({ ok: true, status: 200, json: async () => body });
+const PEOPLE = [{ id: "u" }, { id: "v" }];
+
+test("carga · fallo HTTP (500/404) y de red: se marca como fallida, sin datos viejos ni ceros", async () => {
+  const L = makeLoader(PEOPLE);
+  for (const r of [() => ({ ok: false, status: 500, json: async () => ({ error: "server_error" }) }), () => ({ ok: false, status: 404, json: async () => ({}) }), () => Promise.reject(new Error("red"))]) {
+    L.set(r); await L.run();
+    assert.deepEqual(L.state(), { allPicksCache: {}, allPicksLoadFailed: true });
+  }
+});
+
+test("carga · un 200 no basta: forma inválida o respuesta incompleta = carga fallida", async () => {
+  const bad = [
+    {}, { picks: { u: {}, v: {} } }, { ok: false, picks: { u: {}, v: {} } }, { ok: true }, { ok: true, picks: null }, { ok: true, picks: [] },
+    { ok: true, picks: { u: { r1: { a: "A" } } } },            // falta v
+    { ok: true, picks: { u: {}, v: null } },                    // v no es objeto
+    { ok: true, picks: { u: {}, v: [] } },
+    { ok: true, picks: { u: {}, V: {} } },                      // otro id
+    null, "texto",
+  ];
+  for (const body of bad) {
+    const L = makeLoader(PEOPLE);
+    L.set(ok200(body)); await L.run();
+    assert.deepEqual(L.state(), { allPicksCache: {}, allPicksLoadFailed: true }, JSON.stringify(body));
+  }
+  const L = makeLoader(PEOPLE);
+  L.set(() => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("no es JSON"); } }));
+  await L.run();
+  assert.equal(L.state().allPicksLoadFailed, true, "200 con un cuerpo que no es JSON");
+});
+
+test("carga · quien no pronosticó llega como {} y es una entrada válida (no es una carga incompleta)", async () => {
+  const L = makeLoader([{ id: "u" }, { id: "v" }, { id: "u" }]); // un id repetido en la meta: se pide una vez
+  L.set(ok200({ ok: true, picks: { u: { r1: { a: "A" } }, v: {} } }));
+  await L.run();
+  assert.deepEqual(L.state(), { allPicksCache: { u: { r1: { a: "A" } }, v: {} }, allPicksLoadFailed: false });
+  // Se pide lo mismo de siempre (el servidor decide qué se ve de cada quien).
+  assert.deepEqual(L.calls[0], { metaKey: "quiniela:x:meta", participantIds: ["u", "v", "u"] });
+  // Quiniela sin participantes: { ok:true, picks:{} } es completa.
+  const E = makeLoader([]);
+  E.set(ok200({ ok: true, picks: {} })); await E.run();
+  assert.deepEqual(E.state(), { allPicksCache: {}, allPicksLoadFailed: false });
+});
+
+test("carga · se recupera: falla → completa → falla otra vez (sin quedarse con lo de antes)", async () => {
+  const L = makeLoader(PEOPLE);
+  L.set(ok200({ ok: true, picks: { u: {} } })); await L.run();
+  assert.equal(L.state().allPicksLoadFailed, true);
+  L.set(ok200({ ok: true, picks: { u: { r1: { a: "B" } }, v: {} } })); await L.run();
+  assert.deepEqual(L.state(), { allPicksCache: { u: { r1: { a: "B" } }, v: {} }, allPicksLoadFailed: false });
+  L.set(() => ({ ok: false, status: 503, json: async () => ({}) })); await L.run();
+  assert.deepEqual(L.state(), { allPicksCache: {}, allPicksLoadFailed: true });
+});
+
+test("carga · la respuesta real del servidor cumple el contrato que valida el navegador", () => {
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const route = extractFrom(server, 'app.post("/api/picks-batch", async (req, res) =>');
+  assert.ok(route.includes("if (raw == null) { picks[pid] = {}; continue; }"), "quien no pronosticó llega como {}");
+  assert.ok(route.includes("res.json({ ok: true, picks });"));
+  assert.ok(route.includes(".slice(0, 2000)"), "mismo tope que el navegador");
+});
+
+test("Tabla, Historial y Solo ver: con la carga fallida no se calcula ni se pinta una clasificación", () => {
   const tabla = fn("async function renderTabla(main)");
   const gT = tabla.indexOf("if(allPicksLoadFailed){");
   assert.ok(gT !== -1 && gT < tabla.indexOf("const list = standingsList();"), "la guarda existe y va antes de calcular");
@@ -438,6 +495,93 @@ test("carga fallida de pronósticos: se marca como fallida (no como cero) y se r
   const hist = fn("function renderHistDetail(round)");
   const gH = hist.indexOf("if(allPicksLoadFailed){");
   assert.ok(gH !== -1 && gH < hist.indexOf("if(isLg(round)){"), "la guarda existe y va antes de pintar");
+});
+
+test("Solo ver · con la carga fallida: aviso y reintento, sin tabla; al reintentar con la carga completa, la clasificación vuelve", async () => {
+  const src = fn("async function renderSpectatorView()");
+  let failNext = true;
+  const listeners = {};
+  const root = { innerHTML: "" };
+  const env = new Function("root", "document", "ensureAllPicksLoaded", "standingsList", "state", `
+    const meta = { groupName: "Liga <b>", settings: { entryFee: 0 }, participants: [{ id: "u", name: "Ana", paid: false }], rounds: [] };
+    const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    const feeSummaryHtml = () => ({ feeDisplay: "$0", recaudadoDisplay: "$0" });
+    ${fn("function computeDenseRanks(list)")}
+    let allPicksLoadFailed;
+    Object.defineProperty(state, "failed", { set(v) { allPicksLoadFailed = v; } });
+    ${src}
+    return renderSpectatorView;`);
+  const state = {};
+  const view = env(root, { getElementById: (id) => ({ addEventListener: (ev, f) => { listeners[id] = f; } }) },
+    async () => { state.failed = failNext; }, () => [{ id: "u", name: "Ana", pts: 7, isAdmin: false }], state);
+  await view();
+  assert.match(root.innerHTML, /No pudimos cargar los pronósticos para calcular la tabla\./);
+  assert.match(root.innerHTML, /role="alert"/);
+  assert.doesNotMatch(root.innerHTML, /<table|Recaudado/);
+  assert.ok(listeners["qz-spectator-retry"], "hay botón de reintento conectado");
+  failNext = false;
+  await listeners["qz-spectator-retry"]();
+  assert.match(root.innerHTML, /<table/);
+  assert.match(root.innerHTML, /<td style="text-align:center;font-weight:700;">7<\/td>/);
+  assert.doesNotMatch(root.innerHTML, /No pudimos cargar/);
+});
+
+// ---- Excel (XLSX simulado: no es el generador real) ---------------------------
+async function runExcel({ metaOver, failed }) {
+  const sheets = {}, written = [], toasts = [];
+  const XLSX = { utils: { book_new: () => ({}), json_to_sheet: (rows) => rows, book_append_sheet: (wb, rows, name) => { sheets[name] = rows; } }, writeFile: (wb, f) => written.push(f) };
+  const meta = { groupName: "Liga", settings: { entryFee: 0 }, rounds: [], customBets: [],
+    participants: [{ id: "a", name: "Ana", paid: true, pts: 9 }, { id: "b", name: "Beto", paid: true, pts: 4 }], ...metaOver };
+  const run = new Function("XLSX", "meta", "toast", "failed", `
+    let allPicksCache = {}, allPicksLoadFailed = false;
+    async function ensureXLSXLoaded(){}
+    async function ensureAllPicksLoaded(){ allPicksLoadFailed = failed; }
+    function standingsList(){ return meta.participants.slice(); }
+    function pointsFor(id){ return { pts: meta.participants.find(p => p.id === id).pts }; }
+    function isLg(){ return false; }
+    ${fn("function computeDenseRanks(list)")}
+    ${fn("function paymentsTracked()")}
+    ${fn("async function exportExcel()")}
+    return exportExcel;`)(XLSX, meta, (m) => toasts.push(m), failed);
+  await run();
+  return { sheets, written, toasts };
+}
+test("Excel · con la carga fallida o incompleta no se descarga nada ni se anuncia éxito", async () => {
+  const r = await runExcel({ failed: true });
+  assert.deepEqual(r.written, []);
+  assert.deepEqual(Object.keys(r.sheets), []);
+  assert.ok(!r.toasts.some((t) => /Listo|descargó/.test(t)), JSON.stringify(r.toasts));
+  assert.ok(r.toasts.includes("No pudimos cargar todos los pronósticos, así que no se generó el Excel. Vuelve a intentarlo."));
+});
+test("Excel · hoja Tabla: «Pagó» según paymentsTracked(), igual que la app y la imagen", async () => {
+  // Sin seguimiento (sin cuota, sin penalización, nadie marcado): sin «Pagó».
+  const sin = await runExcel({ metaOver: { participants: [{ id: "a", name: "Ana", paid: false, pts: 9 }, { id: "b", name: "Beto", paid: false, pts: 4 }] } });
+  assert.deepEqual(sin.sheets.Tabla, [{ "#": 1, Participante: "Ana", Puntos: 9 }, { "#": 2, Participante: "Beto", Puntos: 4 }]);
+  assert.deepEqual(sin.written, ["quiniela_Liga.xlsx"]);
+  assert.ok(sin.toasts.includes("✅ Listo, tu Excel se descargó."));
+  // Pendiente conocido (fuera de esta decisión): la hoja «Pagos» sigue diciendo «No» sin seguimiento.
+  assert.deepEqual(sin.sheets.Pagos.map((r) => r["Pagó"]), ["No", "No"]);
+  // Con cuota y todos pagados: la columna se conserva.
+  const todos = await runExcel({ metaOver: { settings: { entryFee: 100 } } });
+  assert.deepEqual(todos.sheets.Tabla.map((r) => r["Pagó"]), ["Sí", "Sí"]);
+  // Seguimiento sólo por penalización (cuota 0): también.
+  const pen = await runExcel({ metaOver: { paymentPenalty: { enabled: true, startsAtRound: 1 }, participants: [{ id: "a", name: "Ana", paid: false, pts: 9 }, { id: "b", name: "Beto", paid: true, pts: 4 }] } });
+  assert.deepEqual(pen.sheets.Tabla.map((r) => r["Pagó"]), ["No", "Sí"]);
+  // Nada más cambia de forma: mismas hojas y mismas columnas de puntos.
+  assert.deepEqual(Object.keys(todos.sheets), ["Tabla", "Jornada detalle", "Estadísticas", "Pagos"]);
+});
+
+// ---- Gráfica de evolución: aviso visible, fórmula igual -----------------------
+test("Gráfica · aviso visible y accesible (también en móvil) que manda a la Tabla; la fórmula no cambia", (t) => {
+  const tabla = fn("async function renderTabla(main)");
+  assert.ok(tabla.includes('<p class="qz-chart-note" id="qz-chart-note">Esta gráfica se calcula con los datos actuales y puede no coincidir con la Tabla, sobre todo si hay descuentos de jornadas que el admin eliminó. La clasificación vigente es la de la Tabla de posiciones.</p>'));
+  assert.ok(tabla.includes('<div id="qz-chart-svg" role="group" aria-label="Gráfica de evolución de posiciones" aria-describedby="qz-chart-note"'));
+  assert.ok(!/@media[^{]*\{[^}]*qz-chart-note[^}]*display:\s*none/.test(indexSrc), "no se oculta en pantallas angostas");
+  let orig;
+  try { orig = execFileSync("git", ["show", `${ORIG.sha}:public/index.html`], { cwd: path.join(__dirname, ".."), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }); }
+  catch (e) { t.skip("este checkout no tiene el commit 6ef81ce"); return; }
+  assert.equal(fn("function progressData()"), extractFrom(orig, "function progressData()"), "misma fórmula de la gráfica");
+  assert.equal(fn("function renderProgressChart(orderedList)"), extractFrom(orig, "function renderProgressChart(orderedList)"));
 });
 
 // ---- Tabla: «Ver desglose» -----------------------------------------------------
