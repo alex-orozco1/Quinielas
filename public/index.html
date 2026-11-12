@@ -1634,6 +1634,8 @@
   #quiniela-root .pick-btn.qz-pick-blocked{ opacity:.45; cursor:not-allowed; }
   #quiniela-root .qz-picks-loadfail{ border:1px solid var(--red); background:#FDF1F0; border-radius:10px; padding:10px 12px; margin:0 0 12px; text-align:left; }
   #quiniela-root .qz-picks-loadfail p{ margin:0 0 8px; }
+  #quiniela-root .qz-picks-loadfail .btn[aria-disabled="true"]{ cursor:progress; opacity:0.85; }
+  #quiniela-root .qz-retry-note{ font-size:13px; font-weight:600; color:var(--red); }
   #quiniela-root .qz-chart-note{ margin:8px 0 0; padding:8px 10px; border-left:3px solid var(--gold); background:#FFF9EC; border-radius:6px; font-size:13px; line-height:1.45; color:var(--ink); }
   #quiniela-root .qz-picks-conflict{ display:inline-block; margin-top:4px; color:var(--ink); font-weight:600; }
   #quiniela-root .qz-backup-note{ font-size:13px; }
@@ -4291,15 +4293,33 @@
     }
     return { picks: body.picks, missing };
   }
-  // «Volver a intentar» de un aviso de carga: se ve que está cargando y, al
-  // terminar, el foco no se pierde: vuelve al nuevo botón si falló otra vez,
-  // o a `landing()` (un lugar de la pantalla ya cargada).
+  // «Volver a intentar» de un aviso de carga. El aviso se queda mientras
+  // carga: el botón dice «Cargando…» y conserva el foco. Si vuelve a fallar,
+  // el botón regresa con una nota visible; si carga, se pinta la pantalla
+  // (`rerender`) y el foco va a `landing()`, un lugar de lo ya cargado.
   async function retryPicksLoad(btn, rerender, landing){
-    btn.disabled = true;
+    if(btn.getAttribute("aria-disabled") === "true") return;
+    const label = btn.textContent;
+    btn.setAttribute("aria-disabled", "true");
     btn.textContent = "Cargando…";
+    await ensureAllPicksLoaded();
+    if(!btn.isConnected) return; // ya se fue a otra pantalla
+    if(allPicksLoadFailed){
+      btn.removeAttribute("aria-disabled");
+      btn.textContent = label;
+      let note = btn.parentElement.querySelector(".qz-retry-note");
+      if(!note){
+        note = document.createElement("p");
+        note.className = "qz-retry-note";
+        note.setAttribute("role", "status");
+        btn.before(note);
+      }
+      note.textContent = "Lo intentamos de nuevo y todavía no se pudo. Revisa tu conexión o recarga la página.";
+      btn.focus();
+      return;
+    }
     await rerender();
-    const again = document.getElementById(btn.id);
-    const target = again || (landing && landing());
+    const target = landing && landing();
     if(target){
       if(!target.matches("button, a, input, select, textarea, [tabindex]")) target.setAttribute("tabindex", "-1");
       target.focus();
@@ -4314,21 +4334,33 @@
         const headers = { "Content-Type": "application/json" };
         setAuthHeaders(headers, cred);
         const participantIds = meta.participants.map(p => p.id);
-        const res = await fetch("/api/picks-batch", {
-          method: "POST", headers, credentials: "same-origin",
-          body: JSON.stringify({ metaKey: currentMetaKey(), participantIds })
-        });
-        if(!res.ok) throw new Error("picks-batch " + res.status);
-        const parsed = picksBatchFromResponse(await res.json(), [...new Set(participantIds)].slice(0, 2000));
-        if(!parsed) throw new Error("picks-batch con forma inválida");
+        const requested = [...new Set(participantIds)].slice(0, 2000);
+        const fetchBatch = async () => {
+          const res = await fetch("/api/picks-batch", {
+            method: "POST", headers, credentials: "same-origin",
+            body: JSON.stringify({ metaKey: currentMetaKey(), participantIds })
+          });
+          if(!res.ok) throw new Error("picks-batch " + res.status);
+          const out = picksBatchFromResponse(await res.json(), requested);
+          if(!out) throw new Error("picks-batch con forma inválida");
+          return out;
+        };
+        let parsed = await fetchBatch();
         // Falta alguien: puede que ya no sea participante (otro dispositivo lo
         // borró y esta página tiene la meta de antes; el servidor lo omite y
         // eso no es una carga incompleta, como siempre). Se confirma con la
-        // meta actual del servidor; si sigue ahí, la carga está incompleta.
+        // meta actual del servidor. Si alguno sí está ahí, puede que haya
+        // entrado justo después de la consulta (p. ej. el admin lo acaba de
+        // agregar): se repite la consulta UNA vez; si aún falta, la carga
+        // está incompleta. Sin poder leer la meta, también.
         if(parsed.missing.length){
           const fresh = await kvGet(currentMetaKey(), { owner: cred });
-          const freshIds = new Set(((fresh.found && fresh.value && fresh.value.participants) || []).map(p => p.id));
-          if(!fresh.found || parsed.missing.some(id => freshIds.has(id))) throw new Error("picks-batch incompleto");
+          if(!fresh.found) throw new Error("picks-batch incompleto (sin meta)");
+          const freshIds = new Set(((fresh.value && fresh.value.participants) || []).map(p => p.id));
+          if(parsed.missing.some(id => freshIds.has(id))){
+            parsed = await fetchBatch();
+            if(parsed.missing.some(id => freshIds.has(id))) throw new Error("picks-batch incompleto");
+          }
         }
         allPicksCache = parsed.picks;
         allPicksLoadFailed = false;
@@ -9200,10 +9232,7 @@
         <button class="btn btn-gold btn-sm" id="qz-hist-retry">Volver a intentar</button>
       </div></div>`;
       const retryBtn = document.getElementById("qz-hist-retry");
-      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, async () => {
-        await ensureAllPicksLoaded();
-        if(detail.isConnected) renderHistDetail(round);
-      }, () => detail.querySelector("h3")));
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, () => { if(detail.isConnected) renderHistDetail(round); }, () => detail.querySelector("h3")));
       // El aviso queda debajo de la lista de jornadas: se lleva a la vista
       // (bajo el menú fijo), igual que el detalle cuando sí carga.
       const hdr = document.querySelector("#quiniela-root .qz-header");

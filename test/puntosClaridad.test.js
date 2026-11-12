@@ -488,10 +488,11 @@ test("carga · meta desactualizada: falta alguien que el servidor ya no tiene (l
   await L.run();
   assert.deepEqual(L.state(), { allPicksCache: { u: { r1: { a: "A" } }, v: {} }, allPicksLoadFailed: false });
   assert.deepEqual(L.metaReads, ["quiniela:x:meta"], "se confirma con la meta actual del servidor");
-  // Si w sigue en el servidor, sí es una respuesta incompleta.
+  // Si w sigue en el servidor y tampoco viene al repetir la consulta, la respuesta está incompleta.
   const I = makeLoader([{ id: "u" }, { id: "v" }, { id: "w" }]);
   I.set(ok200({ ok: true, picks: { u: {}, v: {} } })); await I.run();
   assert.deepEqual(I.state(), { allPicksCache: {}, allPicksLoadFailed: true });
+  assert.equal(I.calls.length, 2, "se repite la consulta una sola vez");
   // Sin poder leer la meta actual (404, error HTTP o de red): no se da por buena.
   for (const f of [() => ({ found: false }), () => { throw new Error("kv get failed: HTTP 500"); }]) {
     const X = makeLoader([{ id: "u" }, { id: "w" }], [{ id: "u" }]);
@@ -502,6 +503,29 @@ test("carga · meta desactualizada: falta alguien que el servidor ya no tiene (l
   const C = makeLoader([{ id: "u" }]);
   C.set(ok200({ ok: true, picks: { u: {} } })); await C.run();
   assert.deepEqual(C.metaReads, []);
+});
+
+test("carga · carrera: alguien entra justo después de la consulta (el admin lo agregó) → se repite una vez y la carga es válida, como en main", async () => {
+  // La página ya tiene a w (alta optimista); la 1.ª consulta llegó antes que
+  // el guardado y no lo trae; la meta actual del servidor ya lo tiene.
+  const L = makeLoader([{ id: "u" }, { id: "w" }], [{ id: "u" }, { id: "w" }]);
+  let n = 0;
+  L.set(() => { n++; return ok200(n === 1 ? { ok: true, picks: { u: { r1: { a: "A" } } } } : { ok: true, picks: { u: { r1: { a: "A" } }, w: {} } })(); });
+  await L.run();
+  assert.deepEqual(L.state(), { allPicksCache: { u: { r1: { a: "A" } }, w: {} }, allPicksLoadFailed: false });
+  assert.equal(L.calls.length, 2);
+  // Si la 2.ª respuesta trae una forma inválida, la carga falla (no se mezcla con la 1.ª).
+  const B = makeLoader([{ id: "u" }, { id: "w" }]);
+  let m = 0;
+  B.set(() => { m++; return ok200(m === 1 ? { ok: true, picks: { u: {} } } : { ok: true, picks: { u: [], w: {} } })(); });
+  await B.run();
+  assert.deepEqual(B.state(), { allPicksCache: {}, allPicksLoadFailed: true });
+  // Y si la 2.ª es un error HTTP, también.
+  const H = makeLoader([{ id: "u" }, { id: "w" }]);
+  let k = 0;
+  H.set(() => { k++; return k === 1 ? ok200({ ok: true, picks: { u: {} } })() : { ok: false, status: 500, json: async () => ({}) }; });
+  await H.run();
+  assert.equal(H.state().allPicksLoadFailed, true);
 });
 
 test("carga · la respuesta real del servidor cumple el contrato que valida el navegador", () => {
@@ -522,21 +546,24 @@ test("Tabla, Historial y Solo ver: con la carga fallida no se calcula ni se pint
   assert.ok(gH !== -1 && gH < hist.indexOf("if(isLg(round)){"), "la guarda existe y va antes de pintar");
 });
 
-test("Solo ver · con la carga fallida: aviso y reintento («Cargando…», foco), sin tabla; al reintentar con la carga completa, la clasificación vuelve", async () => {
+test("Solo ver · con la carga fallida: aviso y reintento («Cargando…» en el botón, foco), sin tabla; al reintentar con la carga completa, la clasificación vuelve", async () => {
   const src = fn("async function retryPicksLoad(btn, rerender, landing)") + "\n" + fn("async function renderSpectatorView()");
-  let failNext = true;
+  let failNext = true, loads = 0;
   const focused = [];
-  const els = {};
-  const root = { innerHTML: "", querySelector: (sel) => ({ sel, matches: () => false, setAttribute() {}, focus() { focused.push(sel); } }) };
-  // Un botón por id mientras su HTML esté pintado; null si ya no está.
-  const document = { getElementById: (id) => {
-    if (!root.innerHTML.includes(`id="${id}"`)) return null;
-    if (!els[id] || els[id].html !== root.innerHTML) {
-      els[id] = { id, html: root.innerHTML, disabled: false, textContent: "Volver a intentar", listeners: {},
-        addEventListener(ev, f) { this.listeners[ev] = f; }, matches: () => true, setAttribute() {}, focus() { focused.push("#" + id); } };
-    }
-    return els[id];
-  } };
+  // DOM mínimo: el botón del aviso es un objeto con lo que usa retryPicksLoad.
+  const makeBtn = () => {
+    const attrs = {}, kids = [];
+    const parent = { querySelector: (sel) => kids.find((k) => k.className === sel.slice(1)) || null };
+    const b = { id: "qz-spectator-retry", isConnected: true, textContent: "Volver a intentar", listeners: {}, parentElement: parent,
+      getAttribute: (k) => (k in attrs ? attrs[k] : null), setAttribute: (k, v) => { attrs[k] = String(v); }, removeAttribute: (k) => { delete attrs[k]; },
+      addEventListener(ev, f) { this.listeners[ev] = f; }, matches: () => true, focus() { focused.push("#retry"); }, before(el) { kids.push(el); } };
+    return { b, kids };
+  };
+  let cur = null;
+  const root = { set innerHTML(v) { this._h = v; if (cur) cur.b.isConnected = false; cur = v.includes('id="qz-spectator-retry"') ? makeBtn() : null; }, get innerHTML() { return this._h; },
+    querySelector: (sel) => ({ sel, matches: () => false, setAttribute() {}, focus() { focused.push(sel); } }) };
+  const document = { getElementById: (id) => (id === "qz-spectator-retry" && cur ? cur.b : null),
+    createElement: () => ({ className: "", textContent: "", attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } }) };
   const state = {};
   const view = new Function("root", "document", "ensureAllPicksLoaded", "standingsList", "state", `
     const meta = { groupName: "Liga <b>", settings: { entryFee: 0 }, participants: [{ id: "u", name: "Ana", paid: false }], rounds: [] };
@@ -546,26 +573,33 @@ test("Solo ver · con la carga fallida: aviso y reintento («Cargando…», foco
     let allPicksLoadFailed;
     Object.defineProperty(state, "failed", { set(v) { allPicksLoadFailed = v; } });
     ${src}
-    return renderSpectatorView;`)(root, document, async () => { state.failed = failNext; }, () => [{ id: "u", name: "Ana", pts: -7, isAdmin: false }], state);
+    return renderSpectatorView;`)(root, document, async () => { loads++; state.failed = failNext; }, () => [{ id: "u", name: "Ana", pts: -7, isAdmin: false }], state);
   await view();
   assert.match(root.innerHTML, /No pudimos cargar los pronósticos para calcular la tabla\./);
   assert.match(root.innerHTML, /role="alert"/);
   assert.doesNotMatch(root.innerHTML, /<table|Recaudado/);
-  // Reintento que vuelve a fallar: «Cargando…» mientras tanto y el foco al nuevo botón.
-  const btn1 = document.getElementById("qz-spectator-retry");
-  const p1 = btn1.listeners.click();
-  assert.equal(btn1.disabled, true);
-  assert.equal(btn1.textContent, "Cargando…");
+  // Reintento que vuelve a fallar: el aviso se queda, el botón dice «Cargando…»
+  // mientras tanto, y luego vuelve con una nota y con el foco.
+  const first = cur;
+  const p1 = first.b.listeners.click();
+  assert.equal(first.b.textContent, "Cargando…");
+  assert.equal(first.b.getAttribute("aria-disabled"), "true");
+  await first.b.listeners.click(); // un segundo toque mientras carga no hace nada
   await p1;
-  assert.match(root.innerHTML, /No pudimos cargar/);
-  assert.deepEqual(focused, ["#qz-spectator-retry"]);
+  assert.equal(cur, first, "el aviso no se repintó");
+  assert.equal(first.b.textContent, "Volver a intentar");
+  assert.equal(first.b.getAttribute("aria-disabled"), null);
+  assert.match(first.kids[0].textContent, /Lo intentamos de nuevo y todavía no se pudo/);
+  assert.equal(first.kids[0].attrs.role, "status");
+  assert.deepEqual(focused, ["#retry"]);
+  assert.equal(loads, 2, "1 carga inicial + 1 del reintento (el toque doble no carga)");
   // Reintento con la carga completa: vuelve la clasificación y el foco a su título.
   failNext = false;
-  await document.getElementById("qz-spectator-retry").listeners.click();
+  await first.b.listeners.click();
   assert.match(root.innerHTML, /<table/);
   assert.match(root.innerHTML, /<td style="text-align:center;font-weight:700;">−7<\/td>/);
   assert.doesNotMatch(root.innerHTML, /No pudimos cargar/);
-  assert.deepEqual(focused, ["#qz-spectator-retry", ".qz-main .section-title"]);
+  assert.deepEqual(focused, ["#retry", ".qz-main .section-title"]);
 });
 
 test("Gráfica · con una carga posterior fallida (p. ej. el Excel) no dibuja posiciones; Tabla e Historial usan el mismo reintento", () => {
@@ -574,7 +608,7 @@ test("Gráfica · con una carga posterior fallida (p. ej. el Excel) no dibuja po
   const tabla = fn("async function renderTabla(main)");
   assert.ok(tabla.includes('retryPicksLoad(retryBtn, () => renderTabla(main), () => main.querySelector("[data-bd]"))'));
   const hist = fn("function renderHistDetail(round)");
-  assert.ok(hist.includes("retryPicksLoad(retryBtn, async () =>"));
+  assert.ok(hist.includes('retryPicksLoad(retryBtn, () => { if(detail.isConnected) renderHistDetail(round); }, () => detail.querySelector("h3"))'));
   assert.ok(hist.indexOf("window.scrollTo({ top: Math.max(0, top)") !== -1 && hist.indexOf("window.scrollTo({ top: Math.max(0, top)") < hist.indexOf("if(isLg(round)){"), "el aviso se lleva a la vista");
 });
 
