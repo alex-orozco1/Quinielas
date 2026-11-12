@@ -4275,18 +4275,35 @@
   // when acting as admin) — the server applies the identical per-participant
   // visibility rules either way, so callers see no difference at all.
   // Contrato de /api/picks-batch (server.js): { ok:true, picks:{ [id]: objeto } }
-  // con UNA entrada por cada participante pedido que exista en la quiniela
-  // (sin repetidos, hasta 2000). Quien no pronosticó llega como {} y es una
-  // entrada válida; si falta alguien, o la forma no es esa, la carga está
-  // incompleta y no se usa. El servidor ya decide qué se ve de cada quien
-  // (las jornadas abiertas de los demás no vienen): aquí sólo se comprueba.
+  // con UNA entrada por cada participante pedido que exista EN LA META DEL
+  // SERVIDOR (sin repetidos, hasta 2000). Quien no pronosticó llega como {} y
+  // es una entrada válida. Devuelve { picks, missing } (los ids pedidos que no
+  // vinieron) o null si la forma no es esa. El servidor ya decide qué se ve
+  // de cada quien (las jornadas abiertas de los demás no vienen): aquí sólo
+  // se comprueba.
   function picksBatchFromResponse(body, requestedIds){
     const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
     if(!isObj(body) || body.ok !== true || !isObj(body.picks)) return null;
+    const missing = [];
     for(const id of requestedIds){
-      if(!Object.prototype.hasOwnProperty.call(body.picks, id) || !isObj(body.picks[id])) return null;
+      if(!Object.prototype.hasOwnProperty.call(body.picks, id)) missing.push(id);
+      else if(!isObj(body.picks[id])) return null;
     }
-    return body.picks;
+    return { picks: body.picks, missing };
+  }
+  // «Volver a intentar» de un aviso de carga: se ve que está cargando y, al
+  // terminar, el foco no se pierde: vuelve al nuevo botón si falló otra vez,
+  // o a `landing()` (un lugar de la pantalla ya cargada).
+  async function retryPicksLoad(btn, rerender, landing){
+    btn.disabled = true;
+    btn.textContent = "Cargando…";
+    await rerender();
+    const again = document.getElementById(btn.id);
+    const target = again || (landing && landing());
+    if(target){
+      if(!target.matches("button, a, input, select, textarea, [tabindex]")) target.setAttribute("tabindex", "-1");
+      target.focus();
+    }
   }
   async function ensureAllPicksLoaded(){
     if(allPicksLoadInFlight) return allPicksLoadInFlight;
@@ -4302,9 +4319,18 @@
           body: JSON.stringify({ metaKey: currentMetaKey(), participantIds })
         });
         if(!res.ok) throw new Error("picks-batch " + res.status);
-        const picks = picksBatchFromResponse(await res.json(), [...new Set(participantIds)].slice(0, 2000));
-        if(!picks) throw new Error("picks-batch incompleto");
-        allPicksCache = picks;
+        const parsed = picksBatchFromResponse(await res.json(), [...new Set(participantIds)].slice(0, 2000));
+        if(!parsed) throw new Error("picks-batch con forma inválida");
+        // Falta alguien: puede que ya no sea participante (otro dispositivo lo
+        // borró y esta página tiene la meta de antes; el servidor lo omite y
+        // eso no es una carga incompleta, como siempre). Se confirma con la
+        // meta actual del servidor; si sigue ahí, la carga está incompleta.
+        if(parsed.missing.length){
+          const fresh = await kvGet(currentMetaKey(), { owner: cred });
+          const freshIds = new Set(((fresh.found && fresh.value && fresh.value.participants) || []).map(p => p.id));
+          if(!fresh.found || parsed.missing.some(id => freshIds.has(id))) throw new Error("picks-batch incompleto");
+        }
+        allPicksCache = parsed.picks;
         allPicksLoadFailed = false;
       }catch(e){
         console.error("ensureAllPicksLoaded (batch) failed", e);
@@ -8657,7 +8683,8 @@
           <button class="btn btn-gold btn-sm" id="qz-tabla-retry">Volver a intentar</button>
         </div></div>`;
       wireScreenHeader(main, "tabla");
-      document.getElementById("qz-tabla-retry").addEventListener("click", () => renderTabla(main));
+      const retryBtn = document.getElementById("qz-tabla-retry");
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, () => renderTabla(main), () => main.querySelector("[data-bd]")));
       return;
     }
     const list = standingsList();
@@ -8939,6 +8966,13 @@
     const legendEl = document.getElementById("qz-chart-legend");
     const svgEl = document.getElementById("qz-chart-svg");
     if(!legendEl || !svgEl) return;
+    // Si una carga posterior falló (p. ej. al exportar el Excel), no hay
+    // pronósticos con qué calcular: no se dibujan posiciones inventadas.
+    if(allPicksLoadFailed){
+      legendEl.innerHTML = "";
+      svgEl.innerHTML = `<p class="muted" role="status">No pudimos cargar los pronósticos, así que la gráfica no se muestra. Vuelve a abrir la Tabla para intentarlo de nuevo.</p>`;
+      return;
+    }
     const { rounds, series } = progressData();
 
     if(!rounds.length){
@@ -9165,10 +9199,17 @@
         <p><strong>No pudimos cargar los pronósticos de esta jornada.</strong> Los aciertos y los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
         <button class="btn btn-gold btn-sm" id="qz-hist-retry">Volver a intentar</button>
       </div></div>`;
-      document.getElementById("qz-hist-retry").addEventListener("click", async () => {
+      const retryBtn = document.getElementById("qz-hist-retry");
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, async () => {
         await ensureAllPicksLoaded();
         if(detail.isConnected) renderHistDetail(round);
-      });
+      }, () => detail.querySelector("h3")));
+      // El aviso queda debajo de la lista de jornadas: se lleva a la vista
+      // (bajo el menú fijo), igual que el detalle cuando sí carga.
+      const hdr = document.querySelector("#quiniela-root .qz-header");
+      const top = detail.getBoundingClientRect().top + window.scrollY - (hdr ? hdr.getBoundingClientRect().height : 0) - 12;
+      const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({ top: Math.max(0, top), behavior: reduced ? "auto" : "smooth" });
       return;
     }
     if(isLg(round)){
@@ -15874,7 +15915,8 @@
             <button class="btn btn-gold btn-sm" id="qz-spectator-retry">Volver a intentar</button>
           </div></div>
         </div>`;
-      document.getElementById("qz-spectator-retry").addEventListener("click", () => renderSpectatorView());
+      const retryBtn = document.getElementById("qz-spectator-retry");
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, () => renderSpectatorView(), () => root.querySelector(".qz-main .section-title")));
       return;
     }
     const list = standingsList();

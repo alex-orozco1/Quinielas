@@ -410,20 +410,22 @@ test("AUD-12 · la imagen compartida sólo muestra pagos si la quiniela lleva pa
 
 // ---- una carga fallida o incompleta no es cero ---------------------------------
 // ensureAllPicksLoaded() real, con su validador real, y fetch simulado.
-function makeLoader(participants) {
+function makeLoader(participants, serverParticipants) {
   const src = fn("function picksBatchFromResponse(body, requestedIds)") + "\n" + fn("async function ensureAllPicksLoaded()");
-  const calls = [];
+  const calls = [], metaReads = [];
   let reply = null;
+  // La meta actual del servidor: por omisión, la misma que tiene la página.
+  let serverMeta = () => ({ found: true, value: { participants: serverParticipants || participants } });
   const fetchStub = async (url, opts) => { calls.push(JSON.parse(opts.body)); return reply(); };
-  const m = new Function("fetch", "meta", "console", `
+  const m = new Function("fetch", "meta", "console", "kvGet", `
     let allPicksCache = { viejo: { r1: { a: "A" } } }, allPicksLoadFailed = false, allPicksLoadInFlight = null;
     const currentUser = null, currentUserPinCache = null;
     function adminOrOwnerCred(){ return null; }
     function setAuthHeaders(){}
     function currentMetaKey(){ return "quiniela:x:meta"; }
     ${src}
-    return { run: ensureAllPicksLoaded, state: () => ({ allPicksCache, allPicksLoadFailed }) };`)(fetchStub, { participants }, { error() {} });
-  return { ...m, calls, set: (fnReply) => { reply = fnReply; } };
+    return { run: ensureAllPicksLoaded, state: () => ({ allPicksCache, allPicksLoadFailed }) };`)(fetchStub, { participants }, { error() {} }, async (key) => { metaReads.push(key); return serverMeta(); });
+  return { ...m, calls, metaReads, set: (fnReply) => { reply = fnReply; }, setServerMeta: (f) => { serverMeta = f; } };
 }
 const ok200 = (body) => () => ({ ok: true, status: 200, json: async () => body });
 const PEOPLE = [{ id: "u" }, { id: "v" }];
@@ -442,7 +444,7 @@ test("carga · un 200 no basta: forma inválida o respuesta incompleta = carga f
     { ok: true, picks: { u: { r1: { a: "A" } } } },            // falta v
     { ok: true, picks: { u: {}, v: null } },                    // v no es objeto
     { ok: true, picks: { u: {}, v: [] } },
-    { ok: true, picks: { u: {}, V: {} } },                      // otro id
+    { ok: true, picks: { u: {}, V: {} } },                      // otro id (v sigue en el servidor)
     null, "texto",
   ];
   for (const body of bad) {
@@ -479,6 +481,29 @@ test("carga · se recupera: falla → completa → falla otra vez (sin quedarse 
   assert.deepEqual(L.state(), { allPicksCache: {}, allPicksLoadFailed: true });
 });
 
+test("carga · meta desactualizada: falta alguien que el servidor ya no tiene (lo borró otro dispositivo) → carga válida, como en main", async () => {
+  // La página cree que hay u, v y w; en el servidor, w ya no existe: no viene.
+  const L = makeLoader([{ id: "u" }, { id: "v" }, { id: "w" }], [{ id: "u" }, { id: "v" }]);
+  L.set(ok200({ ok: true, picks: { u: { r1: { a: "A" } }, v: {} } }));
+  await L.run();
+  assert.deepEqual(L.state(), { allPicksCache: { u: { r1: { a: "A" } }, v: {} }, allPicksLoadFailed: false });
+  assert.deepEqual(L.metaReads, ["quiniela:x:meta"], "se confirma con la meta actual del servidor");
+  // Si w sigue en el servidor, sí es una respuesta incompleta.
+  const I = makeLoader([{ id: "u" }, { id: "v" }, { id: "w" }]);
+  I.set(ok200({ ok: true, picks: { u: {}, v: {} } })); await I.run();
+  assert.deepEqual(I.state(), { allPicksCache: {}, allPicksLoadFailed: true });
+  // Sin poder leer la meta actual (404, error HTTP o de red): no se da por buena.
+  for (const f of [() => ({ found: false }), () => { throw new Error("kv get failed: HTTP 500"); }]) {
+    const X = makeLoader([{ id: "u" }, { id: "w" }], [{ id: "u" }]);
+    X.set(ok200({ ok: true, picks: { u: {} } })); X.setServerMeta(f); await X.run();
+    assert.equal(X.state().allPicksLoadFailed, true);
+  }
+  // Respuesta completa: no hace falta leer la meta.
+  const C = makeLoader([{ id: "u" }]);
+  C.set(ok200({ ok: true, picks: { u: {} } })); await C.run();
+  assert.deepEqual(C.metaReads, []);
+});
+
 test("carga · la respuesta real del servidor cumple el contrato que valida el navegador", () => {
   const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
   const route = extractFrom(server, 'app.post("/api/picks-batch", async (req, res) =>');
@@ -497,12 +522,23 @@ test("Tabla, Historial y Solo ver: con la carga fallida no se calcula ni se pint
   assert.ok(gH !== -1 && gH < hist.indexOf("if(isLg(round)){"), "la guarda existe y va antes de pintar");
 });
 
-test("Solo ver · con la carga fallida: aviso y reintento, sin tabla; al reintentar con la carga completa, la clasificación vuelve", async () => {
-  const src = fn("async function renderSpectatorView()");
+test("Solo ver · con la carga fallida: aviso y reintento («Cargando…», foco), sin tabla; al reintentar con la carga completa, la clasificación vuelve", async () => {
+  const src = fn("async function retryPicksLoad(btn, rerender, landing)") + "\n" + fn("async function renderSpectatorView()");
   let failNext = true;
-  const listeners = {};
-  const root = { innerHTML: "" };
-  const env = new Function("root", "document", "ensureAllPicksLoaded", "standingsList", "state", `
+  const focused = [];
+  const els = {};
+  const root = { innerHTML: "", querySelector: (sel) => ({ sel, matches: () => false, setAttribute() {}, focus() { focused.push(sel); } }) };
+  // Un botón por id mientras su HTML esté pintado; null si ya no está.
+  const document = { getElementById: (id) => {
+    if (!root.innerHTML.includes(`id="${id}"`)) return null;
+    if (!els[id] || els[id].html !== root.innerHTML) {
+      els[id] = { id, html: root.innerHTML, disabled: false, textContent: "Volver a intentar", listeners: {},
+        addEventListener(ev, f) { this.listeners[ev] = f; }, matches: () => true, setAttribute() {}, focus() { focused.push("#" + id); } };
+    }
+    return els[id];
+  } };
+  const state = {};
+  const view = new Function("root", "document", "ensureAllPicksLoaded", "standingsList", "state", `
     const meta = { groupName: "Liga <b>", settings: { entryFee: 0 }, participants: [{ id: "u", name: "Ana", paid: false }], rounds: [] };
     const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     const feeSummaryHtml = () => ({ feeDisplay: "$0", recaudadoDisplay: "$0" });
@@ -510,20 +546,36 @@ test("Solo ver · con la carga fallida: aviso y reintento, sin tabla; al reinten
     let allPicksLoadFailed;
     Object.defineProperty(state, "failed", { set(v) { allPicksLoadFailed = v; } });
     ${src}
-    return renderSpectatorView;`);
-  const state = {};
-  const view = env(root, { getElementById: (id) => ({ addEventListener: (ev, f) => { listeners[id] = f; } }) },
-    async () => { state.failed = failNext; }, () => [{ id: "u", name: "Ana", pts: 7, isAdmin: false }], state);
+    return renderSpectatorView;`)(root, document, async () => { state.failed = failNext; }, () => [{ id: "u", name: "Ana", pts: -7, isAdmin: false }], state);
   await view();
   assert.match(root.innerHTML, /No pudimos cargar los pronósticos para calcular la tabla\./);
   assert.match(root.innerHTML, /role="alert"/);
   assert.doesNotMatch(root.innerHTML, /<table|Recaudado/);
-  assert.ok(listeners["qz-spectator-retry"], "hay botón de reintento conectado");
+  // Reintento que vuelve a fallar: «Cargando…» mientras tanto y el foco al nuevo botón.
+  const btn1 = document.getElementById("qz-spectator-retry");
+  const p1 = btn1.listeners.click();
+  assert.equal(btn1.disabled, true);
+  assert.equal(btn1.textContent, "Cargando…");
+  await p1;
+  assert.match(root.innerHTML, /No pudimos cargar/);
+  assert.deepEqual(focused, ["#qz-spectator-retry"]);
+  // Reintento con la carga completa: vuelve la clasificación y el foco a su título.
   failNext = false;
-  await listeners["qz-spectator-retry"]();
+  await document.getElementById("qz-spectator-retry").listeners.click();
   assert.match(root.innerHTML, /<table/);
-  assert.match(root.innerHTML, /<td style="text-align:center;font-weight:700;">7<\/td>/);
+  assert.match(root.innerHTML, /<td style="text-align:center;font-weight:700;">−7<\/td>/);
   assert.doesNotMatch(root.innerHTML, /No pudimos cargar/);
+  assert.deepEqual(focused, ["#qz-spectator-retry", ".qz-main .section-title"]);
+});
+
+test("Gráfica · con una carga posterior fallida (p. ej. el Excel) no dibuja posiciones; Tabla e Historial usan el mismo reintento", () => {
+  const chart = fn("function renderProgressChart(orderedList)");
+  assert.ok(chart.indexOf("if(allPicksLoadFailed){") !== -1 && chart.indexOf("if(allPicksLoadFailed){") < chart.indexOf("progressData()"));
+  const tabla = fn("async function renderTabla(main)");
+  assert.ok(tabla.includes('retryPicksLoad(retryBtn, () => renderTabla(main), () => main.querySelector("[data-bd]"))'));
+  const hist = fn("function renderHistDetail(round)");
+  assert.ok(hist.includes("retryPicksLoad(retryBtn, async () =>"));
+  assert.ok(hist.indexOf("window.scrollTo({ top: Math.max(0, top)") !== -1 && hist.indexOf("window.scrollTo({ top: Math.max(0, top)") < hist.indexOf("if(isLg(round)){"), "el aviso se lleva a la vista");
 });
 
 // ---- Excel (XLSX simulado: no es el generador real) ---------------------------
@@ -581,7 +633,11 @@ test("Gráfica · aviso visible y accesible (también en móvil) que manda a la 
   try { orig = execFileSync("git", ["show", `${ORIG.sha}:public/index.html`], { cwd: path.join(__dirname, ".."), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }); }
   catch (e) { t.skip("este checkout no tiene el commit 6ef81ce"); return; }
   assert.equal(fn("function progressData()"), extractFrom(orig, "function progressData()"), "misma fórmula de la gráfica");
-  assert.equal(fn("function renderProgressChart(orderedList)"), extractFrom(orig, "function renderProgressChart(orderedList)"));
+  // renderProgressChart: igual que main salvo la guarda de carga fallida (no
+  // dibuja posiciones sin pronósticos).
+  const guard = fn("function renderProgressChart(orderedList)").match(/\n    \/\/ Si una carga posterior falló[\s\S]*?\n    \}\n/);
+  assert.ok(guard && guard[0].includes("if(allPicksLoadFailed){"), "la guarda existe");
+  assert.equal(fn("function renderProgressChart(orderedList)").replace(guard[0], "\n"), extractFrom(orig, "function renderProgressChart(orderedList)"));
 });
 
 // ---- Tabla: «Ver desglose» -----------------------------------------------------
