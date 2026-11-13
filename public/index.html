@@ -1635,6 +1635,8 @@
   #quiniela-root .qz-picks-loadfail{ border:1px solid var(--red); background:#FDF1F0; border-radius:10px; padding:10px 12px; margin:0 0 12px; text-align:left; }
   #quiniela-root .qz-picks-loadfail p{ margin:0 0 8px; }
   #quiniela-root .qz-picks-loadfail .btn[aria-disabled="true"]{ cursor:progress; opacity:0.85; }
+  #quiniela-root .qz-rb-unknown{ margin:8px 0 0; }
+  #quiniela-root .qz-qcard-actions .qz-linkbtn[aria-disabled="true"]{ color:var(--ink-soft); text-decoration:line-through; cursor:not-allowed; }
   #quiniela-root .qz-retry-note{ font-size:13px; font-weight:600; color:var(--red); }
   #quiniela-root .qz-chart-note{ margin:8px 0 0; padding:8px 10px; border-left:3px solid var(--gold); background:#FFF9EC; border-radius:6px; font-size:13px; line-height:1.45; color:var(--ink); }
   #quiniela-root .qz-picks-conflict{ display:inline-block; margin-top:4px; color:var(--ink); font-weight:600; }
@@ -11661,6 +11663,13 @@
     });
     return n;
   }
+  // Las respuestas de una pregunta de jornada viven en los pronósticos: si la
+  // última carga falló o llegó incompleta, no se sabe cuántas hay (no es
+  // «nadie respondió»). Las del torneo vienen en la meta y siempre se saben.
+  function betAnswersUnknown(bet){
+    return !!bet && bet.scope === "jornada" && allPicksLoadFailed;
+  }
+  const BET_ANSWERS_UNKNOWN_MSG = "No pudimos cargar las respuestas. Vuelve a intentarlo antes de quitar esta pregunta.";
   function betHitCount(bet){
     if(bet.scope === "temporada"){
       return meta.participants.filter(p => p.customBetAnswers && p.customBetAnswers[bet.id] && p.customBetAnswers[bet.id].correct === true).length;
@@ -11716,9 +11725,12 @@
   function betCloseFixed(bet){
     return !!(bet && bet.scope === "temporada" && customBetsLocked(bet));
   }
-  function reglasBetCardHtml(bet){
+  function reglasBetCardHtml(bet, i, all){
     const answers = betAnswerCount(bet);
     const hits = betHitCount(bet);
+    const unknown = betAnswersUnknown(bet);
+    // Sólo el primer aviso se anuncia (role=alert); los demás se leen al llegar.
+    const firstUnknown = unknown && all && all.findIndex(betAnswersUnknown) === i;
     const noClose = bet.scope === "temporada" && betCloseInfo(bet).kind === "none";
     return `
       <div class="qz-qcard">
@@ -11728,11 +11740,16 @@
           ? `<p class="qz-wz-warn qz-tight"><span class="qz-chip qz-chip-warn">Sin cierre</span> Esta pregunta no tiene fecha de cierre: sigue abierta hasta que termines el torneo, y entonces se cierra y se guarda en el historial. Si quieres que cierre antes, elige con qué jornada.</p>`
           : `<div class="qz-qcard-close">${esc(betCloseLine(bet))}</div>`}
         <div class="qz-qcard-chips">
-          <span class="qz-chip">${answers ? `${esc(answers)} ${answers === 1 ? "respuesta" : "respuestas"}` : "Sin respuestas todavía"}</span>
+          <span class="qz-chip">${unknown ? "Respuestas sin cargar" : answers ? `${esc(answers)} ${answers === 1 ? "respuesta" : "respuestas"}` : "Sin respuestas todavía"}</span>
           ${hits ? `<span class="qz-chip">${esc(hits)} ${hits === 1 ? "acierto marcado" : "aciertos marcados"}</span>` : ``}
         </div>
+        ${unknown ? `
+        <div class="qz-picks-loadfail qz-rb-unknown" ${firstUnknown ? 'role="alert"' : ""}>
+          <p id="qz-rb-unk-${esc(bet.id)}">${BET_ANSWERS_UNKNOWN_MSG}</p>
+          <button type="button" class="btn btn-gold btn-sm" id="qz-rb-retry-${esc(bet.id)}" data-rb-retry="${esc(bet.id)}">Volver a intentar</button>
+        </div>` : ``}
         <div class="qz-qcard-actions">
-          <button class="qz-linkbtn" data-rb-edit="${esc(bet.id)}">${noClose ? "Elegir cierre" : "Editar"}</button><span aria-hidden="true"> · </span><button class="qz-linkbtn" data-rb-del="${esc(bet.id)}">Quitar</button>
+          <button class="qz-linkbtn" data-rb-edit="${esc(bet.id)}">${noClose ? "Elegir cierre" : "Editar"}</button><span aria-hidden="true"> · </span><button class="qz-linkbtn" data-rb-del="${esc(bet.id)}" ${unknown ? `aria-disabled="true" aria-describedby="qz-rb-unk-${esc(bet.id)}"` : ""}>Quitar</button>
         </div>
       </div>`;
   }
@@ -11830,7 +11847,7 @@
     const lockLine = noPasswordYet
       ? `<p class="muted qz-tight">🔒 Los puntos y la cuota se protegen con tu contraseña de administrador. ${isCreator(currentUser) ? "La creas al publicar tu primera jornada o en Ajustes." : "La configura quien creó la quiniela."}</p>`
       : `<p class="muted qz-tight">🔒 Para cambiarlos, desbloquea con tu contraseña de administrador (arriba).</p>`;
-    const cardsHtml = bets.map(reglasBetCardHtml).join("");
+    const cardsHtml = bets.map((b, i, all) => reglasBetCardHtml(b, i, all)).join("");
     const formHtml = st.form ? reglasBetFormHtml(st.form) : "";
     // R2: what the first publish could not store (someone else saved first),
     // kept for this admin until reviewed; nothing of it is applied by itself.
@@ -12168,15 +12185,26 @@
       toast(editingBet ? "✅ Listo, la pregunta quedó actualizada." : "✅ Listo, la pregunta quedó guardada.");
       repaint();
     });
+    // Reintento de las respuestas sin cargar: sólo lee; al cargar, la tarjeta
+    // vuelve con sus conteos verdaderos y el foco va a su «Quitar».
+    body.querySelectorAll("[data-rb-retry]").forEach(btn => btn.addEventListener("click", () => {
+      const id = btn.dataset.rbRetry;
+      retryPicksLoad(btn, () => renderAdminReglas(body, { quick: true }), () => [...body.querySelectorAll("[data-rb-del]")].find(x => x.dataset.rbDel === id));
+    }));
     body.querySelectorAll("[data-rb-del]").forEach(b => b.addEventListener("click", async () => {
       const bet = bets.find(x => x.id === b.dataset.rbDel);
       if(!bet) return;
+      // Se comprueba al ejecutar, no sólo por el aspecto del botón: sin saber
+      // cuántas respuestas hay, no se pregunta ni se escribe nada.
+      if(betAnswersUnknown(bet)){ toast(BET_ANSWERS_UNKNOWN_MSG, 6000); return; }
       const answers = betAnswerCount(bet), hits = betHitCount(bet);
       const ok = await qzConfirm(answers || hits
         ? `Se borran las ${answers} respuestas de tus participantes y los ${hits} aciertos marcados, y esos puntos salen de la tabla. Esto no se puede deshacer.`
         : "Se quita de tus reglas. Nadie la ha respondido todavía.",
         { title: "¿Quitar esta pregunta?", confirmLabel: answers || hits ? "Quitar pregunta" : "Quitar", cancelLabel: "Cancelar" });
       if(!ok) return;
+      // Y otra vez justo antes de escribir (la carga pudo fallar mientras tanto).
+      if(betAnswersUnknown(bet)){ toast(BET_ANSWERS_UNKNOWN_MSG, 6000); return; }
       const betsBefore = meta.customBets.slice();
       const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
       const roundsSnapshot = JSON.parse(JSON.stringify(meta.rounds));

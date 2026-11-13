@@ -700,3 +700,69 @@ test("un id de jornada como «constructor» o «toString» no hereda nada: el to
   assert.deepEqual(rounds.map((r) => N.roundTotalParts("u", r, picks.u[r.id]).total), [3, 0]);
   assert.equal(N.pointsBreakdown("u").total, 3);
 });
+
+// ---- Reglas: no se quita una pregunta con respuestas desconocidas -------------
+function reglasCard(state) {
+  const src = ["function betAnswerCount(bet)", "function betAnswersUnknown(bet)", "function betHitCount(bet)", "function reglasBetCardHtml(bet, i, all)"].map(fn).join("\n");
+  const constLine = indexSrc.match(/\n  const BET_ANSWERS_UNKNOWN_MSG = "[^"]+";/)[0];
+  return new Function("meta", "allPicksCache", "allPicksLoadFailed", `
+    const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    const pointsWord = (n) => Number(n) === 1 ? "punto" : "puntos";
+    const scopeLabel = (s) => s === "jornada" ? "Cada jornada" : "Todo el torneo";
+    const betCloseInfo = () => ({ kind: "jornada" });
+    const betCloseLine = () => "Cierra con cada jornada";
+    ${constLine}
+    ${src}
+    return { card: (bet, i, all) => reglasBetCardHtml(bet, i, all), unknown: betAnswersUnknown, count: betAnswerCount };`)(state.meta, state.picks, state.failed);
+}
+const RG_META = {
+  participants: [{ id: "beto", name: "Beto", customBetAnswers: { bt: { guess: "Toros" } } }, { id: "diego", name: "Diego" }],
+  rounds: [{ id: "r5", number: 5, customBetResults: { bj: { beto: true } } }],
+  customBets: [{ id: "bj", label: "¿Quién anota?", scope: "jornada", points: 5 }, { id: "bv", label: "¿Rojas?", scope: "jornada", points: 2 }, { id: "bt", label: "Campeón", scope: "temporada", points: 10 }],
+};
+const RG_PICKS = { beto: { r5: { __extra: { bj: "Halcones" } } }, diego: { r5: { __extra: { bj: "Toros" } } } };
+
+test("Reglas · con la carga fallida, una pregunta de jornada no dice «Sin respuestas»: avisa, ofrece reintento y «Quitar» queda bloqueado", () => {
+  const R = reglasCard({ meta: RG_META, picks: {}, failed: true });
+  const [bj, bv, bt] = RG_META.customBets;
+  const html = R.card(bj, 0, RG_META.customBets);
+  assert.match(html, /Respuestas sin cargar/);
+  assert.doesNotMatch(html, /Sin respuestas todavía/);
+  assert.match(html, /<p id="qz-rb-unk-bj">No pudimos cargar las respuestas\. Vuelve a intentarlo antes de quitar esta pregunta\.<\/p>/);
+  assert.match(html, /<div class="qz-picks-loadfail qz-rb-unknown" role="alert">/, "el primer aviso se anuncia");
+  assert.match(html, /data-rb-retry="bj">Volver a intentar<\/button>/);
+  assert.match(html, /data-rb-del="bj" aria-disabled="true" aria-describedby="qz-rb-unk-bj">Quitar/);
+  assert.doesNotMatch(R.card(bv, 1, RG_META.customBets), /role="alert"/, "sólo un aviso con role=alert");
+  // Las del torneo vienen en la meta: no dependen de la carga.
+  assert.equal(R.unknown(bt), false);
+  const tHtml = R.card(bt, 2, RG_META.customBets);
+  assert.match(tHtml, /1 respuesta</);
+  assert.doesNotMatch(tHtml, /aria-disabled|No pudimos cargar/);
+});
+
+test("Reglas · con la carga completa: conteos verdaderos; una entrada vacía válida sigue siendo «Sin respuestas todavía»", () => {
+  const R = reglasCard({ meta: RG_META, picks: RG_PICKS, failed: false });
+  const [bj, bv] = RG_META.customBets;
+  const a = R.card(bj, 0, RG_META.customBets);
+  assert.match(a, /2 respuestas</);
+  assert.match(a, /1 acierto marcado/);
+  assert.doesNotMatch(a, /aria-disabled|No pudimos cargar/);
+  // Nadie respondió de verdad (entradas {} válidas): se puede quitar.
+  const E = reglasCard({ meta: RG_META, picks: { beto: {}, diego: {} }, failed: false });
+  const b = E.card(bv, 1, RG_META.customBets);
+  assert.match(b, /Sin respuestas todavía/);
+  assert.doesNotMatch(b, /aria-disabled|No pudimos cargar/);
+});
+
+test("Reglas · «Quitar» comprueba al ejecutar (antes de preguntar y antes de escribir), no sólo por el aspecto del botón", () => {
+  const r = fn("async function renderAdminReglas(body, opts)");
+  const h = r.slice(r.indexOf('body.querySelectorAll("[data-rb-del]")'));
+  const g1 = h.indexOf("if(betAnswersUnknown(bet)){ toast(BET_ANSWERS_UNKNOWN_MSG, 6000); return; }");
+  const conf = h.indexOf("await qzConfirm(");
+  const g2 = h.indexOf("if(betAnswersUnknown(bet)){ toast(BET_ANSWERS_UNKNOWN_MSG, 6000); return; }", g1 + 1);
+  const write = h.indexOf("await setMetaWithError(meta)");
+  const mutate = h.indexOf("meta.customBets = meta.customBets.filter");
+  assert.ok(g1 !== -1 && g1 < conf, "antes de la confirmación");
+  assert.ok(g2 !== -1 && conf < g2 && g2 < mutate && mutate < write, "y antes de tocar la meta y escribir");
+  assert.ok(r.includes('retryPicksLoad(btn, () => renderAdminReglas(body, { quick: true })'), "el reintento sólo lee y repinta");
+});
