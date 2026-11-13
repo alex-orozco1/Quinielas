@@ -615,7 +615,7 @@ test("Gráfica · con una carga posterior fallida (p. ej. el Excel) no dibuja po
 // ---- Excel (XLSX simulado: no es el generador real) ---------------------------
 async function runExcel({ metaOver, failed }) {
   const sheets = {}, written = [], toasts = [];
-  const XLSX = { utils: { book_new: () => ({}), json_to_sheet: (rows) => rows, book_append_sheet: (wb, rows, name) => { sheets[name] = rows; } }, writeFile: (wb, f) => written.push(f) };
+  const XLSX = { utils: { book_new: () => ({}), json_to_sheet: (rows) => rows, aoa_to_sheet: (aoa) => ({ aoa }), book_append_sheet: (wb, rows, name) => { sheets[name] = rows; } }, writeFile: (wb, f) => written.push(f) };
   const meta = { groupName: "Liga", settings: { entryFee: 0 }, rounds: [], customBets: [],
     participants: [{ id: "a", name: "Ana", paid: true, pts: 9 }, { id: "b", name: "Beto", paid: true, pts: 4 }], ...metaOver };
   const run = new Function("XLSX", "meta", "toast", "failed", `
@@ -632,7 +632,7 @@ async function runExcel({ metaOver, failed }) {
   await run();
   return { sheets, written, toasts };
 }
-test("Excel · con la carga fallida o incompleta no se descarga nada ni se anuncia éxito", async () => {
+test("Excel · con la carga fallida o incompleta no se descarga nada ni se anuncia éxito (tampoco la hoja «Pagos»)", async () => {
   const r = await runExcel({ failed: true });
   assert.deepEqual(r.written, []);
   assert.deepEqual(Object.keys(r.sheets), []);
@@ -645,14 +645,16 @@ test("Excel · hoja Tabla: «Pagó» según paymentsTracked(), igual que la app 
   assert.deepEqual(sin.sheets.Tabla, [{ "#": 1, Participante: "Ana", Puntos: 9 }, { "#": 2, Participante: "Beto", Puntos: 4 }]);
   assert.deepEqual(sin.written, ["quiniela_Liga.xlsx"]);
   assert.ok(sin.toasts.includes("✅ Listo, tu Excel se descargó."));
-  // Pendiente conocido (fuera de esta decisión): la hoja «Pagos» sigue diciendo «No» sin seguimiento.
-  assert.deepEqual(sin.sheets.Pagos.map((r) => r["Pagó"]), ["No", "No"]);
+  // Hoja «Pagos» sin seguimiento: se queda, sólo con el aviso; nadie «No pagó».
+  assert.deepEqual(sin.sheets.Pagos, { aoa: [["Esta quiniela no lleva registro de pagos"]] });
   // Con cuota y todos pagados: la columna se conserva.
   const todos = await runExcel({ metaOver: { settings: { entryFee: 100 } } });
   assert.deepEqual(todos.sheets.Tabla.map((r) => r["Pagó"]), ["Sí", "Sí"]);
+  assert.deepEqual(todos.sheets.Pagos, [{ Participante: "Ana", Cuota: 100, "Pagó": "Sí" }, { Participante: "Beto", Cuota: 100, "Pagó": "Sí" }], "con seguimiento y todos pagados, la hoja «Pagos» conserva los pagos reales");
   // Seguimiento sólo por penalización (cuota 0): también.
   const pen = await runExcel({ metaOver: { paymentPenalty: { enabled: true, startsAtRound: 1 }, participants: [{ id: "a", name: "Ana", paid: false, pts: 9 }, { id: "b", name: "Beto", paid: true, pts: 4 }] } });
   assert.deepEqual(pen.sheets.Tabla.map((r) => r["Pagó"]), ["No", "Sí"]);
+  assert.deepEqual(pen.sheets.Pagos.map((r) => r["Pagó"]), ["No", "Sí"], "con seguimiento, «No» es un pago pendiente real");
   // Nada más cambia de forma: mismas hojas y mismas columnas de puntos.
   assert.deepEqual(Object.keys(todos.sheets), ["Tabla", "Jornada detalle", "Estadísticas", "Pagos"]);
 });

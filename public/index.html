@@ -14615,13 +14615,19 @@
     }).sort((a,b)=>b["Puntos totales"]-a["Puntos totales"]);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(statsRows), "Estadísticas");
 
-    // Payments
-    const paymentRows = meta.participants.map(p => ({
-      "Participante": p.name,
-      "Cuota": meta.settings.entryFee,
-      "Pagó": p.paid ? "Sí" : "No"
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), "Pagos");
+    // Payments. Con seguimiento (paymentsTracked), los pagos reales, también
+    // si ya pagaron todos. Sin seguimiento, la hoja se queda pero sólo lo
+    // dice: nadie aparece como «No pagó» en una quiniela que no lleva pagos.
+    if(payTracked){
+      const paymentRows = meta.participants.map(p => ({
+        "Participante": p.name,
+        "Cuota": meta.settings.entryFee,
+        "Pagó": p.paid ? "Sí" : "No"
+      }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), "Pagos");
+    } else {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Esta quiniela no lleva registro de pagos"]]), "Pagos");
+    }
 
     XLSX.writeFile(wb, "quiniela_" + meta.groupName.replace(/\s+/g,"_") + ".xlsx");
     toast("✅ Listo, tu Excel se descargó.");
