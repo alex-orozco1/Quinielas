@@ -11666,10 +11666,15 @@
   // Las respuestas de una pregunta de jornada viven en los pronósticos: si la
   // última carga falló o llegó incompleta, no se sabe cuántas hay (no es
   // «nadie respondió»). Las del torneo vienen en la meta y siempre se saben.
+  // Como betAnswerCount(): toda pregunta que no es del torneo, también una
+  // antigua sin tipo explícito (la app la trata como «Cada jornada»).
   function betAnswersUnknown(bet){
-    return !!bet && bet.scope === "jornada" && allPicksLoadFailed;
+    return !!bet && bet.scope !== "temporada" && allPicksLoadFailed;
   }
   const BET_ANSWERS_UNKNOWN_MSG = "No pudimos cargar las respuestas. Vuelve a intentarlo antes de quitar esta pregunta.";
+  const BET_TYPE_LOCKED_MSG = "Carga las respuestas antes de cambiar el tipo de pregunta.";
+  // El tipo como lo lee la app: lo que no es «temporada» es «jornada».
+  function betScopeKind(scope){ return scope === "temporada" ? "temporada" : "jornada"; }
   function betHitCount(bet){
     if(bet.scope === "temporada"){
       return meta.participants.filter(p => p.customBetAnswers && p.customBetAnswers[bet.id] && p.customBetAnswers[bet.id].correct === true).length;
@@ -11759,9 +11764,14 @@
     const editing = !!f.id;
     const bet = editing ? meta.customBets.find(b => b.id === f.id) : null;
     const answers = bet ? betAnswerCount(bet) : 0;
+    // Sin sus respuestas no se sabe si se puede cambiar el tipo: se queda el
+    // original (también en el estado del formulario, para que lo que se ve
+    // sea lo que se guarda) y se bloquea el selector.
+    const typeLocked = editing && betAnswersUnknown(bet);
+    if(typeLocked) f.scope = bet.scope;
     const tpl = extraTemplate(f.template);
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
-    const scope = tpl ? tpl.scope : (f.scope || "jornada");
+    const scope = tpl ? tpl.scope : (typeLocked ? betScopeKind(bet.scope) : (f.scope || "jornada"));
     const rounds = closableRounds();
     const closeFixed = editing && betCloseFixed(bet);
     // MS2 · D4. Its current close stays the selected value (saving without
@@ -11790,12 +11800,16 @@
             <div class="field qz-field-text"><label for="qz-rb-text">${editing ? "Pregunta" : "Escribe tu pregunta"}</label>
               <input type="text" id="qz-rb-text" maxlength="${EXTRA_TEXT_MAX}" value="${esc(f.text)}" autocomplete="off"></div>
             ${editing && answers ? `<p class="muted qz-tight">Cambiar el texto no cambia las respuestas ya enviadas. Úsalo sólo para corregir errores.</p>` : ``}
-            <fieldset class="qz-scope" ${editing && answers ? "disabled" : ""}><legend>¿Cómo se responde?</legend>
+            <fieldset class="qz-scope" ${(editing && answers) || typeLocked ? "disabled" : ""} ${typeLocked ? `aria-describedby="qz-rb-type-lock"` : ""}><legend>¿Cómo se responde?</legend>
               ${["temporada", "jornada"].map(s => `
                 <label class="qz-scope-opt"><input type="radio" name="qz-rb-scope" value="${s}" ${scope === s ? "checked" : ""}>
                   <span><strong>${esc(scopeLabel(s))}</strong><span class="muted">${esc(scopeHelp(s))}</span></span></label>`).join("")}
             </fieldset>
-            ${editing && answers ? `<p class="muted qz-tight">No se puede cambiar el tipo porque ya hay respuestas.</p>` : ``}
+            ${typeLocked ? `
+            <div class="qz-picks-loadfail qz-rb-unknown" role="alert">
+              <p id="qz-rb-type-lock">${BET_TYPE_LOCKED_MSG}</p>
+              <button type="button" class="btn btn-gold btn-sm" id="qz-rb-form-retry">Volver a intentar</button>
+            </div>` : editing && answers ? `<p class="muted qz-tight">No se puede cambiar el tipo porque ya hay respuestas.</p>` : ``}
           ` : `<p class="qz-wz-line">Se responde: <strong>${esc(scopeLabel(scope).toLowerCase())}</strong></p>`}
           <div class="field qz-field-narrow"><label for="qz-rb-points">Puntos si acierta</label>
             <input type="text" inputmode="numeric" id="qz-rb-points" value="${esc(f.points)}" autocomplete="off"></div>
@@ -12112,7 +12126,20 @@
       if(p) st.form.points = p.value;
       if(c) st.form.closes = c.value;
     };
-    body.querySelectorAll('input[name="qz-rb-scope"]').forEach(r => r.addEventListener("change", () => { keepTyped(); st.form.scope = r.value; repaint(); }));
+    const formTypeLocked = () => {
+      const b = st.form && st.form.id ? meta.customBets.find(x => x.id === st.form.id) : null;
+      return !!b && betAnswersUnknown(b);
+    };
+    body.querySelectorAll('input[name="qz-rb-scope"]').forEach(r => r.addEventListener("change", () => {
+      keepTyped();
+      if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }
+      st.form.scope = r.value; repaint();
+    }));
+    const formRetry = document.getElementById("qz-rb-form-retry");
+    if(formRetry) formRetry.addEventListener("click", () => {
+      keepTyped();
+      retryPicksLoad(formRetry, () => renderAdminReglas(body, { quick: true }), () => document.querySelector('#qz-rb-form fieldset.qz-scope:not([disabled]) input[name="qz-rb-scope"]:checked') || document.getElementById("qz-rb-text"));
+    });
     const cancelForm = document.getElementById("qz-rb-cancel");
     if(cancelForm) cancelForm.addEventListener("click", () => { st.form = null; repaint(); });
     const saveForm = document.getElementById("qz-rb-save");
@@ -12123,7 +12150,23 @@
       const tpl = extraTemplate(f.template);
       const problem = extraQuestionProblem({ template: f.template, text: f.text, points: f.points }, meta.customBets.map(b => ({ key: b.id, text: b.label })), f.id);
       if(problem){ setupFieldError("qz-rb-err", problem); return; }
-      const scope = tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
+      // Con las respuestas sin cargar, el tipo no cambia: si se pidió otro (el
+      // formulario se abrió antes del fallo, o se forzó el selector), no se
+      // guarda nada; si es el mismo, se conserva exactamente el original (una
+      // pregunta antigua sin tipo sigue sin tipo).
+      const typeChangeBlocked = () => {
+        if(!editingBet || !betAnswersUnknown(editingBet)) return false;
+        const requested = tpl ? tpl.scope : (f.scope || "jornada");
+        return betScopeKind(requested) !== betScopeKind(editingBet.scope);
+      };
+      const blockTypeChange = () => {
+        f.scope = editingBet.scope;
+        repaint();
+        toast(BET_TYPE_LOCKED_MSG + " No se guardó nada.", 6000);
+      };
+      if(typeChangeBlocked()){ blockTypeChange(); return; }
+      let scope = editingBet && betAnswersUnknown(editingBet) ? editingBet.scope
+        : tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
       // It closed while this form was open: the close it had stays.
       if(scope === "temporada" && betCloseFixed(editingBet) && f.closes !== "" && parsePositiveInt(f.closes) !== editingBet.closesAtRound){
         f.closes = String(editingBet.closesAtRound);
@@ -12160,6 +12203,10 @@
           if(!ok) return;
         }
       }
+      // Otra vez después de la espera, justo antes de tocar la meta: la carga
+      // pudo fallar mientras la confirmación estaba abierta.
+      if(typeChangeBlocked()){ blockTypeChange(); return; }
+      if(editingBet && betAnswersUnknown(editingBet)) scope = editingBet.scope;
       const snapshot = JSON.parse(JSON.stringify(meta.customBets));
       const label = tpl ? tpl.text : f.text.trim();
       if(editingBet){

@@ -735,6 +735,8 @@ test("Reglas · con la carga fallida, una pregunta de jornada no dice «Sin resp
   assert.doesNotMatch(R.card(bv, 1, RG_META.customBets), /role="alert"/, "sólo un aviso con role=alert");
   // Las del torneo vienen en la meta: no dependen de la carga.
   assert.equal(R.unknown(bt), false);
+  // Una antigua sin tipo cuenta sus respuestas en los pronósticos (como betAnswerCount): también se protege.
+  assert.equal(R.unknown({ id: "old", label: "Antigua", points: 1 }), true);
   const tHtml = R.card(bt, 2, RG_META.customBets);
   assert.match(tHtml, /1 respuesta</);
   assert.doesNotMatch(tHtml, /aria-disabled|No pudimos cargar/);
@@ -765,4 +767,83 @@ test("Reglas · «Quitar» comprueba al ejecutar (antes de preguntar y antes de 
   assert.ok(g1 !== -1 && g1 < conf, "antes de la confirmación");
   assert.ok(g2 !== -1 && conf < g2 && g2 < mutate && mutate < write, "y antes de tocar la meta y escribir");
   assert.ok(r.includes('retryPicksLoad(btn, () => renderAdminReglas(body, { quick: true })'), "el reintento sólo lee y repinta");
+});
+
+// ---- Reglas: no se cambia el tipo de una pregunta con respuestas sin cargar ----
+function reglasForm(state) {
+  const src = ["function betAnswerCount(bet)", "function betAnswersUnknown(bet)", "function betScopeKind(scope)", "function reglasBetFormHtml(f)"].map(fn).join("\n");
+  const consts = [/\n  const BET_TYPE_LOCKED_MSG = "[^"]+";/, /\n  const EXTRA_CUSTOM_KEY = "[^"]+";/, /\n  const EXTRA_TEXT_MAX = \d+;/].map((re) => indexSrc.match(re)[0]).join("");
+  return new Function("meta", "allPicksCache", "allPicksLoadFailed", `
+    const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    const scopeLabel = (s) => s === "temporada" ? "Una vez por torneo" : "Cada jornada";
+    const scopeHelp = () => "";
+    const extraTemplate = () => null;
+    const EXTRA_TEMPLATES = [];
+    const closableRounds = () => [];
+    const betCloseFixed = () => false;
+    const betCloseInfo = () => ({ kind: "none" });
+    const betCloseLine = () => "";
+    const sameInstantMs = () => false;
+    const fmtWhenTz = (x) => String(x);
+    ${consts}
+    ${src}
+    return reglasBetFormHtml;`)(state.meta, state.picks, state.failed);
+}
+const TP_META = {
+  participants: [{ id: "beto", name: "Beto" }, { id: "diego", name: "Diego" }],
+  rounds: [{ id: "r5", number: 5, customBetResults: { bj: { beto: true } } }],
+  customBets: [{ id: "bj", label: "¿Quién anota?", scope: "jornada", points: 5 }, { id: "bv", label: "¿Rojas?", scope: "jornada", points: 2 }, { id: "bl", label: "Antigua", points: 4 }, { id: "bt", label: "Campeón", scope: "temporada", points: 10 }],
+};
+const formOf = (id) => ({ id, template: "custom", text: "x", scope: id === "bt" ? "temporada" : "temporada", points: "5", closes: "" });
+
+test("Reglas · tipo con respuestas sin cargar: selector deshabilitado, aviso con reintento y el formulario vuelve al tipo original", () => {
+  const render = reglasForm({ meta: TP_META, picks: {}, failed: true });
+  for (const id of ["bj", "bv"]) {
+    const f = formOf(id); // el formulario traía «temporada» (p. ej. abierto antes del fallo)
+    const html = render(f);
+    assert.match(html, /<fieldset class="qz-scope" disabled aria-describedby="qz-rb-type-lock">/, id);
+    assert.match(html, /<p id="qz-rb-type-lock">Carga las respuestas antes de cambiar el tipo de pregunta\.<\/p>/);
+    assert.match(html, /id="qz-rb-form-retry">Volver a intentar<\/button>/);
+    assert.match(html, /value="jornada" checked/, "se ve el tipo original");
+    assert.equal(f.scope, "jornada", "y es el que queda en el formulario");
+    assert.doesNotMatch(html, /ya hay respuestas/, "no se afirma nada sobre las respuestas");
+  }
+  // Antigua sin tipo: la app la trata como «Cada jornada»; se bloquea y su tipo sigue sin definir.
+  const fl = formOf("bl");
+  const hl = render(fl);
+  assert.match(hl, /<fieldset class="qz-scope" disabled/);
+  assert.match(hl, /value="jornada" checked/);
+  assert.equal(fl.scope, undefined, "no se le asigna un tipo");
+  // La del torneo no depende de la carga: no se bloquea por esto.
+  assert.doesNotMatch(render(formOf("bt")), /Carga las respuestas|disabled aria-describedby/);
+});
+
+test("Reglas · tipo con la carga correcta: con respuestas, la restricción de siempre; sin respuestas, se puede cambiar", () => {
+  const render = reglasForm({ meta: TP_META, picks: { beto: { r5: { __extra: { bj: "A", bl: "B" } } }, diego: {} }, failed: false });
+  const hj = render(formOf("bj"));
+  assert.match(hj, /<fieldset class="qz-scope" disabled >/);
+  assert.match(hj, /No se puede cambiar el tipo porque ya hay respuestas\./);
+  assert.doesNotMatch(hj, /Carga las respuestas/);
+  const fv = formOf("bv");
+  const hv = render(fv);
+  assert.match(hv, /<fieldset class="qz-scope"  >/, "habilitado");
+  assert.match(hv, /value="temporada" checked/, "conserva lo que eligió el admin");
+  assert.equal(fv.scope, "temporada");
+  assert.match(render(formOf("bl")), /ya hay respuestas/, "la antigua con 1 respuesta mantiene su restricción");
+});
+
+test("Reglas · el guardado comprueba el tipo al empezar y otra vez después de la confirmación, antes de tocar la meta", () => {
+  const r = fn("async function renderAdminReglas(body, opts)");
+  const h = r.slice(r.indexOf('if(saveForm) saveForm.addEventListener("click", async () => {'));
+  const g1 = h.indexOf("if(typeChangeBlocked()){ blockTypeChange(); return; }");
+  const conf = h.indexOf("await qzConfirm(");
+  const g2 = h.indexOf("if(typeChangeBlocked()){ blockTypeChange(); return; }", g1 + 1);
+  const keep2 = h.indexOf("if(editingBet && betAnswersUnknown(editingBet)) scope = editingBet.scope;");
+  const mutate = h.indexOf("editingBet.scope = scope;");
+  const write = h.indexOf("await setMetaWithError(meta, { betsEdited: true })");
+  assert.ok(g1 !== -1 && g1 < conf, "antes de la confirmación");
+  assert.ok(g2 !== -1 && conf < g2 && g2 < keep2 && keep2 < mutate && mutate < write, "y después, antes de cambiar la meta y escribir");
+  assert.ok(h.includes("let scope = editingBet && betAnswersUnknown(editingBet) ? editingBet.scope"), "con respuestas sin cargar se conserva el tipo exacto");
+  // El selector tampoco acepta el cambio aunque se quite el bloqueo del HTML.
+  assert.ok(r.includes('if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }'));
 });

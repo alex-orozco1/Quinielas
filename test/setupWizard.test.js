@@ -398,6 +398,10 @@ test("pestaña atrasada · una pregunta del torneo que esta pestaña no editó n
 const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
   const serverNow = () => serverNowMs;
   const allPicksCache = {};
+  // Con la carga de pronósticos completa (el formulario de siempre); el caso
+  // de respuestas sin cargar está en test/puntosClaridad.test.js.
+  const allPicksLoadFailed = false;
+  ${indexSrc.match(/const BET_TYPE_LOCKED_MSG = "[^"]+";/)[0]}
   ${constLine("EXTRA_TEMPLATES")}
   const EXTRA_CUSTOM_KEY = "custom";
   const EXTRA_TEXT_MAX = 200;
@@ -412,6 +416,8 @@ const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
   ${fn("function sameInstantMs(a, b)")}
   ${fn("function customBetsLocked(bet)")}
   ${fn("function betAnswerCount(bet)")}
+  ${fn("function betAnswersUnknown(bet)")}
+  ${fn("function betScopeKind(scope)")}
   ${fn("function closableRounds()")}
   ${fn("function betCloseLine(bet)")}
   ${fn("function betCloseFixed(bet)")}
