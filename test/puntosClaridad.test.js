@@ -771,7 +771,7 @@ test("Reglas · «Quitar» comprueba al ejecutar (antes de preguntar y antes de 
 
 // ---- Reglas: no se cambia el tipo de una pregunta con respuestas sin cargar ----
 function reglasForm(state) {
-  const src = ["function betAnswerCount(bet)", "function betAnswersUnknown(bet)", "function betScopeKind(scope)", "function reglasBetFormHtml(f)"].map(fn).join("\n");
+  const src = ["function betAnswerCount(bet)", "function betAnswersUnknown(bet)", "function betScopeKind(scope)", "function betHasNoScope(bet)", "function reglasBetFormHtml(f)"].map(fn).join("\n");
   const consts = [/\n  const BET_TYPE_LOCKED_MSG = "[^"]+";/, /\n  const EXTRA_CUSTOM_KEY = "[^"]+";/, /\n  const EXTRA_TEXT_MAX = \d+;/].map((re) => indexSrc.match(re)[0]).join("");
   return new Function("meta", "allPicksCache", "allPicksLoadFailed", `
     const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -843,7 +843,7 @@ test("Reglas · el guardado comprueba el tipo al empezar y otra vez después de 
   const write = h.indexOf("await setMetaWithError(meta, { betsEdited: true })");
   assert.ok(g1 !== -1 && g1 < conf, "antes de la confirmación");
   assert.ok(g2 !== -1 && conf < g2 && g2 < keep2 && keep2 < mutate && mutate < write, "y después, antes de cambiar la meta y escribir");
-  assert.ok(h.includes("let scope = editingBet && betAnswersUnknown(editingBet) ? editingBet.scope"), "con respuestas sin cargar se conserva el tipo exacto");
+  assert.ok(h.includes("let scope = editingBet && (betAnswersUnknown(editingBet) || keepNoScope()) ? editingBet.scope"), "con respuestas sin cargar se conserva el tipo exacto");
   // El selector tampoco acepta el cambio aunque se quite el bloqueo del HTML.
   assert.ok(r.includes('if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }'));
 });
@@ -856,4 +856,36 @@ test("Reglas · «Editar» lleva el formulario a la vista bajo el menú fijo y p
   assert.ok(show.includes("field.focus({ preventScroll: true })"), "el foco no vuelve a mover la página");
   const edit = r.slice(r.indexOf('body.querySelectorAll("[data-rb-edit]")'));
   assert.ok(edit.indexOf("repaint();\n      showReglasForm();") !== -1, "después de pintar el formulario");
+});
+
+test("Reglas · pregunta antigua sin tipo: el formulario no da por elegido ningún tipo; sólo al elegir uno se marca", () => {
+  const meta = { participants: [{ id: "diego", name: "Diego" }], rounds: [{ id: "r5", number: 5, customBetResults: { bl0: { diego: true } } }],
+    customBets: [{ id: "bl0", label: "Vieja", points: 2 }] };
+  const render = reglasForm({ meta, picks: { diego: {} }, failed: false });
+  const f = { id: "bl0", template: "custom", text: "Vieja", scope: undefined, points: "2", closes: "" };
+  const html = render(f);
+  assert.doesNotMatch(html, /name="qz-rb-scope" value="[a-z]+" checked/, "ninguna opción marcada");
+  assert.match(html, /<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado\. Si no eliges uno, se queda así\.<\/p>/);
+  assert.match(html, /<fieldset class="qz-scope"  aria-describedby="qz-rb-noscope">/, "habilitado y descrito");
+  assert.equal(f.scope, undefined);
+  // El admin elige «Cada jornada» expresamente: queda marcada y sin la nota.
+  const t = { ...f, scope: "jornada", scopeTouched: true };
+  const h2 = render(t);
+  assert.match(h2, /value="jornada" checked/);
+  assert.doesNotMatch(h2, /qz-rb-noscope/);
+  // Con respuestas sin cargar, el bloqueo de siempre (muestra «Cada jornada», deshabilitado).
+  const locked = reglasForm({ meta, picks: {}, failed: true })({ ...f });
+  assert.match(locked, /<fieldset class="qz-scope" disabled aria-describedby="qz-rb-type-lock">/);
+  assert.match(locked, /value="jornada" checked/);
+});
+
+test("Reglas · guardar una pregunta antigua sin tocar su tipo la deja exactamente igual (sin tipo, sin cierre nuevo)", () => {
+  const r = fn("async function renderAdminReglas(body, opts)");
+  assert.ok(r.includes("st.form.scope = r.value; st.form.scopeTouched = true; repaint();"), "sólo un cambio del selector cuenta como elegir el tipo");
+  assert.ok(r.includes("const keepNoScope = () => !!editingBet && betHasNoScope(editingBet) && !f.scopeTouched;"));
+  assert.ok(r.includes("const untouchedNoScope = betHasNoScope(editingBet) && scope === editingBet.scope;"));
+  assert.ok(r.includes("if(!untouchedNoScope) editingBet.scope = scope;"));
+  assert.ok(r.includes('if(!(untouchedNoScope && closes == null && !("closesAtRound" in editingBet))) editingBet.closesAtRound = closes;'));
+  // El «Editar» empieza siempre sin elección hecha.
+  assert.ok(!/st\.form = \{ id: bet\.id[^}]*scopeTouched/.test(r));
 });

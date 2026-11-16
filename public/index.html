@@ -11675,6 +11675,10 @@
   const BET_TYPE_LOCKED_MSG = "Carga las respuestas antes de cambiar el tipo de pregunta.";
   // El tipo como lo lee la app: lo que no es «temporada» es «jornada».
   function betScopeKind(scope){ return scope === "temporada" ? "temporada" : "jornada"; }
+  // Una pregunta antigua sin tipo guardado. Se muestra como «Cada jornada»,
+  // pero la puntuación no la cuenta: guardarla con un tipo cambiaría la
+  // tabla, así que sólo se le pone uno si el admin lo elige expresamente.
+  function betHasNoScope(bet){ return !!bet && bet.scope !== "temporada" && bet.scope !== "jornada"; }
   function betHitCount(bet){
     if(bet.scope === "temporada"){
       return meta.participants.filter(p => p.customBetAnswers && p.customBetAnswers[bet.id] && p.customBetAnswers[bet.id].correct === true).length;
@@ -11772,6 +11776,10 @@
     const tpl = extraTemplate(f.template);
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
     const scope = tpl ? tpl.scope : (typeLocked ? betScopeKind(bet.scope) : (f.scope || "jornada"));
+    const scopeDisabled = (editing && answers) || typeLocked;
+    // Sin tipo guardado y sin que el admin haya elegido uno: ninguna opción
+    // aparece marcada (no se da por elegido lo que el formulario muestra).
+    const noScopeYet = editing && betHasNoScope(bet) && !f.scopeTouched && !scopeDisabled;
     const rounds = closableRounds();
     const closeFixed = editing && betCloseFixed(bet);
     // MS2 · D4. Its current close stays the selected value (saving without
@@ -11800,9 +11808,10 @@
             <div class="field qz-field-text"><label for="qz-rb-text">${editing ? "Pregunta" : "Escribe tu pregunta"}</label>
               <input type="text" id="qz-rb-text" maxlength="${EXTRA_TEXT_MAX}" value="${esc(f.text)}" autocomplete="off"></div>
             ${editing && answers ? `<p class="muted qz-tight">Cambiar el texto no cambia las respuestas ya enviadas. Úsalo sólo para corregir errores.</p>` : ``}
-            <fieldset class="qz-scope" ${(editing && answers) || typeLocked ? "disabled" : ""} ${typeLocked ? `aria-describedby="qz-rb-type-lock"` : ""}><legend>¿Cómo se responde?</legend>
+            <fieldset class="qz-scope" ${scopeDisabled ? "disabled" : ""} ${typeLocked ? `aria-describedby="qz-rb-type-lock"` : noScopeYet ? `aria-describedby="qz-rb-noscope"` : ""}><legend>¿Cómo se responde?</legend>
+              ${noScopeYet ? `<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado. Si no eliges uno, se queda así.</p>` : ``}
               ${["temporada", "jornada"].map(s => `
-                <label class="qz-scope-opt"><input type="radio" name="qz-rb-scope" value="${s}" ${scope === s ? "checked" : ""}>
+                <label class="qz-scope-opt"><input type="radio" name="qz-rb-scope" value="${s}" ${scope === s && !noScopeYet ? "checked" : ""}>
                   <span><strong>${esc(scopeLabel(s))}</strong><span class="muted">${esc(scopeHelp(s))}</span></span></label>`).join("")}
             </fieldset>
             ${typeLocked ? `
@@ -12147,7 +12156,7 @@
     body.querySelectorAll('input[name="qz-rb-scope"]').forEach(r => r.addEventListener("change", () => {
       keepTyped();
       if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }
-      st.form.scope = r.value; repaint();
+      st.form.scope = r.value; st.form.scopeTouched = true; repaint();
     }));
     const formRetry = document.getElementById("qz-rb-form-retry");
     if(formRetry) formRetry.addEventListener("click", () => {
@@ -12179,7 +12188,10 @@
         toast(BET_TYPE_LOCKED_MSG + " No se guardó nada.", 6000);
       };
       if(typeChangeBlocked()){ blockTypeChange(); return; }
-      let scope = editingBet && betAnswersUnknown(editingBet) ? editingBet.scope
+      // Una pregunta antigua sin tipo se queda sin tipo salvo que el admin
+      // elija uno expresamente (f.scopeTouched).
+      const keepNoScope = () => !!editingBet && betHasNoScope(editingBet) && !f.scopeTouched;
+      let scope = editingBet && (betAnswersUnknown(editingBet) || keepNoScope()) ? editingBet.scope
         : tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
       // It closed while this form was open: the close it had stays.
       if(scope === "temporada" && betCloseFixed(editingBet) && f.closes !== "" && parsePositiveInt(f.closes) !== editingBet.closesAtRound){
@@ -12224,10 +12236,12 @@
       const snapshot = JSON.parse(JSON.stringify(meta.customBets));
       const label = tpl ? tpl.text : f.text.trim();
       if(editingBet){
+        // Se conserva exactamente: sin tipo y sin un cierre que nunca tuvo.
+        const untouchedNoScope = betHasNoScope(editingBet) && scope === editingBet.scope;
         editingBet.label = label;
-        editingBet.scope = scope;
+        if(!untouchedNoScope) editingBet.scope = scope;
         editingBet.points = newPoints;
-        editingBet.closesAtRound = closes;
+        if(!(untouchedNoScope && closes == null && !("closesAtRound" in editingBet))) editingBet.closesAtRound = closes;
         if(relinkTo != null) editingBet.closesRoundId = relinkTo;
         if(moveTo != null) editingBet.closesAt = moveTo;
       } else {

@@ -418,6 +418,7 @@ const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
   ${fn("function betAnswerCount(bet)")}
   ${fn("function betAnswersUnknown(bet)")}
   ${fn("function betScopeKind(scope)")}
+  ${fn("function betHasNoScope(bet)")}
   ${fn("function closableRounds()")}
   ${fn("function betCloseLine(bet)")}
   ${fn("function betCloseFixed(bet)")}
