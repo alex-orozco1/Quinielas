@@ -12104,12 +12104,26 @@
     // Questions.
     const newBtn = document.getElementById("qz-rb-new");
     if(newBtn) newBtn.addEventListener("click", () => { st.form = { id: null, template: "", text: "", scope: "", points: "", closes: "" }; repaint(); });
+    // El formulario se pinta al final de la lista: al abrirlo con «Editar» se
+    // lleva a la vista, debajo del menú fijo, y el foco va a «Pregunta» (o al
+    // primer campo editable si es una pregunta de plantilla), para que no
+    // parezca que el botón no hizo nada.
+    function showReglasForm(){
+      const form = document.getElementById("qz-rb-form");
+      if(!form) return;
+      const field = document.getElementById("qz-rb-text") || document.getElementById("qz-rb-points");
+      const hdr = root.querySelector(".qz-header");
+      const top = form.getBoundingClientRect().top + window.scrollY - (hdr ? hdr.getBoundingClientRect().height : 0) - 12;
+      window.scrollTo({ top: Math.max(0, top), behavior: "instant" });
+      if(field) field.focus({ preventScroll: true });
+    }
     body.querySelectorAll("[data-rb-edit]").forEach(b => b.addEventListener("click", () => {
       const bet = bets.find(x => x.id === b.dataset.rbEdit);
       if(!bet) return;
       const tpl = EXTRA_TEMPLATES.find(t => t.text === bet.label && t.scope === bet.scope);
       st.form = { id: bet.id, template: tpl ? tpl.key : EXTRA_CUSTOM_KEY, text: bet.label, scope: bet.scope, points: String(bet.points), closes: bet.scope === "temporada" ? betFormCloses(bet) : "" };
       repaint();
+      showReglasForm();
     }));
     const tplSel = document.getElementById("qz-rb-tpl");
     if(tplSel) tplSel.addEventListener("change", () => {

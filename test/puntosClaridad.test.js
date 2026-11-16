@@ -847,3 +847,13 @@ test("Reglas · el guardado comprueba el tipo al empezar y otra vez después de 
   // El selector tampoco acepta el cambio aunque se quite el bloqueo del HTML.
   assert.ok(r.includes('if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }'));
 });
+
+test("Reglas · «Editar» lleva el formulario a la vista bajo el menú fijo y pone el foco en «Pregunta»", () => {
+  const r = fn("async function renderAdminReglas(body, opts)");
+  const show = r.slice(r.indexOf("function showReglasForm(){"), r.indexOf('body.querySelectorAll("[data-rb-edit]")'));
+  assert.ok(show.includes('document.getElementById("qz-rb-text") || document.getElementById("qz-rb-points")'), "«Pregunta» o, en una plantilla, el primer campo editable");
+  assert.ok(show.includes('(hdr ? hdr.getBoundingClientRect().height : 0) - 12'), "descuenta el menú fijo");
+  assert.ok(show.includes("field.focus({ preventScroll: true })"), "el foco no vuelve a mover la página");
+  const edit = r.slice(r.indexOf('body.querySelectorAll("[data-rb-edit]")'));
+  assert.ok(edit.indexOf("repaint();\n      showReglasForm();") !== -1, "después de pintar el formulario");
+});
