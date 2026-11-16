@@ -569,6 +569,7 @@ test("Solo ver · con la carga fallida: aviso y reintento («Cargando…» en el
     const meta = { groupName: "Liga <b>", settings: { entryFee: 0 }, participants: [{ id: "u", name: "Ana", paid: false }], rounds: [] };
     const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     const feeSummaryHtml = () => ({ feeDisplay: "$0", recaudadoDisplay: "$0" });
+    const keepFocusBelowHeader = () => {}; // se prueba aparte
     ${fn("function computeDenseRanks(list)")}
     let allPicksLoadFailed;
     Object.defineProperty(state, "failed", { set(v) { allPicksLoadFailed = v; } });
@@ -888,4 +889,27 @@ test("Reglas · guardar una pregunta antigua sin tocar su tipo la deja exactamen
   assert.ok(r.includes('if(!(untouchedNoScope && closes == null && !("closesAtRound" in editingBet))) editingBet.closesAtRound = closes;'));
   // El «Editar» empieza siempre sin elección hecha.
   assert.ok(!/st\.form = \{ id: bet\.id[^}]*scopeTouched/.test(r));
+});
+
+test("Foco tras «Volver a intentar»: si queda bajo el menú fijo (o fuera de pantalla), la página se mueve lo justo", () => {
+  const scrolls = [];
+  const run = (headerBottom, top, bottom, innerHeight) => new Function("root", "window", `${fn("function keepFocusBelowHeader(el)")}\nreturn keepFocusBelowHeader;`)(
+    { querySelector: () => ({ getBoundingClientRect: () => ({ bottom: headerBottom }) }) },
+    { innerHeight, scrollBy: (o) => scrolls.push(o) })({ getBoundingClientRect: () => ({ top, bottom }) });
+  run(179, 19, 55, 568);          // tapado por el menú (320×568)
+  assert.deepEqual(scrolls.pop(), { top: 19 - 179 - 12, behavior: "instant" });
+  run(172, 700, 790, 768);        // por debajo de la pantalla
+  assert.deepEqual(scrolls.pop(), { top: 700 - 172 - 12, behavior: "instant" });
+  run(172, 300, 336, 768);        // ya visible: no se mueve
+  assert.equal(scrolls.length, 0);
+  assert.ok(fn("async function retryPicksLoad(btn, rerender, landing)").split("keepFocusBelowHeader(").length - 1 === 2, "al volver al botón y al ir a lo cargado");
+});
+
+test("«Editar»: durante medio segundo se ignoran los clics sobre el formulario recién abierto (segundo clic de un doble clic)", () => {
+  const show = fn("async function renderAdminReglas(body, opts)");
+  const s2 = show.slice(show.indexOf("function showReglasForm(){"), show.indexOf('body.querySelectorAll("[data-rb-edit]")'));
+  assert.ok(s2.includes("const until = performance.now() + 500;"));
+  assert.ok(s2.includes('["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));'), "en captura, antes que los radios");
+  assert.ok(s2.includes("e.preventDefault(); e.stopPropagation();"));
+  assert.ok(!/keydown|keyup/.test(s2), "el teclado no se toca");
 });

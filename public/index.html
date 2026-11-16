@@ -4317,15 +4317,24 @@
         btn.before(note);
       }
       note.textContent = "Lo intentamos de nuevo y todavía no se pudo. Revisa tu conexión o recarga la página.";
-      btn.focus();
+      btn.focus({ preventScroll: true });
+      keepFocusBelowHeader(btn);
       return;
     }
     await rerender();
     const target = landing && landing();
     if(target){
       if(!target.matches("button, a, input, select, textarea, [tabindex]")) target.setAttribute("tabindex", "-1");
-      target.focus();
+      target.focus({ preventScroll: true });
+      keepFocusBelowHeader(target);
     }
+  }
+  // Lleva a la vista un elemento enfocado sin dejarlo bajo el menú fijo.
+  function keepFocusBelowHeader(el){
+    const hdr = root.querySelector(".qz-header");
+    const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
+    const r = el.getBoundingClientRect();
+    if(r.top < hb + 8 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - hb - 12, behavior: "instant" });
   }
   async function ensureAllPicksLoaded(){
     if(allPicksLoadInFlight) return allPicksLoadInFlight;
@@ -12125,6 +12134,13 @@
       const top = form.getBoundingClientRect().top + window.scrollY - (hdr ? hdr.getBoundingClientRect().height : 0) - 12;
       window.scrollTo({ top: Math.max(0, top), behavior: "instant" });
       if(field) field.focus({ preventScroll: true });
+      // El formulario aparece justo bajo el puntero: el segundo clic de un
+      // doble clic (o toque) en «Editar» caería sobre él y podría marcar un
+      // tipo sin que el admin lo eligiera. Durante medio segundo se ignoran
+      // los clics sobre el formulario (no el teclado).
+      const until = performance.now() + 500;
+      const swallow = (e) => { if(performance.now() < until){ e.preventDefault(); e.stopPropagation(); } };
+      ["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));
     }
     body.querySelectorAll("[data-rb-edit]").forEach(b => b.addEventListener("click", () => {
       const bet = bets.find(x => x.id === b.dataset.rbEdit);
