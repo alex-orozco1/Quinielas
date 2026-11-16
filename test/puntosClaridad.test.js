@@ -895,16 +895,25 @@ test("Reglas · guardar una pregunta antigua sin tocar su tipo la deja exactamen
 
 test("Foco tras «Volver a intentar»: si queda bajo el menú fijo (o fuera de pantalla), la página se mueve lo justo", () => {
   const scrolls = [];
-  const run = (headerBottom, top, bottom, innerHeight) => new Function("root", "window", `${fn("function keepFocusBelowHeader(el)")}\nreturn keepFocusBelowHeader;`)(
+  const run = (headerBottom, top, bottom, innerHeight) => new Function("root", "window", `${fn("function keepFocusBelowHeader(el, from)")}\nreturn keepFocusBelowHeader;`)(
     { querySelector: () => ({ getBoundingClientRect: () => ({ bottom: headerBottom }) }) },
     { innerHeight, scrollBy: (o) => scrolls.push(o) })({ getBoundingClientRect: () => ({ top, bottom }) });
   run(179, 19, 55, 568);          // tapado por el menú (320×568)
   assert.deepEqual(scrolls.pop(), { top: 19 - 179 - 12, behavior: "instant" });
-  run(172, 700, 790, 768);        // por debajo de la pantalla
-  assert.deepEqual(scrolls.pop(), { top: 700 - 172 - 12, behavior: "instant" });
+  run(172, 700, 790, 768);        // por debajo de la pantalla: lo mínimo para que quepa
+  assert.deepEqual(scrolls.pop(), { top: 790 - 768 + 12, behavior: "instant" });
   run(172, 300, 336, 768);        // ya visible: no se mueve
   assert.equal(scrolls.length, 0);
   assert.ok(fn("async function retryPicksLoad(btn, rerender, landing)").split("keepFocusBelowHeader(").length - 1 === 2, "al volver al botón y al ir a lo cargado");
+  assert.ok(fn("async function retryPicksLoad(btn, rerender, landing)").includes("keepFocusBelowHeader(btn, note);"), "la nota de «todavía no se pudo» también se ve");
+  // Con la nota encima del botón: se alinea con la nota, no con el botón.
+  const run2 = (hb, noteTop, btnTop, btnBottom, vh) => new Function("root", "window", `${fn("function keepFocusBelowHeader(el, from)")}\nreturn keepFocusBelowHeader;`)(
+    { querySelector: () => ({ getBoundingClientRect: () => ({ bottom: hb }) }) }, { innerHeight: vh, scrollBy: (o) => scrolls.push(o) })(
+    { getBoundingClientRect: () => ({ top: btnTop, bottom: btnBottom }) }, { getBoundingClientRect: () => ({ top: noteTop }) });
+  run2(179, 129, 250, 279, 568);  // la nota quedaría bajo el menú: se baja la página lo justo para verla
+  assert.deepEqual(scrolls.pop(), { top: 129 - 179 - 12, behavior: "instant" });
+  run2(172, 620, 690, 790, 768);  // el botón se sale por abajo: sube lo mínimo, sin tapar la nota
+  assert.deepEqual(scrolls.pop(), { top: 790 - 768 + 12, behavior: "instant" });
 });
 
 test("«Editar»: durante medio segundo se ignoran los clics sobre el formulario recién abierto (segundo clic de un doble clic)", () => {
@@ -914,6 +923,7 @@ test("«Editar»: durante medio segundo se ignoran los clics sobre el formulario
   assert.ok(s2.includes('["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));'), "en captura, antes que los radios");
   assert.ok(s2.includes("e.preventDefault(); e.stopPropagation();"));
   assert.ok(!/keydown|keyup/.test(s2), "el teclado no se toca");
+  assert.ok(s2.includes('if(e.type === "click" && e.detail === 0) return;'), "ni el clic que genera Enter/Espacio");
 });
 
 test("Reglas · «sin tipo» es todo lo que no es «temporada» ni «jornada» (undefined, null, vacío u otro valor), como lo trata la puntuación", () => {

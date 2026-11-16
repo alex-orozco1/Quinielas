@@ -4318,7 +4318,7 @@
       }
       note.textContent = "Lo intentamos de nuevo y todavía no se pudo. Revisa tu conexión o recarga la página.";
       btn.focus({ preventScroll: true });
-      keepFocusBelowHeader(btn);
+      keepFocusBelowHeader(btn, note);
       return;
     }
     await rerender();
@@ -4329,12 +4329,16 @@
       keepFocusBelowHeader(target);
     }
   }
-  // Lleva a la vista un elemento enfocado sin dejarlo bajo el menú fijo.
-  function keepFocusBelowHeader(el){
+  // Lleva a la vista un elemento enfocado sin dejarlo bajo el menú fijo,
+  // moviendo la página lo mínimo. `from` (opcional) es lo que tiene que verse
+  // encima del elemento, como la nota de «todavía no se pudo» sobre su botón.
+  function keepFocusBelowHeader(el, from){
     const hdr = root.querySelector(".qz-header");
     const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
-    const r = el.getBoundingClientRect();
-    if(r.top < hb + 8 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - hb - 12, behavior: "instant" });
+    const top = (from || el).getBoundingClientRect().top;
+    const bottom = el.getBoundingClientRect().bottom;
+    if(top < hb + 8) window.scrollBy({ top: top - hb - 12, behavior: "instant" });
+    else if(bottom > window.innerHeight - 8) window.scrollBy({ top: Math.min(bottom - window.innerHeight + 12, top - hb - 12), behavior: "instant" });
   }
   async function ensureAllPicksLoaded(){
     if(allPicksLoadInFlight) return allPicksLoadInFlight;
@@ -12139,7 +12143,10 @@
       // tipo sin que el admin lo eligiera. Durante medio segundo se ignoran
       // los clics sobre el formulario (no el teclado).
       const until = performance.now() + 500;
-      const swallow = (e) => { if(performance.now() < until){ e.preventDefault(); e.stopPropagation(); } };
+      const swallow = (e) => {
+        if(e.type === "click" && e.detail === 0) return; // Enter/Espacio: es del teclado
+        if(performance.now() < until){ e.preventDefault(); e.stopPropagation(); }
+      };
       ["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));
     }
     body.querySelectorAll("[data-rb-edit]").forEach(b => b.addEventListener("click", () => {
