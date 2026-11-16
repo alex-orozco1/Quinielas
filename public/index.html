@@ -11785,7 +11785,7 @@
     // original (también en el estado del formulario, para que lo que se ve
     // sea lo que se guarda) y se bloquea el selector.
     const typeLocked = editing && betAnswersUnknown(bet);
-    if(typeLocked) f.scope = bet.scope;
+    if(typeLocked){ f.scope = bet.scope; f.scopeTouched = false; }
     const tpl = extraTemplate(f.template);
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
     const scope = tpl ? tpl.scope : (typeLocked ? betScopeKind(bet.scope) : (f.scope || "jornada"));
@@ -11835,7 +11835,7 @@
           ` : `<p class="qz-wz-line">Se responde: <strong>${esc(scopeLabel(scope).toLowerCase())}</strong></p>`}
           <div class="field qz-field-narrow"><label for="qz-rb-points">Puntos si acierta</label>
             <input type="text" inputmode="numeric" id="qz-rb-points" value="${esc(f.points)}" autocomplete="off"></div>
-          <p class="muted qz-tight">Cuentan para la tabla cuando tú marcas quién acertó.</p>
+          <p class="muted qz-tight">${noScopeYet ? "Cuentan para la tabla cuando elijas un tipo y marques quién acertó." : "Cuentan para la tabla cuando tú marcas quién acertó."}</p>
           ${scope === "temporada" && closeFixed ? `
             <p class="qz-wz-line">${esc(betCloseLine(bet))}. <strong>Ya cerró.</strong></p>
             <p class="muted qz-tight">Tus amigos ya no pueden responderla. Para no reabrir sus respuestas por accidente, el cierre de una pregunta que ya cerró no se cambia; puedes corregir el texto o los puntos y calificarla abajo.</p>
@@ -12202,11 +12202,15 @@
       // pregunta antigua sin tipo sigue sin tipo).
       const typeChangeBlocked = () => {
         if(!editingBet || !betAnswersUnknown(editingBet)) return false;
+        // A una pregunta sin tipo, elegirle cualquiera (también «Cada jornada»)
+        // es un cambio de tipo.
+        if(betHasNoScope(editingBet) && f.scopeTouched) return true;
         const requested = tpl ? tpl.scope : (f.scope || "jornada");
         return betScopeKind(requested) !== betScopeKind(editingBet.scope);
       };
       const blockTypeChange = () => {
         f.scope = editingBet.scope;
+        f.scopeTouched = false;
         repaint();
         toast(BET_TYPE_LOCKED_MSG + " No se guardó nada.", 6000);
       };

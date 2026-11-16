@@ -845,6 +845,8 @@ test("Reglas · el guardado comprueba el tipo al empezar y otra vez después de 
   assert.ok(g1 !== -1 && g1 < conf, "antes de la confirmación");
   assert.ok(g2 !== -1 && conf < g2 && g2 < keep2 && keep2 < mutate && mutate < write, "y después, antes de cambiar la meta y escribir");
   assert.ok(h.includes("let scope = editingBet && (betAnswersUnknown(editingBet) || keepNoScope()) ? editingBet.scope"), "con respuestas sin cargar se conserva el tipo exacto");
+  assert.ok(h.includes("if(betHasNoScope(editingBet) && f.scopeTouched) return true;"), "elegir un tipo para una pregunta sin tipo, con respuestas sin cargar, también se bloquea");
+  assert.ok(h.includes("f.scope = editingBet.scope;\n        f.scopeTouched = false;"), "y el formulario vuelve a «sin tipo»");
   // El selector tampoco acepta el cambio aunque se quite el bloqueo del HTML.
   assert.ok(r.includes('if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }'));
 });
@@ -868,6 +870,7 @@ test("Reglas · pregunta antigua sin tipo: el formulario no da por elegido ning�
   assert.doesNotMatch(html, /name="qz-rb-scope" value="[a-z]+" checked/, "ninguna opción marcada");
   assert.match(html, /<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado: tus amigos no la ven y sus aciertos no cuentan en la tabla\. Si eliges un tipo, se empieza a mostrar y sus aciertos cuentan\. Si no eliges ninguno, se queda como está\.<\/p>/);
   assert.doesNotMatch(html, /Cierra con cada jornada/, "no se describe un comportamiento que no tiene");
+  assert.match(html, /Cuentan para la tabla cuando elijas un tipo y marques quién acertó\./, "la ayuda de «Puntos» no contradice la nota");
   assert.match(html, /<fieldset class="qz-scope"  aria-describedby="qz-rb-noscope">/, "habilitado y descrito");
   assert.equal(f.scope, undefined);
   // El admin elige «Cada jornada» expresamente: queda marcada y sin la nota.
@@ -875,7 +878,13 @@ test("Reglas · pregunta antigua sin tipo: el formulario no da por elegido ning�
   const h2 = render(t);
   assert.match(h2, /value="jornada" checked/);
   assert.doesNotMatch(h2, /qz-rb-noscope/);
-  // Con respuestas sin cargar, el bloqueo de siempre (muestra «Cada jornada», deshabilitado).
+  // Con respuestas sin cargar, el bloqueo de siempre (muestra «Cada jornada», deshabilitado),
+  // y se olvida una elección hecha antes del fallo: al recuperar no queda un tipo marcado por defecto.
+  const touched = { ...f, scope: "temporada", scopeTouched: true };
+  reglasForm({ meta, picks: {}, failed: true })(touched);
+  assert.deepEqual([touched.scope, touched.scopeTouched], [undefined, false]);
+  assert.doesNotMatch(render(touched), /name="qz-rb-scope" value="[a-z]+" checked/, "tras recuperar, ninguna opción marcada");
+  assert.match(render(touched), /qz-rb-noscope/);
   const locked = reglasForm({ meta, picks: {}, failed: true })({ ...f });
   assert.match(locked, /<fieldset class="qz-scope" disabled aria-describedby="qz-rb-type-lock">/);
   assert.match(locked, /value="jornada" checked/);
