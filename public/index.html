@@ -11818,7 +11818,7 @@
               <input type="text" id="qz-rb-text" maxlength="${EXTRA_TEXT_MAX}" value="${esc(f.text)}" autocomplete="off"></div>
             ${editing && answers ? `<p class="muted qz-tight">Cambiar el texto no cambia las respuestas ya enviadas. Úsalo sólo para corregir errores.</p>` : ``}
             <fieldset class="qz-scope" ${scopeDisabled ? "disabled" : ""} ${typeLocked ? `aria-describedby="qz-rb-type-lock"` : noScopeYet ? `aria-describedby="qz-rb-noscope"` : ""}><legend>¿Cómo se responde?</legend>
-              ${noScopeYet ? `<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado. Si no eliges uno, se queda así.</p>` : ``}
+              ${noScopeYet ? `<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado: tus amigos no la ven y sus aciertos no cuentan en la tabla. Si eliges un tipo, se empieza a mostrar y sus aciertos cuentan. Si no eliges ninguno, se queda como está.</p>` : ``}
               ${["temporada", "jornada"].map(s => `
                 <label class="qz-scope-opt"><input type="radio" name="qz-rb-scope" value="${s}" ${scope === s && !noScopeYet ? "checked" : ""}>
                   <span><strong>${esc(scopeLabel(s))}</strong><span class="muted">${esc(scopeHelp(s))}</span></span></label>`).join("")}
@@ -11842,7 +11842,7 @@
                 : `<p class="qz-wz-warn">No hay ninguna jornada por cerrar. Crea o prepara una jornada en Admin → Jornadas para poder ligar esta pregunta a su cierre.</p>`}
             </div>
             <p class="muted qz-tight">Hasta ese cierre tus amigos pueden responder y cambiar su respuesta; después ya no. Quien entre más tarde la verá cerrada.</p>
-          ` : `<p class="qz-wz-close">Cierra con cada jornada. Aparece en las jornadas que estén abiertas ahora y en las siguientes; no se agrega a jornadas cerradas.</p>`}
+          ` : noScopeYet ? `` : `<p class="qz-wz-close">Cierra con cada jornada. Aparece en las jornadas que estén abiertas ahora y en las siguientes; no se agrega a jornadas cerradas.</p>`}
         `}
         <p class="qz-field-error" id="qz-rb-err" role="alert" hidden></p>
         <div class="qz-qform-actions">
@@ -12237,7 +12237,9 @@
       }
       if(scope === "temporada" && closes == null){ setupFieldError("qz-rb-err", "Elige con qué jornada cierra."); return; }
       const newPoints = parsePositiveInt(f.points);
-      if(editingBet && newPoints !== editingBet.points){
+      // Sin tipo (y sin elegirlo) sus aciertos no cuentan: cambiar los puntos
+      // no recalcula la tabla, así que no se pregunta como si lo hiciera.
+      if(editingBet && newPoints !== editingBet.points && !keepNoScope()){
         const hits = betHitCount(editingBet);
         if(hits){
           const ok = await qzConfirm(`Ya marcaste ${hits} ${hits === 1 ? "acierto" : "aciertos"} en esta pregunta. Al cambiar los puntos, la tabla se recalcula (${editingBet.points} → ${newPoints} puntos cada uno).`,
@@ -12257,7 +12259,7 @@
         editingBet.label = label;
         if(!untouchedNoScope) editingBet.scope = scope;
         editingBet.points = newPoints;
-        if(!(untouchedNoScope && closes == null && !("closesAtRound" in editingBet))) editingBet.closesAtRound = closes;
+        if(!(untouchedNoScope && closes == null)) editingBet.closesAtRound = closes;
         if(relinkTo != null) editingBet.closesRoundId = relinkTo;
         if(moveTo != null) editingBet.closesAt = moveTo;
       } else {

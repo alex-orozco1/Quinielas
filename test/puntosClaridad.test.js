@@ -866,7 +866,8 @@ test("Reglas · pregunta antigua sin tipo: el formulario no da por elegido ning�
   const f = { id: "bl0", template: "custom", text: "Vieja", scope: undefined, points: "2", closes: "" };
   const html = render(f);
   assert.doesNotMatch(html, /name="qz-rb-scope" value="[a-z]+" checked/, "ninguna opción marcada");
-  assert.match(html, /<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado\. Si no eliges uno, se queda así\.<\/p>/);
+  assert.match(html, /<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado: tus amigos no la ven y sus aciertos no cuentan en la tabla\. Si eliges un tipo, se empieza a mostrar y sus aciertos cuentan\. Si no eliges ninguno, se queda como está\.<\/p>/);
+  assert.doesNotMatch(html, /Cierra con cada jornada/, "no se describe un comportamiento que no tiene");
   assert.match(html, /<fieldset class="qz-scope"  aria-describedby="qz-rb-noscope">/, "habilitado y descrito");
   assert.equal(f.scope, undefined);
   // El admin elige «Cada jornada» expresamente: queda marcada y sin la nota.
@@ -886,7 +887,8 @@ test("Reglas · guardar una pregunta antigua sin tocar su tipo la deja exactamen
   assert.ok(r.includes("const keepNoScope = () => !!editingBet && betHasNoScope(editingBet) && !f.scopeTouched;"));
   assert.ok(r.includes("const untouchedNoScope = betHasNoScope(editingBet) && scope === editingBet.scope;"));
   assert.ok(r.includes("if(!untouchedNoScope) editingBet.scope = scope;"));
-  assert.ok(r.includes('if(!(untouchedNoScope && closes == null && !("closesAtRound" in editingBet))) editingBet.closesAtRound = closes;'));
+  assert.ok(r.includes("if(!(untouchedNoScope && closes == null)) editingBet.closesAtRound = closes;"), "ni se añade ni se borra un cierre guardado");
+  assert.ok(r.includes("if(editingBet && newPoints !== editingBet.points && !keepNoScope()){"), "sin tipo, cambiar los puntos no se presenta como un recálculo de la tabla");
   // El «Editar» empieza siempre sin elección hecha.
   assert.ok(!/st\.form = \{ id: bet\.id[^}]*scopeTouched/.test(r));
 });
@@ -912,4 +914,11 @@ test("«Editar»: durante medio segundo se ignoran los clics sobre el formulario
   assert.ok(s2.includes('["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));'), "en captura, antes que los radios");
   assert.ok(s2.includes("e.preventDefault(); e.stopPropagation();"));
   assert.ok(!/keydown|keyup/.test(s2), "el teclado no se toca");
+});
+
+test("Reglas · «sin tipo» es todo lo que no es «temporada» ni «jornada» (undefined, null, vacío u otro valor), como lo trata la puntuación", () => {
+  const f = new Function(`${fn("function betHasNoScope(bet)")}\nreturn betHasNoScope;`)();
+  for (const scope of [undefined, null, "", "otro", "Jornada"]) assert.equal(f({ id: "x", scope }), true, String(scope));
+  for (const scope of ["jornada", "temporada"]) assert.equal(f({ id: "x", scope }), false, scope);
+  assert.equal(f(null), false);
 });
