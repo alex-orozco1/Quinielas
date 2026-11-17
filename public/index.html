@@ -11685,6 +11685,7 @@
     return !!bet && bet.scope !== "temporada" && allPicksLoadFailed;
   }
   const BET_ANSWERS_UNKNOWN_MSG = "No pudimos cargar las respuestas. Vuelve a intentarlo antes de quitar esta pregunta.";
+  const BET_GONE_MSG = "Esta pregunta ya no existe: la quitaron desde otra pestaña o dispositivo. No se guardó nada.";
   const BET_TYPE_LOCKED_MSG = "Carga las respuestas antes de cambiar el tipo de pregunta.";
   // El tipo como lo lee la app: lo que no es «temporada» es «jornada».
   function betScopeKind(scope){ return scope === "temporada" ? "temporada" : "jornada"; }
@@ -11815,6 +11816,7 @@
     return `
       <div class="qz-qform" id="qz-rb-form">
         <div class="qz-qform-title">${editing ? "Editar pregunta" : "Nueva pregunta"}</div>
+        ${f.error ? `<p class="qz-field-error" id="qz-rb-conflict" role="alert">${esc(f.error)}</p>` : ``}
         ${editing ? (tpl ? `<blockquote class="qz-qfixed">${esc(tpl.text)}</blockquote>` : ``) : `
           <div class="field qz-field-select"><label for="qz-rb-tpl">¿Qué quieres preguntar?</label>
             <select id="qz-rb-tpl">
@@ -12137,14 +12139,21 @@
     // lleva a la vista, debajo del menú fijo, y el foco va a «Pregunta» (o al
     // primer campo editable si es una pregunta de plantilla), para que no
     // parezca que el botón no hizo nada.
-    function showReglasForm(){
+    // Lleva el formulario a la vista, bajo el menú fijo, con el foco en su
+    // primer campo.
+    function scrollReglasForm(){
       const form = document.getElementById("qz-rb-form");
-      if(!form) return;
+      if(!form) return null;
       const field = document.getElementById("qz-rb-text") || document.getElementById("qz-rb-points");
       const hdr = root.querySelector(".qz-header");
       const top = form.getBoundingClientRect().top + window.scrollY - (hdr ? hdr.getBoundingClientRect().height : 0) - 12;
       window.scrollTo({ top: Math.max(0, top), behavior: "instant" });
       if(field) field.focus({ preventScroll: true });
+      return form;
+    }
+    function showReglasForm(){
+      const form = scrollReglasForm();
+      if(!form) return;
       // El formulario aparece justo bajo el puntero: el segundo clic de un
       // doble clic (o toque) en «Editar» caería sobre él y podría marcar un
       // tipo sin que el admin lo eligiera. Durante medio segundo se ignoran
@@ -12155,6 +12164,26 @@
         if(performance.now() < until){ e.preventDefault(); e.stopPropagation(); }
       };
       ["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));
+    }
+    // Tras un conflicto, la pantalla se vuelve a pintar (a veces más tarde, al
+    // terminar de cargar): el formulario vuelve a la vista cuando ya está.
+    if(st.scrollToForm && st.form && document.getElementById("qz-rb-form")){
+      st.scrollToForm = false;
+      scrollReglasForm();
+      // El menú fijo se vuelve a pintar a la vez y cambia de alto un momento
+      // después: si eso deja el formulario debajo, se vuelve a alinear. Sólo
+      // reacciona a cambios de tamaño del menú (no al desplazamiento del
+      // admin) y sólo durante un segundo y medio.
+      const hdr = root.querySelector(".qz-header");
+      if(hdr && typeof ResizeObserver === "function"){
+        const ro = new ResizeObserver(() => {
+          const form = document.getElementById("qz-rb-form");
+          const gap = form ? form.getBoundingClientRect().top - (hdr.getBoundingClientRect().bottom + 12) : 0;
+          if(gap < 0) window.scrollBy({ top: gap, behavior: "instant" });
+        });
+        ro.observe(hdr);
+        setTimeout(() => ro.disconnect(), 1500);
+      }
     }
     body.querySelectorAll("[data-rb-edit]").forEach(b => b.addEventListener("click", () => {
       const bet = bets.find(x => x.id === b.dataset.rbEdit);
@@ -12201,7 +12230,11 @@
     if(saveForm) saveForm.addEventListener("click", async () => {
       keepTyped();
       const f = st.form;
+      f.error = "";
       const editingBet = f.id ? meta.customBets.find(b => b.id === f.id) : null;
+      // La quitaron desde otra pestaña o dispositivo: no se vuelve a crear como
+      // pregunta nueva sin que el admin lo pida.
+      if(f.id && !editingBet){ st.form = null; repaint(); toast(BET_GONE_MSG, 6000); return; }
       const tpl = extraTemplate(f.template);
       const problem = extraQuestionProblem({ template: f.template, text: f.text, points: f.points }, meta.customBets.map(b => ({ key: b.id, text: b.label })), f.id);
       if(problem){ setupFieldError("qz-rb-err", problem); return; }
@@ -12295,6 +12328,15 @@
       saveForm.disabled = false;
       if(!result.ok){
         if(!result.reconciled) meta.customBets = snapshot;
+        // Conflicto: la pestaña ya trae lo más reciente del servidor. El
+        // formulario se repinta con eso, vuelve a la vista y el aviso queda
+        // dentro de él (no se pierde con el repintado).
+        if(result.reconciled && (result.error === "bets_conflict" || result.error === "rounds_conflict")){
+          if(st.form && st.form.id && !meta.customBets.some(b => b.id === st.form.id)){ st.form = null; repaint(); toast(BET_GONE_MSG, 6000); return; }
+          if(st.form){ st.form.error = humanizeError(result.error, result); st.scrollToForm = true; }
+          if(body.isConnected) repaint();
+          return;
+        }
         setupFieldError("qz-rb-err", result.error === "bet_close_required" || result.error === "bet_close_past" || result.error === "bet_close_locked" || result.error === "bet_close_invalid"
           ? humanizeError(result.error, result) : `${humanizeError(result.error, result)} No se guardó la pregunta.`);
         return;

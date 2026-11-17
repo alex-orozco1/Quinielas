@@ -853,7 +853,8 @@ test("Reglas · el guardado comprueba el tipo al empezar y otra vez después de 
 
 test("Reglas · «Editar» lleva el formulario a la vista bajo el menú fijo y pone el foco en «Pregunta»", () => {
   const r = fn("async function renderAdminReglas(body, opts)");
-  const show = r.slice(r.indexOf("function showReglasForm(){"), r.indexOf('body.querySelectorAll("[data-rb-edit]")'));
+  const show = r.slice(r.indexOf("function scrollReglasForm(){"), r.indexOf('body.querySelectorAll("[data-rb-edit]")'));
+  assert.ok(show.includes("const form = scrollReglasForm();"), "«Editar» usa el mismo desplazamiento");
   assert.ok(show.includes('document.getElementById("qz-rb-text") || document.getElementById("qz-rb-points")'), "«Pregunta» o, en una plantilla, el primer campo editable");
   assert.ok(show.includes('(hdr ? hdr.getBoundingClientRect().height : 0) - 12'), "descuenta el menú fijo");
   assert.ok(show.includes("field.focus({ preventScroll: true })"), "el foco no vuelve a mover la página");
@@ -953,6 +954,30 @@ test("Reglas · tras un conflicto con otra pestaña, el formulario muestra el ti
   assert.doesNotMatch(html, /value="jornada" checked/, "no «Cada jornada» por defecto");
   const r = fn("async function renderAdminReglas(body, opts)");
   assert.ok(r.includes('const requested = !f.scopeTouched ? editingBet.scope : tpl ? tpl.scope : (f.scope || "jornada");'));
+});
+
+test("Reglas · tras un conflicto, el aviso queda dentro del formulario (escapado) y el formulario vuelve a la vista", () => {
+  const meta = { participants: [], rounds: [], customBets: [{ id: "bj", label: "Goles", points: 2, scope: "jornada" }] };
+  const render = reglasForm({ meta, picks: {}, failed: false });
+  const quiet = render({ id: "bj", template: "custom", text: "Goles", scope: "jornada", points: "2", closes: "" });
+  assert.doesNotMatch(quiet, /qz-rb-conflict/, "sin conflicto, sin aviso");
+  const html = render({ id: "bj", template: "custom", text: "Goles", scope: "jornada", points: "2", closes: "", error: "Cambió <b>algo</b>" });
+  assert.match(html, /<div class="qz-qform-title">Editar pregunta<\/div>\s*<p class="qz-field-error" id="qz-rb-conflict" role="alert">Cambió &lt;b&gt;algo&lt;\/b&gt;<\/p>/, "arriba del formulario, visible y escapado");
+  const r = fn("async function renderAdminReglas(body, opts)");
+  const save = r.slice(r.indexOf('const saveForm = document.getElementById("qz-rb-save");'));
+  assert.ok(save.includes('if(st.form){ st.form.error = humanizeError(result.error, result); st.scrollToForm = true; }\n          if(body.isConnected) repaint();'));
+  assert.ok(r.includes('if(st.scrollToForm && st.form && document.getElementById("qz-rb-form")){\n      st.scrollToForm = false;\n      scrollReglasForm();'), "al pintar, aunque el repintado llegue más tarde");
+  assert.ok(r.includes("ro.observe(hdr);\n        setTimeout(() => ro.disconnect(), 1500);"), "sólo un momento, y sólo por cambios de tamaño del menú");
+});
+
+test("Reglas · si otra pestaña quitó la pregunta, guardar no la vuelve a crear como nueva", () => {
+  const r = fn("async function renderAdminReglas(body, opts)");
+  const save = r.slice(r.indexOf('const saveForm = document.getElementById("qz-rb-save");'));
+  const guard = 'if(f.id && !editingBet){ st.form = null; repaint(); toast(BET_GONE_MSG, 6000); return; }';
+  assert.ok(save.includes(guard), "antes de guardar");
+  assert.ok(save.indexOf(guard) < save.indexOf("meta.customBets.push("), "antes del camino que crea una pregunta nueva");
+  assert.ok(save.includes("if(st.form && st.form.id && !meta.customBets.some(b => b.id === st.form.id)){ st.form = null; repaint(); toast(BET_GONE_MSG, 6000); return; }"), "y tras un conflicto");
+  assert.match(indexSrc, /const BET_GONE_MSG = "Esta pregunta ya no existe: la quitaron desde otra pestaña o dispositivo\. No se guardó nada\.";/);
 });
 
 test("Reglas · tras un conflicto con otra pestaña, el formulario toma el cierre vigente si el admin no lo tocó", () => {
