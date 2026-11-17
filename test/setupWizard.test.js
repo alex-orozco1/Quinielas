@@ -422,6 +422,7 @@ const reglasForm = (metaObj) => new Function("serverNowMs", "meta", `
   ${fn("function closableRounds()")}
   ${fn("function betCloseLine(bet)")}
   ${fn("function betCloseFixed(bet)")}
+  ${fn("function betFormCloses(bet)")}
   ${fn("function reglasBetFormHtml(f)")}
   return reglasBetFormHtml;
 `)(NOW, metaObj);

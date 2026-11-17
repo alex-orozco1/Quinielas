@@ -11786,6 +11786,10 @@
     // sea lo que se guarda) y se bloquea el selector.
     const typeLocked = editing && betAnswersUnknown(bet);
     if(typeLocked){ f.scope = bet.scope; f.scopeTouched = false; }
+    // Igual con el cierre: mientras el admin no elija otro, se muestra el que la
+    // pregunta tiene AHORA (también si otra pestaña lo cambió y se adoptó la
+    // meta del servidor tras un conflicto).
+    if(editing && bet && !f.closesTouched) f.closes = bet.scope === "temporada" ? betFormCloses(bet) : "";
     const tpl = extraTemplate(f.template);
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
     // Mientras el admin no elija otro, el tipo que se muestra es el que la
@@ -12175,6 +12179,8 @@
       if(p) st.form.points = p.value;
       if(c) st.form.closes = c.value;
     };
+    const closesSel = document.getElementById("qz-rb-closes");
+    if(closesSel) closesSel.addEventListener("change", () => { st.form.closes = closesSel.value; st.form.closesTouched = true; });
     const formTypeLocked = () => {
       const b = st.form && st.form.id ? meta.customBets.find(x => x.id === st.form.id) : null;
       return !!b && betAnswersUnknown(b);
@@ -12225,6 +12231,9 @@
       // tiene ahora (el de la meta vigente, también tras un conflicto).
       let scope = editingBet && (betAnswersUnknown(editingBet) || !f.scopeTouched) ? editingBet.scope
         : tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
+      // Sin una elección expresa del admin, se guarda el cierre que la pregunta
+      // tiene ahora (el de la meta vigente, también tras un conflicto).
+      if(editingBet && !f.closesTouched && editingBet.scope === "temporada") f.closes = betFormCloses(editingBet);
       // It closed while this form was open: the close it had stays.
       if(scope === "temporada" && betCloseFixed(editingBet) && f.closes !== "" && parsePositiveInt(f.closes) !== editingBet.closesAtRound){
         f.closes = String(editingBet.closesAtRound);

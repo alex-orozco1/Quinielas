@@ -772,7 +772,7 @@ test("Reglas · «Quitar» comprueba al ejecutar (antes de preguntar y antes de 
 
 // ---- Reglas: no se cambia el tipo de una pregunta con respuestas sin cargar ----
 function reglasForm(state) {
-  const src = ["function betAnswerCount(bet)", "function betAnswersUnknown(bet)", "function betScopeKind(scope)", "function betHasNoScope(bet)", "function reglasBetFormHtml(f)"].map(fn).join("\n");
+  const src = ["function betAnswerCount(bet)", "function betAnswersUnknown(bet)", "function betScopeKind(scope)", "function betHasNoScope(bet)", "function betFormCloses(bet)", "function reglasBetFormHtml(f)"].map(fn).join("\n");
   const consts = [/\n  const BET_TYPE_LOCKED_MSG = "[^"]+";/, /\n  const EXTRA_CUSTOM_KEY = "[^"]+";/, /\n  const EXTRA_TEXT_MAX = \d+;/].map((re) => indexSrc.match(re)[0]).join("");
   return new Function("meta", "allPicksCache", "allPicksLoadFailed", `
     const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -953,4 +953,22 @@ test("Reglas · tras un conflicto con otra pestaña, el formulario muestra el ti
   assert.doesNotMatch(html, /value="jornada" checked/, "no «Cada jornada» por defecto");
   const r = fn("async function renderAdminReglas(body, opts)");
   assert.ok(r.includes('const requested = !f.scopeTouched ? editingBet.scope : tpl ? tpl.scope : (f.scope || "jornada");'));
+});
+
+test("Reglas · tras un conflicto con otra pestaña, el formulario toma el cierre vigente si el admin no lo tocó", () => {
+  // A abrió «Editar» con cierre en la J6; B lo cambió a la J7 y A adoptó la meta del servidor.
+  const meta = { participants: [], rounds: [], customBets: [{ id: "bt", label: "Campeón", points: 10, scope: "temporada", closesAtRound: 7 }, { id: "bj", label: "Goles", points: 2, scope: "jornada" }] };
+  const render = reglasForm({ meta, picks: {}, failed: false });
+  const f = { id: "bt", template: "custom", text: "Campeón", scope: "temporada", points: "10", closes: "6" };
+  render(f);
+  assert.equal(f.closes, "7", "el cierre vigente, no el de cuando se abrió");
+  const touched = { id: "bt", template: "custom", text: "Campeón", scope: "temporada", points: "10", closes: "6", closesTouched: true };
+  render(touched);
+  assert.equal(touched.closes, "6", "lo que el admin eligió expresamente se respeta");
+  const nowJornada = { id: "bj", template: "custom", text: "Goles", scope: "temporada", points: "2", closes: "6" };
+  render(nowJornada);
+  assert.equal(nowJornada.closes, "", "si ahora es «Cada jornada», no arrastra un cierre viejo");
+  const r = fn("async function renderAdminReglas(body, opts)");
+  assert.ok(r.includes('if(editingBet && !f.closesTouched && editingBet.scope === "temporada") f.closes = betFormCloses(editingBet);'), "el guardado usa el cierre vigente");
+  assert.ok(r.includes('st.form.closesTouched = true;'), "elegir un cierre lo marca como elección expresa");
 });
