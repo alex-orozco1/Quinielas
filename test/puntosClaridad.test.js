@@ -825,7 +825,7 @@ test("Reglas · tipo con la carga correcta: con respuestas, la restricción de s
   assert.match(hj, /<fieldset class="qz-scope" disabled >/);
   assert.match(hj, /No se puede cambiar el tipo porque ya hay respuestas\./);
   assert.doesNotMatch(hj, /Carga las respuestas/);
-  const fv = formOf("bv");
+  const fv = { ...formOf("bv"), scopeTouched: true }; // el admin eligió «Una vez por torneo»
   const hv = render(fv);
   assert.match(hv, /<fieldset class="qz-scope"  >/, "habilitado");
   assert.match(hv, /value="temporada" checked/, "conserva lo que eligió el admin");
@@ -844,7 +844,7 @@ test("Reglas · el guardado comprueba el tipo al empezar y otra vez después de 
   const write = h.indexOf("await setMetaWithError(meta, { betsEdited: true })");
   assert.ok(g1 !== -1 && g1 < conf, "antes de la confirmación");
   assert.ok(g2 !== -1 && conf < g2 && g2 < keep2 && keep2 < mutate && mutate < write, "y después, antes de cambiar la meta y escribir");
-  assert.ok(h.includes("let scope = editingBet && (betAnswersUnknown(editingBet) || keepNoScope()) ? editingBet.scope"), "con respuestas sin cargar se conserva el tipo exacto");
+  assert.ok(h.includes("let scope = editingBet && (betAnswersUnknown(editingBet) || !f.scopeTouched) ? editingBet.scope"), "con respuestas sin cargar, o sin elección expresa, se conserva el tipo vigente exacto");
   assert.ok(h.includes("if(betHasNoScope(editingBet) && f.scopeTouched) return true;"), "elegir un tipo para una pregunta sin tipo, con respuestas sin cargar, también se bloquea");
   assert.ok(h.includes("f.scope = editingBet.scope;\n        f.scopeTouched = false;"), "y el formulario vuelve a «sin tipo»");
   // El selector tampoco acepta el cambio aunque se quite el bloqueo del HTML.
@@ -940,4 +940,17 @@ test("Reglas · «sin tipo» es todo lo que no es «temporada» ni «jornada» (
   for (const scope of [undefined, null, "", "otro", "Jornada"]) assert.equal(f({ id: "x", scope }), true, String(scope));
   for (const scope of ["jornada", "temporada"]) assert.equal(f({ id: "x", scope }), false, scope);
   assert.equal(f(null), false);
+});
+
+test("Reglas · tras un conflicto con otra pestaña, el formulario muestra el tipo vigente de la pregunta, no un valor por defecto", () => {
+  // La pestaña A abrió «Editar» sin tocar el tipo (f.scope del momento de abrir: sin tipo);
+  // la pestaña B le puso «Una vez por torneo» y A adoptó la meta del servidor.
+  const meta = { participants: [{ id: "diego", name: "Diego" }], rounds: [{ id: "r5", number: 5, customBetResults: { bl0: { diego: true } } }],
+    customBets: [{ id: "bl0", label: "Vieja", points: 2, scope: "temporada" }] };
+  const f = { id: "bl0", template: "custom", text: "Vieja", scope: undefined, points: "2", closes: "" };
+  const html = reglasForm({ meta, picks: { diego: {} }, failed: false })(f);
+  assert.match(html, /value="temporada" checked/, "el tipo vigente");
+  assert.doesNotMatch(html, /value="jornada" checked/, "no «Cada jornada» por defecto");
+  const r = fn("async function renderAdminReglas(body, opts)");
+  assert.ok(r.includes('const requested = !f.scopeTouched ? editingBet.scope : tpl ? tpl.scope : (f.scope || "jornada");'));
 });

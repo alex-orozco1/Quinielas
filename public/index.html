@@ -11788,7 +11788,10 @@
     if(typeLocked){ f.scope = bet.scope; f.scopeTouched = false; }
     const tpl = extraTemplate(f.template);
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
-    const scope = tpl ? tpl.scope : (typeLocked ? betScopeKind(bet.scope) : (f.scope || "jornada"));
+    // Mientras el admin no elija otro, el tipo que se muestra es el que la
+    // pregunta tiene AHORA (también si otra pestaña lo cambió y se adoptó la
+    // meta del servidor tras un conflicto), nunca un valor por defecto.
+    const scope = tpl ? tpl.scope : (typeLocked || (editing && bet && !f.scopeTouched) ? betScopeKind(bet.scope) : (f.scope || "jornada"));
     const scopeDisabled = (editing && answers) || typeLocked;
     // Sin tipo guardado y sin que el admin haya elegido uno: ninguna opción
     // aparece marcada (no se da por elegido lo que el formulario muestra).
@@ -12205,7 +12208,7 @@
         // A una pregunta sin tipo, elegirle cualquiera (también «Cada jornada»)
         // es un cambio de tipo.
         if(betHasNoScope(editingBet) && f.scopeTouched) return true;
-        const requested = tpl ? tpl.scope : (f.scope || "jornada");
+        const requested = !f.scopeTouched ? editingBet.scope : tpl ? tpl.scope : (f.scope || "jornada");
         return betScopeKind(requested) !== betScopeKind(editingBet.scope);
       };
       const blockTypeChange = () => {
@@ -12218,7 +12221,9 @@
       // Una pregunta antigua sin tipo se queda sin tipo salvo que el admin
       // elija uno expresamente (f.scopeTouched).
       const keepNoScope = () => !!editingBet && betHasNoScope(editingBet) && !f.scopeTouched;
-      let scope = editingBet && (betAnswersUnknown(editingBet) || keepNoScope()) ? editingBet.scope
+      // Sin una elección expresa del admin, se guarda el tipo que la pregunta
+      // tiene ahora (el de la meta vigente, también tras un conflicto).
+      let scope = editingBet && (betAnswersUnknown(editingBet) || !f.scopeTouched) ? editingBet.scope
         : tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
       // It closed while this form was open: the close it had stays.
       if(scope === "temporada" && betCloseFixed(editingBet) && f.closes !== "" && parsePositiveInt(f.closes) !== editingBet.closesAtRound){
