@@ -140,6 +140,7 @@ function penaltyFor(meta, p) {
   const f = new Function("meta", "serverNow", `
     ${fn("function isRoundLocked(round)")}
     ${fn("function isRoundEligibleForPenalty(round, penalty)")}
+    ${fn("function penaltyParts(p, cutoffRoundNumber)")}
     ${fn("function penaltyPointsFor(p, cutoffRoundNumber)")}
     return penaltyPointsFor;`)(meta, () => Date.parse("2026-11-06T12:00:00Z"));
   return f(p, null);

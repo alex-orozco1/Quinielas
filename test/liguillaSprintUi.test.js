@@ -13,11 +13,14 @@ test("UI · el módulo de puntos se carga antes del script de la app y lo sirve 
   assert.ok(/app\.get\("\/liguillaScoring\.js"[\s\S]{0,200}no-cache/.test(server));
 });
 
-test("UI · Tabla, flechas, Historial y Panel Plataforma suman la liguilla con LG.scoreRound; la regular sigue igual", () => {
-  assert.ok(ui.includes("if(isLg(r)){ const sr = LG.scoreRound(r, picks[r.id]); pts += sr.total; played += sr.scored; return; }"));
-  assert.ok(ui.includes("if(isLg(r)){ pts += LG.scoreRound(r, picks[r.id]).total; return; }"));
+test("UI · Tabla, Historial y Panel Plataforma suman la liguilla con LG.scoreRound; la regular sigue igual", () => {
+  // Claridad de puntos: pointsFor() suma roundMatchScore() por jornada (la
+  // misma fórmula, compartida con el desglose; test/puntosClaridad.test.js la
+  // compara contra main 6ef81ce). Las flechas ya no calculan nada (AUD-11).
+  assert.ok(ui.includes("const sm = roundMatchScore(r, picks[r.id]);\n      pts += sm.pts; played += sm.played;"));
+  assert.ok(ui.includes("const sr = LG.scoreRound(r, roundPicks);\n      return { pts: sr.total, played: sr.scored,"));
   assert.ok(ui.includes("if(isLg(rnd)){ pts += LG.scoreRound(rnd, picksCache[pid] && picksCache[pid][rnd.id]).total; return; }"));
-  assert.ok(ui.includes("if(pick && pick === result) pts += perPick;"), "la fórmula regular no cambia");
+  assert.ok(ui.includes("if(pick && pick === result){ pts += perPick; hits++; }"), "la fórmula regular no cambia");
   assert.ok(ui.includes("if(isLg(round)){\n      renderLiguillaHistDetail(detail, round);"));
 });
 

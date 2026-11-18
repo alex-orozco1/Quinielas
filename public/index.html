@@ -282,7 +282,7 @@
   #quiniela-root .qz-cmp-sr br{ display:none; }
   #quiniela-root table.qz-cmp-reg col.qz-cmp-c-name{ width:140px; }
   #quiniela-root table.qz-cmp-reg col.qz-cmp-c-cell{ width:100px; }
-  #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:56px; }
+  #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:92px; }
   #quiniela-root table.qz-cmp-reg th, #quiniela-root table.qz-cmp-reg td{ overflow-wrap:break-word; }
   #quiniela-root table.qz-cmp-reg td{ font-size:12.5px; padding-left:4px; padding-right:4px; }
   #quiniela-root table.qz-cmp-reg thead th{ letter-spacing:0.01em; padding-left:4px; padding-right:4px; }
@@ -293,7 +293,7 @@
   @media (max-width:360px){
     #quiniela-root table.qz-cmp-reg col.qz-cmp-c-name{ width:104px; }
     #quiniela-root table.qz-cmp-reg col.qz-cmp-c-cell{ width:96px; }
-    #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:48px; }
+    #quiniela-root table.qz-cmp-reg col.qz-cmp-c-pts{ width:80px; }
     #quiniela-root table.lg-h-table col.qz-cmp-c-name{ width:92px; }
     #quiniela-root table.lg-h-table col.qz-cmp-c-cell{ width:118px; }
     #quiniela-root table.qz-cmp-reg thead th{ font-size:10px; letter-spacing:0; }
@@ -1387,6 +1387,20 @@
   #quiniela-root .qz-name-cell.qz-name-wrap{ white-space:normal; overflow:visible; min-width:120px; max-width:200px; }
   #quiniela-root .qz-name-wrap .badge{ display:inline-block; margin-top:2px; }
   #quiniela-root tr.me .qz-sticky-col{ background:#FBF3DE; }
+  /* Claridad de puntos: «Ver desglose» en la Tabla y totales de jornada */
+  #quiniela-root .qz-bd-btn{ display:block; margin-top:6px; min-height:32px; padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:var(--paper); color:var(--pitch-light); font:inherit; font-size:12px; font-weight:700; cursor:pointer; white-space:nowrap; }
+  #quiniela-root .qz-bd-btn[aria-expanded="true"]{ background:var(--chalk); }
+  #quiniela-root .qz-bd-btn:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; }
+  #quiniela-root tr.qz-bd-row > td{ padding:0 0 10px; background:var(--chalk); }
+  #quiniela-root .qz-bd{ position:sticky; left:0; box-sizing:border-box; width:min(420px, calc(100vw - 72px)); padding:10px 12px; }
+  #quiniela-root .qz-bd-line{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:3px 0; font-size:13px; }
+  #quiniela-root .qz-bd-line strong{ white-space:nowrap; }
+  #quiniela-root .qz-bd-note{ display:block; font-size:11.5px; color:var(--ink-soft); font-weight:400; }
+  #quiniela-root .qz-bd-total{ border-top:1px solid var(--line); margin-top:4px; padding-top:6px; font-weight:800; }
+  #quiniela-root .qz-rt{ border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin:8px 0 12px; background:var(--chalk); }
+  #quiniela-root .qz-rt .qz-bd-line{ font-size:13.5px; }
+  #quiniela-root .qz-ht-total{ display:block; font-weight:800; font-size:15px; }
+  #quiniela-root .qz-ht-sub{ display:block; font-size:11px; font-weight:500; color:var(--ink-soft); white-space:nowrap; }
   #quiniela-root .qz-next{ border-color:var(--gold); background:#FFF9EC; }
   #quiniela-root .qz-next .qz-wz-actions{ margin-top:6px; }
   #quiniela-root .qz-rules-grid{ display:grid; grid-template-columns:minmax(0, 1fr); gap:0 20px; }
@@ -1620,6 +1634,11 @@
   #quiniela-root .pick-btn.qz-pick-blocked{ opacity:.45; cursor:not-allowed; }
   #quiniela-root .qz-picks-loadfail{ border:1px solid var(--red); background:#FDF1F0; border-radius:10px; padding:10px 12px; margin:0 0 12px; text-align:left; }
   #quiniela-root .qz-picks-loadfail p{ margin:0 0 8px; }
+  #quiniela-root .qz-picks-loadfail .btn[aria-disabled="true"]{ cursor:progress; opacity:0.85; }
+  #quiniela-root .qz-rb-unknown{ margin:8px 0 0; }
+  #quiniela-root .qz-qcard-actions .qz-linkbtn[aria-disabled="true"]{ color:var(--ink-soft); text-decoration:line-through; cursor:not-allowed; }
+  #quiniela-root .qz-retry-note{ font-size:13px; font-weight:600; color:var(--red); }
+  #quiniela-root .qz-chart-note{ margin:8px 0 0; padding:8px 10px; border-left:3px solid var(--gold); background:#FFF9EC; border-radius:6px; font-size:13px; line-height:1.45; color:var(--ink); }
   #quiniela-root .qz-picks-conflict{ display:inline-block; margin-top:4px; color:var(--ink); font-weight:600; }
   #quiniela-root .qz-backup-note{ font-size:13px; }
   #quiniela-root .qz-wz-countdown.qz-wz-countdown-empty{ font-weight:400; color:var(--ink-soft); background:none; padding:0; }
@@ -3489,6 +3508,9 @@
   let currentUser = null; // participant object (from meta.participants) for this session
   let myPicks = {};       // { roundId: { matchId: 'A'|'D'|'B' } }
   let allPicksCache = {}; // { participantId: picksObj } - loaded on demand for standings/history/export
+  // La última carga de allPicksCache falló: sin pronósticos, los puntos de la
+  // Tabla y del Historial no se conocen (no son cero).
+  let allPicksLoadFailed = false;
   let activeTab = "jornada";
   let adminSubTab = "rondas";
   let ownerUnlocked = false;
@@ -4256,6 +4278,68 @@
   // Same credential logic as before (own PIN for yourself, admin/owner cred
   // when acting as admin) — the server applies the identical per-participant
   // visibility rules either way, so callers see no difference at all.
+  // Contrato de /api/picks-batch (server.js): { ok:true, picks:{ [id]: objeto } }
+  // con UNA entrada por cada participante pedido que exista EN LA META DEL
+  // SERVIDOR (sin repetidos, hasta 2000). Quien no pronosticó llega como {} y
+  // es una entrada válida. Devuelve { picks, missing } (los ids pedidos que no
+  // vinieron) o null si la forma no es esa. El servidor ya decide qué se ve
+  // de cada quien (las jornadas abiertas de los demás no vienen): aquí sólo
+  // se comprueba.
+  function picksBatchFromResponse(body, requestedIds){
+    const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+    if(!isObj(body) || body.ok !== true || !isObj(body.picks)) return null;
+    const missing = [];
+    for(const id of requestedIds){
+      if(!Object.prototype.hasOwnProperty.call(body.picks, id)) missing.push(id);
+      else if(!isObj(body.picks[id])) return null;
+    }
+    return { picks: body.picks, missing };
+  }
+  // «Volver a intentar» de un aviso de carga. El aviso se queda mientras
+  // carga: el botón dice «Cargando…» y conserva el foco. Si vuelve a fallar,
+  // el botón regresa con una nota visible; si carga, se pinta la pantalla
+  // (`rerender`) y el foco va a `landing()`, un lugar de lo ya cargado.
+  async function retryPicksLoad(btn, rerender, landing){
+    if(btn.getAttribute("aria-disabled") === "true") return;
+    const label = btn.textContent;
+    btn.setAttribute("aria-disabled", "true");
+    btn.textContent = "Cargando…";
+    await ensureAllPicksLoaded();
+    if(!btn.isConnected) return; // ya se fue a otra pantalla
+    if(allPicksLoadFailed){
+      btn.removeAttribute("aria-disabled");
+      btn.textContent = label;
+      let note = btn.parentElement.querySelector(".qz-retry-note");
+      if(!note){
+        note = document.createElement("p");
+        note.className = "qz-retry-note";
+        note.setAttribute("role", "status");
+        btn.before(note);
+      }
+      note.textContent = "Lo intentamos de nuevo y todavía no se pudo. Revisa tu conexión o recarga la página.";
+      btn.focus({ preventScroll: true });
+      keepFocusBelowHeader(btn, note);
+      return;
+    }
+    await rerender();
+    const target = landing && landing();
+    if(target){
+      if(!target.matches("button, a, input, select, textarea, [tabindex]")) target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      keepFocusBelowHeader(target);
+    }
+  }
+  // Lleva a la vista un elemento enfocado sin dejarlo bajo el menú fijo,
+  // moviendo la página lo mínimo. `from` (opcional) es lo que tiene que verse
+  // encima del elemento, como la nota de «todavía no se pudo» sobre su botón.
+  function keepFocusBelowHeader(el, from){
+    const hdr = root.querySelector(".qz-header");
+    const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
+    const top = (from || el).getBoundingClientRect().top;
+    const bottom = el.getBoundingClientRect().bottom;
+    if(top < hb + 8) window.scrollBy({ top: top - hb - 12, behavior: "instant" });
+    else if(bottom > window.innerHeight - 8) window.scrollBy({ top: Math.min(bottom - window.innerHeight + 12, top - hb - 12), behavior: "instant" });
+  }
   async function ensureAllPicksLoaded(){
     if(allPicksLoadInFlight) return allPicksLoadInFlight;
     allPicksLoadInFlight = (async () => {
@@ -4264,14 +4348,41 @@
         const cred = isAdmin ? adminOrOwnerCred() : currentUserPinCache;
         const headers = { "Content-Type": "application/json" };
         setAuthHeaders(headers, cred);
-        const res = await fetch("/api/picks-batch", {
-          method: "POST", headers, credentials: "same-origin",
-          body: JSON.stringify({ metaKey: currentMetaKey(), participantIds: meta.participants.map(p => p.id) })
-        });
-        allPicksCache = res.ok ? (await res.json()).picks || {} : {};
+        const participantIds = meta.participants.map(p => p.id);
+        const requested = [...new Set(participantIds)].slice(0, 2000);
+        const fetchBatch = async () => {
+          const res = await fetch("/api/picks-batch", {
+            method: "POST", headers, credentials: "same-origin",
+            body: JSON.stringify({ metaKey: currentMetaKey(), participantIds })
+          });
+          if(!res.ok) throw new Error("picks-batch " + res.status);
+          const out = picksBatchFromResponse(await res.json(), requested);
+          if(!out) throw new Error("picks-batch con forma inválida");
+          return out;
+        };
+        let parsed = await fetchBatch();
+        // Falta alguien: puede que ya no sea participante (otro dispositivo lo
+        // borró y esta página tiene la meta de antes; el servidor lo omite y
+        // eso no es una carga incompleta, como siempre). Se confirma con la
+        // meta actual del servidor. Si alguno sí está ahí, puede que haya
+        // entrado justo después de la consulta (p. ej. el admin lo acaba de
+        // agregar): se repite la consulta UNA vez; si aún falta, la carga
+        // está incompleta. Sin poder leer la meta, también.
+        if(parsed.missing.length){
+          const fresh = await kvGet(currentMetaKey(), { owner: cred });
+          if(!fresh.found) throw new Error("picks-batch incompleto (sin meta)");
+          const freshIds = new Set(((fresh.value && fresh.value.participants) || []).map(p => p.id));
+          if(parsed.missing.some(id => freshIds.has(id))){
+            parsed = await fetchBatch();
+            if(parsed.missing.some(id => freshIds.has(id))) throw new Error("picks-batch incompleto");
+          }
+        }
+        allPicksCache = parsed.picks;
+        allPicksLoadFailed = false;
       }catch(e){
         console.error("ensureAllPicksLoaded (batch) failed", e);
         allPicksCache = {};
+        allPicksLoadFailed = true;
       }
     })();
     try{
@@ -4357,11 +4468,14 @@
     return betCloseInfo(bet).closed;
   }
 
-  function customBetPointsFor(participantId, participantMap, cutoffRoundNumber){
-    let pts = 0;
-    if(!meta.customBets || !meta.customBets.length) return pts;
+  // Claridad de puntos: las preguntas separadas en las de cada jornada
+  // (byRound, por id de jornada) y las del torneo (temporada). Mismas reglas
+  // de siempre; customBetPointsFor() es su suma.
+  function customBetParts(participantId, participantMap, cutoffRoundNumber){
+    const parts = { byRound: Object.create(null), temporada: 0, total: 0 };
+    if(!meta.customBets || !meta.customBets.length) return parts;
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    if(!p) return pts;
+    if(!p) return parts;
     // "temporada" bets have no round of their own, so they can't be placed on
     // any specific past jornada. They must never leak backwards into earlier
     // chart points (that would let a bet graded today rewrite what J1's real
@@ -4374,7 +4488,7 @@
       if(bet.scope === "temporada"){
         if(!includeTemporadaBets) return;
         const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
-        if(ans && ans.correct === true) pts += bet.points;
+        if(ans && ans.correct === true){ parts.temporada += bet.points; parts.total += bet.points; }
       } else if(bet.scope === "jornada"){
         meta.rounds.forEach(r => {
           // AUTO-001 HOTFIX: unlike per-match points (which can only exist
@@ -4387,11 +4501,17 @@
           if(r.published === false) return;
           if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
           const res = r.customBetResults && r.customBetResults[bet.id];
-          if(res && res[participantId] === true) pts += bet.points;
+          if(res && res[participantId] === true){
+            parts.byRound[r.id] = (parts.byRound[r.id] || 0) + bet.points;
+            parts.total += bet.points;
+          }
         });
       }
     });
-    return pts;
+    return parts;
+  }
+  function customBetPointsFor(participantId, participantMap, cutoffRoundNumber){
+    return customBetParts(participantId, participantMap, cutoffRoundNumber).total;
   }
 
   // Payment-penalty persistence (P1, QA-corrected model): a penalty is
@@ -4480,12 +4600,16 @@
       });
     });
   }
-  function penaltyPointsFor(p, cutoffRoundNumber){
+  // Claridad de puntos: los descuentos separados en los de cada jornada que
+  // existe (byRound, por id) y los de jornadas eliminadas (deleted). Mismas
+  // reglas de siempre; penaltyPointsFor() es su suma.
+  function penaltyParts(p, cutoffRoundNumber){
+    const parts = { byRound: Object.create(null), deleted: 0, total: 0 };
     const penalty = meta.paymentPenalty;
-    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return 0;
+    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return parts;
     const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
     const ledger = p.penalizedRounds || {};
-    let total = 0;
+    const add = (roundId, n) => { parts.byRound[roundId] = (parts.byRound[roundId] || 0) + n; parts.total += n; };
     // Permanent ledger entries always count exactly as resolved (0 for
     // exempt, perRound-at-the-time for penalized) -- this is what survives
     // reopening/deadline edits/round deletion/later paid toggles. The round
@@ -4493,7 +4617,7 @@
     // outcome already frozen in.
     meta.rounds.forEach(r => {
       if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-      if(r.id in ledger) total += ledger[r.id];
+      if(r.id in ledger) add(r.id, ledger[r.id]);
     });
     // A round could be deleted after being resolved -- its outcome still
     // counts even though it no longer appears in meta.rounds at all.
@@ -4506,7 +4630,7 @@
       (meta.pastTournaments || []).forEach(t => ((t && t.rounds) || []).forEach(r => { if(r && r.id != null) archived.add(String(r.id)); }));
       Object.keys(ledger).forEach(roundId => {
         if(archived.has(String(roundId))) return;
-        if(!meta.rounds.some(r => r.id === roundId)) total += ledger[roundId];
+        if(!meta.rounds.some(r => r.id === roundId)){ parts.deleted += ledger[roundId]; parts.total += ledger[roundId]; }
       });
     }
     // Live top-up: only for rounds that have NEVER been resolved before
@@ -4517,28 +4641,45 @@
     if(!p.paid){
       meta.rounds.forEach(r => {
         if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in ledger)) total += perRound;
+        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in ledger)) add(r.id, perRound);
       });
     }
-    return total;
+    return parts;
+  }
+  function penaltyPointsFor(p, cutoffRoundNumber){
+    return penaltyParts(p, cutoffRoundNumber).total;
+  }
+
+  // Puntos por PARTIDOS de una jornada (sin preguntas ni descuentos). Sólo
+  // cuentan con resultados publicados. Regular: aciertos × puntos por acierto;
+  // liguilla: base + bono con las reglas de ESA jornada (liguillaScoring.js).
+  function roundMatchScore(r, roundPicks){
+    const lg = isLg(r);
+    if(!r.resultsPublished) return { pts: 0, played: 0, hits: 0, exact: 0, base: 0, bonus: 0, lg, scored: false };
+    if(lg){
+      const sr = LG.scoreRound(r, roundPicks);
+      return { pts: sr.total, played: sr.scored, hits: sr.resultHits, exact: sr.exactHits, base: sr.base, bonus: sr.bonus, lg, scored: true };
+    }
+    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
+    let pts = 0, played = 0, hits = 0;
+    r.matches.forEach(m => {
+      const result = r.results ? r.results[m.id] : null;
+      if(!result) return;
+      played++;
+      const pick = roundPicks ? roundPicks[m.id] : null;
+      if(pick && pick === result){ pts += perPick; hits++; }
+    });
+    return { pts, played, hits, exact: 0, base: pts, bonus: 0, lg, scored: true };
   }
 
   function pointsFor(participantId, participantMap, cutoffRoundNumber){
     const picks = allPicksCache[participantId] || {};
-    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
     let pts = 0, played = 0;
     meta.rounds.forEach(r => {
       if(!r.resultsPublished) return;
       if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-      // Liguilla: base + bono con las reglas de ESA jornada (liguillaScoring.js).
-      if(isLg(r)){ const sr = LG.scoreRound(r, picks[r.id]); pts += sr.total; played += sr.scored; return; }
-      r.matches.forEach(m => {
-        const result = r.results ? r.results[m.id] : null;
-        if(!result) return;
-        played++;
-        const pick = picks[r.id] ? picks[r.id][m.id] : null;
-        if(pick && pick === result) pts += perPick;
-      });
+      const sm = roundMatchScore(r, picks[r.id]);
+      pts += sm.pts; played += sm.played;
     });
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     pts += customBetPointsFor(participantId, participantMap, cutoffRoundNumber);
@@ -4550,6 +4691,46 @@
     const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
     return penaltyPointsFor(p, null);
   }
+
+  // ---------- claridad de puntos: de dónde sale cada número ----------
+  // Las mismas partes que suma pointsFor() (sin corte: la Tabla de hoy),
+  // separadas para explicarlas. Sólo cantidades: nunca un pronóstico ni una
+  // respuesta.
+  function sumValues(o){ return Object.keys(o).reduce((n, k) => n + o[k], 0); }
+  // Total del torneo de una persona, línea por línea (desglose de la Tabla).
+  function pointsBreakdown(participantId, participantMap){
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
+    const picks = allPicksCache[participantId] || {};
+    const out = { base: 0, bonus: 0, matchPts: 0, hits: 0, exact: 0, lgBonusRule: false,
+      roundQuestions: 0, tournamentQuestions: 0, roundDiscounts: 0, deletedDiscounts: 0, total: 0 };
+    meta.rounds.forEach(r => {
+      if(!r.resultsPublished) return;
+      const sm = roundMatchScore(r, picks[r.id]);
+      out.base += sm.base; out.bonus += sm.bonus; out.matchPts += sm.pts; out.hits += sm.hits; out.exact += sm.exact;
+      if(sm.lg){ const rules = LG.roundRules(r); if(rules && rules.exactBonus) out.lgBonusRule = true; }
+    });
+    const bets = customBetParts(participantId, participantMap, null);
+    const pen = penaltyParts(p, null);
+    out.roundQuestions = sumValues(bets.byRound);
+    out.tournamentQuestions = bets.temporada;
+    out.roundDiscounts = sumValues(pen.byRound);
+    out.deletedDiscounts = pen.deleted;
+    out.total = out.matchPts + bets.total - pen.total;
+    return out;
+  }
+  // Total de UNA jornada: sus partidos + sus preguntas − sus descuentos. No
+  // incluye preguntas del torneo ni descuentos de otras jornadas o de
+  // jornadas eliminadas. roundPicks: los pronósticos de esa jornada.
+  function roundTotalParts(participantId, round, roundPicks, participantMap){
+    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
+    const match = roundMatchScore(round, roundPicks);
+    const questions = customBetParts(participantId, participantMap, null).byRound[round.id] || 0;
+    const discount = penaltyParts(p, null).byRound[round.id] || 0;
+    return { match, questions, discount, total: match.pts + questions - discount };
+  }
+  // «+5», «−1», «0»: con el signo de verdad (U+2212 para restar).
+  function signedPts(n){ return n > 0 ? "+" + n : n < 0 ? "−" + Math.abs(n) : "0"; }
+  function ptsText(n){ return (n < 0 ? "−" + Math.abs(n) : String(n)) + " " + (Math.abs(n) === 1 ? "pt" : "pts"); }
 
   function standingsList(){
     // Built once per call instead of doing a linear .find() per participant
@@ -4576,32 +4757,6 @@
       }
       ranks[i] = currentRank;
     });
-    return ranks;
-  }
-
-  function previousRanks(){
-    const published = meta.rounds.filter(r => r.resultsPublished).sort((a,b)=>a.number-b.number);
-    if(published.length < 2) return null;
-    const lastId = published[published.length-1].id;
-    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
-    const prev = meta.participants.map(p => {
-      const picks = allPicksCache[p.id] || {};
-      let pts = 0;
-      published.forEach(r => {
-        if(r.id === lastId) return;
-        if(isLg(r)){ pts += LG.scoreRound(r, picks[r.id]).total; return; }
-        r.matches.forEach(m => {
-          const result = r.results[m.id];
-          if(!result) return;
-          const pick = picks[r.id] ? picks[r.id][m.id] : null;
-          if(pick && pick === result) pts += perPick;
-        });
-      });
-      return { id: p.id, pts };
-    }).sort((a,b) => b.pts - a.pts);
-    const denseRanks = computeDenseRanks(prev);
-    const ranks = {};
-    prev.forEach((p,i) => { ranks[p.id] = denseRanks[i]; });
     return ranks;
   }
 
@@ -8475,6 +8630,27 @@
       <div class="qz-compare-v ${verdictCls || ""}">${verdict}</div>`;
   }
 
+  // Jugados: el subtotal de partidos y el «Total de esta jornada» (sus
+  // partidos + sus preguntas − sus descuentos), cada uno con su nombre. No
+  // entran las preguntas del torneo ni descuentos de otras jornadas.
+  function roundTotalHtml(round, roundPicks, participantId, partial){
+    const t = roundTotalParts(participantId, round, roundPicks);
+    const line = (labelHtml, value) => `<div class="qz-bd-line"><span>${labelHtml}</span><strong>${esc(value)}</strong></div>`;
+    const hits = t.match.hits;
+    const hitsTxt = t.match.lg
+      ? `${hits} partido${hits === 1 ? "" : "s"} acertado${hits === 1 ? "" : "s"}${t.match.exact ? ` (${t.match.exact} exacto${t.match.exact === 1 ? "" : "s"})` : ""}`
+      : `${hits} acierto${hits === 1 ? "" : "s"}`;
+    const hasRoundBets = (meta.customBets || []).some(b => b.scope === "jornada");
+    const matchLine = line(`Partidos · ${esc(hitsTxt)}`, ptsText(t.match.pts));
+    return `
+      <div class="qz-rt" role="group" aria-label="Total de esta jornada">
+        ${matchLine}
+        ${t.questions || hasRoundBets ? line("Preguntas de esta jornada", signedPts(t.questions)) : ``}
+        ${t.discount ? line("Descuento por no pagar", signedPts(-t.discount)) : ``}
+        <div class="qz-bd-line qz-bd-total"><span>Total de esta jornada${partial ? " (hasta ahora)" : ""}</span><strong>${esc(ptsText(t.total))}</strong></div>
+      </div>`;
+  }
+
   // "Jugados": results known, show correct/wrong
   function renderRoundPlayed(box, round){
     const roundPicks = myPicks[round.id] || {};
@@ -8503,11 +8679,13 @@
       `;
     }).join("");
     const pts = correct * perPick;
+    const roundTotal = roundTotalHtml(round, roundPicks, currentUser.id, waiting > 0);
     box.innerHTML = `
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
         <span>Jornada ${esc(round.number)}</span>
-        <span class="badge paid">${correct}/${total} aciertos · ${esc(pts)} ${esc(pointsWord(pts))}</span>
+        <span class="badge paid">${correct}/${total} aciertos · ${esc(pts)} ${esc(pointsWord(pts))} por partidos</span>
       </div>
+      ${roundTotal}
       ${waiting ? `<p class="muted qz-tight">Faltan por calificar ${waiting} partido${waiting === 1 ? "" : "s"}. No cuentan como fallo; los puntos se actualizan cuando el admin publique su resultado.</p>` : ``}
       ${matchesHtml}
       ${roundBetAnswersHtml(round, true)}
@@ -8542,17 +8720,45 @@
     await ensureAllPicksLoaded();
     // The participant moved to another tab meanwhile: this panel is gone.
     if(!main.isConnected) return;
+    // Sin los pronósticos no se conocen los puntos: no se pinta una tabla en
+    // ceros como si lo fuera.
+    if(allPicksLoadFailed){
+      main.innerHTML = `
+        ${screenHeaderHtml("tabla", "Tabla de posiciones")}
+        <div class="card"><div class="qz-picks-loadfail" role="alert">
+          <p><strong>No pudimos cargar los pronósticos para calcular la tabla.</strong> Los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
+          <button class="btn btn-gold btn-sm" id="qz-tabla-retry">Volver a intentar</button>
+        </div></div>`;
+      wireScreenHeader(main, "tabla");
+      const retryBtn = document.getElementById("qz-tabla-retry");
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, () => renderTabla(main), () => main.querySelector("[data-bd]")));
+      return;
+    }
     const list = standingsList();
     const ranks = computeDenseRanks(list);
-    const prevRanks = previousRanks();
     const leaderPts = list.length ? list[0].pts : 0;
     const medal = (rank) => rank===1 ? "🥇" : rank===2 ? "🥈" : rank===3 ? "🥉" : null;
-    function movementHtml(p, rank){
-      if(!prevRanks || prevRanks[p.id] == null) return `<span class="muted">–</span>`;
-      const prev = prevRanks[p.id];
-      if(prev === rank) return `<span class="muted">–</span>`;
-      if(prev > rank) return `<span style="color:var(--pitch-light);font-weight:700;">▲${prev - rank}</span>`;
-      return `<span style="color:var(--red);font-weight:700;">▼${rank - prev}</span>`;
+    // AUD-11: la comparación con la jornada anterior no se puede calcular con
+    // los mismos puntos que la tabla (preguntas y descuentos no tienen fecha
+    // de jornada), así que no se inventa un movimiento.
+    const NO_MOVE = "Comparación con la jornada anterior no disponible";
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
+    const hasRoundBets = (meta.customBets || []).some(b => b.scope === "jornada");
+    const hasSeasonBets = (meta.customBets || []).some(b => b.scope === "temporada");
+    const penaltyOn = !!(meta.paymentPenalty && meta.paymentPenalty.enabled);
+    // Desglose del total del torneo de una persona: sólo cantidades.
+    function breakdownHtml(p){
+      const b = pointsBreakdown(p.id, participantMap);
+      const line = (labelHtml, value, note) => `<div class="qz-bd-line"><span>${labelHtml}${note ? `<span class="qz-bd-note">${esc(note)}</span>` : ``}</span><strong>${esc(value)}</strong></div>`;
+      const hitsTxt = `${b.hits} acierto${b.hits === 1 ? "" : "s"}`;
+      return `
+        ${line(`Puntos base por partidos · ${esc(hitsTxt)}`, signedPts(b.base))}
+        ${b.bonus || b.lgBonusRule ? line(`Bono por marcador exacto · ${esc(b.exact)} exacto${b.exact === 1 ? "" : "s"}`, signedPts(b.bonus)) : ``}
+        ${b.roundQuestions || hasRoundBets ? line("Preguntas de jornada", signedPts(b.roundQuestions)) : ``}
+        ${b.tournamentQuestions || hasSeasonBets ? line("Preguntas del torneo", signedPts(b.tournamentQuestions)) : ``}
+        ${b.roundDiscounts || penaltyOn ? line("Descuentos por no pagar", signedPts(-b.roundDiscounts)) : ``}
+        ${b.deletedDiscounts ? line("Descuentos de jornadas eliminadas", signedPts(-b.deletedDiscounts), "Se aplicaron cuando esas jornadas cerraron; el admin las borró después y el descuento se mantiene.") : ``}
+        <div class="qz-bd-line qz-bd-total"><span>Total del torneo</span><strong>${esc(ptsText(b.total))}</strong></div>`;
     }
     const fee = meta.settings.entryFee;
     const paidCount = meta.participants.filter(p=>p.paid).length;
@@ -8580,35 +8786,61 @@
       <div class="card" style="padding:8px 12px;">
         <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th style="text-align:center;">#</th><th></th><th class="qz-sticky-col">Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th>${payTracked ? `<th style="text-align:center;">Pagó</th>` : ``}</tr></thead>
+          <thead><tr><th style="text-align:center;">#</th><th><span class="sr-only">Movimiento</span></th><th class="qz-sticky-col">Participante</th><th style="text-align:center;">Pts</th><th style="text-align:center;">vs líder</th>${payTracked ? `<th style="text-align:center;">Pagó</th>` : ``}</tr></thead>
           <tbody>
             ${list.map((p,i) => `
               <tr class="${p.id===currentUser.id?'me':''}">
                 <td class="pos ${ranks[i]===1?'top1':''}" style="text-align:center;">${medal(ranks[i]) || ranks[i]}</td>
-                <td style="text-align:center;">${movementHtml(p, ranks[i])}</td>
-                <td class="qz-sticky-col qz-name-cell qz-name-wrap" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}</td>
-                <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
-                <td style="text-align:center;" class="muted">${esc(i===0 ? "líder" : "−" + (leaderPts - p.pts))}</td>
+                <td style="text-align:center;"><span class="muted" title="${NO_MOVE}">—</span></td>
+                <td class="qz-sticky-col qz-name-cell qz-name-wrap" title="${esc(p.name)}">${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''} ${p.penalty > 0 ? `<span class="badge unpaid" title="Penalización por no pagar">−${esc(p.penalty)} por no pagar</span>` : ''}
+                  <button type="button" class="qz-bd-btn" data-bd="${i}" aria-expanded="false" aria-controls="qz-bd-${i}">Ver desglose<span class="sr-only"> de ${esc(p.name)}</span></button></td>
+                <td style="text-align:center;font-weight:700;">${esc(p.pts < 0 ? "−" + Math.abs(p.pts) : p.pts)}</td>
+                <td style="text-align:center;" class="muted">${esc(i===0 || p.pts === leaderPts ? "líder" : "−" + (leaderPts - p.pts))}</td>
                 ${payTracked ? `<td style="text-align:center;">${p.paid ? '<span class="badge paid">✅</span>' : '<span class="badge unpaid">❌</span>'}</td>` : ``}
               </tr>
+              <tr class="qz-bd-row" id="qz-bd-${i}" hidden><td colspan="${payTracked ? 6 : 5}"><div class="qz-bd" aria-label="Desglose de ${esc(p.name)}" role="group">${breakdownHtml(p)}</div></td></tr>
             `).join("")}
           </tbody>
         </table>
         </div>
       </div>
-      <p class="muted" style="text-align:center;">${payTracked ? (typeof fee === "number" && fee > 0 ? `✅ = pagó su cuota de $${esc(fee)} · ❌ = pendiente · ` : `✅ = pagó · ❌ = pendiente · `) : ``}▲▼ = movimiento desde la jornada pasada</p>
+      <p class="muted" style="text-align:center;">${payTracked ? (typeof fee === "number" && fee > 0 ? `✅ = pagó su cuota de $${esc(fee)} · ❌ = pendiente · ` : `✅ = pagó · ❌ = pendiente · `) : ``}— = ${NO_MOVE}</p>
       `}
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:20px;">Evolución de posiciones</span></div>
         <p class="muted" style="margin-top:-4px;">Sigue cómo cambió la posición de cada participante después de cada jornada. Toca un nombre para mostrar u ocultar su línea.</p>
+        <p class="qz-chart-note" id="qz-chart-note">Esta gráfica se calcula con los datos actuales y puede no coincidir con la Tabla, sobre todo si hay descuentos de jornadas que el admin eliminó. La clasificación vigente es la de la Tabla de posiciones.</p>
         <div id="qz-chart-legend" style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0;"></div>
-        <div id="qz-chart-svg" style="overflow-x:auto;"></div>
+        <div id="qz-chart-svg" role="group" aria-label="Gráfica de evolución de posiciones" aria-describedby="qz-chart-note" style="overflow-x:auto;"></div>
       </div>
     `;
     wireScreenHeader(main, "tabla");
     document.getElementById("qz-export").addEventListener("click", exportExcel);
     const shareBtn = document.getElementById("qz-share-card");
     if(shareBtn) shareBtn.addEventListener("click", () => shareResultsCard(list));
+    // El menú de arriba es fijo: si el foco (Tab o Shift+Tab) deja el botón
+    // debajo de él, se baja la página lo justo para verlo.
+    main.querySelectorAll("[data-bd]").forEach(btn => btn.addEventListener("focus", () => {
+      const hdr = root.querySelector(".qz-header");
+      const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
+      const top = btn.getBoundingClientRect().top;
+      if(top < hb + 8) window.scrollBy({ top: top - hb - 12, behavior: "instant" });
+    }));
+    main.querySelectorAll("[data-bd]").forEach(btn => btn.addEventListener("click", () => {
+      const row = document.getElementById("qz-bd-" + btn.dataset.bd);
+      if(!row) return;
+      const open = btn.getAttribute("aria-expanded") !== "true";
+      row.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.firstChild.textContent = open ? "Ocultar desglose" : "Ver desglose";
+      if(open){
+        const r = row.getBoundingClientRect();
+        if(r.bottom > window.innerHeight){
+          const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          row.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+        }
+      }
+    }));
     renderProgressChart(list);
   }
 
@@ -8654,11 +8886,13 @@
     ctx.lineTo(width - 60, 150);
     ctx.stroke();
 
-    const hasPendingPayments = shown.some(p => !p.paid);
+    // AUD-12: la columna de pago sale igual que en la Tabla: sólo si la
+    // quiniela lleva pagos (paymentsTracked), aunque ya hayan pagado todos.
+    const showPayColumn = paymentsTracked();
     const rightMargin = width - 60; // 740 — mismo margen derecho ya usado por la línea divisoria de arriba
-    const puntosColStart = hasPendingPayments ? 480 : 600; // igual que el encabezado, sin tocarlo
+    const puntosColStart = showPayColumn ? 480 : 600; // igual que el encabezado, sin tocarlo
     const pagoColStart = 650; // igual que el encabezado, sin tocarlo
-    const puntosColEnd = hasPendingPayments ? pagoColStart : rightMargin;
+    const puntosColEnd = showPayColumn ? pagoColStart : rightMargin;
     // Centro real de cada columna: columnStart + columnWidth / 2 — ya no valores fijos aproximados.
     const puntosX = puntosColStart + (puntosColEnd - puntosColStart) / 2;
     const pagoX = pagoColStart + (rightMargin - pagoColStart) / 2;
@@ -8669,7 +8903,7 @@
     ctx.fillText("PARTICIPANTE", 105, 178);
     ctx.textAlign = "center";
     ctx.fillText("PUNTOS", puntosX, 178);
-    if(hasPendingPayments) ctx.fillText("PAGO", pagoX, 178);
+    if(showPayColumn) ctx.fillText("PAGO", pagoX, 178);
 
     const ranks = computeDenseRanks(shown);
     const medalColor = (rank) => rank===1 ? "#D6A73C" : rank===2 ? "#C9CDD3" : rank===3 ? "#B9784A" : null;
@@ -8701,12 +8935,12 @@
       ctx.textAlign = "left";
       ctx.fillStyle = mColor ? mColor : "#F7F5EC";
       ctx.font = `800 24px ${F}`;
-      ctx.fillText(p.name, 105, textY, hasPendingPayments ? 340 : (width - 260));
+      ctx.fillText(p.name, 105, textY, showPayColumn ? 340 : (width - 260));
       ctx.textAlign = "center";
       ctx.fillStyle = "#F7F5EC";
       ctx.font = `800 26px ${F}`;
-      ctx.fillText(String(p.pts), puntosX, textY);
-      if(hasPendingPayments){
+      ctx.fillText(p.pts < 0 ? "−" + Math.abs(p.pts) : String(p.pts), puntosX, textY); // el mismo signo que la Tabla
+      if(showPayColumn){
         ctx.font = `800 22px ${F}`;
         ctx.fillText(p.paid ? "✅" : "❌", pagoX, textY);
       }
@@ -8779,6 +9013,13 @@
     const legendEl = document.getElementById("qz-chart-legend");
     const svgEl = document.getElementById("qz-chart-svg");
     if(!legendEl || !svgEl) return;
+    // Si una carga posterior falló (p. ej. al exportar el Excel), no hay
+    // pronósticos con qué calcular: no se dibujan posiciones inventadas.
+    if(allPicksLoadFailed){
+      legendEl.innerHTML = "";
+      svgEl.innerHTML = `<p class="muted" role="status">No pudimos cargar los pronósticos, así que la gráfica no se muestra. Vuelve a abrir la Tabla para intentarlo de nuevo.</p>`;
+      return;
+    }
     const { rounds, series } = progressData();
 
     if(!rounds.length){
@@ -8999,11 +9240,39 @@
 
   function renderHistDetail(round){
     const detail = document.getElementById("qz-hist-detail");
+    // Sin los pronósticos no se conocen aciertos ni puntos: no se muestran en cero.
+    if(allPicksLoadFailed){
+      detail.innerHTML = `<div class="card"><div class="qz-picks-loadfail" role="alert">
+        <p><strong>No pudimos cargar los pronósticos de esta jornada.</strong> Los aciertos y los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
+        <button class="btn btn-gold btn-sm" id="qz-hist-retry">Volver a intentar</button>
+      </div></div>`;
+      const retryBtn = document.getElementById("qz-hist-retry");
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, () => { if(detail.isConnected) renderHistDetail(round); }, () => detail.querySelector("h3")));
+      // El aviso queda debajo de la lista de jornadas: se lleva a la vista
+      // (bajo el menú fijo), igual que el detalle cuando sí carga.
+      const hdr = document.querySelector("#quiniela-root .qz-header");
+      const top = detail.getBoundingClientRect().top + window.scrollY - (hdr ? hdr.getBoundingClientRect().height : 0) - 12;
+      const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({ top: Math.max(0, top), behavior: reduced ? "auto" : "smooth" });
+      return;
+    }
     if(isLg(round)){
       renderLiguillaHistDetail(detail, round);
       detail.scrollIntoView({ behavior: window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
       return;
     }
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
+    // Última columna: el total de la jornada (partidos + preguntas de esta
+    // jornada − descuentos de esta jornada), con los aciertos aparte (AUD-10).
+    const totalCell = (p) => {
+      const t = p.t;
+      const extra = t.questions || t.discount;
+      const sub = (txt) => `<span class="qz-ht-sub">${esc(txt)}</span>`;
+      const soFar = round.matches.some(m => !(round.results && round.results[m.id])) ? sub("hasta ahora") : "";
+      const hitsSub = sub(p.correct + " acierto" + (p.correct === 1 ? "" : "s"));
+      const extraSubs = extra ? sub("Partidos " + ptsText(t.match.pts)) + (t.questions ? sub("Preguntas " + signedPts(t.questions)) : "") + (t.discount ? sub("Descuento " + signedPts(-t.discount)) : "") : "";
+      return `<td style="text-align:center;"><span class="qz-ht-total">${esc(ptsText(t.total))}</span>${soFar}${hitsSub}${extraSubs}</td>`;
+    };
     const perParticipant = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const picks = (allPicksCache[p.id] || {})[round.id] || {};
       let correct = 0;
@@ -9016,18 +9285,18 @@
         // Sin resultado el partido está pendiente: el pronóstico no se pinta como fallo.
         return `<td style="text-align:center;${isCorrect?'color:#1B4332;font-weight:700;':pick && result?'color:#7d251d;':pick?'':'color:var(--ink-soft);'}">${esc(label)}</td>`;
       }).join("");
-      return { id: p.id, name: p.name, correct, cellsHtml: cells };
+      return { id: p.id, name: p.name, correct, cellsHtml: cells, t: roundTotalParts(p.id, round, picks, participantMap) };
     });
     const maxCorrect = Math.max(0, ...perParticipant.map(p => p.correct));
     const mvps = maxCorrect > 0 ? perParticipant.filter(p => p.correct === maxCorrect).map(p => p.name) : [];
-    const rows = perParticipant.map(p => `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col qz-cmp-name">${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</th>${p.cellsHtml}<td style="font-weight:700;text-align:center;">${p.correct}</td></tr>`).join("");
+    const rows = perParticipant.map(p => `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col qz-cmp-name">${esc(p.name)} ${mvps.includes(p.name) ? '🏅' : ''}</th>${p.cellsHtml}${totalCell(p)}</tr>`).join("");
     const resultRow = round.matches.map(m => {
       const r = round.results[m.id];
       const label = r==='A'? m.teamA : r==='B'? m.teamB : r==='D'?'Empate':'Pendiente';
       return `<td style="font-weight:700;text-align:center;">${esc(label)}</td>`;
     }).join("");
     const headRows = `
-      <tr><th scope="col" class="qz-sticky-col qz-cmp-name">Participante</th>${round.matches.map(m=>`<th scope="col" style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th scope="col" style="text-align:center;">Pts</th></tr>
+      <tr><th scope="col" class="qz-sticky-col qz-cmp-name">Participante</th>${round.matches.map(m=>`<th scope="col" style="text-align:center;">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}<th scope="col" style="text-align:center;">Total jornada</th></tr>
       <tr class="qz-cmp-real"><th scope="row" class="qz-sticky-col qz-cmp-name"><strong>Resultado real</strong></th>${resultRow}<td></td></tr>`;
     const tableHtml = stickyCompareHtml({
       tableCls: "qz-cmp-reg",
@@ -9045,6 +9314,7 @@
       ` : ``}
       <div class="card">
         <h3>Jornada ${esc(round.number)} — detalle</h3>
+        <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido y, al final, el «Total jornada» de cada quien; el nombre se queda fijo.</p>
         ${tableHtml}
       </div>
     `;
@@ -9664,8 +9934,10 @@
     const rp = myPicks[round.id] || {};
     const res = LG.scoreRound(round, rp);
     const partial = res.pending + res.postponed > 0;
+    const roundTotal = roundTotalHtml(round, rp, currentUser.id, partial);
     box.innerHTML = `
-      <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), partial ? "resultados parciales" : "resultados oficiales"].filter(Boolean).join(" · "))}</div></div><span class="badge paid">${esc(lgPts(res.total))}</span></div>
+      <div class="lg-head"><div><div class="lg-phase">${esc(roundTitle(round))}</div><div class="muted lg-sub">${esc([roundSubtitle(round), partial ? "resultados parciales" : "resultados oficiales"].filter(Boolean).join(" · "))}</div></div><span class="badge paid">${esc(lgPts(res.total))} por partidos</span></div>
+      ${roundTotal}
       ${lgRulesStripHtml(rules, true)}
       ${round.matches.map((m, i) => {
         const out = res.matches[i];
@@ -9724,18 +9996,25 @@
   }
   function renderLiguillaHistDetail(detail, round){
     const rules = lgRulesOf(round);
+    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
     const rows = meta.participants.slice().sort((a,b) => a.name.localeCompare(b.name, "es", {sensitivity:"base"})).map(p => {
       const rp = (allPicksCache[p.id] || {})[round.id] || {};
       const res = LG.scoreRound(round, rp);
+      // El total de la jornada incluye sus preguntas y descuentos; el de
+      // partidos se nombra aparte (AUD-10).
+      const t = roundTotalParts(p.id, round, rp, participantMap);
+      const parts = t.questions || t.discount ? ["Partidos " + lgPts(t.match.pts)] : [];
+      if(t.questions) parts.push("Preguntas " + signedPts(t.questions));
+      if(t.discount) parts.push("Descuento " + signedPts(-t.discount));
       const cells = round.matches.map((m, i) => {
         const out = res.matches[i];
         const v = rules && rules.capture === "score" ? (rp.__score && rp.__score[m.id]) : rp[m.id];
         return `<td class="lg-h-cell">${lgHistCellHtml(round, m, out, v)}</td>`;
       }).join("");
-      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(lgPts(res.total))}</span><span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
+      return `<tr class="${p.id === currentUser.id ? "me" : ""}"><th scope="row" class="qz-sticky-col lg-h-name"><strong>${esc(p.name)}</strong><span class="lg-h-total">${esc(ptsText(t.total))}</span>${parts.length ? `<span class="lg-h-sum">${esc(parts.join(" · "))}</span>` : ``}<span class="lg-h-sum">${esc(lgHitSummary(res))}</span></th>${cells}</tr>`;
     }).join("");
     const headRows = `
-      <tr><th scope="col" class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Puntos de la jornada</span></th>${round.matches.map(m=>`<th scope="col" class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr>
+      <tr><th scope="col" class="qz-sticky-col lg-h-name">Participante<span class="lg-h-sum">Total jornada</span></th>${round.matches.map(m=>`<th scope="col" class="lg-h-cell">${esc(m.teamA)}<br>vs ${esc(m.teamB)}</th>`).join("")}</tr>
       <tr class="lg-h-real"><th scope="row" class="qz-sticky-col lg-h-name"><strong>Resultado real</strong></th>${round.matches.map(m => `<td class="lg-h-cell"><strong>${esc(lgResultText(round, m))}</strong></td>`).join("")}</tr>`;
     const tableHtml = stickyCompareHtml({
       tableCls: "lg-h-table",
@@ -9748,7 +10027,7 @@
       <div class="card">
         <h3>${esc(roundTitle(round))}${roundSubtitle(round) ? ` <span class="muted" style="font-weight:500;">· ${esc(roundSubtitle(round))}</span>` : ``}</h3>
         <div class="lg-strip"><strong>Reglas de esta jornada</strong><span>${esc(lgRulesSentence(rules))}</span><span>Cuenta el marcador final con prórroga, sin penales.</span></div>
-        <p class="muted lg-h-help">Cada casilla dice el pronóstico, los puntos que dio y por qué. A la izquierda, el total de la jornada y cuántos partidos acertó cada quien${rules && rules.exactBonus ? "; un exacto también cuenta como partido acertado" : ""}.</p>
+        <p class="muted lg-h-help">Cada casilla dice el pronóstico, los puntos que dio y por qué. A la izquierda, el total de la jornada (partidos, preguntas y descuentos de esta jornada), los puntos por partidos y cuántos partidos acertó cada quien${rules && rules.exactBonus ? "; un exacto también cuenta como partido acertado" : ""}.</p>
         <p class="muted lg-scroll-hint">Desliza la tabla hacia los lados para ver cada partido; el nombre y los puntos se quedan fijos.</p>
         ${tableHtml}
       </div>`;
@@ -11397,6 +11676,23 @@
     });
     return n;
   }
+  // Las respuestas de una pregunta de jornada viven en los pronósticos: si la
+  // última carga falló o llegó incompleta, no se sabe cuántas hay (no es
+  // «nadie respondió»). Las del torneo vienen en la meta y siempre se saben.
+  // Como betAnswerCount(): toda pregunta que no es del torneo, también una
+  // antigua sin tipo explícito (la app la trata como «Cada jornada»).
+  function betAnswersUnknown(bet){
+    return !!bet && bet.scope !== "temporada" && allPicksLoadFailed;
+  }
+  const BET_ANSWERS_UNKNOWN_MSG = "No pudimos cargar las respuestas. Vuelve a intentarlo antes de quitar esta pregunta.";
+  const BET_GONE_MSG = "Esta pregunta ya no existe: la quitaron desde otra pestaña o dispositivo. No se guardó nada.";
+  const BET_TYPE_LOCKED_MSG = "Carga las respuestas antes de cambiar el tipo de pregunta.";
+  // El tipo como lo lee la app: lo que no es «temporada» es «jornada».
+  function betScopeKind(scope){ return scope === "temporada" ? "temporada" : "jornada"; }
+  // Una pregunta antigua sin tipo guardado. Se muestra como «Cada jornada»,
+  // pero la puntuación no la cuenta: guardarla con un tipo cambiaría la
+  // tabla, así que sólo se le pone uno si el admin lo elige expresamente.
+  function betHasNoScope(bet){ return !!bet && bet.scope !== "temporada" && bet.scope !== "jornada"; }
   function betHitCount(bet){
     if(bet.scope === "temporada"){
       return meta.participants.filter(p => p.customBetAnswers && p.customBetAnswers[bet.id] && p.customBetAnswers[bet.id].correct === true).length;
@@ -11452,9 +11748,12 @@
   function betCloseFixed(bet){
     return !!(bet && bet.scope === "temporada" && customBetsLocked(bet));
   }
-  function reglasBetCardHtml(bet){
+  function reglasBetCardHtml(bet, i, all){
     const answers = betAnswerCount(bet);
     const hits = betHitCount(bet);
+    const unknown = betAnswersUnknown(bet);
+    // Sólo el primer aviso se anuncia (role=alert); los demás se leen al llegar.
+    const firstUnknown = unknown && all && all.findIndex(betAnswersUnknown) === i;
     const noClose = bet.scope === "temporada" && betCloseInfo(bet).kind === "none";
     return `
       <div class="qz-qcard">
@@ -11464,11 +11763,16 @@
           ? `<p class="qz-wz-warn qz-tight"><span class="qz-chip qz-chip-warn">Sin cierre</span> Esta pregunta no tiene fecha de cierre: sigue abierta hasta que termines el torneo, y entonces se cierra y se guarda en el historial. Si quieres que cierre antes, elige con qué jornada.</p>`
           : `<div class="qz-qcard-close">${esc(betCloseLine(bet))}</div>`}
         <div class="qz-qcard-chips">
-          <span class="qz-chip">${answers ? `${esc(answers)} ${answers === 1 ? "respuesta" : "respuestas"}` : "Sin respuestas todavía"}</span>
+          <span class="qz-chip">${unknown ? "Respuestas sin cargar" : answers ? `${esc(answers)} ${answers === 1 ? "respuesta" : "respuestas"}` : "Sin respuestas todavía"}</span>
           ${hits ? `<span class="qz-chip">${esc(hits)} ${hits === 1 ? "acierto marcado" : "aciertos marcados"}</span>` : ``}
         </div>
+        ${unknown ? `
+        <div class="qz-picks-loadfail qz-rb-unknown" ${firstUnknown ? 'role="alert"' : ""}>
+          <p id="qz-rb-unk-${esc(bet.id)}">${BET_ANSWERS_UNKNOWN_MSG}</p>
+          <button type="button" class="btn btn-gold btn-sm" id="qz-rb-retry-${esc(bet.id)}" data-rb-retry="${esc(bet.id)}">Volver a intentar</button>
+        </div>` : ``}
         <div class="qz-qcard-actions">
-          <button class="qz-linkbtn" data-rb-edit="${esc(bet.id)}">${noClose ? "Elegir cierre" : "Editar"}</button><span aria-hidden="true"> · </span><button class="qz-linkbtn" data-rb-del="${esc(bet.id)}">Quitar</button>
+          <button class="qz-linkbtn" data-rb-edit="${esc(bet.id)}">${noClose ? "Elegir cierre" : "Editar"}</button><span aria-hidden="true"> · </span><button class="qz-linkbtn" data-rb-del="${esc(bet.id)}" ${unknown ? `aria-disabled="true" aria-describedby="qz-rb-unk-${esc(bet.id)}"` : ""}>Quitar</button>
         </div>
       </div>`;
   }
@@ -11478,9 +11782,25 @@
     const editing = !!f.id;
     const bet = editing ? meta.customBets.find(b => b.id === f.id) : null;
     const answers = bet ? betAnswerCount(bet) : 0;
+    // Sin sus respuestas no se sabe si se puede cambiar el tipo: se queda el
+    // original (también en el estado del formulario, para que lo que se ve
+    // sea lo que se guarda) y se bloquea el selector.
+    const typeLocked = editing && betAnswersUnknown(bet);
+    if(typeLocked){ f.scope = bet.scope; f.scopeTouched = false; }
+    // Igual con el cierre: mientras el admin no elija otro, se muestra el que la
+    // pregunta tiene AHORA (también si otra pestaña lo cambió y se adoptó la
+    // meta del servidor tras un conflicto).
+    if(editing && bet && !f.closesTouched) f.closes = bet.scope === "temporada" ? betFormCloses(bet) : "";
     const tpl = extraTemplate(f.template);
     const isCustom = f.template === EXTRA_CUSTOM_KEY;
-    const scope = tpl ? tpl.scope : (f.scope || "jornada");
+    // Mientras el admin no elija otro, el tipo que se muestra es el que la
+    // pregunta tiene AHORA (también si otra pestaña lo cambió y se adoptó la
+    // meta del servidor tras un conflicto), nunca un valor por defecto.
+    const scope = tpl ? tpl.scope : (typeLocked || (editing && bet && !f.scopeTouched) ? betScopeKind(bet.scope) : (f.scope || "jornada"));
+    const scopeDisabled = (editing && answers) || typeLocked;
+    // Sin tipo guardado y sin que el admin haya elegido uno: ninguna opción
+    // aparece marcada (no se da por elegido lo que el formulario muestra).
+    const noScopeYet = editing && betHasNoScope(bet) && !f.scopeTouched && !scopeDisabled;
     const rounds = closableRounds();
     const closeFixed = editing && betCloseFixed(bet);
     // MS2 · D4. Its current close stays the selected value (saving without
@@ -11496,6 +11816,7 @@
     return `
       <div class="qz-qform" id="qz-rb-form">
         <div class="qz-qform-title">${editing ? "Editar pregunta" : "Nueva pregunta"}</div>
+        ${f.error ? `<p class="qz-field-error" id="qz-rb-conflict" role="alert">${esc(f.error)}</p>` : ``}
         ${editing ? (tpl ? `<blockquote class="qz-qfixed">${esc(tpl.text)}</blockquote>` : ``) : `
           <div class="field qz-field-select"><label for="qz-rb-tpl">¿Qué quieres preguntar?</label>
             <select id="qz-rb-tpl">
@@ -11509,16 +11830,21 @@
             <div class="field qz-field-text"><label for="qz-rb-text">${editing ? "Pregunta" : "Escribe tu pregunta"}</label>
               <input type="text" id="qz-rb-text" maxlength="${EXTRA_TEXT_MAX}" value="${esc(f.text)}" autocomplete="off"></div>
             ${editing && answers ? `<p class="muted qz-tight">Cambiar el texto no cambia las respuestas ya enviadas. Úsalo sólo para corregir errores.</p>` : ``}
-            <fieldset class="qz-scope" ${editing && answers ? "disabled" : ""}><legend>¿Cómo se responde?</legend>
+            <fieldset class="qz-scope" ${scopeDisabled ? "disabled" : ""} ${typeLocked ? `aria-describedby="qz-rb-type-lock"` : noScopeYet ? `aria-describedby="qz-rb-noscope"` : ""}><legend>¿Cómo se responde?</legend>
+              ${noScopeYet ? `<p class="muted qz-tight" id="qz-rb-noscope">Esta pregunta no tiene un tipo guardado: tus amigos no la ven y sus aciertos no cuentan en la tabla. Si eliges un tipo, se empieza a mostrar y sus aciertos cuentan. Si no eliges ninguno, se queda como está.</p>` : ``}
               ${["temporada", "jornada"].map(s => `
-                <label class="qz-scope-opt"><input type="radio" name="qz-rb-scope" value="${s}" ${scope === s ? "checked" : ""}>
+                <label class="qz-scope-opt"><input type="radio" name="qz-rb-scope" value="${s}" ${scope === s && !noScopeYet ? "checked" : ""}>
                   <span><strong>${esc(scopeLabel(s))}</strong><span class="muted">${esc(scopeHelp(s))}</span></span></label>`).join("")}
             </fieldset>
-            ${editing && answers ? `<p class="muted qz-tight">No se puede cambiar el tipo porque ya hay respuestas.</p>` : ``}
+            ${typeLocked ? `
+            <div class="qz-picks-loadfail qz-rb-unknown" role="alert">
+              <p id="qz-rb-type-lock">${BET_TYPE_LOCKED_MSG}</p>
+              <button type="button" class="btn btn-gold btn-sm" id="qz-rb-form-retry">Volver a intentar</button>
+            </div>` : editing && answers ? `<p class="muted qz-tight">No se puede cambiar el tipo porque ya hay respuestas.</p>` : ``}
           ` : `<p class="qz-wz-line">Se responde: <strong>${esc(scopeLabel(scope).toLowerCase())}</strong></p>`}
           <div class="field qz-field-narrow"><label for="qz-rb-points">Puntos si acierta</label>
             <input type="text" inputmode="numeric" id="qz-rb-points" value="${esc(f.points)}" autocomplete="off"></div>
-          <p class="muted qz-tight">Cuentan para la tabla cuando tú marcas quién acertó.</p>
+          <p class="muted qz-tight">${noScopeYet ? "Cuentan para la tabla cuando elijas un tipo y marques quién acertó." : "Cuentan para la tabla cuando tú marcas quién acertó."}</p>
           ${scope === "temporada" && closeFixed ? `
             <p class="qz-wz-line">${esc(betCloseLine(bet))}. <strong>Ya cerró.</strong></p>
             <p class="muted qz-tight">Tus amigos ya no pueden responderla. Para no reabrir sus respuestas por accidente, el cierre de una pregunta que ya cerró no se cambia; puedes corregir el texto o los puntos y calificarla abajo.</p>
@@ -11529,7 +11855,7 @@
                 : `<p class="qz-wz-warn">No hay ninguna jornada por cerrar. Crea o prepara una jornada en Admin → Jornadas para poder ligar esta pregunta a su cierre.</p>`}
             </div>
             <p class="muted qz-tight">Hasta ese cierre tus amigos pueden responder y cambiar su respuesta; después ya no. Quien entre más tarde la verá cerrada.</p>
-          ` : `<p class="qz-wz-close">Cierra con cada jornada. Aparece en las jornadas que estén abiertas ahora y en las siguientes; no se agrega a jornadas cerradas.</p>`}
+          ` : noScopeYet ? `` : `<p class="qz-wz-close">Cierra con cada jornada. Aparece en las jornadas que estén abiertas ahora y en las siguientes; no se agrega a jornadas cerradas.</p>`}
         `}
         <p class="qz-field-error" id="qz-rb-err" role="alert" hidden></p>
         <div class="qz-qform-actions">
@@ -11566,7 +11892,7 @@
     const lockLine = noPasswordYet
       ? `<p class="muted qz-tight">🔒 Los puntos y la cuota se protegen con tu contraseña de administrador. ${isCreator(currentUser) ? "La creas al publicar tu primera jornada o en Ajustes." : "La configura quien creó la quiniela."}</p>`
       : `<p class="muted qz-tight">🔒 Para cambiarlos, desbloquea con tu contraseña de administrador (arriba).</p>`;
-    const cardsHtml = bets.map(reglasBetCardHtml).join("");
+    const cardsHtml = bets.map((b, i, all) => reglasBetCardHtml(b, i, all)).join("");
     const formHtml = st.form ? reglasBetFormHtml(st.form) : "";
     // R2: what the first publish could not store (someone else saved first),
     // kept for this admin until reviewed; nothing of it is applied by itself.
@@ -11809,12 +12135,63 @@
     // Questions.
     const newBtn = document.getElementById("qz-rb-new");
     if(newBtn) newBtn.addEventListener("click", () => { st.form = { id: null, template: "", text: "", scope: "", points: "", closes: "" }; repaint(); });
+    // El formulario se pinta al final de la lista: al abrirlo con «Editar» se
+    // lleva a la vista, debajo del menú fijo, y el foco va a «Pregunta» (o al
+    // primer campo editable si es una pregunta de plantilla), para que no
+    // parezca que el botón no hizo nada.
+    // Lleva el formulario a la vista, bajo el menú fijo, con el foco en su
+    // primer campo.
+    function scrollReglasForm(){
+      const form = document.getElementById("qz-rb-form");
+      if(!form) return null;
+      const field = document.getElementById("qz-rb-text") || document.getElementById("qz-rb-points");
+      const hdr = root.querySelector(".qz-header");
+      const top = form.getBoundingClientRect().top + window.scrollY - (hdr ? hdr.getBoundingClientRect().height : 0) - 12;
+      window.scrollTo({ top: Math.max(0, top), behavior: "instant" });
+      if(field) field.focus({ preventScroll: true });
+      return form;
+    }
+    function showReglasForm(){
+      const form = scrollReglasForm();
+      if(!form) return;
+      // El formulario aparece justo bajo el puntero: el segundo clic de un
+      // doble clic (o toque) en «Editar» caería sobre él y podría marcar un
+      // tipo sin que el admin lo eligiera. Durante medio segundo se ignoran
+      // los clics sobre el formulario (no el teclado).
+      const until = performance.now() + 500;
+      const swallow = (e) => {
+        if(e.type === "click" && e.detail === 0) return; // Enter/Espacio: es del teclado
+        if(performance.now() < until){ e.preventDefault(); e.stopPropagation(); }
+      };
+      ["pointerdown", "mousedown", "click", "dblclick"].forEach(t => form.addEventListener(t, swallow, true));
+    }
+    // Tras un conflicto, la pantalla se vuelve a pintar (a veces más tarde, al
+    // terminar de cargar): el formulario vuelve a la vista cuando ya está.
+    if(st.scrollToForm && st.form && document.getElementById("qz-rb-form")){
+      st.scrollToForm = false;
+      scrollReglasForm();
+      // El menú fijo se vuelve a pintar a la vez y cambia de alto un momento
+      // después: si eso deja el formulario debajo, se vuelve a alinear. Sólo
+      // reacciona a cambios de tamaño del menú (no al desplazamiento del
+      // admin) y sólo durante un segundo y medio.
+      const hdr = root.querySelector(".qz-header");
+      if(hdr && typeof ResizeObserver === "function"){
+        const ro = new ResizeObserver(() => {
+          const form = document.getElementById("qz-rb-form");
+          const gap = form ? form.getBoundingClientRect().top - (hdr.getBoundingClientRect().bottom + 12) : 0;
+          if(gap < 0) window.scrollBy({ top: gap, behavior: "instant" });
+        });
+        ro.observe(hdr);
+        setTimeout(() => ro.disconnect(), 1500);
+      }
+    }
     body.querySelectorAll("[data-rb-edit]").forEach(b => b.addEventListener("click", () => {
       const bet = bets.find(x => x.id === b.dataset.rbEdit);
       if(!bet) return;
       const tpl = EXTRA_TEMPLATES.find(t => t.text === bet.label && t.scope === bet.scope);
       st.form = { id: bet.id, template: tpl ? tpl.key : EXTRA_CUSTOM_KEY, text: bet.label, scope: bet.scope, points: String(bet.points), closes: bet.scope === "temporada" ? betFormCloses(bet) : "" };
       repaint();
+      showReglasForm();
     }));
     const tplSel = document.getElementById("qz-rb-tpl");
     if(tplSel) tplSel.addEventListener("change", () => {
@@ -11831,18 +12208,65 @@
       if(p) st.form.points = p.value;
       if(c) st.form.closes = c.value;
     };
-    body.querySelectorAll('input[name="qz-rb-scope"]').forEach(r => r.addEventListener("change", () => { keepTyped(); st.form.scope = r.value; repaint(); }));
+    const closesSel = document.getElementById("qz-rb-closes");
+    if(closesSel) closesSel.addEventListener("change", () => { st.form.closes = closesSel.value; st.form.closesTouched = true; });
+    const formTypeLocked = () => {
+      const b = st.form && st.form.id ? meta.customBets.find(x => x.id === st.form.id) : null;
+      return !!b && betAnswersUnknown(b);
+    };
+    body.querySelectorAll('input[name="qz-rb-scope"]').forEach(r => r.addEventListener("change", () => {
+      keepTyped();
+      if(formTypeLocked()){ toast(BET_TYPE_LOCKED_MSG, 6000); repaint(); return; }
+      st.form.scope = r.value; st.form.scopeTouched = true; repaint();
+    }));
+    const formRetry = document.getElementById("qz-rb-form-retry");
+    if(formRetry) formRetry.addEventListener("click", () => {
+      keepTyped();
+      retryPicksLoad(formRetry, () => renderAdminReglas(body, { quick: true }), () => document.querySelector('#qz-rb-form fieldset.qz-scope:not([disabled]) input[name="qz-rb-scope"]:checked') || document.getElementById("qz-rb-text"));
+    });
     const cancelForm = document.getElementById("qz-rb-cancel");
     if(cancelForm) cancelForm.addEventListener("click", () => { st.form = null; repaint(); });
     const saveForm = document.getElementById("qz-rb-save");
     if(saveForm) saveForm.addEventListener("click", async () => {
       keepTyped();
       const f = st.form;
+      f.error = "";
       const editingBet = f.id ? meta.customBets.find(b => b.id === f.id) : null;
+      // La quitaron desde otra pestaña o dispositivo: no se vuelve a crear como
+      // pregunta nueva sin que el admin lo pida.
+      if(f.id && !editingBet){ st.form = null; repaint(); toast(BET_GONE_MSG, 6000); return; }
       const tpl = extraTemplate(f.template);
       const problem = extraQuestionProblem({ template: f.template, text: f.text, points: f.points }, meta.customBets.map(b => ({ key: b.id, text: b.label })), f.id);
       if(problem){ setupFieldError("qz-rb-err", problem); return; }
-      const scope = tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
+      // Con las respuestas sin cargar, el tipo no cambia: si se pidió otro (el
+      // formulario se abrió antes del fallo, o se forzó el selector), no se
+      // guarda nada; si es el mismo, se conserva exactamente el original (una
+      // pregunta antigua sin tipo sigue sin tipo).
+      const typeChangeBlocked = () => {
+        if(!editingBet || !betAnswersUnknown(editingBet)) return false;
+        // A una pregunta sin tipo, elegirle cualquiera (también «Cada jornada»)
+        // es un cambio de tipo.
+        if(betHasNoScope(editingBet) && f.scopeTouched) return true;
+        const requested = !f.scopeTouched ? editingBet.scope : tpl ? tpl.scope : (f.scope || "jornada");
+        return betScopeKind(requested) !== betScopeKind(editingBet.scope);
+      };
+      const blockTypeChange = () => {
+        f.scope = editingBet.scope;
+        f.scopeTouched = false;
+        repaint();
+        toast(BET_TYPE_LOCKED_MSG + " No se guardó nada.", 6000);
+      };
+      if(typeChangeBlocked()){ blockTypeChange(); return; }
+      // Una pregunta antigua sin tipo se queda sin tipo salvo que el admin
+      // elija uno expresamente (f.scopeTouched).
+      const keepNoScope = () => !!editingBet && betHasNoScope(editingBet) && !f.scopeTouched;
+      // Sin una elección expresa del admin, se guarda el tipo que la pregunta
+      // tiene ahora (el de la meta vigente, también tras un conflicto).
+      let scope = editingBet && (betAnswersUnknown(editingBet) || !f.scopeTouched) ? editingBet.scope
+        : tpl ? tpl.scope : (editingBet && betAnswerCount(editingBet) ? editingBet.scope : (f.scope || "jornada"));
+      // Sin una elección expresa del admin, se guarda el cierre que la pregunta
+      // tiene ahora (el de la meta vigente, también tras un conflicto).
+      if(editingBet && !f.closesTouched && editingBet.scope === "temporada") f.closes = betFormCloses(editingBet);
       // It closed while this form was open: the close it had stays.
       if(scope === "temporada" && betCloseFixed(editingBet) && f.closes !== "" && parsePositiveInt(f.closes) !== editingBet.closesAtRound){
         f.closes = String(editingBet.closesAtRound);
@@ -11871,7 +12295,9 @@
       }
       if(scope === "temporada" && closes == null){ setupFieldError("qz-rb-err", "Elige con qué jornada cierra."); return; }
       const newPoints = parsePositiveInt(f.points);
-      if(editingBet && newPoints !== editingBet.points){
+      // Sin tipo (y sin elegirlo) sus aciertos no cuentan: cambiar los puntos
+      // no recalcula la tabla, así que no se pregunta como si lo hiciera.
+      if(editingBet && newPoints !== editingBet.points && !keepNoScope()){
         const hits = betHitCount(editingBet);
         if(hits){
           const ok = await qzConfirm(`Ya marcaste ${hits} ${hits === 1 ? "acierto" : "aciertos"} en esta pregunta. Al cambiar los puntos, la tabla se recalcula (${editingBet.points} → ${newPoints} puntos cada uno).`,
@@ -11879,13 +12305,19 @@
           if(!ok) return;
         }
       }
+      // Otra vez después de la espera, justo antes de tocar la meta: la carga
+      // pudo fallar mientras la confirmación estaba abierta.
+      if(typeChangeBlocked()){ blockTypeChange(); return; }
+      if(editingBet && betAnswersUnknown(editingBet)) scope = editingBet.scope;
       const snapshot = JSON.parse(JSON.stringify(meta.customBets));
       const label = tpl ? tpl.text : f.text.trim();
       if(editingBet){
+        // Se conserva exactamente: sin tipo y sin un cierre que nunca tuvo.
+        const untouchedNoScope = betHasNoScope(editingBet) && scope === editingBet.scope;
         editingBet.label = label;
-        editingBet.scope = scope;
+        if(!untouchedNoScope) editingBet.scope = scope;
         editingBet.points = newPoints;
-        editingBet.closesAtRound = closes;
+        if(!(untouchedNoScope && closes == null)) editingBet.closesAtRound = closes;
         if(relinkTo != null) editingBet.closesRoundId = relinkTo;
         if(moveTo != null) editingBet.closesAt = moveTo;
       } else {
@@ -11896,6 +12328,15 @@
       saveForm.disabled = false;
       if(!result.ok){
         if(!result.reconciled) meta.customBets = snapshot;
+        // Conflicto: la pestaña ya trae lo más reciente del servidor. El
+        // formulario se repinta con eso, vuelve a la vista y el aviso queda
+        // dentro de él (no se pierde con el repintado).
+        if(result.reconciled && (result.error === "bets_conflict" || result.error === "rounds_conflict")){
+          if(st.form && st.form.id && !meta.customBets.some(b => b.id === st.form.id)){ st.form = null; repaint(); toast(BET_GONE_MSG, 6000); return; }
+          if(st.form){ st.form.error = humanizeError(result.error, result); st.scrollToForm = true; }
+          if(body.isConnected) repaint();
+          return;
+        }
         setupFieldError("qz-rb-err", result.error === "bet_close_required" || result.error === "bet_close_past" || result.error === "bet_close_locked" || result.error === "bet_close_invalid"
           ? humanizeError(result.error, result) : `${humanizeError(result.error, result)} No se guardó la pregunta.`);
         return;
@@ -11904,15 +12345,26 @@
       toast(editingBet ? "✅ Listo, la pregunta quedó actualizada." : "✅ Listo, la pregunta quedó guardada.");
       repaint();
     });
+    // Reintento de las respuestas sin cargar: sólo lee; al cargar, la tarjeta
+    // vuelve con sus conteos verdaderos y el foco va a su «Quitar».
+    body.querySelectorAll("[data-rb-retry]").forEach(btn => btn.addEventListener("click", () => {
+      const id = btn.dataset.rbRetry;
+      retryPicksLoad(btn, () => renderAdminReglas(body, { quick: true }), () => [...body.querySelectorAll("[data-rb-del]")].find(x => x.dataset.rbDel === id));
+    }));
     body.querySelectorAll("[data-rb-del]").forEach(b => b.addEventListener("click", async () => {
       const bet = bets.find(x => x.id === b.dataset.rbDel);
       if(!bet) return;
+      // Se comprueba al ejecutar, no sólo por el aspecto del botón: sin saber
+      // cuántas respuestas hay, no se pregunta ni se escribe nada.
+      if(betAnswersUnknown(bet)){ toast(BET_ANSWERS_UNKNOWN_MSG, 6000); return; }
       const answers = betAnswerCount(bet), hits = betHitCount(bet);
       const ok = await qzConfirm(answers || hits
         ? `Se borran las ${answers} respuestas de tus participantes y los ${hits} aciertos marcados, y esos puntos salen de la tabla. Esto no se puede deshacer.`
         : "Se quita de tus reglas. Nadie la ha respondido todavía.",
         { title: "¿Quitar esta pregunta?", confirmLabel: answers || hits ? "Quitar pregunta" : "Quitar", cancelLabel: "Cancelar" });
       if(!ok) return;
+      // Y otra vez justo antes de escribir (la carga pudo fallar mientras tanto).
+      if(betAnswersUnknown(bet)){ toast(BET_ANSWERS_UNKNOWN_MSG, 6000); return; }
       const betsBefore = meta.customBets.slice();
       const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));
       const roundsSnapshot = JSON.parse(JSON.stringify(meta.rounds));
@@ -14277,14 +14729,24 @@
       return;
     }
     await ensureAllPicksLoaded();
+    // Sin todos los pronósticos el archivo saldría con puntos parciales: no se
+    // genera ni se anuncia nada como listo.
+    if(allPicksLoadFailed){
+      toast("No pudimos cargar todos los pronósticos, así que no se generó el Excel. Vuelve a intentarlo.", 6000);
+      return;
+    }
     const wb = XLSX.utils.book_new();
 
-    // Standings
+    // Standings. «Pagó» sale igual que en la Tabla y en la imagen: sólo si la
+    // quiniela lleva pagos (paymentsTracked), aunque ya hayan pagado todos.
     const standingsSrc = standingsList();
     const standingsRanks = computeDenseRanks(standingsSrc);
-    const standings = standingsSrc.map((p,i) => ({
-      "#": standingsRanks[i], "Participante": p.name, "Puntos": p.pts, "Pagó": p.paid ? "Sí" : "No"
-    }));
+    const payTracked = paymentsTracked();
+    const standings = standingsSrc.map((p,i) => {
+      const row = { "#": standingsRanks[i], "Participante": p.name, "Puntos": p.pts };
+      if(payTracked) row["Pagó"] = p.paid ? "Sí" : "No";
+      return row;
+    });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(standings), "Tabla");
 
     // Jornada detail (matrix)
@@ -14341,13 +14803,19 @@
     }).sort((a,b)=>b["Puntos totales"]-a["Puntos totales"]);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(statsRows), "Estadísticas");
 
-    // Payments
-    const paymentRows = meta.participants.map(p => ({
-      "Participante": p.name,
-      "Cuota": meta.settings.entryFee,
-      "Pagó": p.paid ? "Sí" : "No"
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), "Pagos");
+    // Payments. Con seguimiento (paymentsTracked), los pagos reales, también
+    // si ya pagaron todos. Sin seguimiento, la hoja se queda pero sólo lo
+    // dice: nadie aparece como «No pagó» en una quiniela que no lleva pagos.
+    if(payTracked){
+      const paymentRows = meta.participants.map(p => ({
+        "Participante": p.name,
+        "Cuota": meta.settings.entryFee,
+        "Pagó": p.paid ? "Sí" : "No"
+      }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), "Pagos");
+    } else {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Esta quiniela no lleva registro de pagos"]]), "Pagos");
+    }
 
     XLSX.writeFile(wb, "quiniela_" + meta.groupName.replace(/\s+/g,"_") + ".xlsx");
     toast("✅ Listo, tu Excel se descargó.");
@@ -15653,6 +16121,27 @@
   async function renderSpectatorView(){
     root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
     await ensureAllPicksLoaded();
+    // Sin todos los pronósticos no se conocen los puntos: aviso y reintento,
+    // nunca una clasificación con datos parciales (igual que la Tabla).
+    if(allPicksLoadFailed){
+      root.innerHTML = `
+        <div class="qz-header">
+          <div class="qz-header-top">
+            <div class="qz-brand"><span class="display">${esc(meta.groupName)}</span><span class="display dot">.</span></div>
+            <div class="qz-user-chip">👁 Solo ver</div>
+          </div>
+        </div>
+        <div class="qz-main">
+          <div class="section-title"><span class="display">Tabla de posiciones</span></div>
+          <div class="card"><div class="qz-picks-loadfail" role="alert">
+            <p><strong>No pudimos cargar los pronósticos para calcular la tabla.</strong> Los puntos no se muestran hasta que se carguen. Si sigue fallando, recarga la página.</p>
+            <button class="btn btn-gold btn-sm" id="qz-spectator-retry">Volver a intentar</button>
+          </div></div>
+        </div>`;
+      const retryBtn = document.getElementById("qz-spectator-retry");
+      retryBtn.addEventListener("click", () => retryPicksLoad(retryBtn, () => renderSpectatorView(), () => root.querySelector(".qz-main .section-title")));
+      return;
+    }
     const list = standingsList();
     const spectatorRanks = computeDenseRanks(list);
     const fee = meta.settings.entryFee;
@@ -15683,7 +16172,7 @@
                 <tr>
                   <td class="pos ${spectatorRanks[i]===1?'top1':''}" style="text-align:center;">${spectatorRanks[i]}</td>
                   <td>${esc(p.name)} ${p.isAdmin?'<span class="badge admin">ADMIN</span>':''}</td>
-                  <td style="text-align:center;font-weight:700;">${esc(p.pts)}</td>
+                  <td style="text-align:center;font-weight:700;">${esc(p.pts < 0 ? "−" + Math.abs(p.pts) : p.pts)}</td>
                 </tr>
               `).join("")}
             </tbody>

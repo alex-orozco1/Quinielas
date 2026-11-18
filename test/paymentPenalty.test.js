@@ -33,11 +33,14 @@ function loadPenaltyModel(){
   const isRoundLockedSrc = extractFunctionBody(indexSrc, "function isRoundLocked(round)");
   const isRoundEligibleSrc = extractFunctionBody(indexSrc, "function isRoundEligibleForPenalty(round, penalty)");
   const reconcileSrc = extractFunctionBody(indexSrc, "function reconcilePenaltyLedger(meta)");
+  // penaltyPointsFor() suma penaltyParts() (claridad de puntos): las dos van juntas.
+  const penaltyPartsSrc = extractFunctionBody(indexSrc, "function penaltyParts(p, cutoffRoundNumber)");
   const penaltyPointsForSrc = extractFunctionBody(indexSrc, "function penaltyPointsFor(p, cutoffRoundNumber)");
   return new Function("meta", "p", "cutoffRoundNumber", "serverNow", "action", `
     ${isRoundLockedSrc}
     ${isRoundEligibleSrc}
     ${reconcileSrc}
+    ${penaltyPartsSrc}
     ${penaltyPointsForSrc}
     if (action === "reconcile") { reconcilePenaltyLedger(meta); return null; }
     return penaltyPointsFor(p, cutoffRoundNumber);

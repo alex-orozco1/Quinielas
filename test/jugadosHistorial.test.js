@@ -24,15 +24,22 @@ function fnSource(signature) {
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-function playedEnv(myPicks, settings) {
-  const src = [fnSource("function pickText(m, v){"), fnSource("function compareHtml(mine, real, verdict, verdictCls){"), fnSource("function renderRoundPlayed(box, round){")].join("\n");
+function playedEnv(myPicks, settings, extraMeta) {
+  const src = [fnSource("function pickText(m, v){"), fnSource("function compareHtml(mine, real, verdict, verdictCls){"), fnSource("function renderRoundPlayed(box, round){"),
+    // «Total de esta jornada» (claridad de puntos) con el cálculo real.
+    fnSource("function roundTotalHtml(round, roundPicks, participantId, partial){"), fnSource("function roundTotalParts(participantId, round, roundPicks, participantMap){"),
+    fnSource("function roundMatchScore(r, roundPicks){"), fnSource("function customBetParts(participantId, participantMap, cutoffRoundNumber){"),
+    fnSource("function penaltyParts(p, cutoffRoundNumber){"), fnSource("function isRoundEligibleForPenalty(round, penalty){"), fnSource("function isRoundLocked(round){"),
+    fnSource("function signedPts(n){"), fnSource("function ptsText(n){")].join("\n");
   return new Function("esc", "myPicks", "meta", `
+    const currentUser = { id: "yo" };
+    const isLg = () => false, LG = null, serverNow = () => Date.parse("2026-11-10T12:00:00Z");
     const pointsWord = (n) => Number(n) === 1 ? "punto" : "puntos";
     const matchTeamsHtml = (m) => "<div>" + esc(m.teamA) + " vs " + esc(m.teamB) + "</div>";
     const roundBetAnswersHtml = () => "";
     ${src}
     return (round) => { const box = { innerHTML: "" }; renderRoundPlayed(box, round); return box.innerHTML; };
-  `)(esc, myPicks, { settings: settings || {} });
+  `)(esc, myPicks, { settings: settings || {}, participants: [{ id: "yo", name: "Yo" }], rounds: [], customBets: [], ...(extraMeta || {}) });
 }
 
 const round = {
@@ -48,7 +55,8 @@ const round = {
 
 test("JUG-01 · Jugados compara «Tu pronóstico» con «Resultado real» y suma aciertos y puntos de esa jornada", () => {
   const out = playedEnv({ r9: { m1: "A", m2: "B", m4: "A" } }, { pointsPerCorrectPick: 3 })(round);
-  assert.match(out, /1\/3 aciertos · 3 puntos/);
+  assert.match(out, /1\/3 aciertos · 3 puntos por partidos/);
+  assert.match(out, /Total de esta jornada \(hasta ahora\)<\/span><strong>3 pts<\/strong>/);
   assert.equal((out.match(/Tu pronóstico/g) || []).length, 4);
   assert.equal((out.match(/Resultado real/g) || []).length, 4);
   assert.match(out, /Acertaste ✅ · \+3 puntos/);
@@ -183,4 +191,21 @@ test("JUG-01 · cambiar de jornada no mueve la página: se repinta, se enfoca si
   const picker = fnSource("function renderJugadosPicker(list, rounds, focusSel){");
   assert.ok(picker.includes("const y = window.scrollY;") && picker.includes('window.scrollTo({ top: y, behavior: "instant" });'));
   assert.ok(picker.includes(".focus({ preventScroll: true })"));
+});
+
+test("Claridad · Jugados: el «Total de esta jornada» suma sus preguntas y resta su descuento; no las del torneo", () => {
+  const r = { ...round, deadline: "2026-10-01T00:00:00Z", published: true, results: { m1: "A", m2: "D", m3: "B", m4: "A" }, customBetResults: { bj: { yo: true } } };
+  const extra = {
+    customBets: [{ id: "bj", label: "P", scope: "jornada", points: 5 }, { id: "bt", label: "T", scope: "temporada", points: 10 }],
+    participants: [{ id: "yo", name: "Yo", paid: false, penalizedRounds: { r9: 1, rBorrada: 1 }, customBetAnswers: { bt: { correct: true } } }],
+    paymentPenalty: { enabled: true, startsAtRound: 1, pointsPerRound: 1 },
+  };
+  extra.rounds = [r];
+  const out = playedEnv({ r9: { m1: "A", m2: "D", m3: "A" } }, { pointsPerCorrectPick: 3 }, extra)(r);
+  assert.match(out, /2\/4 aciertos · 6 puntos por partidos/);
+  assert.match(out, /Partidos · 2 aciertos<\/span><strong>6 pts<\/strong>/);
+  assert.match(out, /Preguntas de esta jornada<\/span><strong>\+5<\/strong>/);
+  assert.match(out, /Descuento por no pagar<\/span><strong>−1<\/strong>/);
+  assert.match(out, /Total de esta jornada<\/span><strong>10 pts<\/strong>/);
+  assert.doesNotMatch(out, /hasta ahora|\+10|torneo/);
 });

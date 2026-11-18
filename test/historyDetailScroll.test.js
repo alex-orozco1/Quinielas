@@ -60,7 +60,13 @@ test("renderHistDetail does not rely on setTimeout or an arbitrary delay to scro
 });
 
 test("the scroll call happens after detail.innerHTML is assigned, so it measures the just-rendered content", () => {
-  const b = body();
+  // El camino con datos (después del aviso de carga fallida, que tiene su
+  // propio scroll al aviso, también posterior a pintarlo).
+  const all = body();
+  const failEnd = all.indexOf("if(isLg(round)){");
+  const fail = all.slice(0, failEnd);
+  assert.ok(fail.lastIndexOf("detail.innerHTML = `") < fail.indexOf("window.scrollTo("), "el aviso también se mide ya pintado");
+  const b = all.slice(failEnd);
   const innerHtmlIdx = b.lastIndexOf("detail.innerHTML = `");
   const scrollIdx = b.indexOf("window.scrollTo(");
   assert.ok(innerHtmlIdx !== -1 && scrollIdx !== -1);
