@@ -11646,6 +11646,10 @@
     "resultados.calificar": "Aquí ves lo que respondió cada quien. Marca «¿Atinó?» a quien acertó: esos puntos cuentan desde ese momento. La Tabla los muestra en cuanto hay resultados publicados de alguna jornada.",
   });
   const helpForced = new Set();
+  // Ayudas con una sola acción: «Entendido» la cierra (y se recuerda); un
+  // «Ocultar» al lado decía lo mismo. Sólo las listadas aquí; las demás
+  // conservan sus dos acciones.
+  const HELP_SINGLE_ACTION = new Set(["reglas.puntos"]);
   // MS2: whether this quiniela keeps a record of payments at all (a fee, a
   // penalty, or someone already marked as paid). Without it, the Tabla does
   // not show a fee of $0 and a «Pagó» column of ❌ from day one.
@@ -11668,7 +11672,7 @@
         <p>${esc(HELP_TEXTS[featureId])}</p>
         <div class="qz-help-actions">
           <button class="btn btn-ghost btn-sm" data-help-ok="${esc(featureId)}">Entendido</button>
-          <button class="qz-linkbtn" data-help-hide="${esc(featureId)}">Ocultar</button>
+          ${HELP_SINGLE_ACTION.has(featureId) ? `` : `<button class="qz-linkbtn" data-help-hide="${esc(featureId)}">Ocultar</button>`}
         </div>
       </div>`;
   }

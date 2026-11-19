@@ -38,3 +38,39 @@ test("menú principal: el reparto sólo toca .qz-tabs--main; filtros de Jornada 
   assert.ok(html.includes('<div class="qz-tabs" id="qz-jornada-filters"'));
   assert.ok(html.includes('<div class="qz-tabs" id="qz-admin-subtabs"'));
 });
+
+test("ayuda de «Puntos por acierto»: sólo «Entendido» (sin «Ocultar»); las demás ayudas conservan las dos", () => {
+  const store = new Map();
+  const localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) };
+  const src = [
+    html.match(/  const HELP_TEXTS = Object\.freeze\(\{[^]*?\n  \}\);/)[0],
+    "  const helpForced = new Set();",
+    html.match(/  const HELP_SINGLE_ACTION = new Set\(\[[^\]]*\]\);/)[0],
+    fn("function helpKey(featureId)"), fn("function helpState(featureId)"), fn("function setHelpState(featureId, state)"),
+    fn("function helpBlockHtml(featureId)"), fn("function helpLinkHtml(featureId)"), fn("function wireHelp(container, repaint)"),
+  ].join("\n");
+  const api = new Function("window", "SLUG", "currentUser", "esc", "toast",
+    `${src}\nreturn { helpBlockHtml, helpLinkHtml, wireHelp, helpState };`)(
+    { localStorage }, "q1", { id: "ana" }, (s) => String(s), () => {});
+  const puntos = api.helpBlockHtml("reglas.puntos");
+  assert.match(puntos, /data-help-ok="reglas\.puntos">Entendido</);
+  assert.doesNotMatch(puntos, /Ocultar/);
+  assert.match(api.helpBlockHtml("reglas.pagos"), /data-help-hide="reglas\.pagos">Ocultar</, "no se extiende a otras ayudas");
+
+  // Entendido → se cierra y se recuerda → «Cómo funciona» la reabre.
+  const handlers = {};
+  const container = { querySelectorAll: (sel) => {
+    const attr = sel.slice(1, -1);
+    return (handlers[attr] || []).map((id) => ({ dataset: { [attr === "data-help-ok" ? "helpOk" : attr === "data-help-open" ? "helpOpen" : "helpHide"]: id }, addEventListener: (_, f) => { handlers["click:" + attr + ":" + id] = f; } }));
+  } };
+  handlers["data-help-ok"] = ["reglas.puntos"]; handlers["data-help-open"] = ["reglas.puntos"]; handlers["data-help-hide"] = [];
+  let repaints = 0;
+  api.wireHelp(container, () => { repaints++; });
+  handlers["click:data-help-ok:reglas.puntos"]();
+  assert.equal(api.helpState("reglas.puntos"), "learned", "se recuerda");
+  assert.equal(api.helpBlockHtml("reglas.puntos"), "", "cerrada");
+  assert.match(api.helpLinkHtml("reglas.puntos"), /ⓘ Cómo funciona/);
+  handlers["click:data-help-open:reglas.puntos"]();
+  assert.match(api.helpBlockHtml("reglas.puntos"), /Entendido/, "«Cómo funciona» la vuelve a abrir");
+  assert.equal(repaints, 2);
+});
