@@ -10206,8 +10206,17 @@
         const fresh = await getMeta({ owner: adminOrOwnerCred() });
         if(fresh) adoptFreshMeta(meta, fresh);
       }catch(e){ console.error("liguilla cancel refresh failed", e); }
-      renderAdminReglas._state.lg = null;
-      await repaint();
+      // Sólo se vuelve a pintar ESTA tarjeta: lo que el admin tenga escrito
+      // sin guardar en las demás tarjetas de Tus reglas se queda como está.
+      Object.assign(st, lgFormFromSettings());
+      const sec = cancel.closest("section");
+      if(sec && sec.isConnected){
+        sec.outerHTML = reglasLiguillaCardHtml(st, true, false);
+        wireReglasLiguilla(body, st, repaint, saveProtected);
+      }else{
+        renderAdminReglas._state.lg = null;
+        await repaint();
+      }
       const saved = lgConfigRules();
       toast(meta.liguillaLock ? "Se descartaron los cambios. Las reglas de liguilla ya están fijas."
         : saved ? "Se descartaron los cambios. Siguen las reglas guardadas."

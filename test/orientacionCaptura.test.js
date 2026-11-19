@@ -71,6 +71,12 @@ test("un torneo nuevo empieza en cero, también si las jornadas del anterior sig
   assert.equal(ts.resultsRoundsInScope(entry, S1, now), 5, "el anterior conserva el suyo");
 });
 
+test("resultados publicados guardados como \"true\" o 1 también cuentan (como los trata la pantalla)", () => {
+  const entry = entryWith({ [S1]: ["r1", "r2"] });
+  const rs = [{ id: "r1", published: true, resultsPublished: "true" }, { id: "r2", published: true, resultsPublished: 1 }];
+  assert.equal(ts.resultsRoundsInScope(entry, S1, rs), 2);
+});
+
 test("jornadas sin resultados publicados (borradores, cerradas sin capturar) no cuentan", () => {
   const entry = entryWith({ [S1]: ["r1", "r2"] });
   const rs = [{ id: "r1", published: true, resultsPublished: false }, { id: "r2", published: false }, { id: "r3", published: false, resultsPublished: true }];

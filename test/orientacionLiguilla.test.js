@@ -98,7 +98,9 @@ test("«Cancelar» de liguilla: vuelve a lo guardado vigente, sin guardar, publi
   const wire = fn("function wireReglasLiguilla(body, st, repaint, saveProtected)");
   const cancel = wire.slice(wire.indexOf('const cancel = document.getElementById("qz-r-lg-cancel");'), wire.indexOf('const save = document.getElementById("qz-r-lg-save");'));
   assert.ok(cancel.includes("const fresh = await getMeta({ owner: adminOrOwnerCred() });"), "lee lo vigente en el servidor");
-  assert.ok(cancel.includes("renderAdminReglas._state.lg = null;"), "descarta el formulario");
-  assert.doesNotMatch(cancel, /saveProtected|setMeta|liguillaLock\s*=|publish|_lgReturn\s*=/, "no escribe nada ni publica");
+  assert.ok(cancel.includes("Object.assign(st, lgFormFromSettings());"), "descarta el formulario de liguilla");
+  assert.ok(cancel.includes("sec.outerHTML = reglasLiguillaCardHtml(st, true, false);"), "sólo repinta su tarjeta (lo escrito en las demás se queda)");
+  assert.doesNotMatch(cancel.slice(0, cancel.indexOf("}else{")), /await repaint\(\)/, "no repinta toda la pantalla");
+  assert.doesNotMatch(cancel, /saveProtected\(|setMeta|liguillaLock\s*=|publish|_lgReturn\s*=/, "no escribe nada ni publica (sólo vuelve a conectar la tarjeta)");
   assert.match(cancel, /La liguilla sigue sin configurar\./);
 });

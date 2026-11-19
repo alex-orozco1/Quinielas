@@ -380,7 +380,9 @@ function resultsRoundIdsInScope(entry, scopeId, rounds) {
   const seen = new Set(ids);
   const ofScope = new Set(readConsumedByScope(entry)[scopeId] || []);
   (Array.isArray(rounds) ? rounds : []).forEach((r) => {
-    if (!r || r.id == null || r.resultsPublished !== true) return;
+    // Truthy, like the server and the screen treat it (a stored "true" or 1
+    // also means published).
+    if (!r || r.id == null || !r.resultsPublished) return;
     const key = String(r.id);
     if (!ofScope.has(key) || seen.has(key)) return;
     seen.add(key);
