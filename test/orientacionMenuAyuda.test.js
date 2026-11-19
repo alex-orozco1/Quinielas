@@ -33,6 +33,7 @@ test("menú principal: el reparto sólo toca .qz-tabs--main; filtros de Jornada 
   assert.ok(rules.some((r) => /\.qz-tabs--main \.qz-tab\{[^]*flex:1 1 0/.test(r + "}")), "las pestañas se reparten el ancho");
   assert.ok(rules.some((r) => /\.qz-tabs--main \.qz-tab\.active\{/.test(r + "}")), "la activa tiene su fondo");
   assert.ok(rules.some((r) => /\.qz-tabs--main \.qz-tab:focus-visible\{/.test(r + "}")), "foco visible con teclado");
+  assert.ok(rules.some((r) => /\.qz-tabs--main \.qz-dot\{ flex:none; $/.test(r + "}") || /\.qz-tabs--main \.qz-dot\{\s*flex:none;/.test(r + "}")), "el punto de «Te faltan votos» no se encoge");
   // Ninguna regla nueva sin el modificador alcanza a las otras barras.
   assert.equal((html.match(/class="qz-tabs qz-tabs--main"/g) || []).length, 1);
   assert.ok(html.includes('<div class="qz-tabs" id="qz-jornada-filters"'));

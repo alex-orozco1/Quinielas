@@ -183,6 +183,9 @@
     padding:8px 6px; border-radius:8px 8px 0 0; text-align:center;
   }
   #quiniela-root .qz-tabs--main .qz-tab + .qz-tab{ margin-left:0; }
+  /* El punto de «Te faltan votos» nunca se encoge al repartir el ancho. */
+  #quiniela-root .qz-tabs--main .qz-dot{ flex:none; }
+  @media (max-width:360px){ #quiniela-root .qz-tabs--main .qz-tab{ padding-left:2px; padding-right:2px; } }
   #quiniela-root .qz-tabs--main .qz-tab:hover{ color:var(--chalk); background:rgba(247,245,236,0.06); }
   #quiniela-root .qz-tabs--main .qz-tab.active{ background:rgba(247,245,236,0.12); }
   #quiniela-root .qz-tabs--main .qz-tab:focus-visible{ outline:2px solid var(--gold); outline-offset:-2px; }
