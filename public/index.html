@@ -8096,7 +8096,7 @@
       };
     }
     const closedPending = published.filter(r => isRoundLocked(r) && !r.resultsPublished);
-    if(closedPending.length){
+    if(closedPending.length && await captureOrientationDue()){
       const r = closedPending[0];
       const bets = meta.customBets || [];
       let text = "Captura los resultados. Al publicarlos se califican los pronósticos y se actualiza la tabla.";
@@ -8131,6 +8131,20 @@
       };
     }
     return null;
+  }
+  // El aviso grande «Captura los resultados» orienta durante las primeras
+  // jornadas de CADA torneo: se deja de mostrar cuando este torneo ya tiene
+  // CAPTURE_ORIENTATION_ROUNDS jornadas distintas con resultados publicados.
+  // El conteo lo lleva el servidor por torneo (tournamentScope.js), así que
+  // recargar, cambiar de dispositivo o borrar una jornada no lo reinicia, y un
+  // torneo nuevo empieza en cero. Sin el dato (el plan no se pudo leer), se
+  // sigue mostrando: ante la duda, se orienta.
+  const CAPTURE_ORIENTATION_ROUNDS = 4;
+  async function captureOrientationDue(){
+    let plan = null;
+    try{ plan = await loadPlan({ force: true }); }catch(e){ console.error("capture orientation plan read failed", e); }
+    const n = plan && plan.tournament ? plan.tournament.resultsRounds : null;
+    return !(typeof n === "number" && Number.isFinite(n)) || n < CAPTURE_ORIENTATION_ROUNDS;
   }
   function nextStepCardHtml(info){
     if(!info) return "";

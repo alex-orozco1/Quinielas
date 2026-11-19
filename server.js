@@ -1201,7 +1201,7 @@ function participantRevMap(doc) {
 // official. This is hygiene, not enforcement — enforcement is that these
 // fields are never read from here in the first place.
 const META_RESERVED_COMMERCIAL_FIELDS = Object.freeze([
-  "tournamentScope", "scopeHistory", "consumedRoundIdsByScope",
+  "tournamentScope", "scopeHistory", "consumedRoundIdsByScope", "resultsRoundIdsByScope",
   "entitlement", "entitlementHistory",
   "lifecycleConsumedRoundIds", "lifecycleRoundsConsumed",
   "lastClose",
@@ -2402,6 +2402,13 @@ app.post("/api/kv/:key", async (req, res) => {
           // cache) in the SAME transaction as the meta write itself, so
           // they can never drift apart under concurrency.
           entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, currentScopeId, newlyConsumedIds);
+          // Orientation counter: the rounds of this cycle whose results were
+          // published (stored row first, so a round deleted in this write
+          // still counts). Recorded AFTER consumption, so a round published
+          // in this same write belongs to the cycle.
+          if (currentScopeId) {
+            entry.resultsRoundIdsByScope = tournamentScope.recordResultsRounds(entry, currentScopeId, [oldValue.rounds, mergedValue.rounds]);
+          }
           // Kept in step for anything still reading the flat pre-MON-002C
           // shape (and for a human reading the row): the durable list of every
           // round ever published, across every cycle.
@@ -3343,6 +3350,9 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
         // tells the screen to say "tu Plus anterior no se transfiere" rather
         // than explaining cycles to somebody on their first one.
         previousCycles: Array.isArray(entry.scopeHistory) ? entry.scopeHistory.length : 0,
+        // Orientation: how many rounds of THIS tournament have had their
+        // results published (a count, no ids). See tournamentScope.js.
+        resultsRounds: tournamentScope.resultsRoundsInScope(entry, currentScope.id, meta.rounds),
       } : null,
     });
   } catch (err) {

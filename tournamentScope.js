@@ -345,6 +345,64 @@ function recordConsumption(entry, scopeId, ids) {
   return { ...byScope, [scopeId]: merged };
 }
 
+// ---- orientation: rounds with results published, per cycle --------------
+//
+// The admin's big «Captura los resultados» notice is orientation for the first
+// rounds of EACH tournament. What it counts is "rounds of this tournament whose
+// results were published", and the count must survive a reload, another
+// device, and deleting a round — so it cannot be read from meta.rounds (a
+// deleted round is gone from there). It is kept next to the consumption map,
+// server-owned and append-only, keyed by the same scope id: a new cycle starts
+// at zero, and nothing a browser writes can move it.
+//
+// Only rounds this cycle published count (consumedRoundIdsByScope[scope]): an
+// old tournament's round still on the board after «empezar un torneo nuevo sin
+// cerrar este» is not part of the new tournament. A round counts once, however
+// many times its results are corrected or re-published.
+//
+// Quinielas that predate this list: the first time it is read or written for
+// a cycle, it starts from the rounds that cycle published and that have their
+// results published TODAY. A round deleted before the list existed cannot be
+// counted — it is not invented.
+function readResultsByScope(entry) {
+  const raw = entry && entry.resultsRoundIdsByScope;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  Object.keys(raw).forEach((key) => {
+    if (Array.isArray(raw[key])) out[key] = raw[key].filter((id) => id != null).map(String);
+  });
+  return out;
+}
+
+function resultsRoundIdsInScope(entry, scopeId, rounds) {
+  const byScope = readResultsByScope(entry);
+  const ids = Array.isArray(byScope[scopeId]) ? byScope[scopeId].slice() : [];
+  const seen = new Set(ids);
+  const ofScope = new Set(readConsumedByScope(entry)[scopeId] || []);
+  (Array.isArray(rounds) ? rounds : []).forEach((r) => {
+    if (!r || r.id == null || r.resultsPublished !== true) return;
+    const key = String(r.id);
+    if (!ofScope.has(key) || seen.has(key)) return;
+    seen.add(key);
+    ids.push(key);
+  });
+  return ids;
+}
+
+// How many rounds of this cycle have had their results published.
+function resultsRoundsInScope(entry, scopeId, rounds) {
+  return resultsRoundIdsInScope(entry, scopeId, rounds).length;
+}
+
+// Returns the updated map; never mutates the input. `roundLists` are the
+// stored (before) and written (after) rounds: a round deleted in this very
+// write still counts if its results were published.
+function recordResultsRounds(entry, scopeId, roundLists) {
+  const rounds = [];
+  (Array.isArray(roundLists) ? roundLists : []).forEach((list) => { if (Array.isArray(list)) rounds.push(...list); });
+  return { ...readResultsByScope(entry), [scopeId]: resultsRoundIdsInScope(entry, scopeId, rounds) };
+}
+
 module.exports = {
   SCOPE_VERSION,
   LIFECYCLE,
@@ -365,4 +423,8 @@ module.exports = {
   consumedInScope,
   newlyConsumedIds,
   recordConsumption,
+  readResultsByScope,
+  resultsRoundIdsInScope,
+  resultsRoundsInScope,
+  recordResultsRounds,
 };
