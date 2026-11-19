@@ -117,6 +117,9 @@ test.describe("orientación: jornadas del torneo con resultados publicados", () 
     const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
     delete idx.quinielas.find((x) => x.slug === q.slug).resultsRoundIdsByScope;
     await dbQuery("UPDATE kv SET value = $1 WHERE key = 'platform_index'", [JSON.stringify(idx)]);
+    assert.equal(await counted(q), null, "sin registro: desconocido (el aviso se sigue mostrando)");
+    // Su siguiente guardado (cualquiera) arranca el registro con lo que hay hoy.
+    const v = await read(q); v.settings.groupName = "Otro nombre"; assert.equal((await write(q, v)).status, 200);
     assert.equal(await counted(q), 2, "las que hoy tienen resultados publicados");
   });
 

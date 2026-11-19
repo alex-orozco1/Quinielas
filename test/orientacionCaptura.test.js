@@ -77,10 +77,12 @@ test("jornadas sin resultados publicados (borradores, cerradas sin capturar) no 
   assert.equal(ts.resultsRoundsInScope(entry, S1, rs), 0, "r3 no es de este torneo (nunca se publicó en él)");
 });
 
-test("quiniela anterior a este registro: arranca de lo que hay hoy, sin inventar jornadas borradas", () => {
+test("quiniela anterior a este registro: sin dato hasta su siguiente guardado, que arranca de lo que hay hoy, sin inventar jornadas borradas", () => {
   const entry = entryWith({ [S1]: ["r1", "r2", "r3"] }); // sin resultsRoundIdsByScope
+  assert.equal(ts.recordedResultsRounds(entry, S1), null, "sin registro: desconocido (el aviso se sigue mostrando)");
   const rs = rounds([["r1", true], ["r3", true]]); // r2 se borró antes: no se puede saber
-  assert.equal(ts.resultsRoundsInScope(entry, S1, rs), 2);
+  const next = { ...entry, resultsRoundIdsByScope: ts.recordResultsRounds(entry, S1, [rs, rs]) };
+  assert.equal(ts.recordedResultsRounds(next, S1), 2);
 });
 
 test("el registro es del servidor: no se toma de la meta ni de una edición del índice", () => {
@@ -91,7 +93,7 @@ test("el registro es del servidor: no se toma de la meta ni de una edición del 
   const iConsume = server.indexOf("entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, currentScopeId, newlyConsumedIds);");
   const iResults = server.indexOf("entry.resultsRoundIdsByScope = tournamentScope.recordResultsRounds(entry, currentScopeId, [oldValue.rounds, mergedValue.rounds]);");
   assert.ok(iConsume > 0 && iResults > iConsume);
-  assert.ok(server.includes("resultsRounds: tournamentScope.resultsRoundsInScope(entry, currentScope.id, meta.rounds),"), "el plan da el conteo, sin ids");
+  assert.ok(server.includes("resultsRounds: tournamentScope.recordedResultsRounds(entry, currentScope.id),"), "el plan da el conteo registrado, sin ids ni meta.rounds");
 });
 
 test("navegador: el aviso de captura se muestra con 0–3 jornadas, no con 4 o más, y sin dato se orienta", async () => {

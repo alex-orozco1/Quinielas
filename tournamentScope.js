@@ -360,10 +360,10 @@ function recordConsumption(entry, scopeId, ids) {
 // cerrar este» is not part of the new tournament. A round counts once, however
 // many times its results are corrected or re-published.
 //
-// Quinielas that predate this list: the first time it is read or written for
-// a cycle, it starts from the rounds that cycle published and that have their
-// results published TODAY. A round deleted before the list existed cannot be
-// counted — it is not invented.
+// Quinielas that predate this list: the first write after it exists starts it
+// from the rounds that cycle published and that have their results published
+// TODAY (until then the count is unknown, and the notice keeps showing). A
+// round deleted before the list existed cannot be counted — it is not invented.
 function readResultsByScope(entry) {
   const raw = entry && entry.resultsRoundIdsByScope;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -392,6 +392,12 @@ function resultsRoundIdsInScope(entry, scopeId, rounds) {
 // How many rounds of this cycle have had their results published.
 function resultsRoundsInScope(entry, scopeId, rounds) {
   return resultsRoundIdsInScope(entry, scopeId, rounds).length;
+}
+
+// The recorded count for a cycle, or null when that cycle has no record yet.
+function recordedResultsRounds(entry, scopeId) {
+  const byScope = readResultsByScope(entry);
+  return Array.isArray(byScope[scopeId]) ? byScope[scopeId].length : null;
 }
 
 // Returns the updated map; never mutates the input. `roundLists` are the
@@ -426,5 +432,6 @@ module.exports = {
   readResultsByScope,
   resultsRoundIdsInScope,
   resultsRoundsInScope,
+  recordedResultsRounds,
   recordResultsRounds,
 };

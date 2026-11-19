@@ -3351,8 +3351,10 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
         // than explaining cycles to somebody on their first one.
         previousCycles: Array.isArray(entry.scopeHistory) ? entry.scopeHistory.length : 0,
         // Orientation: how many rounds of THIS tournament have had their
-        // results published (a count, no ids). See tournamentScope.js.
-        resultsRounds: tournamentScope.resultsRoundsInScope(entry, currentScope.id, meta.rounds),
+        // results published (a count, no ids), as RECORDED by the writes —
+        // never re-derived from the round array here. null until this cycle
+        // has a record (a quiniela from before it gets one on its next save).
+        resultsRounds: tournamentScope.recordedResultsRounds(entry, currentScope.id),
       } : null,
     });
   } catch (err) {
@@ -3400,6 +3402,9 @@ function advanceTournamentCycle(entry, { meta, displayName, now, commercialConfi
   // chargeable.
   entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, next.id, []);
   entry.lifecycleRoundsConsumed = 0;
+  // Orientation counter: the new tournament starts with none of its rounds'
+  // results published (the old cycle keeps its own record).
+  entry.resultsRoundIdsByScope = { ...tournamentScope.readResultsByScope(entry), [next.id]: [] };
 
   // ---- what carries into the new tournament, and what does not ----------
   //
