@@ -173,6 +173,19 @@
   }
   #quiniela-root .qz-help-btn{ width:30px; height:30px; flex-shrink:0; }
   #quiniela-root .qz-tab + .qz-tab{ margin-left:14px; }
+  /* Menú principal (sólo el del encabezado; los filtros de Jornada y las
+     subpestañas de Admin también usan .qz-tabs y no cambian): las pestañas que
+     la persona puede ver se reparten el ancho, cada una con su área pulsable
+     completa y la activa resaltada, sin añadir altura. */
+  #quiniela-root .qz-tabs--main{ gap:4px; }
+  #quiniela-root .qz-tabs--main .qz-tab{
+    flex:1 1 0; min-width:0; display:inline-flex; align-items:center; justify-content:center;
+    padding:8px 6px; border-radius:8px 8px 0 0; text-align:center;
+  }
+  #quiniela-root .qz-tabs--main .qz-tab + .qz-tab{ margin-left:0; }
+  #quiniela-root .qz-tabs--main .qz-tab:hover{ color:var(--chalk); background:rgba(247,245,236,0.06); }
+  #quiniela-root .qz-tabs--main .qz-tab.active{ background:rgba(247,245,236,0.12); }
+  #quiniela-root .qz-tabs--main .qz-tab:focus-visible{ outline:2px solid var(--gold); outline-offset:-2px; }
 
   /* UX-001: with the scrollbar hidden above, this is the only cue that a tab
      bar has more tabs off-screen — a soft fade at whichever edge still has
@@ -7748,8 +7761,8 @@
             </div>
           </div>
         </div>
-        <div class="qz-tabs">
-          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}">${t.label}${t.id==='jornada' && pending ? '<span class="qz-dot"></span>' : ''}</button>`).join("")}
+        <div class="qz-tabs qz-tabs--main">
+          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}"${t.id===activeTab?' aria-current="page"':''}>${t.label}${t.id==='jornada' && pending ? '<span class="qz-dot"></span>' : ''}</button>`).join("")}
         </div>
       </div>
       <div class="qz-main${activeTab === "admin" || activeTab === "tabla" || activeTab === "historial" ? " qz-main--wide" : ""}" id="qz-main"></div>
