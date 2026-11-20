@@ -7970,14 +7970,13 @@
     const heroCoversPending = !!(heroRound && pending && pending.round.id === heroRound.id);
     // MS2: the admin's «Siguiente paso», from the real state of the quiniela.
     const nextStep = currentUser.isAdmin ? await nextStepInfo() : null;
-    const resultsNotice = currentUser.isAdmin ? await resultsNoticeInfo() : null;
     if(!main.isConnected) return;
     const nextStepHtml = nextStepCardHtml(nextStep);
     const inviteBtnHtml = currentUser.isAdmin && meta.rounds.some(r => r.published !== false) ? `<button class="btn btn-ghost btn-sm" id="qz-open-invite">🔗 Invitar</button>` : null;
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}
       ${nextStepHtml}
-      ${resultsNoticeHtml(resultsNotice)}
+      <div id="qz-results-note-slot"></div>
       ${liguillaReminderHtml()}
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
@@ -7999,7 +7998,17 @@
     `;
     wireScreenHeader(main, "jornada");
     wireNextStep(main);
-    wireResultsNotice(main);
+    // El aviso de resultados puede depender del proveedor: Jornada se pinta ya
+    // y el aviso entra en su hueco cuando llega (nunca deja la pantalla en
+    // blanco esperando).
+    if(currentUser.isAdmin){
+      resultsNoticeInfo().then(info => {
+        const slot = main.isConnected ? main.querySelector("#qz-results-note-slot") : null;
+        if(!slot || !info) return;
+        slot.innerHTML = resultsNoticeHtml(info);
+        wireResultsNotice(slot);
+      }).catch(e => console.error("results notice failed", e));
+    }
     wireLiguillaReminder(main);
     const openInvite = document.getElementById("qz-open-invite");
     if(openInvite) openInvite.addEventListener("click", () => openInviteSheet({ first: false }));
@@ -8181,31 +8190,44 @@
   //     se dice, con captura manual; nada todavía → sin aviso (salvo la
   //     orientación de las primeras jornadas).
   // El botón abre SIEMPRE la jornada que el aviso nombra.
+  // Una respuesta se recuerda unos minutos (un fallo, sólo uno): volver a
+  // Jornada no vuelve a consultar al proveedor ni gasta el límite de
+  // búsquedas que comparte con «Buscar resultados del proveedor».
   const RESULTS_LOOKUP_TTL_MS = 3 * 60 * 1000;
+  const RESULTS_LOOKUP_FAIL_TTL_MS = 60 * 1000;
+  const RESULTS_LOOKUP_TIMEOUT_MS = 6000;
   let resultsLookupMemo = null;
+  function forgetResultsLookup(){ resultsLookupMemo = null; }
   async function lookupProviderResults(){
-    if(resultsLookupMemo && resultsLookupMemo.slug === SLUG && Date.now() - resultsLookupMemo.at < RESULTS_LOOKUP_TTL_MS) return resultsLookupMemo.data;
+    if(resultsLookupMemo && resultsLookupMemo.slug === SLUG && Date.now() - resultsLookupMemo.at < resultsLookupMemo.ttl) return resultsLookupMemo.data;
     let data = null;
+    const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), RESULTS_LOOKUP_TIMEOUT_MS) : null;
     try{
-      const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sports-results`, { headers: setAuthHeaders({}, adminOrOwnerCred()), credentials: "same-origin" });
+      const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sports-results`, { headers: setAuthHeaders({}, adminOrOwnerCred()), credentials: "same-origin", ...(ctrl ? { signal: ctrl.signal } : {}) });
       data = await res.json().catch(() => null);
-      if(!res.ok || !data) data = { ok: false, reliabilityState: data && data.reliabilityState || null };
+      if(!res.ok || !data || typeof data !== "object") data = { ok: false, reliabilityState: data && data.reliabilityState || null };
     }catch(e){
       console.error("results notice lookup failed", e);
       data = { ok: false, reliabilityState: null };
+    }finally{
+      if(timer) clearTimeout(timer);
     }
-    // Sólo se recuerda una respuesta buena: un fallo se vuelve a intentar.
-    if(data.ok && !data.reliabilityState) resultsLookupMemo = { slug: SLUG, at: Date.now(), data };
+    const good = (data.ok && !data.reliabilityState) || data.reliabilityState === "competition_not_supported";
+    resultsLookupMemo = { slug: SLUG, at: Date.now(), ttl: good ? RESULTS_LOOKUP_TTL_MS : RESULTS_LOOKUP_FAIL_TTL_MS, data };
     return data;
   }
   // Lo que el proveedor dijo de UNA jornada.
   function classifyRoundLookup(round, data){
+    // «Esta competencia/temporada no está en el proveedor» no es una falla: el
+    // servidor la manda con ok:false y aquí es captura manual.
+    if(data && data.reliabilityState === "competition_not_supported") return { kind: "manual" };
     if(!data || !data.ok) return { kind: "error", reliabilityState: data && data.reliabilityState || null };
-    if(data.reliabilityState === "competition_not_supported") return { kind: "manual" };
     if(data.reliabilityState) return { kind: "error", reliabilityState: data.reliabilityState };
     const matches = round.matches || [];
-    const sug = new Set((((data.results || {})[round.id]) || []).map(s => s.matchId));
-    const uns = new Set((((data.unscorable || {})[round.id]) || []).map(u => u.matchId));
+    const list = (v) => Array.isArray(v) ? v.filter(x => x && typeof x === "object") : [];
+    const sug = new Set(list((data.results || {})[round.id]).map(s => s.matchId));
+    const uns = new Set(list((data.unscorable || {})[round.id]).map(u => u.matchId));
     const found = matches.filter(m => sug.has(m.id)).length;
     const doubtful = matches.filter(m => !sug.has(m.id) && uns.has(m.id)).length;
     if(matches.length && found === matches.length) return { kind: "available" };
@@ -8268,9 +8290,14 @@
       // Siempre la jornada que nombra el aviso; al revisar, con lo que el
       // proveedor ya respondió, para no volver a buscar.
       renderAdminResultados._target = b.dataset.round;
-      if(b.dataset.resultsGo === "review" && resultsLookupMemo && resultsLookupMemo.slug === SLUG){
-        renderAdminResultados._bulkCache = resultsLookupMemo.data.results || {};
-        renderAdminResultados._bulkUnscorable = resultsLookupMemo.data.unscorable || {};
+      const memo = resultsLookupMemo && resultsLookupMemo.slug === SLUG ? resultsLookupMemo.data : null;
+      if(b.dataset.resultsGo === "review" && memo && memo.ok){
+        renderAdminResultados._bulkCache = memo.results && typeof memo.results === "object" ? memo.results : {};
+        renderAdminResultados._bulkUnscorable = memo.unscorable && typeof memo.unscorable === "object" ? memo.unscorable : {};
+      }else{
+        // Captura manual: sin sugerencias de una consulta anterior.
+        renderAdminResultados._bulkCache = null;
+        renderAdminResultados._bulkUnscorable = null;
       }
       activeTab = "admin";
       adminSubTab = "resultados";
@@ -10651,12 +10678,7 @@
       dRes[row.dataset.lgrPick] = btn.dataset.val; repaint();
     })));
     const autofill = document.getElementById("qz-autofill");
-    if(autofill) autofill.addEventListener("click", async () => {
-      const statusEl = document.getElementById("qz-autofill-status");
-      statusEl.textContent = "Buscando resultados…";
-      try{
-        const data = await fetchSportsResults(round.id);
-        if(!data.ok || data.reliabilityState){ statusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState); return; }
+    const applyLgSuggestions = (data, statusEl) => {
         let found = 0;
         const byMatch = {}; (data.suggestions || []).forEach(s => { byMatch[s.matchId] = s; });
         const un = {}; (data.unscorable || []).forEach(u => { un[u.matchId] = u; });
@@ -10679,9 +10701,21 @@
               : unscorableCopy(un[m.id].reason);
           } else tag.textContent = "Sin resultado del proveedor todavía. Puedes capturarlo a mano.";
         });
-        statusEl.textContent = found ? found + " de " + round.matches.length + " partidos con sugerencia. Revisa y confirma." : "Sin sugerencias por ahora. Captura los resultados a mano.";
+        if(statusEl) statusEl.textContent = found ? found + " de " + round.matches.length + " partidos con sugerencia. Revisa y confirma." : "Sin sugerencias por ahora. Captura los resultados a mano.";
+    };
+    if(autofill) autofill.addEventListener("click", async () => {
+      const statusEl = document.getElementById("qz-autofill-status");
+      statusEl.textContent = "Buscando resultados…";
+      try{
+        const data = await fetchSportsResults(round.id);
+        if(!data.ok || data.reliabilityState){ statusEl.textContent = "⚠️ " + sportsDataFailureMessage(data.reliabilityState); return; }
+        applyLgSuggestions(data, statusEl);
       }catch(e){ statusEl.textContent = "⚠️ " + sportsDataFailureMessage(null); }
     });
+    // Lo que el proveedor ya respondió para ESTA jornada (búsqueda de todas, o
+    // «Revisar resultados» desde Jornada) se muestra sin volver a buscar.
+    const bulkLg = editing && renderAdminResultados._bulkCache && renderAdminResultados._bulkCache[round.id];
+    if(Array.isArray(bulkLg)) applyLgSuggestions({ suggestions: bulkLg, unscorable: (renderAdminResultados._bulkUnscorable || {})[round.id] || [] }, document.getElementById("qz-autofill-status"));
     const saveDraft = document.getElementById("qz-save-draft");
     if(saveDraft) saveDraft.addEventListener("click", async () => {
       saveDraft.disabled = true;
@@ -10713,7 +10747,7 @@
       logAudit(before.resultsPublished ? "Corrigió resultados" : "Publicó resultados", roundTitle(round) + " (J" + round.number + ")");
       const result = await setMetaWithError(meta);
       if(result.ok){
-        invalidatePlan(); // el conteo de jornadas con resultados del torneo cambió
+        invalidatePlan(); forgetResultsLookup(); // el conteo de jornadas con resultados del torneo cambió, y lo que dijo el proveedor ya no aplica
         renderLiguillaResultados._st = null;
         allPicksCache = {};
         toast("✅ Listo, los resultados quedaron publicados y los puntos se actualizaron.");
@@ -14047,7 +14081,7 @@
         );
         const result = await setMetaWithError(meta);
         if(result.ok){
-          invalidatePlan(); // el conteo de jornadas con resultados del torneo cambió
+          invalidatePlan(); forgetResultsLookup(); // el conteo de jornadas con resultados del torneo cambió, y lo que dijo el proveedor ya no aplica
           round._hadSavedDraftChecked = false;
           toast(correcting ? "✅ Listo, la corrección quedó publicada y los puntos se actualizaron." : "✅ Listo, los resultados quedaron publicados y los puntos se actualizaron.");
           allPicksCache = {};

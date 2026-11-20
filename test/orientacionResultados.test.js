@@ -103,8 +103,8 @@ test("Plus con competencia: sin nada del proveedor → sin aviso (nunca «Espera
   assert.doesNotMatch(block, /["`]Esperando resultados/, "el aviso no finge una consulta en segundo plano");
 });
 
-test("Plus con competencia: si el proveedor falla se dice, con «Capturar manualmente»; un fallo no se recuerda", async () => {
-  for (const lookup of ["throw", { ok: false, reliabilityState: "provider_timeout" }, { __status: 500 }]) {
+test("Plus con competencia: si el proveedor falla se dice, con «Capturar manualmente»; el fallo se recuerda sólo un minuto", async () => {
+  for (const lookup of ["throw", { ok: false, reliabilityState: "provider_timeout" }, { __status: 500 }, null, "x"]) {
     const h = harness({ lookup });
     const info = await h.resultsNoticeInfo();
     assert.equal(info.kind, "error", JSON.stringify(lookup));
@@ -112,10 +112,26 @@ test("Plus con competencia: si el proveedor falla se dice, con «Capturar manual
     assert.match(info.text, /^Jornada 15: /);
     assert.deepEqual(info.actions.map((a) => a.label), ["Capturar manualmente"]);
     await h.resultsNoticeInfo();
-    assert.equal(h.lookups(), 2, "se vuelve a intentar");
+    assert.equal(h.lookups(), 1, "volver a Jornada enseguida no vuelve a consultar");
   }
-  const notSupported = await harness({ lookup: { ok: true, reliabilityState: "competition_not_supported", results: {} } }).resultsNoticeInfo();
-  assert.equal(notSupported.kind, "manual", "competencia no soportada: captura manual, no un error");
+  assert.match(block, /const RESULTS_LOOKUP_FAIL_TTL_MS = 60 \* 1000;/);
+  assert.match(block, /const RESULTS_LOOKUP_TIMEOUT_MS = 6000;/, "la consulta tiene su propio tiempo límite");
+});
+
+test("competencia/temporada que el proveedor no tiene: captura manual (como la manda el servidor real: ok:false), y se recuerda", async () => {
+  const h = harness({ lookup: { ok: false, reliabilityState: "competition_not_supported", results: {} } });
+  const info = await h.resultsNoticeInfo();
+  assert.equal(info.kind, "manual", "no es un fallo del proveedor");
+  assert.equal(info.title, "Jornada 15 ya cerró");
+  await h.resultsNoticeInfo();
+  assert.equal(h.lookups(), 1);
+});
+
+test("una respuesta con forma inesperada no rompe Jornada", async () => {
+  for (const results of [{ r15: "x" }, { r15: null }, { r15: [null, 3, { matchId: "m15a" }] }, "x", null]) {
+    const info = await harness({ lookup: { ok: true, reliabilityState: null, results } }).resultsNoticeInfo();
+    assert.ok(info === null || ["review", "available"].includes(info.kind), JSON.stringify(results));
+  }
 });
 
 test("Plus: una respuesta buena se reutiliza unos minutos (no una consulta por visita)", async () => {
@@ -143,5 +159,20 @@ test("el aviso es discreto (no es «Siguiente paso»), escapa su texto y el bot�
   assert.match(out, /class="qz-linkbtn" data-results-go="manual" data-round="r&quot;15">Capturar manualmente<\/button>/, "la captura manual es secundaria");
   const wire = fn("function wireResultsNotice(container)");
   assert.ok(wire.includes("renderAdminResultados._target = b.dataset.round;"), "abre la jornada que nombra el aviso");
-  assert.ok(wire.includes("renderAdminResultados._bulkCache = resultsLookupMemo.data.results || {};"), "con las sugerencias ya recibidas");
+  assert.ok(wire.includes('if(b.dataset.resultsGo === "review" && memo && memo.ok){'), "al revisar, con las sugerencias ya recibidas");
+  assert.ok(wire.includes("renderAdminResultados._bulkCache = null;"), "la captura manual no arrastra sugerencias de antes");
+});
+
+test("Jornada no espera al proveedor: se pinta y el aviso entra en su hueco; publicar olvida lo consultado", () => {
+  const jornada = html.slice(html.indexOf('${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}'), html.indexOf('<div id="qz-pending-banner">'));
+  assert.ok(jornada.includes('<div id="qz-results-note-slot"></div>'));
+  assert.doesNotMatch(html, /await resultsNoticeInfo\(\)/, "nadie espera el aviso antes de pintar");
+  assert.ok(html.includes("resultsNoticeInfo().then(info => {"));
+  assert.equal((html.match(/invalidatePlan\(\); forgetResultsLookup\(\);/g) || []).length, 2, "fase regular y liguilla");
+});
+
+test("liguilla: «Revisar resultados» muestra en su formulario las sugerencias ya recibidas", () => {
+  const lg = fn("function renderLiguillaResultados(");
+  assert.ok(lg.includes("const bulkLg = editing && renderAdminResultados._bulkCache && renderAdminResultados._bulkCache[round.id];"));
+  assert.ok(lg.includes("if(Array.isArray(bulkLg)) applyLgSuggestions("));
 });

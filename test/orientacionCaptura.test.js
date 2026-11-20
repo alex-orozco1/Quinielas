@@ -114,5 +114,5 @@ test("navegador: la orientación manual se muestra con 0–3 jornadas, no con 4 
   assert.equal(due({ available: false }), true, "plan no disponible");
   assert.equal(due({ tournament: { cycle: 1 } }), true, "servidor sin el conteo");
   // Publicar resultados invalida el plan leído (el conteo cambió).
-  assert.equal((html.match(/invalidatePlan\(\); \/\/ el conteo de jornadas con resultados del torneo cambió/g) || []).length, 2, "fase regular y liguilla");
+  assert.equal((html.match(/invalidatePlan\(\); forgetResultsLookup\(\); \/\/ el conteo de jornadas con resultados del torneo cambió/g) || []).length, 2, "fase regular y liguilla");
 });
