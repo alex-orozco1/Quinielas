@@ -350,8 +350,11 @@ test("invitación · popup con WhatsApp, copiar, añadir, ver y cerrar; copiar o
 
 test("después · «Siguiente paso» por estado real, «Invitar» siempre a mano y una confirmación breve en publicaciones posteriores", () => {
   const next = fn("async function nextStepInfo()");
-  for (const s of ["Publica tu primera jornada", "Invita a tus amigos", "ya cerró`", "Faltan pronósticos", "Resultados publicados"]) assert.ok(next.includes(s), s);
-  assert.ok(next.indexOf("Invita a tus amigos") < next.indexOf("ya cerró`") && next.indexOf("ya cerró`") < next.indexOf("Faltan pronósticos"), "prioridad 1 → 5");
+  for (const s of ["Publica tu primera jornada", "Invita a tus amigos", "Faltan pronósticos", "Resultados publicados"]) assert.ok(next.includes(s), s);
+  assert.ok(next.indexOf("Invita a tus amigos") < next.indexOf("Faltan pronósticos"), "prioridad");
+  // Una jornada cerrada sin resultados tiene su propio aviso discreto (resultsNoticeInfo), fuera de «Siguiente paso».
+  assert.ok(!next.includes("ya cerró`"));
+  assert.ok(fn("async function resultsNoticeInfo()").includes("title: `${label} ya cerró`"));
   assert.ok(indexSrc.includes('toast(`✅ La Jornada ${round.number} está abierta. Cierra el ${fmtWhenTz(round.deadline)}.`, 5000);'));
   assert.ok(indexSrc.includes('if(openInvite) openInvite.addEventListener("click", () => openInviteSheet({ first: false }));'));
 });

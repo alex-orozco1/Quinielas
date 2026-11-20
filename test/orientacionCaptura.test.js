@@ -102,18 +102,17 @@ test("el registro es del servidor: no se toma de la meta ni de una edición del 
   assert.ok(server.includes("resultsRounds: tournamentScope.recordedResultsRounds(entry, currentScope.id),"), "el plan da el conteo registrado, sin ids ni meta.rounds");
 });
 
-test("navegador: el aviso de captura se muestra con 0–3 jornadas, no con 4 o más, y sin dato se orienta", async () => {
+test("navegador: la orientación manual se muestra con 0–3 jornadas, no con 4 o más, y sin dato se orienta (sin volver a pedir el plan)", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
   const start = html.indexOf("  const CAPTURE_ORIENTATION_ROUNDS = 4;");
-  const end = html.indexOf("  function nextStepCardHtml(info){");
+  const end = html.indexOf("  // ---- Aviso de resultados (Jornada, sólo el admin)");
   const src = html.slice(start, end);
-  const make = (plan, fail) => new Function("loadPlan", `${src}\nreturn captureOrientationDue;`)(async () => { if (fail) throw new Error("x"); return plan; });
-  for (const [n, due] of [[0, true], [3, true], [4, false], [5, false]]) {
-    assert.equal(await make({ tournament: { resultsRounds: n } })(), due, `${n} jornadas`);
-  }
-  assert.equal(await make(null)(), true, "sin plan");
-  assert.equal(await make({ available: false })(), true, "plan no disponible");
-  assert.equal(await make({ tournament: { cycle: 1 } })(), true, "servidor sin el conteo");
-  assert.equal(await make(null, true)(), true, "lectura fallida");
-  assert.ok(html.includes("if(closedPending.length && await captureOrientationDue()){"), "sólo el aviso de captura depende del conteo");
+  assert.doesNotMatch(src, /loadPlan\(/, "usa el plan ya leído; no fuerza una lectura por visita");
+  const due = new Function(`${src}\nreturn captureOrientationDue;`)();
+  for (const [n, want] of [[0, true], [3, true], [4, false], [5, false]]) assert.equal(due({ tournament: { resultsRounds: n } }), want, `${n} jornadas`);
+  assert.equal(due(null), true, "sin plan");
+  assert.equal(due({ available: false }), true, "plan no disponible");
+  assert.equal(due({ tournament: { cycle: 1 } }), true, "servidor sin el conteo");
+  // Publicar resultados invalida el plan leído (el conteo cambió).
+  assert.equal((html.match(/invalidatePlan\(\); \/\/ el conteo de jornadas con resultados del torneo cambió/g) || []).length, 2, "fase regular y liguilla");
 });

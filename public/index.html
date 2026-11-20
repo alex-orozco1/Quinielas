@@ -1419,8 +1419,13 @@
   #quiniela-root .qz-ht-sub{ display:block; font-size:11px; font-weight:500; color:var(--ink-soft); white-space:nowrap; }
   #quiniela-root .qz-next{ border-color:var(--gold); background:#FFF9EC; }
   #quiniela-root .qz-next .qz-wz-actions{ margin-top:6px; }
-  #quiniela-root .qz-lg-remind{ border-color:var(--gold); background:#FFF9EC; }
-  #quiniela-root .qz-lg-remind .qz-wz-actions{ margin-top:6px; }
+  /* Avisos discretos de Jornada (resultados, liguilla): una línea con texto y
+     una acción secundaria; no compiten con «Siguiente paso». */
+  #quiniela-root .qz-note{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:10px 12px; margin:0 0 12px; border:1px solid var(--line); border-left:3px solid var(--line); border-radius:10px; background:var(--paper); font-size:14px; line-height:1.4; }
+  #quiniela-root .qz-note-text{ margin:0; flex:1 1 240px; min-width:0; overflow-wrap:anywhere; }
+  #quiniela-root .qz-note-actions{ display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; }
+  #quiniela-root .qz-note--available, #quiniela-root .qz-note--review, #quiniela-root .qz-note--liguilla{ border-left-color:var(--gold); }
+  #quiniela-root .qz-note--error{ border-left-color:var(--red); }
   #quiniela-root .lg-explain{ margin:8px 0 12px; }
   #quiniela-root .lg-explain p{ margin:0; }
   #quiniela-root .qz-rules-grid{ display:grid; grid-template-columns:minmax(0, 1fr); gap:0 20px; }
@@ -7965,12 +7970,14 @@
     const heroCoversPending = !!(heroRound && pending && pending.round.id === heroRound.id);
     // MS2: the admin's «Siguiente paso», from the real state of the quiniela.
     const nextStep = currentUser.isAdmin ? await nextStepInfo() : null;
+    const resultsNotice = currentUser.isAdmin ? await resultsNoticeInfo() : null;
     if(!main.isConnected) return;
     const nextStepHtml = nextStepCardHtml(nextStep);
     const inviteBtnHtml = currentUser.isAdmin && meta.rounds.some(r => r.published !== false) ? `<button class="btn btn-ghost btn-sm" id="qz-open-invite">🔗 Invitar</button>` : null;
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}
       ${nextStepHtml}
+      ${resultsNoticeHtml(resultsNotice)}
       ${liguillaReminderHtml()}
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
@@ -7992,6 +7999,7 @@
     `;
     wireScreenHeader(main, "jornada");
     wireNextStep(main);
+    wireResultsNotice(main);
     wireLiguillaReminder(main);
     const openInvite = document.getElementById("qz-open-invite");
     if(openInvite) openInvite.addEventListener("click", () => openInviteSheet({ first: false }));
@@ -8117,19 +8125,8 @@
         actions: [{ id: "invite", label: "🔗 Invitar" }],
       };
     }
-    const closedPending = published.filter(r => isRoundLocked(r) && !r.resultsPublished);
-    if(closedPending.length && await captureOrientationDue()){
-      const r = closedPending[0];
-      const bets = meta.customBets || [];
-      let text = "Captura los resultados. Al publicarlos se califican los pronósticos y se actualiza la tabla.";
-      if(bets.some(b => b.scope === "jornada")) text += " Califica también las preguntas de la jornada.";
-      const ungraded = bets.some(b => b.scope === "temporada" && customBetsLocked(b) && meta.participants.some(p => {
-        const a = p.customBetAnswers && p.customBetAnswers[b.id];
-        return a && a.guess && a.correct !== true && a.correct !== false;
-      }));
-      if(ungraded) text += " Tienes preguntas del torneo por calificar en Admin → Tus reglas.";
-      return { title: `La Jornada ${r.number} ya cerró`, text, actions: [{ id: "results", label: "Capturar resultados" }] };
-    }
+    // Una jornada cerrada sin resultados ya no es un «Siguiente paso»: tiene su
+    // propio aviso, discreto (resultsNoticeInfo), que no compite con éste.
     if(open.length){
       const r = open[0];
       try{ await ensureAllPicksLoaded(); }catch(e){ console.error("next step picks load failed", e); }
@@ -8154,19 +8151,131 @@
     }
     return null;
   }
-  // El aviso grande «Captura los resultados» orienta durante las primeras
+  // La orientación manual «Captura los resultados» acompaña las primeras
   // jornadas de CADA torneo: se deja de mostrar cuando este torneo ya tiene
   // CAPTURE_ORIENTATION_ROUNDS jornadas distintas con resultados publicados.
   // El conteo lo lleva el servidor por torneo (tournamentScope.js), así que
   // recargar, cambiar de dispositivo o borrar una jornada no lo reinicia, y un
   // torneo nuevo empieza en cero. Sin el dato (el plan no se pudo leer), se
-  // sigue mostrando: ante la duda, se orienta.
+  // sigue mostrando: ante la duda, se orienta. Usa el plan ya leído (no lo
+  // vuelve a pedir en cada visita); publicar resultados lo invalida.
   const CAPTURE_ORIENTATION_ROUNDS = 4;
-  async function captureOrientationDue(){
-    let plan = null;
-    try{ plan = await loadPlan({ force: true }); }catch(e){ console.error("capture orientation plan read failed", e); }
+  function captureOrientationDue(plan){
     const n = plan && plan.tournament ? plan.tournament.resultsRounds : null;
     return !(typeof n === "number" && Number.isFinite(n)) || n < CAPTURE_ORIENTATION_ROUNDS;
+  }
+
+  // ---- Aviso de resultados (Jornada, sólo el admin) -------------------------
+  // Hoy QRACKS no consulta resultados por su cuenta: las sugerencias del
+  // proveedor se piden cuando alguien las busca (aquí, al abrir Jornada el
+  // admin de un Plus con competencia guardada; en Admin → Resultados, con su
+  // botón) y nada se publica sin el admin. Por eso el aviso nunca dice
+  // «Esperando resultados»: sólo aparece cuando hay algo que hacer.
+  //   · Gratis (o plan sin leer): captura manual, durante las primeras jornadas
+  //     del torneo (CAPTURE_ORIENTATION_ROUNDS).
+  //   · Plus sin competencia guardada: captura manual, siempre que haya una
+  //     jornada cerrada sin resultados (es la acción pendiente).
+  //   · Plus con competencia: según lo que devuelva el proveedor para ESA
+  //     jornada: todos los marcadores → «Resultados disponibles»; algunos o con
+  //     dudas → «Hay resultados por revisar» (cuántos partidos); fallo →
+  //     se dice, con captura manual; nada todavía → sin aviso (salvo la
+  //     orientación de las primeras jornadas).
+  // El botón abre SIEMPRE la jornada que el aviso nombra.
+  const RESULTS_LOOKUP_TTL_MS = 3 * 60 * 1000;
+  let resultsLookupMemo = null;
+  async function lookupProviderResults(){
+    if(resultsLookupMemo && resultsLookupMemo.slug === SLUG && Date.now() - resultsLookupMemo.at < RESULTS_LOOKUP_TTL_MS) return resultsLookupMemo.data;
+    let data = null;
+    try{
+      const res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/sports-results`, { headers: setAuthHeaders({}, adminOrOwnerCred()), credentials: "same-origin" });
+      data = await res.json().catch(() => null);
+      if(!res.ok || !data) data = { ok: false, reliabilityState: data && data.reliabilityState || null };
+    }catch(e){
+      console.error("results notice lookup failed", e);
+      data = { ok: false, reliabilityState: null };
+    }
+    // Sólo se recuerda una respuesta buena: un fallo se vuelve a intentar.
+    if(data.ok && !data.reliabilityState) resultsLookupMemo = { slug: SLUG, at: Date.now(), data };
+    return data;
+  }
+  // Lo que el proveedor dijo de UNA jornada.
+  function classifyRoundLookup(round, data){
+    if(!data || !data.ok) return { kind: "error", reliabilityState: data && data.reliabilityState || null };
+    if(data.reliabilityState === "competition_not_supported") return { kind: "manual" };
+    if(data.reliabilityState) return { kind: "error", reliabilityState: data.reliabilityState };
+    const matches = round.matches || [];
+    const sug = new Set((((data.results || {})[round.id]) || []).map(s => s.matchId));
+    const uns = new Set((((data.unscorable || {})[round.id]) || []).map(u => u.matchId));
+    const found = matches.filter(m => sug.has(m.id)).length;
+    const doubtful = matches.filter(m => !sug.has(m.id) && uns.has(m.id)).length;
+    if(matches.length && found === matches.length) return { kind: "available" };
+    if(found || doubtful) return { kind: "review", attention: matches.length - found };
+    return { kind: "none" };
+  }
+  function resultsGradingNote(){
+    const bets = meta.customBets || [];
+    let text = "";
+    if(bets.some(b => b.scope === "jornada")) text += " Califica también las preguntas de la jornada.";
+    const ungraded = bets.some(b => b.scope === "temporada" && customBetsLocked(b) && meta.participants.some(p => {
+      const a = p.customBetAnswers && p.customBetAnswers[b.id];
+      return a && a.guess && a.correct !== true && a.correct !== false;
+    }));
+    if(ungraded) text += " Tienes preguntas del torneo por calificar en Admin → Tus reglas.";
+    return text;
+  }
+  async function resultsNoticeInfo(){
+    if(!currentUser || !currentUser.isAdmin) return null;
+    const round = meta.rounds.filter(r => r.published !== false && isRoundLocked(r) && !r.resultsPublished).sort((a, b) => a.number - b.number)[0];
+    if(!round) return null;
+    const label = roundTitle(round);
+    const note = resultsGradingNote();
+    let plan = null;
+    try{ plan = await loadPlan(); }catch(e){ console.error("results notice plan read failed", e); }
+    const plus = !!(plan && plan.available !== false && plan.plan && plan.plan !== "FREE");
+    const manual = (text) => ({ kind: "manual", roundId: round.id, title: `${label} ya cerró`, text: text + note, actions: [{ id: "manual", label: "Capturar resultados", primary: true }] });
+    const manualText = "Captura los resultados en Admin → Resultados. Al publicarlos se califican los pronósticos y se actualiza la tabla.";
+    if(!plus) return captureOrientationDue(plan) ? manual(manualText) : null;
+    const league = meta.settings && meta.settings.sportsdbLeagueId;
+    if(league == null || String(league) === "") return manual(manualText);
+    const look = classifyRoundLookup(round, await lookupProviderResults());
+    const secondary = { id: "manual", label: "Capturar manualmente" };
+    if(look.kind === "available"){
+      return { kind: "available", roundId: round.id, title: "Resultados disponibles", text: `${label}: el proveedor ya tiene los marcadores de todos los partidos. Revísalos y publícalos.${note}`, actions: [{ id: "review", label: "Revisar resultados", primary: true }, secondary] };
+    }
+    if(look.kind === "review"){
+      const n = look.attention;
+      return { kind: "review", roundId: round.id, title: "Hay resultados por revisar", text: `${label}: ${n} ${n === 1 ? "partido requiere" : "partidos requieren"} tu atención (sin marcador del proveedor o con un resultado que hay que confirmar).${note}`, actions: [{ id: "review", label: "Revisar resultados", primary: true }, secondary] };
+    }
+    if(look.kind === "error"){
+      return { kind: "error", roundId: round.id, title: "No pudimos consultar los resultados", text: `${label}: ${sportsDataFailureMessage(look.reliabilityState)}`, actions: [secondary] };
+    }
+    if(look.kind === "manual") return manual(manualText);
+    // Nada del proveedor todavía: no hay acción pendiente que afirmar.
+    return captureOrientationDue(plan) ? manual("El proveedor todavía no tiene marcadores de esta jornada. Si los partidos ya terminaron, puedes capturarlos en Admin → Resultados.") : null;
+  }
+  function resultsNoticeHtml(info){
+    if(!info) return "";
+    return `
+      <section class="qz-note qz-note--${esc(info.kind)}" aria-labelledby="qz-results-note-t">
+        <p class="qz-note-text"><strong id="qz-results-note-t">${esc(info.title)}</strong> ${esc(info.text)}</p>
+        <div class="qz-note-actions">${info.actions.map(a => a.primary
+          ? `<button class="btn btn-ghost btn-sm" data-results-go="${esc(a.id)}" data-round="${esc(info.roundId)}">${esc(a.label)}</button>`
+          : `<button class="qz-linkbtn" data-results-go="${esc(a.id)}" data-round="${esc(info.roundId)}">${esc(a.label)}</button>`).join("")}</div>
+      </section>`;
+  }
+  function wireResultsNotice(container){
+    container.querySelectorAll("[data-results-go]").forEach(b => b.addEventListener("click", async () => {
+      // Siempre la jornada que nombra el aviso; al revisar, con lo que el
+      // proveedor ya respondió, para no volver a buscar.
+      renderAdminResultados._target = b.dataset.round;
+      if(b.dataset.resultsGo === "review" && resultsLookupMemo && resultsLookupMemo.slug === SLUG){
+        renderAdminResultados._bulkCache = resultsLookupMemo.data.results || {};
+        renderAdminResultados._bulkUnscorable = resultsLookupMemo.data.unscorable || {};
+      }
+      activeTab = "admin";
+      adminSubTab = "resultados";
+      await render();
+    }));
   }
   function nextStepCardHtml(info){
     if(!info) return "";
@@ -10261,10 +10370,9 @@
   function liguillaReminderHtml(){
     if(!liguillaReminderDue()) return "";
     return `
-      <section class="card qz-lg-remind" aria-labelledby="qz-lg-remind-t">
-        <div class="eyebrow">Liguilla</div>
-        <p class="qz-tight" id="qz-lg-remind-t">La liguilla se acerca. Configura cómo se ganarán los puntos antes de publicar su primera jornada.</p>
-        <div class="qz-wz-actions"><button class="btn btn-gold btn-sm" data-lg-remind>Configurar liguilla</button></div>
+      <section class="qz-note qz-note--liguilla qz-lg-remind" aria-labelledby="qz-lg-remind-t">
+        <p class="qz-note-text" id="qz-lg-remind-t">La liguilla se acerca. Configura cómo se ganarán los puntos antes de publicar su primera jornada.</p>
+        <div class="qz-note-actions"><button class="btn btn-ghost btn-sm" data-lg-remind>Configurar liguilla</button></div>
       </section>`;
   }
   function wireLiguillaReminder(container){
@@ -10478,7 +10586,7 @@
           ${isPublished && editing ? `<span class="badge unpaid" style="margin-left:6px;">✏️ Corrigiendo — lo publicado no cambia hasta que confirmes</span>` : ``}</p>
         <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
           <span>${esc(roundTitle(round))}${roundSubtitle(round) ? " · " + esc(roundSubtitle(round)) : ""}</span>
-          ${editing ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>` : ``}
+          ${editing ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados del proveedor</button>` : ``}
         </div>
         <p class="muted" style="margin-top:4px;">${rules.capture === "score" ? "Marcador final con prórroga, sin la tanda de penales." : "Resultado del marcador final con prórroga, sin la tanda de penales."}</p>
         <p class="muted" id="qz-autofill-status"></p>
@@ -10569,7 +10677,7 @@
             tag.textContent = un[m.id].reason === "extra_time_or_penalties"
               ? "Hubo prórroga o penales y no podemos confirmar el marcador sin la tanda. Captúralo tú."
               : unscorableCopy(un[m.id].reason);
-          } else tag.textContent = "Sin resultado automático todavía. Puedes capturarlo a mano.";
+          } else tag.textContent = "Sin resultado del proveedor todavía. Puedes capturarlo a mano.";
         });
         statusEl.textContent = found ? found + " de " + round.matches.length + " partidos con sugerencia. Revisa y confirma." : "Sin sugerencias por ahora. Captura los resultados a mano.";
       }catch(e){ statusEl.textContent = "⚠️ " + sportsDataFailureMessage(null); }
@@ -10605,6 +10713,7 @@
       logAudit(before.resultsPublished ? "Corrigió resultados" : "Publicó resultados", roundTitle(round) + " (J" + round.number + ")");
       const result = await setMetaWithError(meta);
       if(result.ok){
+        invalidatePlan(); // el conteo de jornadas con resultados del torneo cambió
         renderLiguillaResultados._st = null;
         allPicksCache = {};
         toast("✅ Listo, los resultados quedaron publicados y los puntos se actualizaron.");
@@ -13577,7 +13686,7 @@
         tag.textContent = unscorableCopy(unscorableByMatch[m.id].reason);
         tag.style.color = "var(--gold)";
       } else {
-        tag.textContent = "Sin resultado automático todavía";
+        tag.textContent = "Sin resultado del proveedor todavía";
         tag.style.color = "var(--ink-soft)";
       }
     });
@@ -13804,7 +13913,7 @@
         </p>
         <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
           <span>Jornada ${esc(round.number)} — resultado de cada partido</span>
-          ${editable ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados automáticos</button>` : ``}
+          ${editable ? `<button class="btn btn-ghost btn-sm" id="qz-autofill">🔎 Buscar resultados del proveedor</button>` : ``}
         </div>
         <p class="muted" id="qz-autofill-status" style="margin-top:-4px;"></p>
         ${round.matches.map(m => `
@@ -13938,6 +14047,7 @@
         );
         const result = await setMetaWithError(meta);
         if(result.ok){
+          invalidatePlan(); // el conteo de jornadas con resultados del torneo cambió
           round._hadSavedDraftChecked = false;
           toast(correcting ? "✅ Listo, la corrección quedó publicada y los puntos se actualizaron." : "✅ Listo, los resultados quedaron publicados y los puntos se actualizaron.");
           allPicksCache = {};
@@ -14393,7 +14503,7 @@
         <div class="eyebrow">Nombre del grupo</div>
         <div class="field"><input type="text" id="qz-group-name" value="${esc(meta.groupName)}"></div>
         <p class="muted qz-tight">La cuota, los puntos por acierto, las preguntas extra y la penalización están en <button class="qz-linkbtn" id="qz-go-reglas">Admin → Tus reglas</button>.</p>
-        <div class="eyebrow">Liga o competencia (para resultados automáticos)</div>
+        <div class="eyebrow">Liga o competencia (para buscar resultados del proveedor)</div>
         <div class="field">
           <select id="qz-sportsdb-league">
             ${/* MON-003 · cobertura: sin liga guardada se muestra "Sin definir", no
@@ -14405,9 +14515,9 @@
             ${SPORTSDB_LEAGUES.map(l => `<option value="${l.id}" ${meta.settings.sportsdbLeagueId === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
           </select>
         </div>
-        <div class="eyebrow">Temporada para resultados automáticos (TheSportsDB)</div>
+        <div class="eyebrow">Temporada para buscar resultados del proveedor (TheSportsDB)</div>
         <div class="field"><input type="text" id="qz-sportsdb-season" value="${esc(meta.settings.sportsdbSeason || '2025-2026')}" placeholder="2025-2026"></div>
-        <p class="muted" style="margin-top:-8px;">Formato AAAA-AAAA. Si "Buscar resultados automáticos" no encuentra nada en Admin → Resultados, prueba ajustando la liga o la temporada.</p>
+        <p class="muted" style="margin-top:-8px;">Formato AAAA-AAAA. Si «Buscar resultados del proveedor» no encuentra nada en Admin → Resultados, prueba ajustando la liga o la temporada.</p>
       </div>
       <div class="card">
         <div class="section-title"><span class="display" style="font-size:18px;">Acceso</span></div>
