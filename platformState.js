@@ -113,6 +113,11 @@ const SERVER_OWNED_INDEX_FIELDS = Object.freeze([
   // over, or reset a budget to zero — so none of them is ever taken from a
   // request, on any path.
   "tournamentScope", "scopeHistory", "consumedRoundIdsByScope",
+  // Orientation: the rounds of each cycle whose results were published (the
+  // admin's «Captura los resultados» notice). A browser that could write it
+  // could only change what orientation it sees, but it is derived from the
+  // same server-owned cycle, so it is kept with it.
+  "resultsRoundIdsByScope",
   // MON-002C QA-2. The record of which close intention was last performed.
   // A browser that could write this could either replay a close that never
   // happened, or erase the record and get a second cycle out of one intention

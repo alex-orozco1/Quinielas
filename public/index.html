@@ -173,6 +173,22 @@
   }
   #quiniela-root .qz-help-btn{ width:30px; height:30px; flex-shrink:0; }
   #quiniela-root .qz-tab + .qz-tab{ margin-left:14px; }
+  /* Menú principal (sólo el del encabezado; los filtros de Jornada y las
+     subpestañas de Admin también usan .qz-tabs y no cambian): las pestañas que
+     la persona puede ver se reparten el ancho, cada una con su área pulsable
+     completa y la activa resaltada, sin añadir altura. */
+  #quiniela-root .qz-tabs--main{ gap:4px; }
+  #quiniela-root .qz-tabs--main .qz-tab{
+    flex:1 1 0; min-width:0; display:inline-flex; align-items:center; justify-content:center;
+    padding:8px 6px; border-radius:8px 8px 0 0; text-align:center;
+  }
+  #quiniela-root .qz-tabs--main .qz-tab + .qz-tab{ margin-left:0; }
+  /* El punto de «Te faltan votos» nunca se encoge al repartir el ancho. */
+  #quiniela-root .qz-tabs--main .qz-dot{ flex:none; }
+  @media (max-width:360px){ #quiniela-root .qz-tabs--main .qz-tab{ padding-left:2px; padding-right:2px; } }
+  #quiniela-root .qz-tabs--main .qz-tab:hover{ color:var(--chalk); background:rgba(247,245,236,0.06); }
+  #quiniela-root .qz-tabs--main .qz-tab.active{ background:rgba(247,245,236,0.12); }
+  #quiniela-root .qz-tabs--main .qz-tab:focus-visible{ outline:2px solid var(--gold); outline-offset:-2px; }
 
   /* UX-001: with the scrollbar hidden above, this is the only cue that a tab
      bar has more tabs off-screen — a soft fade at whichever edge still has
@@ -1403,6 +1419,10 @@
   #quiniela-root .qz-ht-sub{ display:block; font-size:11px; font-weight:500; color:var(--ink-soft); white-space:nowrap; }
   #quiniela-root .qz-next{ border-color:var(--gold); background:#FFF9EC; }
   #quiniela-root .qz-next .qz-wz-actions{ margin-top:6px; }
+  #quiniela-root .qz-lg-remind{ border-color:var(--gold); background:#FFF9EC; }
+  #quiniela-root .qz-lg-remind .qz-wz-actions{ margin-top:6px; }
+  #quiniela-root .lg-explain{ margin:8px 0 12px; }
+  #quiniela-root .lg-explain p{ margin:0; }
   #quiniela-root .qz-rules-grid{ display:grid; grid-template-columns:minmax(0, 1fr); gap:0 20px; }
   @media (min-width:901px){
     #quiniela-root .qz-main.qz-main--wide{ max-width:1200px; padding-left:24px; padding-right:24px; }
@@ -7748,8 +7768,8 @@
             </div>
           </div>
         </div>
-        <div class="qz-tabs">
-          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}">${t.label}${t.id==='jornada' && pending ? '<span class="qz-dot"></span>' : ''}</button>`).join("")}
+        <div class="qz-tabs qz-tabs--main">
+          ${tabs.map(t => `<button class="qz-tab ${t.id===activeTab?'active':''}" data-tab="${t.id}"${t.id===activeTab?' aria-current="page"':''}>${t.label}${t.id==='jornada' && pending ? '<span class="qz-dot"></span>' : ''}</button>`).join("")}
         </div>
       </div>
       <div class="qz-main${activeTab === "admin" || activeTab === "tabla" || activeTab === "historial" ? " qz-main--wide" : ""}" id="qz-main"></div>
@@ -7951,6 +7971,7 @@
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}
       ${nextStepHtml}
+      ${liguillaReminderHtml()}
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
           <div class="eyebrow" style="color:var(--gold-dim);">⚠️ Te faltan votos</div>
@@ -7971,6 +7992,7 @@
     `;
     wireScreenHeader(main, "jornada");
     wireNextStep(main);
+    wireLiguillaReminder(main);
     const openInvite = document.getElementById("qz-open-invite");
     if(openInvite) openInvite.addEventListener("click", () => openInviteSheet({ first: false }));
     const createFirstRoundBtn = document.getElementById("qz-create-first-jornada");
@@ -8096,7 +8118,7 @@
       };
     }
     const closedPending = published.filter(r => isRoundLocked(r) && !r.resultsPublished);
-    if(closedPending.length){
+    if(closedPending.length && await captureOrientationDue()){
       const r = closedPending[0];
       const bets = meta.customBets || [];
       let text = "Captura los resultados. Al publicarlos se califican los pronósticos y se actualiza la tabla.";
@@ -8131,6 +8153,20 @@
       };
     }
     return null;
+  }
+  // El aviso grande «Captura los resultados» orienta durante las primeras
+  // jornadas de CADA torneo: se deja de mostrar cuando este torneo ya tiene
+  // CAPTURE_ORIENTATION_ROUNDS jornadas distintas con resultados publicados.
+  // El conteo lo lleva el servidor por torneo (tournamentScope.js), así que
+  // recargar, cambiar de dispositivo o borrar una jornada no lo reinicia, y un
+  // torneo nuevo empieza en cero. Sin el dato (el plan no se pudo leer), se
+  // sigue mostrando: ante la duda, se orienta.
+  const CAPTURE_ORIENTATION_ROUNDS = 4;
+  async function captureOrientationDue(){
+    let plan = null;
+    try{ plan = await loadPlan({ force: true }); }catch(e){ console.error("capture orientation plan read failed", e); }
+    const n = plan && plan.tournament ? plan.tournament.resultsRounds : null;
+    return !(typeof n === "number" && Number.isFinite(n)) || n < CAPTURE_ORIENTATION_ROUNDS;
   }
   function nextStepCardHtml(info){
     if(!info) return "";
@@ -10084,6 +10120,7 @@
     if(!unlocked){
       return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
         <p class="qz-wz-value">${saved ? esc(lgRulesSummary(saved)) : "Todavía no eliges cómo se juega la liguilla."}</p>
+        ${saved ? `` : `<p class="muted qz-tight">Hay que guardar las reglas antes de publicar la primera jornada de liguilla.</p>`}
         ${noPasswordYet ? `<p class="muted qz-tight">🔒 Se protegen con tu contraseña de administrador.</p>` : `
         <div class="qz-unlock">
           <label for="qz-r-lg-pw">Contraseña de administrador</label>
@@ -10092,7 +10129,13 @@
       </section>`;
     }
     const preview = lgRulesFromForm(st);
+    // Lo que se ve en el formulario no es una regla hasta guardarlo: se dice
+    // antes de los campos, con la regla de la fase regular aparte (arriba).
+    const explain = saved
+      ? `<p>Los cambios que hagas aquí no cuentan hasta que los guardes. Reglas guardadas: <strong>${esc(lgRulesSummary(saved))}</strong>.</p>`
+      : `<p><strong>Los valores sugeridos todavía no son reglas activas.</strong> Hay que guardar las reglas antes de publicar la primera jornada de liguilla.</p>`;
     return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
+      <div class="qz-wz-callout lg-explain" id="qz-r-lg-explain">${explain}</div>
       <div class="field qz-field-narrow">
         <label for="qz-r-lg-res-pts">Puntos por atinarle al ganador o al empate</label>
         <input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-res-pts" value="${esc(st.resultPts)}" autocomplete="off">
@@ -10109,7 +10152,10 @@
         ${lgRulesStripHtml(preview.rules || null)}
       </div>
       <p class="qz-field-error" id="qz-r-lg-err" role="alert" hidden></p>
-      <button class="btn btn-primary" id="qz-r-lg-save">Guardar reglas de liguilla</button>
+      <div class="qz-wz-actions">
+        <button class="btn btn-primary" id="qz-r-lg-save">Guardar reglas de liguilla</button>
+        <button class="btn btn-ghost" id="qz-r-lg-cancel">Cancelar</button>
+      </div>
       <p class="muted qz-tight">Puedes cambiarlas hasta publicar la primera jornada de liguilla; después quedan fijas para todo el torneo.</p>
       ${renderAdminReglas._lgReturn ? `<div class="qz-wz-callout" role="status"><p>Cuando las guardes, vuelve a Jornadas para publicar <strong>${esc(renderAdminReglas._lgReturn.title)}</strong>.</p><button class="btn btn-ghost btn-sm" id="qz-r-lg-back">Volver a Jornadas</button></div>` : ``}
     </section>`;
@@ -10152,6 +10198,35 @@
     };
     live("qz-r-lg-res-pts", "resultPts");
     live("qz-r-lg-bon-pts", "bonusPts");
+    // «Cancelar»: descarta lo que se cambió en esta tarjeta y vuelve a lo
+    // guardado vigente (se pregunta al servidor, por si otra pestaña lo
+    // cambió). No guarda, no publica, no borra reglas ni toca el candado.
+    const cancel = document.getElementById("qz-r-lg-cancel");
+    if(cancel) cancel.addEventListener("click", async () => {
+      if(cancel.disabled) return;
+      cancel.disabled = true;
+      try{
+        const fresh = await getMeta({ owner: adminOrOwnerCred() });
+        if(fresh) adoptFreshMeta(meta, fresh);
+      }catch(e){ console.error("liguilla cancel refresh failed", e); }
+      // Sólo se vuelve a pintar ESTA tarjeta: lo que el admin tenga escrito
+      // sin guardar en las demás tarjetas de Tus reglas se queda como está.
+      Object.assign(st, lgFormFromSettings());
+      const sec = cancel.closest("section");
+      if(sec && sec.isConnected){
+        sec.outerHTML = reglasLiguillaCardHtml(st, true, false);
+        wireReglasLiguilla(body, st, repaint, saveProtected);
+      }else{
+        renderAdminReglas._state.lg = null;
+        await repaint();
+      }
+      const saved = lgConfigRules();
+      toast(meta.liguillaLock ? "Se descartaron los cambios. Las reglas de liguilla ya están fijas."
+        : saved ? "Se descartaron los cambios. Siguen las reglas guardadas."
+        : "Se descartaron los cambios. La liguilla sigue sin configurar.", 5000);
+      const again = document.getElementById("qz-r-lg-cancel") || document.getElementById("qz-r-lg-t");
+      if(again){ if(again.id === "qz-r-lg-t") again.setAttribute("tabindex", "-1"); again.focus({ preventScroll: true }); }
+    });
     const save = document.getElementById("qz-r-lg-save");
     if(save) save.addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -10167,6 +10242,38 @@
         if(ret) toast(`Ahora puedes publicar ${ret.title} desde Jornadas.`, 5000);
       }
     });
+  }
+
+  // ---- admin: recordatorio de liguilla (Liga MX, desde la jornada 15) --------
+  // Sólo con la liga GUARDADA en la quiniela (nunca el valor de respaldo del
+  // editor manual), sólo con jornadas publicadas de la fase regular (no los
+  // borradores importados) y sólo mientras no haya reglas de liguilla
+  // guardadas ni fijas. Se va solo con un guardado válido.
+  const LIGA_MX_LEAGUE_ID = "4350";
+  const LG_REMINDER_FROM_ROUND = 15;
+  function liguillaReminderDue(){
+    if(!LG || !currentUser || !currentUser.isAdmin) return false;
+    const league = meta.settings && meta.settings.sportsdbLeagueId;
+    if(league == null || String(league) !== LIGA_MX_LEAGUE_ID) return false;
+    if(meta.liguillaLock || lgConfigRules()) return false;
+    return (meta.rounds || []).some(r => r && r.published !== false && !isLg(r) && Number(r.number) >= LG_REMINDER_FROM_ROUND);
+  }
+  function liguillaReminderHtml(){
+    if(!liguillaReminderDue()) return "";
+    return `
+      <section class="card qz-lg-remind" aria-labelledby="qz-lg-remind-t">
+        <div class="eyebrow">Liguilla</div>
+        <p class="qz-tight" id="qz-lg-remind-t">La liguilla se acerca. Configura cómo se ganarán los puntos antes de publicar su primera jornada.</p>
+        <div class="qz-wz-actions"><button class="btn btn-gold btn-sm" data-lg-remind>Configurar liguilla</button></div>
+      </section>`;
+  }
+  function wireLiguillaReminder(container){
+    container.querySelectorAll("[data-lg-remind]").forEach(b => b.addEventListener("click", async () => {
+      activeTab = "admin";
+      adminSubTab = "reglas";
+      renderAdminReglas._scrollToLg = true;
+      await render();
+    }));
   }
 
   // ---- admin: publicar una jornada de liguilla -------------------------------
@@ -11619,6 +11726,10 @@
     "resultados.calificar": "Aquí ves lo que respondió cada quien. Marca «¿Atinó?» a quien acertó: esos puntos cuentan desde ese momento. La Tabla los muestra en cuanto hay resultados publicados de alguna jornada.",
   });
   const helpForced = new Set();
+  // Ayudas con una sola acción: «Entendido» la cierra (y se recuerda); un
+  // «Ocultar» al lado decía lo mismo. Sólo las listadas aquí; las demás
+  // conservan sus dos acciones.
+  const HELP_SINGLE_ACTION = new Set(["reglas.puntos"]);
   // MS2: whether this quiniela keeps a record of payments at all (a fee, a
   // penalty, or someone already marked as paid). Without it, the Tabla does
   // not show a fee of $0 and a «Pagó» column of ❌ from day one.
@@ -11641,7 +11752,7 @@
         <p>${esc(HELP_TEXTS[featureId])}</p>
         <div class="qz-help-actions">
           <button class="btn btn-ghost btn-sm" data-help-ok="${esc(featureId)}">Entendido</button>
-          <button class="qz-linkbtn" data-help-hide="${esc(featureId)}">Ocultar</button>
+          ${HELP_SINGLE_ACTION.has(featureId) ? `` : `<button class="qz-linkbtn" data-help-hide="${esc(featureId)}">Ocultar</button>`}
         </div>
       </div>`;
   }
@@ -12041,6 +12152,8 @@
       return true;
     }
     if(LG) wireReglasLiguilla(body, st.lg, repaint, saveProtected);
+    // Desde el recordatorio de liguilla: la vista va a su tarjeta.
+    if(renderAdminReglas._scrollToLg){ renderAdminReglas._scrollToLg = false; lgScrollToCard(); }
     const pointsInput = document.getElementById("qz-r-points");
     if(pointsInput){
       pointsInput.addEventListener("input", () => {
@@ -12918,6 +13031,7 @@
       : (lgDrafts_rounds().length ? `<div class="card"><div class="eyebrow">Liguilla</div><p class="muted">Organiza qué partidos van en cada jornada borrador (ida, vuelta) antes de publicar. Sólo borradores: nada publicado se mueve.</p><button class="btn btn-ghost btn-sm" id="qz-lg-organize">Organizar partidos</button></div>` : ``))
       + lgStagedHtml();
     body.innerHTML = `
+      ${liguillaReminderHtml()}
       ${createCardHtml}
       ${meta.settings.sportsdbLeagueId ? `
       <div class="card">
@@ -13280,6 +13394,7 @@
 
     const lgDraftBtn = document.getElementById("qz-lg-save-draft");
     if(lgDraftBtn) lgDraftBtn.addEventListener("click", () => { renderAdminRondas._lgDraftOnly = true; document.getElementById("qz-publish-round").click(); });
+    wireLiguillaReminder(body);
     body.querySelectorAll("[data-del-round]").forEach(btn => {
       btn.addEventListener("click", () => deleteRoundWithRollback(btn, btn.dataset.delRound));
     });
