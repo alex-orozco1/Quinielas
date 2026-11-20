@@ -75,7 +75,7 @@ test("Plus con competencia: todos los marcadores → «Resultados disponibles» 
   const info = await h.resultsNoticeInfo();
   assert.equal(info.kind, "available");
   assert.equal(info.title, "Resultados disponibles");
-  assert.match(info.text, /^Jornada 15: el proveedor ya tiene los marcadores de todos los partidos\. Revísalos y publícalos\./);
+  assert.match(info.text, /^Jornada 15: el proveedor tiene todos los marcadores\. Revísalos y publícalos\./);
   assert.deepEqual(info.actions.map((a) => [a.id, a.label, !!a.primary]), [["review", "Revisar resultados", true], ["manual", "Capturar manualmente", false]]);
   assert.equal(info.roundId, "r15");
   assert.equal(h.fetchCalls[0], "/api/quinielas/q1/sports-results", "el endpoint de lectura que ya existe");
@@ -163,11 +163,14 @@ test("el aviso es discreto (no es «Siguiente paso»), escapa su texto y el bot�
   assert.ok(wire.includes("renderAdminResultados._bulkCache = null;"), "la captura manual no arrastra sugerencias de antes");
 });
 
-test("Jornada no espera al proveedor: se pinta y el aviso entra en su hueco; publicar olvida lo consultado", () => {
+test("Jornada espera al aviso como mucho 200 ms; si tarda, reserva su lugar (sólo si va a consultar) y compensa el desplazamiento; publicar olvida lo consultado", () => {
   const jornada = html.slice(html.indexOf('${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}'), html.indexOf('<div id="qz-pending-banner">'));
-  assert.ok(jornada.includes('<div id="qz-results-note-slot"></div>'));
-  assert.doesNotMatch(html, /await resultsNoticeInfo\(\)/, "nadie espera el aviso antes de pintar");
-  assert.ok(html.includes("resultsNoticeInfo().then(info => {"));
+  assert.ok(jornada.includes('<div id="qz-results-note-slot" aria-live="polite">${noticeLate ? resultsNoticePendingHtml() : resultsNoticeHtml(earlyNotice)}</div>'));
+  assert.doesNotMatch(html, /await resultsNoticeInfo\(\)/, "nadie espera el aviso sin límite");
+  assert.ok(html.includes("await Promise.race([noticeP, new Promise(r => setTimeout(() => r(NOTICE_PENDING), 200))])"));
+  assert.ok(html.includes("if(delta && before.bottom <= hb + 1) window.scrollBy({ top: delta, behavior: \"instant\" });"), "si el hueco ya quedó arriba, lo que se ve no se mueve");
+  const pending = fn("function resultsNoticePendingHtml()");
+  assert.ok(pending.includes('if(!round || !plus || league == null || String(league) === "") return "";'), "sólo se reserva cuando de verdad se consulta");
   assert.equal((html.match(/invalidatePlan\(\); forgetResultsLookup\(\);/g) || []).length, 2, "fase regular y liguilla");
 });
 

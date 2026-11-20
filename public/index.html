@@ -1426,6 +1426,7 @@
   #quiniela-root .qz-note-actions{ display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; }
   #quiniela-root .qz-note--available, #quiniela-root .qz-note--review, #quiniela-root .qz-note--liguilla{ border-left-color:var(--gold); }
   #quiniela-root .qz-note--error{ border-left-color:var(--red); }
+  #quiniela-root .qz-note--pending{ color:var(--ink-soft); }
   #quiniela-root .lg-explain{ margin:8px 0 12px; }
   #quiniela-root .lg-explain p{ margin:0; }
   #quiniela-root .qz-rules-grid{ display:grid; grid-template-columns:minmax(0, 1fr); gap:0 20px; }
@@ -7970,13 +7971,20 @@
     const heroCoversPending = !!(heroRound && pending && pending.round.id === heroRound.id);
     // MS2: the admin's «Siguiente paso», from the real state of the quiniela.
     const nextStep = currentUser.isAdmin ? await nextStepInfo() : null;
+    // El aviso de resultados: si llega enseguida (plan y consulta ya
+    // recordados, o Gratis), se pinta con Jornada; si no, entra después en su
+    // hueco, que se reserva cuando se sabe que va a consultar al proveedor.
+    const noticeP = currentUser.isAdmin ? resultsNoticeInfo().catch(e => { console.error("results notice failed", e); return null; }) : null;
+    const NOTICE_PENDING = {};
+    const earlyNotice = noticeP ? await Promise.race([noticeP, new Promise(r => setTimeout(() => r(NOTICE_PENDING), 200))]) : null;
+    const noticeLate = earlyNotice === NOTICE_PENDING;
     if(!main.isConnected) return;
     const nextStepHtml = nextStepCardHtml(nextStep);
     const inviteBtnHtml = currentUser.isAdmin && meta.rounds.some(r => r.published !== false) ? `<button class="btn btn-ghost btn-sm" id="qz-open-invite">🔗 Invitar</button>` : null;
     main.innerHTML = `
       ${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}
       ${nextStepHtml}
-      <div id="qz-results-note-slot"></div>
+      <div id="qz-results-note-slot" aria-live="polite">${noticeLate ? resultsNoticePendingHtml() : resultsNoticeHtml(earlyNotice)}</div>
       ${liguillaReminderHtml()}
       <div id="qz-pending-banner">${(pending && !heroCoversPending) ? `
         <div class="card" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:14px;">
@@ -8001,13 +8009,21 @@
     // El aviso de resultados puede depender del proveedor: Jornada se pinta ya
     // y el aviso entra en su hueco cuando llega (nunca deja la pantalla en
     // blanco esperando).
-    if(currentUser.isAdmin){
-      resultsNoticeInfo().then(info => {
-        const slot = main.isConnected ? main.querySelector("#qz-results-note-slot") : null;
-        if(!slot || !info) return;
-        slot.innerHTML = resultsNoticeHtml(info);
-        wireResultsNotice(slot);
-      }).catch(e => console.error("results notice failed", e));
+    const noticeSlot = main.querySelector("#qz-results-note-slot");
+    if(noticeSlot && !noticeLate) wireResultsNotice(noticeSlot);
+    if(noticeSlot && noticeLate){
+      noticeP.then(info => {
+        if(!main.isConnected || !noticeSlot.isConnected) return;
+        // Si el hueco ya quedó por encima de lo que se ve, se compensa el
+        // desplazamiento: lo que el admin tiene bajo el dedo no se mueve.
+        const hdr = document.querySelector("#quiniela-root .qz-header");
+        const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
+        const before = noticeSlot.getBoundingClientRect();
+        noticeSlot.innerHTML = resultsNoticeHtml(info);
+        wireResultsNotice(noticeSlot);
+        const delta = noticeSlot.getBoundingClientRect().height - before.height;
+        if(delta && before.bottom <= hb + 1) window.scrollBy({ top: delta, behavior: "instant" });
+      });
     }
     wireLiguillaReminder(main);
     const openInvite = document.getElementById("qz-open-invite");
@@ -8262,11 +8278,11 @@
     const look = classifyRoundLookup(round, await lookupProviderResults());
     const secondary = { id: "manual", label: "Capturar manualmente" };
     if(look.kind === "available"){
-      return { kind: "available", roundId: round.id, title: "Resultados disponibles", text: `${label}: el proveedor ya tiene los marcadores de todos los partidos. Revísalos y publícalos.${note}`, actions: [{ id: "review", label: "Revisar resultados", primary: true }, secondary] };
+      return { kind: "available", roundId: round.id, title: "Resultados disponibles", text: `${label}: el proveedor tiene todos los marcadores. Revísalos y publícalos.${note}`, actions: [{ id: "review", label: "Revisar resultados", primary: true }, secondary] };
     }
     if(look.kind === "review"){
       const n = look.attention;
-      return { kind: "review", roundId: round.id, title: "Hay resultados por revisar", text: `${label}: ${n} ${n === 1 ? "partido requiere" : "partidos requieren"} tu atención (sin marcador del proveedor o con un resultado que hay que confirmar).${note}`, actions: [{ id: "review", label: "Revisar resultados", primary: true }, secondary] };
+      return { kind: "review", roundId: round.id, title: "Hay resultados por revisar", text: `${label}: ${n} ${n === 1 ? "partido requiere" : "partidos requieren"} tu atención (sin marcador o por confirmar).${note}`, actions: [{ id: "review", label: "Revisar resultados", primary: true }, secondary] };
     }
     if(look.kind === "error"){
       return { kind: "error", roundId: round.id, title: "No pudimos consultar los resultados", text: `${label}: ${sportsDataFailureMessage(look.reliabilityState)}`, actions: [secondary] };
@@ -8275,25 +8291,66 @@
     // Nada del proveedor todavía: no hay acción pendiente que afirmar.
     return captureOrientationDue(plan) ? manual("El proveedor todavía no tiene marcadores de esta jornada. Si los partidos ya terminaron, puedes capturarlos en Admin → Resultados.") : null;
   }
+  function resultsNoticePendingHtml(){
+    const round = meta.rounds.filter(r => r.published !== false && isRoundLocked(r) && !r.resultsPublished).sort((a, b) => a.number - b.number)[0];
+    const league = meta.settings && meta.settings.sportsdbLeagueId;
+    const plus = !!(planState && planState.available !== false && planState.plan && planState.plan !== "FREE");
+    if(!round || !plus || league == null || String(league) === "") return "";
+    // Misma forma que el aviso que va a llegar (título, texto y una fila de
+    // acciones invisible), para que al reemplazarlo casi no se mueva nada.
+    return `
+      <section class="qz-note qz-note--pending" aria-busy="true">
+        <p class="qz-note-text"><strong>Consultando resultados</strong> · ${esc(roundTitle(round))}: preguntando al proveedor por todos los marcadores…</p>
+        <div class="qz-note-actions" aria-hidden="true" style="visibility:hidden;"><span class="btn btn-ghost btn-sm">Revisar resultados</span></div>
+      </section>`;
+  }
   function resultsNoticeHtml(info){
     if(!info) return "";
     return `
       <section class="qz-note qz-note--${esc(info.kind)}" aria-labelledby="qz-results-note-t">
-        <p class="qz-note-text"><strong id="qz-results-note-t">${esc(info.title)}</strong> ${esc(info.text)}</p>
+        <p class="qz-note-text"><strong id="qz-results-note-t">${esc(info.title)}</strong> · ${esc(info.text)}</p>
         <div class="qz-note-actions">${info.actions.map(a => a.primary
           ? `<button class="btn btn-ghost btn-sm" data-results-go="${esc(a.id)}" data-round="${esc(info.roundId)}">${esc(a.label)}</button>`
           : `<button class="qz-linkbtn" data-results-go="${esc(a.id)}" data-round="${esc(info.roundId)}">${esc(a.label)}</button>`).join("")}</div>
       </section>`;
+  }
+  // Desde el aviso de Jornada: la vista llega al formulario de la jornada
+  // (bajo el menú fijo) y el foco a su línea de estado, que dice qué encontró.
+  function focusResultsFormFromNotice(){
+    if(!renderAdminResultados._focusForm) return;
+    renderAdminResultados._focusForm = false;
+    const form = document.getElementById("qz-results-form");
+    if(!form) return;
+    const align = () => {
+      const hdr = document.querySelector("#quiniela-root .qz-header");
+      const hb = hdr ? hdr.getBoundingClientRect().bottom : 0;
+      window.scrollBy({ top: form.getBoundingClientRect().top - hb - 12, behavior: "instant" });
+    };
+    align();
+    const status = document.getElementById("qz-autofill-status");
+    const target = status && status.textContent.trim() ? status : (form.querySelector(".eyebrow") || form);
+    target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+    // El menú se vuelve a pintar a la vez y puede cambiar de alto un momento
+    // después: se vuelve a alinear una vez, si el admin no se movió.
+    const y = window.scrollY;
+    setTimeout(() => { if(Math.abs(window.scrollY - y) < 2 && form.isConnected) align(); }, 250);
   }
   function wireResultsNotice(container){
     container.querySelectorAll("[data-results-go]").forEach(b => b.addEventListener("click", async () => {
       // Siempre la jornada que nombra el aviso; al revisar, con lo que el
       // proveedor ya respondió, para no volver a buscar.
       renderAdminResultados._target = b.dataset.round;
+      renderAdminResultados._focusForm = true;
       const memo = resultsLookupMemo && resultsLookupMemo.slug === SLUG ? resultsLookupMemo.data : null;
       if(b.dataset.resultsGo === "review" && memo && memo.ok){
-        renderAdminResultados._bulkCache = memo.results && typeof memo.results === "object" ? memo.results : {};
-        renderAdminResultados._bulkUnscorable = memo.unscorable && typeof memo.unscorable === "object" ? memo.unscorable : {};
+        const clean = (o) => {
+          const out = {};
+          if(o && typeof o === "object") Object.keys(o).forEach(k => { if(Array.isArray(o[k])) out[k] = o[k].filter(x => x && typeof x === "object"); });
+          return out;
+        };
+        renderAdminResultados._bulkCache = clean(memo.results);
+        renderAdminResultados._bulkUnscorable = clean(memo.unscorable);
       }else{
         // Captura manual: sin sugerencias de una consulta anterior.
         renderAdminResultados._bulkCache = null;
@@ -10715,7 +10772,8 @@
     // Lo que el proveedor ya respondió para ESTA jornada (búsqueda de todas, o
     // «Revisar resultados» desde Jornada) se muestra sin volver a buscar.
     const bulkLg = editing && renderAdminResultados._bulkCache && renderAdminResultados._bulkCache[round.id];
-    if(Array.isArray(bulkLg)) applyLgSuggestions({ suggestions: bulkLg, unscorable: (renderAdminResultados._bulkUnscorable || {})[round.id] || [] }, document.getElementById("qz-autofill-status"));
+    if(Array.isArray(bulkLg)) applyLgSuggestions({ suggestions: bulkLg.filter(x => x && typeof x === "object"), unscorable: ((renderAdminResultados._bulkUnscorable || {})[round.id] || []).filter(x => x && typeof x === "object") }, document.getElementById("qz-autofill-status"));
+    focusResultsFormFromNotice();
     const saveDraft = document.getElementById("qz-save-draft");
     if(saveDraft) saveDraft.addEventListener("click", async () => {
       saveDraft.disabled = true;
@@ -14011,6 +14069,7 @@
     if(editable && renderAdminResultados._bulkCache && renderAdminResultados._bulkCache[round.id]){
       applySuggestionsToForm(round, renderAdminResultados._bulkCache[round.id], form, document.getElementById("qz-autofill-status"), (renderAdminResultados._bulkUnscorable || {})[round.id]);
     }
+    focusResultsFormFromNotice();
     form.querySelectorAll(".pick-row").forEach(row => {
       if(!editable) return; // read-only view — no click handlers, matches the disabled buttons
       row.querySelectorAll(".pick-btn").forEach(btn => {

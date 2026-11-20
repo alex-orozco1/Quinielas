@@ -211,7 +211,7 @@ const PERMITIDAS = [
   { expr: "r.number", en: "pero nadie ha entrado todavía. La Jornada ${r.number} cierra el ${when}.`", por: "texto de nextStepInfo, que se pinta con esc()" },
   { expr: "r.number", en: ": `Todavía nadie ha entrado. La Jornada ${r.number} cierra el ${when}.`", por: "texto de nextStepInfo, que se pinta con esc()" },
   { expr: "label", en: "title: `${label} ya cerró`", por: "título de resultsNoticeInfo, que resultsNoticeHtml pinta con esc()" },
-  { expr: "label", en: "text: `${label}: el proveedor ya tiene los marcadores", por: "texto de resultsNoticeInfo, que se pinta con esc()" },
+  { expr: "label", en: "text: `${label}: el proveedor tiene todos los marcadores", por: "texto de resultsNoticeInfo, que se pinta con esc()" },
   { expr: "label", en: "text: `${label}: ${n} ${n === 1", por: "texto de resultsNoticeInfo, que se pinta con esc()" },
   { expr: "label", en: "text: `${label}: ${sportsDataFailureMessage(", por: "texto de resultsNoticeInfo, que se pinta con esc()" },
   { expr: "missing.length", en: "text: `${missing.length} de ${meta.participants.length} personas", por: "texto de nextStepInfo, que se pinta con esc()" },
