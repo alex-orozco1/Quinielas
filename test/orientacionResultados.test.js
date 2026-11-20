@@ -134,6 +134,17 @@ test("una respuesta con forma inesperada no rompe Jornada", async () => {
   }
 });
 
+test("Plus: una consulta en camino se comparte (dos visitas seguidas, una llamada)", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const h = harness({ lookup: () => ok({ r15: sug("m15a") }) });
+  // Dos avisos pedidos a la vez: la consulta todavía no termina cuando llega el segundo.
+  const [a, b2] = await Promise.all([h.resultsNoticeInfo(), h.resultsNoticeInfo()]);
+  assert.equal(h.lookups(), 1);
+  assert.equal(a.kind, "review"); assert.equal(b2.kind, "review");
+  release();
+});
+
 test("Plus: una respuesta buena se reutiliza unos minutos (no una consulta por visita)", async () => {
   const h = harness({ lookup: ok({ r15: sug("m15a") }) });
   await h.resultsNoticeInfo(); await h.resultsNoticeInfo(); await h.resultsNoticeInfo();

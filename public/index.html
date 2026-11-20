@@ -8213,9 +8213,21 @@
   const RESULTS_LOOKUP_FAIL_TTL_MS = 60 * 1000;
   const RESULTS_LOOKUP_TIMEOUT_MS = 6000;
   let resultsLookupMemo = null;
-  function forgetResultsLookup(){ resultsLookupMemo = null; }
+  let resultsLookupInFlight = null;
+  function forgetResultsLookup(){ resultsLookupMemo = null; resultsLookupInFlight = null; }
   async function lookupProviderResults(){
     if(resultsLookupMemo && resultsLookupMemo.slug === SLUG && Date.now() - resultsLookupMemo.at < resultsLookupMemo.ttl) return resultsLookupMemo.data;
+    // Una consulta que ya va en camino se comparte: salir y volver a Jornada
+    // mientras tanto no lanza otra.
+    if(resultsLookupInFlight && resultsLookupInFlight.slug === SLUG) return resultsLookupInFlight.p;
+    const p = fetchProviderResultsNow();
+    const entry = { slug: SLUG, p };
+    resultsLookupInFlight = entry;
+    try{ return await p; }
+    finally{ if(resultsLookupInFlight === entry) resultsLookupInFlight = null; }
+  }
+  async function fetchProviderResultsNow(){
+    const slug = SLUG;
     let data = null;
     const ctrl = typeof AbortController === "function" ? new AbortController() : null;
     const timer = ctrl ? setTimeout(() => ctrl.abort(), RESULTS_LOOKUP_TIMEOUT_MS) : null;
@@ -8230,7 +8242,7 @@
       if(timer) clearTimeout(timer);
     }
     const good = (data.ok && !data.reliabilityState) || data.reliabilityState === "competition_not_supported";
-    resultsLookupMemo = { slug: SLUG, at: Date.now(), ttl: good ? RESULTS_LOOKUP_TTL_MS : RESULTS_LOOKUP_FAIL_TTL_MS, data };
+    resultsLookupMemo = { slug, at: Date.now(), ttl: good ? RESULTS_LOOKUP_TTL_MS : RESULTS_LOOKUP_FAIL_TTL_MS, data };
     return data;
   }
   // Lo que el proveedor dijo de UNA jornada.
