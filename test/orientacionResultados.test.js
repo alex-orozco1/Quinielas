@@ -134,6 +134,11 @@ test("una respuesta con forma inesperada no rompe Jornada", async () => {
   }
 });
 
+test("una consulta que iba en camino cuando se publicaron resultados no se recuerda", () => {
+  assert.match(block, /function forgetResultsLookup\(\)\{ resultsLookupMemo = null; resultsLookupInFlight = null; resultsLookupGen\+\+; \}/);
+  assert.ok(block.includes("if(gen === resultsLookupGen) resultsLookupMemo = {"));
+});
+
 test("Plus: una consulta en camino se comparte (dos visitas seguidas, una llamada)", async () => {
   let release;
   const gate = new Promise((r) => { release = r; });
@@ -174,14 +179,13 @@ test("el aviso es discreto (no es «Siguiente paso»), escapa su texto y el bot�
   assert.ok(wire.includes("renderAdminResultados._bulkCache = null;"), "la captura manual no arrastra sugerencias de antes");
 });
 
-test("Jornada espera al aviso como mucho 200 ms; si tarda, reserva su lugar (sólo si va a consultar) y compensa el desplazamiento; publicar olvida lo consultado", () => {
+test("el aviso se pinta CON Jornada (espera ≤ 400 ms) o no se pinta: nunca se inserta después; la consulta empieza al abrir la app", () => {
   const jornada = html.slice(html.indexOf('${screenHeaderHtml("jornada", "Jornada", inviteBtnHtml, !!nextStep)}'), html.indexOf('<div id="qz-pending-banner">'));
-  assert.ok(jornada.includes('<div id="qz-results-note-slot" aria-live="polite">${noticeLate ? resultsNoticePendingHtml() : resultsNoticeHtml(earlyNotice)}</div>'));
-  assert.doesNotMatch(html, /await resultsNoticeInfo\(\)/, "nadie espera el aviso sin límite");
-  assert.ok(html.includes("await Promise.race([noticeP, new Promise(r => setTimeout(() => r(NOTICE_PENDING), 200))])"));
-  assert.ok(html.includes("if(delta && before.bottom <= hb + 1) window.scrollBy({ top: delta, behavior: \"instant\" });"), "si el hueco ya quedó arriba, lo que se ve no se mueve");
-  const pending = fn("function resultsNoticePendingHtml()");
-  assert.ok(pending.includes('if(!round || !plus || league == null || String(league) === "") return "";'), "sólo se reserva cuando de verdad se consulta");
+  assert.ok(jornada.includes('<div id="qz-results-note-slot">${resultsNoticeHtml(earlyNotice)}</div>'));
+  assert.ok(html.includes("await Promise.race([noticeP, new Promise(r => setTimeout(() => r(null), RESULTS_NOTICE_WAIT_MS))])"));
+  assert.match(block, /const RESULTS_NOTICE_WAIT_MS = 400;/);
+  assert.doesNotMatch(html, /noticeP\.then\(|resultsNoticePendingHtml|scrollBy\(\{ top: delta/, "sin inserción tardía, sin hueco ni compensación de scroll");
+  assert.ok(fn("function renderApp()").includes("if(currentUser.isAdmin) resultsNoticeInfo().catch(() => {});"), "precalentada al abrir la app");
   assert.equal((html.match(/invalidatePlan\(\); forgetResultsLookup\(\);/g) || []).length, 2, "fase regular y liguilla");
 });
 
