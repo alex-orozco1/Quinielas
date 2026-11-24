@@ -969,6 +969,9 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
   if (clone.settings && "ownerPassword" in clone.settings) {
     delete clone.settings.ownerPassword;
   }
+  // HOTFIX: el registro de correcciones de reglas de liguilla es auditoría del
+  // admin; participantes y lecturas sin credencial no lo reciben.
+  if (!isAdminOrOwner) delete clone.liguillaRulesHistory;
   if (Array.isArray(clone.participants)) {
     clone.participants.forEach((p) => {
       if ("pin" in p) {

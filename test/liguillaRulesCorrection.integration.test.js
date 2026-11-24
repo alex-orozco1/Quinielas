@@ -216,8 +216,12 @@ test.describe("HOTFIX · corregir la puntuación de liguilla", () => {
     const v2 = await read(q);
     v2.settings.liguilla = { capture: "score", resultPoints: 9, exactBonus: 1 };
     assert.deepEqual([(await write(q, v2)).status], [409]);
-    // La pestaña atrasada (reglas anteriores) guarda otra cosa: no falla y no revierte.
+    // La pestaña atrasada que guarda el tablero completo recibe rounds_conflict
+    // (como siempre) y se refresca. Cuando su guardado ya pasa la revisión del
+    // tablero pero aún trae las reglas anteriores, no falla ni las revierte.
     pre.groupName = "Nombre nuevo";
+    const stale = await write(q, pre);
+    assert.deepEqual([stale.status, stale.body.error], [409, "rounds_conflict"]);
     pre.roundsRevision = (await read(q)).roundsRevision;
     const ws = await write(q, pre);
     assert.equal(ws.status, 200, JSON.stringify(ws.body));
@@ -231,7 +235,38 @@ test.describe("HOTFIX · corregir la puntuación de liguilla", () => {
     assert.equal((await correct(q, { "X-Qracks-Auth": q.owner }, { expected: EXP, rules: { resultPoints: 2, exactBonus: 1 } })).status, 200);
     const asBeto = (await call("GET", kvPath(q.slug), { headers: { "X-Qracks-Auth": q.beto.pin, "X-Qracks-Participant": q.beto.id } })).body.value;
     assert.deepEqual(asBeto.rounds.find((r) => r.id === "ida").scoring, { capture: "score", resultPoints: 2, exactBonus: 1 });
-    assert.ok(!JSON.stringify(asBeto.liguillaRulesHistory || []).includes(q.owner));
+    assert.equal(asBeto.liguillaRulesHistory, undefined, "el participante no recibe la auditoría");
+    const anon = (await call("GET", kvPath(q.slug))).body.value;
+    assert.equal(anon.liguillaRulesHistory, undefined, "una lectura sin credencial tampoco");
+    assert.equal((await read(q)).liguillaRulesHistory.length, 1, "el propietario sí");
     assert.equal(L.scoreRound(asBeto.rounds.find((r) => r.id === "ida"), (await storedPicks(q, q.beto.id)).ida).total, 2 * 2 + 1);
+  });
+
+  itest("Technical QA P2: la jornada que fijó el candado en un ciclo nuevo, con un id del ciclo anterior, también se corrige", async () => {
+    const q = await quiniela("p2ciclo");
+    let v = await read(q);
+    v.settings.liguilla = { ...RULES };
+    v.rounds = [{ id: "r1", number: 1, deadline: enHoras(24), results: {}, resultsPublished: false, published: true, matches: [{ id: "m1", teamA: "León", teamB: "Santos" }] }];
+    assert.equal((await write(q, v)).status, 200);
+    v = await read(q); v.rounds[0].published = false;
+    assert.equal((await write(q, v)).status, 200);
+    const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
+    const entry = idx.quinielas.find((x) => x.slug === q.slug);
+    const nc = await call("POST", `/api/quinielas/${q.slug}/tournament/new-cycle`, { headers: { "X-Qracks-Auth": q.owner }, body: { expectedCycle: entry.tournamentScope.editionSeq } });
+    assert.equal(nc.status, 200, JSON.stringify(nc.body));
+    v = await read(q);
+    Object.assign(v.rounds[0], { stage: "liguilla", number: 18, phase: { round: "quarter", leg: "ida", source: "admin" }, published: true });
+    const w = await write(q, v);
+    assert.equal(w.status, 200, JSON.stringify(w.body));
+    const before = await stored(q);
+    assert.equal(before.liguillaLocks.find((l) => l.roundId === "r1") != null, true);
+    const r = await correct(q, { "X-Qracks-Auth": q.owner }, { expected: EXP, rules: { resultPoints: 3, exactBonus: 2 } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.rounds, 1);
+    const st = await stored(q);
+    const NEW = { capture: "score", resultPoints: 3, exactBonus: 2 };
+    assert.ok(L.sameRules(st.rounds[0].scoring, NEW), JSON.stringify(st.rounds[0].scoring));
+    assert.ok(L.sameRules(st.liguillaPublished.r1.scoring, NEW));
+    assert.deepEqual(st.liguillaRulesHistory[0].rounds, ["r1"]);
   });
 });

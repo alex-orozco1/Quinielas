@@ -226,6 +226,11 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
         matchIds: [...new Set([...prevIds, ...ids])],
         scoring: round.scoring ? { ...round.scoring } : (rec && rec.scoring) || null,
       };
+      // El torneo en que se publicó por primera vez: lo usa la corrección de
+      // reglas (correctLiguillaRules) para saber qué jornadas le tocan. Un
+      // registro anterior a este campo no se adivina.
+      if (rec && rec.scopeId) publishedRec[round.id].scopeId = rec.scopeId;
+      else if (!rec) publishedRec[round.id].scopeId = scope;
     }
     if (round.stage === "liguilla" && isPublished(round) && round.resultsPublished) {
       const check = checkLiguillaResults(round);
@@ -359,7 +364,16 @@ function correctLiguillaRules({ value, scopeId, scopeRoundIds, expected, next, a
 
   const doc = JSON.parse(JSON.stringify(value));
   const newRules = { ...v.rules };
-  const inScope = (id) => !scopeRoundIds || scopeRoundIds.has(String(id));
+  const recs = isObj(doc.liguillaPublished) ? doc.liguillaPublished : {};
+  // Qué jornadas son de este torneo: primero el torneo en que el servidor
+  // registró su publicación; sin ese dato (registros anteriores), el registro
+  // de consumo del torneo. La jornada que fijó el candado siempre cuenta.
+  const inScope = (id) => {
+    const r = recs[id];
+    if (isObj(r) && typeof r.scopeId === "string") return r.scopeId === scope;
+    if (lock.roundId != null && String(lock.roundId) === String(id)) return true;
+    return !scopeRoundIds || scopeRoundIds.has(String(id));
+  };
   const changedRounds = [];
   for (const r of Array.isArray(doc.rounds) ? doc.rounds : []) {
     if (!isObj(r) || r.stage !== "liguilla" || !isPublished(r) || !r.scoring) continue;
@@ -367,9 +381,8 @@ function correctLiguillaRules({ value, scopeId, scopeRoundIds, expected, next, a
     r.scoring = { ...newRules };
     changedRounds.push(r.id);
   }
-  const rec = isObj(doc.liguillaPublished) ? doc.liguillaPublished : {};
-  Object.keys(rec).forEach((id) => {
-    const e = rec[id];
+  Object.keys(recs).forEach((id) => {
+    const e = recs[id];
     if (isObj(e) && e.scoring && inScope(id) && L.sameRules(e.scoring, current.rules)) e.scoring = { ...newRules };
   });
   const docLock = lockFor(doc.liguillaLocks, scope);

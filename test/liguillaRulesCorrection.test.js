@@ -139,3 +139,31 @@ test("pestaña atrasada: trae las reglas anteriores a la corrección → se cons
   LR.applyLiguillaWrite({ oldValue: out.value, merged: scoped, scopeId: "t1", nowIso: NOW });
   assert.deepEqual(scoped.rounds.find((r) => r.id === "q1").scoring, { capture: "score", resultPoints: 2, exactBonus: 3 }, "la copia de la jornada publicada no vuelve atrás");
 });
+
+test("alcance: manda el torneo registrado al publicar; la jornada del candado siempre cuenta (Technical QA, P2)", () => {
+  // q1 fijó el candado pero el registro de consumo no la tiene (p. ej. id de un ciclo anterior).
+  const out = run({ scopeRoundIds: new Set(["q2"]) });
+  assert.deepEqual(out.entry.rounds, ["q1", "q2"]);
+  // Con el torneo registrado en liguillaPublished, ese dato manda sobre el consumo.
+  const d = doc();
+  d.liguillaPublished.q2 = { deadline: "x", matchIds: ["b"], scoring: { ...SCORE }, scopeId: "t1" };
+  d.liguillaPublished.qx = { deadline: "x", matchIds: [], scoring: { ...SCORE }, scopeId: "t0" };
+  const o2 = LR.correctLiguillaRules({ value: d, scopeId: "t1", scopeRoundIds: new Set(["qx"]), expected: SCORE, next: { resultPoints: 2, exactBonus: 1 }, nowIso: NOW });
+  assert.deepEqual(o2.entry.rounds, ["q1", "q2"], "qx es de otro torneo aunque el consumo diga lo contrario");
+  assert.deepEqual(o2.value.liguillaPublished.qx.scoring, SCORE);
+});
+
+test("al publicar una jornada de liguilla, el servidor registra el torneo; un registro previo lo conserva", () => {
+  const old = doc();
+  old.rounds.push({ id: "q9", number: 21, stage: "liguilla", deadline: "2026-12-30T00:00:00.000Z", published: false, results: {}, matches: [{ id: "z9", teamA: "X", teamB: "Y" }] });
+  const merged = JSON.parse(JSON.stringify(old));
+  merged.rounds.find((r) => r.id === "q9").published = true;
+  const w = LR.applyLiguillaWrite({ oldValue: old, merged, scopeId: "t1", nowIso: NOW });
+  assert.notEqual(w && w.ok, false, JSON.stringify(w));
+  assert.equal(merged.liguillaPublished.q9.scopeId, "t1");
+  assert.equal(merged.liguillaPublished.q1.scopeId, undefined, "un registro anterior no se adivina");
+  const m2 = JSON.parse(JSON.stringify(merged));
+  m2.liguillaPublished = { q9: { scopeId: "otro" } };
+  LR.applyLiguillaWrite({ oldValue: merged, merged: m2, scopeId: "t2", nowIso: NOW });
+  assert.equal(m2.liguillaPublished.q9.scopeId, "t1", "ni el cliente ni un ciclo nuevo lo cambian");
+});
