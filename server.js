@@ -1204,7 +1204,7 @@ function participantRevMap(doc) {
 // official. This is hygiene, not enforcement — enforcement is that these
 // fields are never read from here in the first place.
 const META_RESERVED_COMMERCIAL_FIELDS = Object.freeze([
-  "tournamentScope", "scopeHistory", "consumedRoundIdsByScope",
+  "tournamentScope", "scopeHistory", "consumedRoundIdsByScope", "resultsRoundIdsByScope",
   "entitlement", "entitlementHistory",
   "lifecycleConsumedRoundIds", "lifecycleRoundsConsumed",
   "lastClose",
@@ -2405,6 +2405,13 @@ app.post("/api/kv/:key", async (req, res) => {
           // cache) in the SAME transaction as the meta write itself, so
           // they can never drift apart under concurrency.
           entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, currentScopeId, newlyConsumedIds);
+          // Orientation counter: the rounds of this cycle whose results were
+          // published (stored row first, so a round deleted in this write
+          // still counts). Recorded AFTER consumption, so a round published
+          // in this same write belongs to the cycle.
+          if (currentScopeId) {
+            entry.resultsRoundIdsByScope = tournamentScope.recordResultsRounds(entry, currentScopeId, [oldValue.rounds, mergedValue.rounds]);
+          }
           // Kept in step for anything still reading the flat pre-MON-002C
           // shape (and for a human reading the row): the durable list of every
           // round ever published, across every cycle.
@@ -3346,6 +3353,11 @@ app.get("/api/quinielas/:slug/plan", async (req, res) => {
         // tells the screen to say "tu Plus anterior no se transfiere" rather
         // than explaining cycles to somebody on their first one.
         previousCycles: Array.isArray(entry.scopeHistory) ? entry.scopeHistory.length : 0,
+        // Orientation: how many rounds of THIS tournament have had their
+        // results published (a count, no ids), as RECORDED by the writes —
+        // never re-derived from the round array here. null until this cycle
+        // has a record (a quiniela from before it gets one on its next save).
+        resultsRounds: tournamentScope.recordedResultsRounds(entry, currentScope.id),
       } : null,
     });
   } catch (err) {
@@ -3393,6 +3405,9 @@ function advanceTournamentCycle(entry, { meta, displayName, now, commercialConfi
   // chargeable.
   entry.consumedRoundIdsByScope = tournamentScope.recordConsumption(entry, next.id, []);
   entry.lifecycleRoundsConsumed = 0;
+  // Orientation counter: the new tournament starts with none of its rounds'
+  // results published (the old cycle keeps its own record).
+  entry.resultsRoundIdsByScope = { ...tournamentScope.readResultsByScope(entry), [next.id]: [] };
 
   // ---- what carries into the new tournament, and what does not ----------
   //
