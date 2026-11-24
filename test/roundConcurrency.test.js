@@ -331,6 +331,8 @@ test("SERVER: TODA escritura de un meta pasa por el embudo stampMetaWrite", () =
       storedAfterPin: "stampMetaWrite(value, beforePinChange)",
       storedAfterRegistration: "stampMetaWrite(value, beforeRegistration)",
       storedAfterPassword: "stampMetaWrite(value, beforePassword)",
+      // HOTFIX: corrección de reglas de liguilla (POST /liguilla/rules)
+      storedAfterLiguillaRules: "stampMetaWrite(result.value, value)",
     }[w.value];
     if (selladoAntes) {
       assert.ok(src.includes(`const ${w.value} = ${selladoAntes}`) || w.value === "mergedValue",

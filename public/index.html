@@ -10071,14 +10071,15 @@
     const lock = meta.liguillaLock || null;
     const saved = lgConfigRules();
     const regular = meta.settings.pointsPerCorrectPick != null ? meta.settings.pointsPerCorrectPick : 1;
-    const status = lock ? `Fijas` : (saved ? `Configurada` : `Sin configurar`);
+    const status = lock ? `Puntuación fijada · Modificable por el propietario` : (saved ? `Configurada` : `Sin configurar`);
     const head = `<div class="qz-sec-head"><div class="eyebrow" id="qz-r-lg-t">Liguilla</div><span class="lg-status">${esc(status)}</span></div>
       <p class="muted qz-tight">Se configura aparte. La fase regular sigue con <strong>${esc(regular)} ${esc(pointsWord(regular))} por acierto</strong>.</p>`;
     if(lock){
       return `<section class="card qz-r-wide" aria-labelledby="qz-r-lg-t">${head}
         <p class="qz-wz-value">${esc(lgRulesSummary(lock.rules))}</p>
-        <p class="muted qz-tight">Fijas desde que publicaste <strong>${esc(lgLockedRoundLabel(lock))}</strong> (${esc(fmtWhenTz(lock.lockedAt))}). Valen para cuartos, semifinal y final de este torneo, aunque borres esa jornada.</p>
-        ${lgExampleHtml(lock.rules)}
+        <p class="muted qz-tight">Fijada desde que publicaste <strong>${esc(lgLockedRoundLabel(lock))}</strong> (${esc(fmtWhenTz(lock.lockedAt))}). Vale para cuartos, semifinal y final de este torneo, aunque borres esa jornada. Si hubo un error, el propietario puede corregirla con la contraseña de administrador.</p>
+        ${st.fix ? lgFixFormHtml(st, lock) : `${lgExampleHtml(lock.rules)}
+        <div class="qz-wz-actions"><button class="btn btn-ghost" id="qz-r-lg-fix">Modificar puntuación</button></div>`}
       </section>`;
     }
     if(!unlocked){
@@ -10114,6 +10115,51 @@
       ${renderAdminReglas._lgReturn ? `<div class="qz-wz-callout" role="status"><p>Cuando las guardes, vuelve a Jornadas para publicar <strong>${esc(renderAdminReglas._lgReturn.title)}</strong>.</p><button class="btn btn-ghost btn-sm" id="qz-r-lg-back">Volver a Jornadas</button></div>` : ``}
     </section>`;
   }
+  // HOTFIX · Corregir la puntuación de liguilla ya fijada. Sólo con la
+  // contraseña de administrador; sólo cambios que no cambian la forma de
+  // pronosticar (con bono se escribe el marcador; sin bono, ganador o empate).
+  function lgFixRulesFrom(st, lock){
+    const score = lock.rules.capture === "score";
+    return lgRulesFromForm({ resultPts: st.fix.resultPts, bonusOn: score, bonusPts: st.fix.bonusPts });
+  }
+  function lgFixFormHtml(st, lock){
+    const hasPw = !!ownerPasswordCache;
+    const score = lock.rules.capture === "score";
+    if(!hasPw){
+      return `<div class="qz-unlock" id="qz-r-lg-fix-auth">
+          <label for="qz-r-lg-fix-pw">Contraseña de administrador</label>
+          <p class="muted qz-tight">Corregir la puntuación sólo lo puede hacer el propietario: con tu PIN no basta.</p>
+          <div class="qz-unlock-row">${passwordFieldHtml("qz-r-lg-fix-pw", `placeholder="Contraseña" autocomplete="current-password"`)}<button class="btn btn-primary" id="qz-r-lg-fix-go">Continuar</button></div>
+        </div>
+        <p class="qz-field-error" id="qz-r-lg-fix-err" role="alert" hidden></p>
+        <div class="qz-wz-actions"><button class="btn btn-ghost" id="qz-r-lg-fix-cancel">Cancelar</button></div>`;
+    }
+    const preview = lgFixRulesFrom(st, lock);
+    return `
+      <p class="qz-field-error" id="qz-r-lg-fix-err" role="alert" hidden></p>
+      <div class="field qz-field-narrow">
+        <label for="qz-r-lg-fix-res">Puntos por atinarle al ganador o al empate</label>
+        <input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-fix-res" value="${esc(st.fix.resultPts)}" autocomplete="off">
+      </div>
+      ${score ? `
+      <div class="field qz-field-narrow">
+        <label for="qz-r-lg-fix-bon">Puntos extra por marcador exacto</label>
+        <input type="text" inputmode="numeric" class="lg-pts" id="qz-r-lg-fix-bon" value="${esc(st.fix.bonusPts)}" autocomplete="off">
+      </div>
+      <p class="muted qz-tight">El extra por marcador exacto no se puede quitar: tus amigos ya pronostican con marcador en la liguilla publicada, y quitarlo cambiaría la forma de pronosticar.</p>` : `
+      <p class="muted qz-tight">No se puede activar el extra por marcador exacto: tus amigos ya pronostican ganador o empate en la liguilla publicada, y el extra les pediría escribir marcadores.</p>`}
+      <div class="lg-example-wrap" aria-live="polite" id="qz-r-lg-fix-preview">${lgFixPreviewHtml(preview, lock)}</div>
+      <div class="qz-wz-actions">
+        <button class="btn btn-primary" id="qz-r-lg-fix-save">Guardar corrección</button>
+        <button class="btn btn-ghost" id="qz-r-lg-fix-cancel">Cancelar</button>
+      </div>`;
+  }
+  function lgFixPreviewHtml(preview, lock){
+    if(!preview.rules) return `<strong>Vista previa</strong><p class="lg-bad">${esc(preview.error)}</p>`;
+    return `<strong>Vista previa</strong>
+      <p class="qz-tight">Antes: ${esc(lgRulesSummary(lock.rules))}<br>Ahora: ${esc(lgRulesSummary(preview.rules))}</p>
+      ${lgExampleHtml(preview.rules)}`;
+  }
   // Lleva la vista a la tarjeta de liguilla, por debajo del encabezado fijo.
   function lgScrollToCard(){
     const el = document.getElementById("qz-r-lg-t");
@@ -10123,7 +10169,124 @@
     const top = el.closest("section").getBoundingClientRect().top + window.scrollY - headerHeight - 12;
     window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
   }
+  // Deja `el` a la vista debajo del encabezado fijo (sólo si hace falta).
+  function lgFixReveal(el){
+    if(!el) return;
+    const headerEl = document.querySelector("#quiniela-root .qz-header");
+    const hb = headerEl ? headerEl.getBoundingClientRect().bottom : 0;
+    const r = el.getBoundingClientRect();
+    if(r.top >= hb + 8 && r.bottom <= window.innerHeight - 8) return;
+    window.scrollTo({ top: Math.max(0, r.top + window.scrollY - hb - 12), behavior: "auto" });
+  }
   function wireReglasLiguilla(body, st, repaint, saveProtected){
+    // Corregir la puntuación fijada: sólo se vuelve a pintar ESTA tarjeta, para
+    // no perder lo escrito sin guardar en las demás tarjetas de Tus reglas.
+    const repaintCard = (focusId) => {
+      const sec = (document.getElementById("qz-r-lg-t") || {}).closest ? document.getElementById("qz-r-lg-t").closest("section") : null;
+      if(!sec){ repaint(); return; }
+      sec.outerHTML = reglasLiguillaCardHtml(st, ownerUnlocked || !!ownerPasswordCache, needsAdminPasswordToPublish());
+      wireReglasLiguilla(body, st, repaint, saveProtected);
+      const f = focusId && document.getElementById(focusId);
+      if(f){ f.focus({ preventScroll: true }); lgFixReveal(f); }
+    };
+    // Un error del formulario de corrección: se ve (encima de los campos) y el
+    // foco queda donde se puede seguir.
+    const fixError = (msg, focusEl) => {
+      setupFieldError("qz-r-lg-fix-err", msg);
+      const err = document.getElementById("qz-r-lg-fix-err");
+      if(focusEl) focusEl.focus({ preventScroll: true });
+      lgFixReveal(err);
+    };
+    const lockNow = () => meta.liguillaLock || null;
+    const fixBtn = document.getElementById("qz-r-lg-fix");
+    if(fixBtn) fixBtn.addEventListener("click", () => {
+      const lock = lockNow(); if(!lock) return;
+      st.fix = { resultPts: String(lock.rules.resultPoints), bonusPts: String(lock.rules.exactBonus || 1) };
+      repaintCard(ownerPasswordCache ? "qz-r-lg-fix-res" : "qz-r-lg-fix-pw");
+    });
+    const fixCancel = document.getElementById("qz-r-lg-fix-cancel");
+    if(fixCancel) fixCancel.addEventListener("click", () => { st.fix = null; repaintCard("qz-r-lg-fix"); });
+    const fixGo = document.getElementById("qz-r-lg-fix-go");
+    if(fixGo){
+      fixGo.addEventListener("click", async () => {
+        if(fixGo.disabled) return;
+        const val = document.getElementById("qz-r-lg-fix-pw").value;
+        fixGo.disabled = true;
+        const result = await verifyOwnerPasswordResult(val);
+        fixGo.disabled = false;
+        if(result.ok){ ownerUnlocked = true; ownerPasswordCache = val; repaintCard("qz-r-lg-fix-res"); }
+        else fixError(pinFailureMessage(result, "La contraseña de administrador no es correcta."), document.getElementById("qz-r-lg-fix-pw"));
+      });
+      enterSubmits("qz-r-lg-fix-pw", "qz-r-lg-fix-go");
+      document.getElementById("qz-r-lg-fix-pw").addEventListener("input", () => setupFieldError("qz-r-lg-fix-err", ""));
+      wirePasswordToggles(fixGo.closest(".qz-unlock"));
+    }
+    const fixLive = (id, key) => {
+      const inp = document.getElementById(id);
+      if(!inp) return;
+      inp.addEventListener("input", () => {
+        st.fix[key] = inp.value;
+        setupFieldError("qz-r-lg-fix-err", "");
+        const lock = lockNow(); const box = document.getElementById("qz-r-lg-fix-preview");
+        if(lock && box) box.innerHTML = lgFixPreviewHtml(lgFixRulesFrom(st, lock), lock);
+      });
+    };
+    fixLive("qz-r-lg-fix-res", "resultPts");
+    fixLive("qz-r-lg-fix-bon", "bonusPts");
+    const fixSave = document.getElementById("qz-r-lg-fix-save");
+    if(fixSave) fixSave.addEventListener("click", async () => {
+      const lock = lockNow(); if(!lock) return;
+      const out = lgFixRulesFrom(st, lock);
+      if(out.error){ fixError(out.error, document.getElementById("qz-r-lg-fix-res")); return; }
+      if(LG.sameRules(out.rules, lock.rules)){ fixError("Son las mismas reglas que ya tienes: no hay nada que corregir.", document.getElementById("qz-r-lg-fix-res")); return; }
+      const ok = await qzConfirm("Estás modificando las reglas de puntuación de la liguilla. Los puntos de las jornadas de liguilla que ya tengan resultados publicados podrían cambiar y la tabla se recalculará. Los pronósticos y resultados originales se conservarán.",
+        { title: "¿Corregir la puntuación de la liguilla?", confirmLabel: "Guardar corrección", cancelLabel: "Cancelar", destructive: false });
+      if(!ok) return;
+      const done = setupBusy(fixSave, "Guardando…");
+      let res = null, data = null;
+      try{
+        res = await fetch(`/api/quinielas/${encodeURIComponent(SLUG)}/liguilla/rules`, {
+          method: "POST", credentials: "same-origin",
+          headers: setAuthHeaders({ "Content-Type": "application/json" }, ownerPasswordCache),
+          body: JSON.stringify({ expected: { resultPoints: lock.rules.resultPoints, exactBonus: lock.rules.exactBonus }, rules: { resultPoints: out.rules.resultPoints, exactBonus: out.rules.exactBonus } }),
+        });
+        data = await res.json().catch(() => ({}));
+      }catch(e){ console.error("liguilla rules correction failed", e); }
+      done();
+      const refresh = async () => {
+        try{ const fresh = await getMeta({ owner: adminOrOwnerCred() }); if(fresh) adoptFreshMeta(meta, fresh); }catch(e){ console.error("liguilla rules refresh failed", e); }
+        allPicksCache = {};
+      };
+      if(res && res.ok && data && data.ok){
+        await refresh();
+        st.fix = null;
+        repaintCard("qz-r-lg-fix");
+        toast("✅ Listo, la puntuación de la liguilla quedó corregida. La tabla ya usa las reglas nuevas.", 6000);
+        return;
+      }
+      const err = data && data.error;
+      if(err === "wrong_admin_password"){
+        ownerPasswordCache = null; ownerUnlocked = false;
+        repaintCard("qz-r-lg-fix-pw");
+        fixError("La contraseña de administrador no es correcta. No se cambió nada.", document.getElementById("qz-r-lg-fix-pw"));
+        return;
+      }
+      if(err === "liguilla_rules_changed"){
+        await refresh();
+        const now = lockNow();
+        if(now) st.fix = { resultPts: String(now.rules.resultPoints), bonusPts: String(now.rules.exactBonus || 1) };
+        repaintCard("qz-r-lg-fix-res");
+        fixError("Alguien cambió la puntuación mientras tanto. Ya ves la vigente; revisa y vuelve a guardar. No se cambió nada.", document.getElementById("qz-r-lg-fix-res"));
+        return;
+      }
+      const msg = err === "liguilla_capture_change_blocked" ? "Ese cambio pediría otra forma de pronosticar en la liguilla ya publicada. No se cambió nada."
+        : err === "liguilla_rules_unchanged" ? "Son las mismas reglas que ya tienes: no hay nada que corregir."
+        : err === "too_many_attempts" ? pinFailureMessage({ error: err, retryAfterSeconds: data.retryAfterSeconds }, "Demasiados intentos. Espera un momento.")
+        : err === "liguilla_not_locked" ? "La puntuación ya no está fijada: corrígela desde el formulario normal. No se cambió nada."
+        : err && ERROR_MESSAGES[err] ? ERROR_MESSAGES[err] + " No se cambió nada."
+        : "No se pudo guardar la corrección. No se cambió nada; intenta de nuevo.";
+      fixError(msg, document.getElementById("qz-r-lg-fix-save"));
+    });
     const lgUnlock = document.getElementById("qz-r-lg-unlock");
     if(lgUnlock){
       lgUnlock.addEventListener("click", async () => {
