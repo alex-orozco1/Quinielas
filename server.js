@@ -6421,6 +6421,72 @@ app.post("/api/platform/quinielas/:slug/settings", async (req, res) => {
   }
 });
 
+// ---------- HOTFIX: corregir las reglas de liguilla ya fijadas ----------
+//
+// Sólo con la CONTRASEÑA de administrador (un PIN, aunque sea de admin, o una
+// sesión no bastan), contra la fila leída bajo bloqueo. El cambio entero lo
+// hace liguillaRules.correctLiguillaRules() y se guarda en UNA escritura de
+// la meta dentro de la transacción: o cambian la configuración, el candado,
+// la copia de cada jornada de liguilla publicada del torneo en curso y su
+// registro, o no cambia nada. Pronósticos, resultados y fase regular no se
+// tocan. Queda en `liguillaRulesHistory` quién (vía contraseña; el
+// participante de la sesión si la hay), cuándo y de qué a qué.
+app.post("/api/quinielas/:slug/liguilla/rules", rateLimit("liguilla-rules"), async (req, res) => {
+  const slug = req.params.slug;
+  const metaKey = `quiniela:${slug}:meta`;
+  const body = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // platform_index primero y luego la meta, como el resto de rutas que
+    // necesitan las dos.
+    const platformIdx = await getRowLocked("platform_index", client);
+    const value = await getRowLocked(metaKey, client);
+    if (!value || value.migratedTo) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "not_found" });
+    }
+    const ownerPassword = value.settings ? value.settings.ownerPassword : null;
+    if (!ownerPassword) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "no_admin_password" });
+    }
+    if (!headerIsOwnerPassword(req, slug, value)) {
+      await client.query("ROLLBACK");
+      if (sendIfCredentialThrottled(req, res)) return;
+      return res.status(403).json({ error: "wrong_admin_password" });
+    }
+    const entry = platformIdx && Array.isArray(platformIdx.quinielas)
+      ? platformIdx.quinielas.find((q) => q.slug === slug) : null;
+    const scopeId = entry && entry.tournamentScope ? entry.tournamentScope.id : null;
+    const consumed = scopeId ? tournamentScope.readConsumedByScope(entry)[scopeId] : null;
+    const session = readSessionFromCookie(req, slug);
+    const result = liguillaRules.correctLiguillaRules({
+      value, scopeId,
+      scopeRoundIds: Array.isArray(consumed) ? new Set(consumed.map(String)) : null,
+      expected: body.expected, next: body.rules,
+      actor: session ? { participantId: session.participantId } : null,
+      nowIso: new Date().toISOString(),
+    });
+    if (!result.ok) {
+      await client.query("ROLLBACK");
+      const { ok, status, ...rest } = result;
+      return res.status(status).json(rest);
+    }
+    const storedAfterLiguillaRules = stampMetaWrite(result.value, value);
+    await putRow(metaKey, storedAfterLiguillaRules, client);
+    await client.query("COMMIT");
+    console.log("liguilla_rules_corrected", { slug, scopeId, from: result.entry.from, to: result.entry.to, rounds: result.entry.rounds.length });
+    res.json({ ok: true, rules: result.entry.to, rounds: result.entry.rounds.length, roundsRevision: storedAfterLiguillaRules.roundsRevision });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("liguilla rules correction failed", { slug, message: err.message });
+    res.status(500).json({ error: "server_error" });
+  } finally {
+    client.release();
+  }
+});
+
 // Simple health check (also useful for uptime pingers to avoid free-tier sleep)
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 

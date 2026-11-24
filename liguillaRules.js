@@ -107,6 +107,10 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
   // cambia el tipo (Technical QA, P1).
   const publishedRec = isObj(old.liguillaPublished) ? JSON.parse(JSON.stringify(old.liguillaPublished)) : {};
   delete merged.liguillaPublished;
+  // El historial de correcciones de reglas (correctLiguillaRules) también es
+  // sólo del servidor: un guardado normal no lo escribe ni lo borra.
+  delete merged.liguillaRulesHistory;
+  if (Array.isArray(old.liguillaRulesHistory)) merged.liguillaRulesHistory = JSON.parse(JSON.stringify(old.liguillaRulesHistory));
   const settings = isObj(merged.settings) ? merged.settings : (merged.settings = {});
   const oldSettings = isObj(old.settings) ? old.settings : {};
 
@@ -118,6 +122,14 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
     settings.liguilla = { ...v.rules };
   }
   let lock = lockFor(locks, scope);
+  // Una pestaña abierta antes de que el propietario corrigiera la puntuación
+  // todavía trae las reglas anteriores. No es un intento de cambiarlas: se
+  // conservan las vigentes y el guardado sigue (sin esto, cualquier guardado
+  // de esa pestaña fallaría con «reglas fijas»).
+  if (lock && !L.sameRules(settings.liguilla, oldSettings.liguilla) && Array.isArray(old.liguillaRulesHistory)
+      && old.liguillaRulesHistory.some((h) => isObj(h) && h.scopeId === scope && L.sameRules(h.from, settings.liguilla))) {
+    settings.liguilla = isObj(oldSettings.liguilla) ? { ...oldSettings.liguilla } : oldSettings.liguilla;
+  }
   if (lock && !L.sameRules(settings.liguilla, oldSettings.liguilla)) {
     return fail(409, "liguilla_rules_locked", { lockedAt: lock.lockedAt });
   }
@@ -304,7 +316,77 @@ function applyMatchPick({ meta, picksDoc, roundId, matchId, value, expected, now
   return { ok: true, doc, accepted: rules.capture === "score" ? norm.score : norm.pick };
 }
 
+// HOTFIX · Corregir las reglas de puntuación de liguilla DESPUÉS de publicar.
+//
+// Las reglas viven en cuatro sitios y los cuatro tienen que decir lo mismo:
+//   settings.liguilla                 la configuración
+//   liguillaLocks[ciclo].rules        el candado del torneo en curso
+//   round.scoring                     la copia de cada jornada de liguilla
+//                                     publicada: CON ESTA se califica
+//   liguillaPublished[id].scoring     el registro, para recrear una jornada
+// Esta función cambia los cuatro en una sola copia del documento (el servidor
+// la guarda en la misma transacción, con la fila bloqueada), y sólo para el
+// torneo en curso: una jornada de un torneo anterior que siga en el tablero
+// conserva sus reglas.
+//
+// No toca pronósticos, resultados, marcadores, estados de partido, fase
+// regular, preguntas ni penalizaciones. No cambia el formato de captura: con
+// bono por exacto se escribe el marcador y sin él se elige 1X2, así que pasar
+// de uno a otro con una jornada ya publicada se rechaza.
+//
+// `expected`: las reglas que vio quien corrige; si ya no son las vigentes
+// (otra pestaña corrigió antes), se rechaza sin cambiar nada.
+// `scopeRoundIds`: los ids de las jornadas publicadas en el torneo en curso
+// (platform_index), o null cuando no hay ciclos (quiniela sin registro).
+function correctLiguillaRules({ value, scopeId, scopeRoundIds, expected, next, actor, nowIso }) {
+  const scope = scopeId || LEGACY_SCOPE;
+  if (!isObj(value)) return fail(404, "not_found");
+  const locks = Array.isArray(value.liguillaLocks) ? value.liguillaLocks : [];
+  const lock = lockFor(locks, scope);
+  if (!lock) return fail(409, "liguilla_not_locked");
+  const current = L.validateRules(lock.rules);
+  if (!current.ok) return fail(409, "liguilla_rules_invalid");
+  const exp = L.validateRules(expected);
+  if (!exp.ok || !L.sameRules(exp.rules, current.rules)) {
+    return fail(409, "liguilla_rules_changed", { current: { ...current.rules } });
+  }
+  const v = L.validateRules(next);
+  if (!v.ok) return fail(400, v.reason);
+  if (v.rules.capture !== current.rules.capture) {
+    return fail(409, "liguilla_capture_change_blocked", { capture: current.rules.capture });
+  }
+  if (L.sameRules(v.rules, current.rules)) return fail(400, "liguilla_rules_unchanged");
+
+  const doc = JSON.parse(JSON.stringify(value));
+  const newRules = { ...v.rules };
+  const inScope = (id) => !scopeRoundIds || scopeRoundIds.has(String(id));
+  const changedRounds = [];
+  for (const r of Array.isArray(doc.rounds) ? doc.rounds : []) {
+    if (!isObj(r) || r.stage !== "liguilla" || !isPublished(r) || !r.scoring) continue;
+    if (!inScope(r.id) || !L.sameRules(r.scoring, current.rules)) continue;
+    r.scoring = { ...newRules };
+    changedRounds.push(r.id);
+  }
+  const rec = isObj(doc.liguillaPublished) ? doc.liguillaPublished : {};
+  Object.keys(rec).forEach((id) => {
+    const e = rec[id];
+    if (isObj(e) && e.scoring && inScope(id) && L.sameRules(e.scoring, current.rules)) e.scoring = { ...newRules };
+  });
+  const docLock = lockFor(doc.liguillaLocks, scope);
+  docLock.rules = { ...newRules };
+  doc.settings = isObj(doc.settings) ? doc.settings : {};
+  doc.settings.liguilla = { ...newRules };
+  const entry = {
+    at: nowIso, scopeId: scope,
+    by: actor && actor.participantId ? { participantId: String(actor.participantId), via: "admin_password" } : { via: "admin_password" },
+    from: { ...current.rules }, to: { ...newRules }, rounds: changedRounds.map(String),
+  };
+  doc.liguillaRulesHistory = [...(Array.isArray(doc.liguillaRulesHistory) ? doc.liguillaRulesHistory : []), entry].slice(-50);
+  delete doc.liguillaLock;
+  return { ok: true, value: doc, entry };
+}
+
 module.exports = {
-  LEGACY_SCOPE, lockFor, canonical, applyLiguillaWrite, checkLiguillaResults,
+  LEGACY_SCOPE, lockFor, canonical, applyLiguillaWrite, checkLiguillaResults, correctLiguillaRules,
   validateLiguillaPicksWrite, storedMatchPick, applyMatchPick,
 };
