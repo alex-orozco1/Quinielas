@@ -94,6 +94,19 @@ function checkLiguillaResults(round) {
  * @param scopeId   el ciclo de torneo en curso (platform_index), o null
  * @param nowIso    la hora del servidor
  */
+// La competencia guardada, como texto comparable ("" si no hay).
+function leagueKey(settings) {
+  const id = isObj(settings) ? settings.sportsdbLeagueId : null;
+  return typeof id === "string" || typeof id === "number" ? String(id).trim() : "";
+}
+// Hay liguilla en curso: candado del torneo actual o alguna jornada de
+// liguilla en el tablero (publicada o borrador).
+function hasLiguillaInProgress(value, scope) {
+  if (!isObj(value)) return false;
+  if (lockFor(value.liguillaLocks, scope)) return true;
+  return (Array.isArray(value.rounds) ? value.rounds : []).some((r) => isObj(r) && r.stage === "liguilla");
+}
+
 function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
   const scope = scopeId || LEGACY_SCOPE;
   const old = isObj(oldValue) ? oldValue : {};
@@ -114,9 +127,20 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
   const settings = isObj(merged.settings) ? merged.settings : (merged.settings = {});
   const oldSettings = isObj(old.settings) ? old.settings : {};
 
+  // La liguilla es sólo de Liga MX. Tiene que serlo la competencia GUARDADA y
+  // también la que trae este guardado: cambiar de competencia y estrenar
+  // liguilla en la misma escritura no la habilita.
+  const ligaMx = L.isLigaMxSettings(oldSettings) && L.isLigaMxSettings(settings);
+  // Cambiar de competencia con una liguilla en curso dejaría reglas y jornadas
+  // de liguilla en una quiniela que ya no es de Liga MX (o al revés).
+  if (leagueKey(oldSettings) !== leagueKey(settings) && hasLiguillaInProgress(old, scope)) {
+    return fail(409, "liguilla_league_change_blocked");
+  }
+
   // La configuración, si viene, tiene que ser una configuración posible.
   const incomingRules = settings.liguilla;
   if (incomingRules != null && !same(incomingRules, oldSettings.liguilla)) {
+    if (!ligaMx) return fail(409, "liguilla_not_available");
     const v = L.validateRules(incomingRules);
     if (!v.ok) return fail(400, v.reason);
     settings.liguilla = { ...v.rules };
@@ -145,6 +169,11 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
     }
     if (!L.validPhase(round.phase)) {
       return fail(400, "invalid_value", { field: "rounds.phase", roundNumber: round.number });
+    }
+    // Fuera de Liga MX no nace ninguna jornada de liguilla (ni nueva ni
+    // cambiando el tipo de una existente). Las que ya existían se conservan.
+    if (!ligaMx && round.stage === "liguilla" && !(before && before.stage === "liguilla")) {
+      return fail(409, "liguilla_not_available", { roundNumber: round.number });
     }
     const wasPublished = !!before && isPublished(before);
     const rec = Object.prototype.hasOwnProperty.call(publishedRec, round.id) ? publishedRec[round.id] : null;
@@ -202,6 +231,8 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
     }
     const newlyPublished = isPublished(round) && !wasPublished;
     if (round.stage === "liguilla" && newlyPublished) {
+      // Ni se publica (ni fija el candado) fuera de Liga MX.
+      if (!ligaMx) return fail(409, "liguilla_not_available", { roundNumber: round.number });
       if (!lock) {
         const v = L.validateRules(settings.liguilla);
         if (!v.ok) return fail(409, "liguilla_rules_required", { roundNumber: round.number });
@@ -346,6 +377,7 @@ function applyMatchPick({ meta, picksDoc, roundId, matchId, value, expected, now
 function correctLiguillaRules({ value, scopeId, scopeRoundIds, expected, next, actor, nowIso }) {
   const scope = scopeId || LEGACY_SCOPE;
   if (!isObj(value)) return fail(404, "not_found");
+  if (!L.isLigaMxSettings(value.settings)) return fail(409, "liguilla_not_available");
   const locks = Array.isArray(value.liguillaLocks) ? value.liguillaLocks : [];
   const lock = lockFor(locks, scope);
   if (!lock) return fail(409, "liguilla_not_locked");

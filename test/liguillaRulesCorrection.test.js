@@ -10,7 +10,7 @@ const NOW = "2026-11-20T12:00:00.000Z";
 
 function doc() {
   return {
-    settings: { liguilla: { ...SCORE }, pointsPerCorrectPick: 1 },
+    settings: { liguilla: { ...SCORE }, pointsPerCorrectPick: 1, sportsdbLeagueId: "4350" },
     liguillaLocks: [{ scopeId: "t1", lockedAt: "2026-11-01T00:00:00.000Z", roundId: "q1", roundNumber: 18, rules: { ...SCORE } }],
     liguillaPublished: {
       q1: { deadline: "2026-11-02T00:00:00.000Z", matchIds: ["a"], scoring: { ...SCORE } },
