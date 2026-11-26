@@ -14612,6 +14612,15 @@
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       const newOwnerPw = typedPw;
       if(newOwnerPw) meta.settings.ownerPassword = newOwnerPw; // left blank = don't touch it, server keeps the old one
+      // Si el guardado no pasa, la competencia de esta pestaña vuelve a la
+      // guardada: nada de esta pantalla puede leer una competencia que el
+      // servidor no aceptó (p. ej. habilitar la liguilla).
+      const hadLeague = Object.prototype.hasOwnProperty.call(meta.settings, "sportsdbLeagueId"), prevLeague = meta.settings.sportsdbLeagueId;
+      const hadSeason = Object.prototype.hasOwnProperty.call(meta.settings, "sportsdbSeason"), prevSeason = meta.settings.sportsdbSeason;
+      const restoreCompetition = () => {
+        if(hadLeague) meta.settings.sportsdbLeagueId = prevLeague; else delete meta.settings.sportsdbLeagueId;
+        if(hadSeason) meta.settings.sportsdbSeason = prevSeason; else delete meta.settings.sportsdbSeason;
+      };
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbTeamsCache = null; // league may have changed — next visit to Jornadas re-fetches its real roster
@@ -14620,9 +14629,10 @@
         const ok = saved.ok;
         delete meta.settings.ownerPassword; // never keep it around locally longer than the request needs
         if(!ok){
+          restoreCompetition();
           saveBtn.disabled = false;
           saveBtn.textContent = originalLabel;
-          toast(saved.error === "admin_password_too_short" ? humanizeError(saved.error, saved) : "No se pudo guardar, intenta de nuevo");
+          toast(saved.error && ERROR_MESSAGES[saved.error] ? humanizeError(saved.error, saved) : "No se pudo guardar, intenta de nuevo", 6000);
           return;
         }
         // Onboarding B: the server kept the stored name, fee and points
@@ -14644,6 +14654,7 @@
       }catch(e){
         console.error(e);
         delete meta.settings.ownerPassword;
+        restoreCompetition();
         saveBtn.disabled = false;
         saveBtn.textContent = originalLabel;
         toast("No se pudo guardar, intenta de nuevo");

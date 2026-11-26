@@ -126,3 +126,54 @@ test("UI: una sola regla (lgAvailable → isLigaMxSettings) decide tarjeta, edit
   assert.ok(src.includes('liguilla_not_available: "La liguilla sólo está disponible para quinielas de Liga MX."'));
   assert.ok(src.includes("liguilla_league_change_blocked:"));
 });
+
+test("Technical QA P2-1: fuera de Liga MX, una pestaña anterior a una corrección de reglas sigue guardando", () => {
+  const NEW = { capture: "score", resultPoints: 3, exactBonus: 2 };
+  const old = meta(PREMIER, {
+    settings: { pointsPerCorrectPick: 1, sportsdbLeagueId: PREMIER, liguilla: { ...NEW } },
+    liguillaLocks: [{ scopeId: "t1", rules: { ...NEW } }],
+    liguillaRulesHistory: [{ at: NOW, scopeId: "t1", by: { via: "admin_password" }, from: { ...RULES }, to: { ...NEW }, rounds: [] }],
+  });
+  const w = write(old, (m) => { m.settings.liguilla = { ...RULES }; m.rounds[0].matches[0].teamA = "Otro"; });
+  assert.equal(err(w), "ok");
+  assert.deepEqual(w.merged.settings.liguilla, NEW, "se conservan las vigentes");
+  // Unas reglas que no vienen del historial siguen sin pasar.
+  assert.deepEqual(err(write(old, (m) => { m.settings.liguilla = { capture: "score", resultPoints: 7, exactBonus: 1 }; })), [409, "liguilla_not_available"]);
+});
+
+test("Technical QA P2-2: sin competencia y con liguilla en curso, declarar Liga MX sí se puede; otra competencia no", () => {
+  const old = meta(undefined, { settings: { pointsPerCorrectPick: 1, liguilla: { ...RULES } }, rounds: [regular("r1", 1), lg("q1", 18)], liguillaLocks: [{ scopeId: "t1", rules: { ...RULES } }] });
+  const w = write(old, (m) => { m.settings.sportsdbLeagueId = LMX; });
+  assert.equal(err(w), "ok");
+  assert.equal(w.merged.settings.sportsdbLeagueId, LMX);
+  // Ya como Liga MX, la liguilla vuelve a operar.
+  assert.equal(err(write(w.merged, (m) => { m.rounds.find((r) => r.id === "q1").published = true; })), "ok");
+  assert.deepEqual(err(write(old, (m) => { m.settings.sportsdbLeagueId = PREMIER; })), [409, "liguilla_league_change_blocked"]);
+  const empty = meta("", { settings: { pointsPerCorrectPick: 1, sportsdbLeagueId: "" }, rounds: [regular("r1", 1), lg("q1", 18)] });
+  assert.equal(err(write(empty, (m) => { m.settings.sportsdbLeagueId = LMX; })), "ok", "desde cadena vacía");
+});
+
+test("Technical QA P3-1: la competencia se guarda normalizada; lo que no es un id no se guarda", () => {
+  const norm = (v) => { const w = write(meta(undefined), (m) => { m.settings.sportsdbLeagueId = v; }); return err(w) === "ok" ? w.merged.settings.sportsdbLeagueId : err(w); };
+  assert.equal(norm(4350), "4350");
+  assert.equal(norm(" 4350 "), "4350");
+  assert.equal(norm("4328"), "4328");
+  assert.equal(norm(""), undefined);
+  assert.ok(norm(null) == null, "null = sin competencia");
+  for (const bad of [["4350"], { id: "4350" }, true, "liga", "12", "123456789"]) assert.deepEqual(norm(bad), [400, "invalid_value"], JSON.stringify(bad));
+  // Un valor viejo que el guardado no cambia se deja como estaba.
+  const legacy = meta(" 4350 ");
+  const w = write(legacy, (m) => { m.groupName = "x"; });
+  assert.equal(err(w), "ok");
+  assert.equal(w.merged.settings.sportsdbLeagueId, " 4350 ");
+});
+
+test("UI (Technical QA P2-2): Ajustes devuelve la competencia guardada si el guardado falla y dice por qué", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const at = src.indexOf("const restoreCompetition = () => {");
+  assert.ok(at > 0);
+  const handler = src.slice(at, at + 3200);
+  assert.ok(handler.includes("if(!ok){\n          restoreCompetition();"), "al fallar");
+  assert.ok(handler.includes("restoreCompetition();\n        saveBtn.disabled = false;"), "en el catch");
+  assert.ok(handler.includes("saved.error && ERROR_MESSAGES[saved.error] ? humanizeError(saved.error, saved)"), "mensaje real");
+});

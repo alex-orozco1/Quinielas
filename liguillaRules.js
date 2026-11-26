@@ -127,14 +127,38 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
   const settings = isObj(merged.settings) ? merged.settings : (merged.settings = {});
   const oldSettings = isObj(old.settings) ? old.settings : {};
 
+  // La competencia que se guarda: un id numérico de TheSportsDB como texto
+  // ("4350"), o nada. Lo que no tiene esa forma no se guarda (Technical QA,
+  // P3). Lo ya guardado de antes no se toca si este guardado no lo cambia.
+  if (Object.prototype.hasOwnProperty.call(settings, "sportsdbLeagueId") && !same(settings.sportsdbLeagueId, oldSettings.sportsdbLeagueId)) {
+    const raw = settings.sportsdbLeagueId;
+    if (raw == null || (typeof raw === "string" && raw.trim() === "")) delete settings.sportsdbLeagueId;
+    else if ((typeof raw === "string" || typeof raw === "number") && /^[0-9]{3,8}$/.test(String(raw).trim())) settings.sportsdbLeagueId = String(raw).trim();
+    else return fail(400, "invalid_value", { field: "settings.sportsdbLeagueId" });
+  }
+
   // La liguilla es sólo de Liga MX. Tiene que serlo la competencia GUARDADA y
   // también la que trae este guardado: cambiar de competencia y estrenar
   // liguilla en la misma escritura no la habilita.
   const ligaMx = L.isLigaMxSettings(oldSettings) && L.isLigaMxSettings(settings);
   // Cambiar de competencia con una liguilla en curso dejaría reglas y jornadas
-  // de liguilla en una quiniela que ya no es de Liga MX (o al revés).
-  if (leagueKey(oldSettings) !== leagueKey(settings) && hasLiguillaInProgress(old, scope)) {
+  // de liguilla en una quiniela que ya no es de Liga MX (o al revés). La única
+  // excepción es declarar Liga MX en una quiniela que no tenía competencia:
+  // no deja nada huérfano, sólo dice qué es (Technical QA, P2-2).
+  if (leagueKey(oldSettings) !== leagueKey(settings) && hasLiguillaInProgress(old, scope)
+      && !(leagueKey(oldSettings) === "" && L.isLigaMxSettings(settings))) {
     return fail(409, "liguilla_league_change_blocked");
+  }
+
+  let lock = lockFor(locks, scope);
+  // Una pestaña abierta antes de que el propietario corrigiera la puntuación
+  // todavía trae las reglas anteriores. No es un intento de cambiarlas: se
+  // conservan las vigentes y el guardado sigue (sin esto, cualquier guardado
+  // de esa pestaña fallaría con «reglas fijas» o, fuera de Liga MX, con
+  // «sólo Liga MX»: va antes de esa comprobación, Technical QA P2-1).
+  if (lock && settings.liguilla != null && !L.sameRules(settings.liguilla, oldSettings.liguilla) && Array.isArray(old.liguillaRulesHistory)
+      && old.liguillaRulesHistory.some((h) => isObj(h) && h.scopeId === scope && L.sameRules(h.from, settings.liguilla))) {
+    settings.liguilla = isObj(oldSettings.liguilla) ? { ...oldSettings.liguilla } : oldSettings.liguilla;
   }
 
   // La configuración, si viene, tiene que ser una configuración posible.
@@ -144,15 +168,6 @@ function applyLiguillaWrite({ oldValue, merged, scopeId, nowIso }) {
     const v = L.validateRules(incomingRules);
     if (!v.ok) return fail(400, v.reason);
     settings.liguilla = { ...v.rules };
-  }
-  let lock = lockFor(locks, scope);
-  // Una pestaña abierta antes de que el propietario corrigiera la puntuación
-  // todavía trae las reglas anteriores. No es un intento de cambiarlas: se
-  // conservan las vigentes y el guardado sigue (sin esto, cualquier guardado
-  // de esa pestaña fallaría con «reglas fijas»).
-  if (lock && !L.sameRules(settings.liguilla, oldSettings.liguilla) && Array.isArray(old.liguillaRulesHistory)
-      && old.liguillaRulesHistory.some((h) => isObj(h) && h.scopeId === scope && L.sameRules(h.from, settings.liguilla))) {
-    settings.liguilla = isObj(oldSettings.liguilla) ? { ...oldSettings.liguilla } : oldSettings.liguilla;
   }
   if (lock && !L.sameRules(settings.liguilla, oldSettings.liguilla)) {
     return fail(409, "liguilla_rules_locked", { lockedAt: lock.lockedAt });

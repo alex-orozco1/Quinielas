@@ -143,4 +143,27 @@ test.describe("HOTFIX · liguilla sólo en Liga MX (servidor real)", () => {
     assert.ok(ch.status === 409 || ch.status === 403, JSON.stringify(ch.body));
     assert.equal((await stored(q)).settings.sportsdbLeagueId, PREMIER);
   });
+
+  itest("Technical QA P2-2: sin competencia con liguilla en curso → declarar Liga MX desbloquea; Premier no", async () => {
+    const q = await quiniela("lmx-none-lg");
+    const st0 = await stored(q);
+    st0.settings.liguilla = { ...RULES };
+    st0.rounds = [lg("q1", 18)];
+    await putStored(q, st0);
+    let v = await read(q);
+    v.settings.sportsdbLeagueId = PREMIER;
+    assert.deepEqual(errOf(await write(q, v)), [409, "liguilla_league_change_blocked"]);
+    v = await read(q);
+    v.settings.sportsdbLeagueId = 4350;
+    const ok = await write(q, v);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal((await stored(q)).settings.sportsdbLeagueId, "4350", "normalizada");
+    v = await read(q);
+    v.rounds[0].published = true;
+    const pub = await write(q, v);
+    assert.equal(pub.status, 200, JSON.stringify(pub.body));
+    v = await read(q);
+    v.settings.sportsdbLeagueId = ["4350"];
+    assert.deepEqual(errOf(await write(q, v)), [400, "invalid_value"]);
+  });
 });
