@@ -4721,6 +4721,7 @@
       const dest = resolveSetupDestination(meta, currentUser);
       if(dest === "review" || dest === "manual"){ startSetupFlow(); return; }
       if(dest === "invite"){ activeTab = "jornada"; renderApp(); openInviteSheet({ first: true }); return; }
+      if(dest === "tournament"){ activeTab = "admin"; adminSubTab = "rondas"; renderApp(); return; }
     }
     renderApp();
   }
@@ -4796,9 +4797,20 @@
   // hasPublishedRound && !hasOtherParticipants is still true in the first
   // place -- once real social activation happens, this flag becomes
   // irrelevant on its own (the hasOtherParticipants branch already wins).
+  // P1 · torneo nuevo: una quiniela que ya jugó un torneo (historial) o que
+  // tiene una competencia sugerida por confirmar, y que aún no publica nada en
+  // el torneo nuevo. No es una quiniela nueva: el asistente de primera vez no
+  // aplica; su lugar es Admin → Jornadas (competencia y primera jornada).
+  function isNewTournamentStart(m){
+    const rounds = (m && m.rounds) || [];
+    if(rounds.some(r => r.published !== false)) return false;
+    const prev = m && m.settings && m.settings.previousCompetition;
+    return !!((m.pastTournaments && m.pastTournaments.length) || (prev && prev.sportsdbLeagueId && !m.settings.sportsdbLeagueId));
+  }
   function resolveSetupDestination(m, user){
     if(!user || !user.isAdmin) return "app";
     const rounds = m.rounds || [];
+    if(isNewTournamentStart(m)) return "tournament";
     const hasPublishedRound = rounds.some(r => r.published !== false);
     if(!hasPublishedRound) return rounds.length > 0 ? "review" : "manual";
     const hasOtherParticipants = (m.participants || []).length > 1;
@@ -5201,6 +5213,10 @@
     const dest = resolveSetupDestination(meta, currentUser);
     if(dest === "review" || dest === "manual"){
       startSetupFlow();
+    } else if(dest === "tournament"){
+      setupContinuityResolved = true;
+      activeTab = "admin"; adminSubTab = "rondas";
+      await render();
     } else if(dest === "invite"){
       setupContinuityResolved = true;
       activeTab = "jornada";
@@ -7964,6 +7980,13 @@
   // un estado; no es un consejo, así que no se oculta.
   async function nextStepInfo(){
     const published = meta.rounds.filter(r => r.published !== false).sort((a, b) => a.number - b.number);
+    if(!published.length && isNewTournamentStart(meta)){
+      return {
+        title: "Empieza el torneo nuevo",
+        text: pendingCompetition() ? "Confirma la competencia y crea la primera jornada en Admin → Jornadas." : "Crea la primera jornada del torneo nuevo en Admin → Jornadas.",
+        actions: [{ id: "rounds", label: "Ir a Jornadas" }],
+      };
+    }
     if(!published.length){
       // The setup draft lives only in this tab (sessionStorage): say so only
       // when this tab has one.
@@ -11161,7 +11184,7 @@
     return `
       <div class="card" id="qz-tournament-ended" style="border-color:var(--gold);background:#FFF9EC;">
         <p style="margin:0 0 6px;font-weight:700;">Este torneo terminó</p>
-        <p class="muted" style="margin:0 0 10px;">Para jugar el siguiente, ciérralo o empieza uno nuevo desde Ajustes. El torneo nuevo empieza con el tablero vacío; lo de este pasa al historial.</p>
+        <p class="muted" style="margin:0 0 10px;">Para jugar el siguiente, ciérralo o empieza uno nuevo desde Ajustes, con la contraseña de administrador. El torneo nuevo empieza con el tablero vacío; lo de este queda en el historial.</p>
         <button class="btn btn-gold btn-sm" data-start-new-tournament>Ir a las acciones del torneo</button>
       </div>
     `;
@@ -11171,15 +11194,39 @@
   // se hace en UN solo lugar —Ajustes → Acciones del torneo—, donde se explica
   // qué se conserva, qué pasa al historial y qué empieza de cero.
   async function goToTournamentActions(){
+    renderAdminOwner._goActions = true;
     activeTab = "admin";
     adminSubTab = "dueno";
     renderApp();
-    // Ajustes se pinta después de leer el plan: se espera a que exista.
-    for(let i = 0; i < 20; i++){
-      const box = document.getElementById("qz-tournament-actions");
-      if(box){ box.scrollIntoView({ block: "start" }); return; }
+    // Ajustes se pinta después de leer el plan: se espera a lo que aparezca.
+    // Desbloqueado → las acciones; bloqueado → la contraseña (y al
+    // desbloquear, renderAdminOwner lleva a las acciones).
+    for(let i = 0; i < 30; i++){
+      if(document.getElementById("qz-tournament-actions")){ revealTournamentActions(); return; }
+      const pw = document.getElementById("qz-owner-pw");
+      if(pw){
+        pw.focus({ preventScroll: true });
+        scrollBelowHeader(pw.closest(".card") || pw);
+        toast("Para cerrar el torneo o empezar uno nuevo, entra con la contraseña de administrador.", 6000);
+        return;
+      }
       await new Promise(r => setTimeout(r, 100));
     }
+  }
+  // Lleva la vista a `el`, por debajo del encabezado fijo.
+  function scrollBelowHeader(el){
+    if(!el) return;
+    const headerEl = document.querySelector("#quiniela-root .qz-header");
+    const hb = headerEl ? headerEl.getBoundingClientRect().bottom : 0;
+    window.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top + window.scrollY - hb - 12), behavior: "auto" });
+  }
+  function revealTournamentActions(){
+    renderAdminOwner._goActions = false;
+    const box = document.getElementById("qz-tournament-actions");
+    if(!box) return;
+    scrollBelowHeader(box);
+    const title = box.querySelector(".section-title");
+    if(title){ title.setAttribute("tabindex", "-1"); title.focus({ preventScroll: true }); }
   }
 
   function wireTournamentActions(scope){
@@ -12891,7 +12938,7 @@
     const prev = pendingCompetition();
     if(!prev) return "";
     const known = SPORTSDB_LEAGUES.find(l => l.id === String(prev.sportsdbLeagueId));
-    return `<div class="card" id="qz-confirm-competition" style="border-color:var(--gold);background:#FFF9EC;">
+    return `<div class="card" id="qz-confirm-competition" role="region" aria-labelledby="qz-cc-t" style="border-color:var(--gold);background:#FFF9EC;">
       <div class="eyebrow">Torneo nuevo</div>
       <p style="margin:0 0 6px;font-weight:700;" id="qz-cc-t">Confirma la competencia de este torneo</p>
       <p class="muted qz-tight">El torneo anterior era de <strong>${esc(known ? known.label : "otra competencia")}</strong>. Confírmala o elige otra: con ella puedes importar el calendario.</p>
@@ -14429,7 +14476,7 @@
             <div class="card" id="qz-close-pending" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:12px;">
               <p style="margin:0 0 6px;font-weight:700;">${pending.kind === "interrupted" ? "Un torneo nuevo quedó sin confirmar" : "Un cierre quedó sin confirmar"}</p>
               <p class="muted" style="margin:0 0 10px;">${pending.kind === "interrupted" ? "Mandaste empezar un torneo nuevo y no supimos si se completó." : "Mandaste cerrar el torneo y no supimos si se completó."} Verificar no empieza otro torneo: pregunta por <strong>esa misma acción</strong> y termina lo que falte.</p>
-              <button class="btn btn-gold btn-sm" id="qz-verify-close">Verificar ese cierre</button>
+              <button class="btn btn-gold btn-sm" id="qz-verify-close">${pending.kind === "interrupted" ? "Verificar esa acción" : "Verificar ese cierre"}</button>
               <button class="btn btn-ghost btn-sm" id="qz-discard-close">Descartar aviso</button>
             </div>
           `;
@@ -14438,7 +14485,7 @@
         <p class="muted">Las dos opciones dejan el tablero <strong>vacío</strong>: el torneo nuevo empieza sin jornadas.</p>
         <ul class="muted qz-tight" style="margin:0 0 10px 18px;padding:0;">
           <li><strong>Se conserva:</strong> la quiniela, su link, participantes, admins y accesos, tus ajustes y todo el historial.</li>
-          <li><strong>Pasa al historial:</strong> las jornadas jugadas con sus resultados, la tabla, las preguntas extra y los descuentos por no pagar, y las reglas de liguilla.</li>
+          <li><strong>Queda en el historial:</strong> el campeón y la tabla final (si cierras) o la tabla al interrumpir, cuántas jornadas se jugaron y las preguntas extra. También se guardan, aunque hoy el Historial no los muestra, los resultados de cada jornada, los descuentos y las reglas de liguilla.</li>
           <li><strong>Empieza de cero:</strong> jornadas (también borradores y partidos pendientes), puntos, preguntas extra, descuentos y quién pagó. La liguilla, sin configurar. El plan empieza en Gratis.</li>
           <li><strong>Competencia:</strong> te sugerimos la anterior y la confirmas o eliges otra.</li>
         </ul>
@@ -14455,6 +14502,7 @@
       </div>
     `;
     renderSettingsPlan();
+    if(renderAdminOwner._goActions) revealTournamentActions();
     (async () => {
       const plan = await loadPlan();
       const note = document.getElementById("qz-new-tournament-note");
@@ -14619,13 +14667,29 @@
       // P1: el torneo nuevo empieza en Jornadas, con el tablero vacío y la
       // competencia por confirmar.
       adminSubTab = "rondas";
-      renderAdmin(document.getElementById("qz-main"));
+      activeTab = "admin";
+      // Toda la app, no sólo Admin: la cabecera (plan, jornada en curso) era
+      // del torneo anterior.
+      renderApp();
       const interrupted = r.kind === "interrupted";
       const who = !interrupted && r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
       const done = interrupted ? "El torneo anterior quedó en el historial, sin cierre formal." : `Torneo cerrado.${who}`;
+      const noArchive = interrupted && r.archived === false;
       toast(r.replayed
         ? `Eso ya se había completado. ${done} Sigues en el torneo nuevo — no se creó otro.`
-        : `${done} Empieza el torneo nuevo: confirma la competencia y crea la primera jornada.`, 7000);
+        : `${noArchive ? "El torneo anterior no tenía nada que guardar en el historial." : done} Empieza el torneo nuevo: confirma la competencia y crea la primera jornada.`, 7000);
+      // La tarjeta de la competencia, a la vista y con el foco (también a 320 px).
+      for(let i = 0; i < 30; i++){
+        const card = document.getElementById("qz-confirm-competition");
+        if(card){
+          scrollBelowHeader(card);
+          const t = document.getElementById("qz-cc-t");
+          if(t){ t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); }
+          return;
+        }
+        if(document.getElementById("qz-publish-round")){ window.scrollTo(0, 0); return; }
+        await new Promise(res => setTimeout(res, 100));
+      }
     }
 
     // Resultado desconocido: la petición pudo haber llegado. NO se reintenta
@@ -14723,7 +14787,10 @@
           closeInFlight = false;
           // El botón puede haber desaparecido con el re-render; reactivarlo sólo
           // tiene sentido si sigue en pantalla.
-          if(document.body.contains(btn)) btn.disabled = false;
+          if(document.body.contains(btn)){
+            btn.disabled = false;
+            if(!document.activeElement || document.activeElement === document.body) btn.focus({ preventScroll: true });
+          }
         }
       });
     });

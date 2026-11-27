@@ -789,7 +789,7 @@ test("FRONTEND: the new-tournament flow states the consequence before doing anyt
   const at = indexSrc.indexOf('<div class="card" id="qz-tournament-actions">');
   assert.ok(at !== -1);
   const actions = indexSrc.slice(at, at + 4000);
-  assert.ok(actions.includes("Se conserva:") && actions.includes("Pasa al historial:") && actions.includes("Empieza de cero:"),
+  assert.ok(actions.includes("Se conserva:") && actions.includes("Queda en el historial:") && actions.includes("Empieza de cero:"),
     "Ajustes explica qué se conserva, qué se archiva y qué empieza de cero");
   assert.ok(!indexSrc.includes("sin archivar ni despejar"), "ya no existe un torneo nuevo que conserve el tablero");
   // One primary action per state: the ended card offers exactly one button.

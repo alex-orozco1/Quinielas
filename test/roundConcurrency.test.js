@@ -508,6 +508,6 @@ test("UI: cerrar el torneo trae el estado nuevo antes de repintar", () => {
   assert.ok(body.includes("getMeta({ owner: adminOrOwnerCred() })"),
     "el cierre es una escritura del servidor sobre el tablero; la pestaña tiene que enterarse");
   const fetchAt = body.indexOf("getMeta({");
-  const renderAt = body.indexOf("renderAdmin(");
+  const renderAt = body.indexOf("renderApp(");
   assert.ok(fetchAt < renderAt, "primero traer, después pintar");
 });

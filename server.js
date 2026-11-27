@@ -4008,7 +4008,7 @@ async function finishTournament(req, res, kind) {
     await client.query("COMMIT");
     console.log("tournament_finished", { slug, kind, fromCycle: storedCycle, toCycle: moved.next.editionSeq, archivedRounds: archived.length, archived: !!archiveEntry, picksDeleted: picksDeleted.rowCount });
     res.json({
-      ok: true, replayed: false, kind,
+      ok: true, replayed: false, kind, archived: !!archiveEntry,
       closedAt: now,
       tournament: { cycle: moved.next.editionSeq, name: moved.next.displayName, state: moved.next.lifecycle },
       previousCycles: entry.scopeHistory.length,
