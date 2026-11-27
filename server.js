@@ -3868,6 +3868,20 @@ async function finishTournament(req, res, kind) {
     // cada participante coinciden. La hora de los descuentos en vivo: la de la
     // lectura de la pantalla (standingsAt, acotada) o la de ahora — la pantalla
     // calculó entre las dos.
+    // Una jornada con resultados publicados y su cierre todavía en el futuro
+    // (datos antiguos, o la API): sus pronósticos siguen ocultos en la lectura
+    // de la pantalla, así que su tabla nunca coincidiría con la del servidor.
+    // Se dice CUÁL y cómo salir, en vez de un desacuerdo sin salida
+    // (Technical QA P2 de 587d1d8). No se revelan pronósticos abiertos.
+    const openWithResults = (Array.isArray(metaBefore.rounds) ? metaBefore.rounds : []).find((r) => {
+      if (!r || !r.resultsPublished || r.published === false) return false;
+      const t = new Date(r.deadline).getTime();
+      return Number.isFinite(t) && t > Date.now();
+    });
+    if (openWithResults) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "close_round_results_open", roundNumber: openWithResults.number });
+    }
     if (closeStandingsMismatch(metaBefore, picksRowsNow, body.standings, body.standingsAt)) {
       await client.query("ROLLBACK");
       console.log("close refused: standings mismatch", { slug, kind });

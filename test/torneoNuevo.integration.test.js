@@ -273,4 +273,27 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
   });
+
+  itest("Technical QA P2 (587d1d8): jornada con resultados y cierre en el futuro → error que la nombra, nada cambia; con la fecha corregida, se cierra", async () => {
+    const q = await jugado("tn-open");
+    // Datos antiguos: r1 con resultados publicados, y su cierre vuelve al futuro.
+    const m = await stored(q);
+    m.rounds.find((r) => r.id === "r1").deadline = enHoras(240);
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+    const c0 = (await entryOf(q)).tournamentScope.editionSeq;
+    for (const kind of ["interrupted", "closed"]) {
+      const r = await terminar(q, kind);
+      assert.deepEqual([r.status, r.body.error, r.body.roundNumber], [409, "close_round_results_open", 1], JSON.stringify(r.body));
+    }
+    assert.equal(await picksRows(q), 1, "ningún pronóstico se borró");
+    assert.equal((await stored(q)).rounds.length, 3);
+    assert.equal((await entryOf(q)).tournamentScope.editionSeq, c0);
+    // La salida que indica el mensaje: su cierre a una fecha que ya pasó.
+    const m2 = await stored(q);
+    m2.rounds.find((r) => r.id === "r1").deadline = new Date(Date.now() - 60e3).toISOString();
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m2)]);
+    const ok = await terminar(q, "closed");
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
+  });
 });

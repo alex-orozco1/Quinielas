@@ -2019,6 +2019,7 @@
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     too_many_attempts: "Demasiados intentos. Espera un rato e intenta de nuevo, o entra desde un dispositivo donde ya hayas entrado.",
     owner_password_required: "Para cambiar quién es admin se necesita la contraseña de administrador.",
+    close_round_results_open: "Una jornada tiene resultados publicados pero su cierre todavía no llega, así que sus pronósticos siguen ocultos y no se puede armar la tabla. Cambia su fecha de cierre a una que ya pasó en Admin → Jornadas y vuelve a intentarlo. No se cambió nada.",
     close_standings_mismatch: "La tabla no coincide con los puntos guardados, así que no se guardó nada. Vuelve a intentarlo; si se repite, descarga el respaldo y avísanos.",
     tournament_owner_password_required: "Para cerrar el torneo o empezar uno nuevo se necesita la contraseña de administrador. No se cambió nada.",
     // Onboarding B (quinielas that remember their creator).
@@ -14657,7 +14658,9 @@
       // un aviso que no desaparece solo: nada se cerró y hay que volver a cerrar.
       if(typeof r.error === "string" && r.error.startsWith("close_")){
         renderAdmin(document.getElementById("qz-main"));
-        qzAlert(ERROR_MESSAGES[r.error] || "No se cerró el torneo. Vuelve a intentarlo.", { title: "No se cerró el torneo" });
+        const named = r.error === "close_round_results_open" && Number.isFinite(r.roundNumber)
+          ? ERROR_MESSAGES.close_round_results_open.replace("Una jornada", "La Jornada " + r.roundNumber) : null;
+        qzAlert(named || ERROR_MESSAGES[r.error] || "No se cerró el torneo. Vuelve a intentarlo.", { title: "No se cerró el torneo" });
         return;
       }
       toast(ERROR_MESSAGES[r.error] || "No se pudo cerrar el torneo, intenta de nuevo");
@@ -16263,6 +16266,11 @@
   // "Solo ver": read-only view for people who aren't participants — no name, no PIN,
   // just the standings and a list of jornadas played. Reached via /q/slug?ver=1
   async function renderSpectatorView(){
+    // Sin el módulo de la Tabla (standings.js) no hay puntos que mostrar.
+    if(!QS){
+      root.innerHTML = `<div class="login-wrap"><div class="login-card"><p style="text-align:center;">No pudimos cargar la tabla de puntos. Revisa tu conexión y recarga la página.</p><button class="btn btn-primary" style="width:100%;" onclick="location.reload()">Recargar</button></div></div>`;
+      return;
+    }
     root.innerHTML = `<div class="login-wrap"><div class="login-card"><p class="muted" style="text-align:center;">Cargando…</p></div></div>`;
     await ensureAllPicksLoaded();
     // Sin todos los pronósticos no se conocen los puntos: aviso y reintento,
