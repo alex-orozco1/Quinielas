@@ -1671,6 +1671,14 @@ async function validatePicksDeadline(info, oldValue, newValue, preloadedMeta, no
       if (oldRoundPicks !== newRoundPicks) return { ok: false };
       continue;
     }
+    // Una jornada con resultados publicados ya se jugó: sus pronósticos no
+    // cambian aunque su cierre esté en el futuro (datos antiguos, o un cierre
+    // movido después de publicar). Si no, se podría pronosticar viendo el
+    // resultado (Technical QA, P1 heredado de main 9982f6d).
+    if (round.resultsPublished) {
+      if (oldRoundPicks !== newRoundPicks) return { ok: false };
+      continue;
+    }
     if (now <= new Date(round.deadline).getTime()) continue; // still open, fine
     if (oldRoundPicks !== newRoundPicks) return { ok: false };
   }

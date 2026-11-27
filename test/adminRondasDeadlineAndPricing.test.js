@@ -91,7 +91,7 @@ test("CASE D: on a past deadline, editingRound itself is never touched (not even
 
 test("CASE G: the exact required inline copy is shown via a real DOM error element, not toast alone -- and nothing about matches/deadline/published is reset alongside it", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 2200);
+  const body = indexSrc.slice(idx, idx + 2800);
   assert.ok(body.includes('deadlineErrorEl.textContent = "Elige una fecha y hora a partir de ahora.";'));
   assert.ok(body.includes("deadlineErrorEl.style.display = \"block\";"));
   const errBlockIdx = body.indexOf("if(!resultsAlreadyPublished && !isSetupDeadlineValid");
@@ -107,15 +107,15 @@ test("qz-deadline-error is a real DOM element rendered in the form, not just ref
 });
 
 test("the datetime-local input has a min attribute computed from serverNow(), same helper pattern as Admin Setup Continuity", () => {
-  // P1 · torneo nuevo: salvo en una jornada con resultados ya publicados.
-  assert.ok(indexSrc.includes('<input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" ${editingRound && editingRound.resultsPublished ? "" : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}>'));
+  // P1 · torneo nuevo: salvo en una jornada con resultados ya publicados (ahí, max: nunca en el futuro).
+  assert.ok(indexSrc.includes('<input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" ${editingRound && editingRound.resultsPublished ? `max="${toLocalInputValue(new Date(serverNow()).toISOString())}"` : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}>'));
 });
 
 // ---- Payment Penalty invariant preserved exactly ----
 
 test("Payment Penalty audit: reconcilePenaltyLedger(meta) is still called before editingRound.deadline mutation, unaffected by adding the new validation", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 4300);
+  const body = indexSrc.slice(idx, idx + 4900);
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const deadlineMutationIdx = body.indexOf("editingRound.deadline = deadlineIsoFromInput(draft.deadline, editingRound.deadline);");
   assert.ok(reconcileIdx !== -1 && deadlineMutationIdx !== -1 && reconcileIdx < deadlineMutationIdx);
@@ -123,7 +123,7 @@ test("Payment Penalty audit: reconcilePenaltyLedger(meta) is still called before
 
 test("the existing full-snapshot rollback (round + participants) on save failure is untouched by this fix", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 4300);
+  const body = indexSrc.slice(idx, idx + 4900);
   assert.ok(body.includes("const roundSnapshot = JSON.parse(JSON.stringify(editingRound));"));
   assert.ok(body.includes("const participantsSnapshot = JSON.parse(JSON.stringify(meta.participants));"));
 });
@@ -156,6 +156,6 @@ test("P1 · torneo nuevo: sólo una jornada con resultados publicados acepta un 
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
   const body = indexSrc.slice(idx, idx + 3200);
   assert.ok(body.includes("const resultsAlreadyPublished = !!(editingRound && editingRound.resultsPublished);"));
-  assert.ok(indexSrc.includes('${editingRound && editingRound.resultsPublished ? "" : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}'),
-    "el campo sólo quita el mínimo para esa jornada");
+  assert.ok(indexSrc.includes('${editingRound && editingRound.resultsPublished ? `max="${toLocalInputValue(new Date(serverNow()).toISOString())}"` : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}'),
+    "esa jornada pide un cierre que ya pasó (max), las demás uno futuro (min)");
 });

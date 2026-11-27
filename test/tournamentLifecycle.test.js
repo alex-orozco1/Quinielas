@@ -1172,3 +1172,28 @@ test("SERVER: el torneo nuevo empieza sin regla de descuentos por no pagar; la a
   assert.ok(h.includes("delete meta.paymentPenalty;"));
   assert.ok(h.indexOf("const paymentPenaltyArchived") < h.indexOf("delete meta.paymentPenalty;"), "se archiva antes de quitarla");
 });
+
+test("FRONTEND: una jornada con resultados no acepta un cierre en el futuro en el editor (Technical QA P1 heredado)", () => {
+  assert.ok(indexSrc.includes("Esta jornada ya tiene resultados: su cierre no puede quedar en el futuro."));
+  assert.ok(/resultsAlreadyPublished && new Date\(deadlineIsoFromInput\(draft\.deadline, editingRound\.deadline\)\)\.getTime\(\) > serverNow\(\)/.test(indexSrc));
+});
+
+test("SERVER: los pronósticos de una jornada con resultados publicados no cambian aunque su cierre esté en el futuro", () => {
+  const fn = stripComments(blockFrom(serverSrc, "async function validatePicksDeadline("));
+  const guard = fn.indexOf("if (round.resultsPublished) {");
+  assert.ok(guard > 0 && guard < fn.indexOf("if (now <= new Date(round.deadline).getTime()) continue;"), "se revisa antes del cierre");
+});
+
+test("FRONTEND: la pantalla trata como cerrada una jornada con resultados publicados, como el servidor", () => {
+  const fn = blockFrom(indexSrc, "function isRoundLocked(round){");
+  assert.ok(fn.includes("if(round.resultsPublished) return true;"));
+});
+
+test("FRONTEND (UX P2-2b): la contraseña se lleva a la vista sin animación y comparando contra la posición real", () => {
+  const sb = blockFrom(indexSrc, "function scrollBelowHeader(el, must){");
+  assert.ok(sb.includes('behavior: "instant"'), "smooth del html haría creer que la persona desplazó");
+  assert.ok(sb.includes("return window.scrollY;"), "devuelve lo que de verdad quedó, no lo pedido");
+  const kv = blockFrom(indexSrc, "async function keepInView(el, must){");
+  assert.ok(kv.includes("Math.abs(window.scrollY - expectedY) > 2"));
+  assert.ok(indexSrc.includes('keepInView(pw.closest(".card") || pw, pw.closest(".field") || pw);'), "lo que debe verse es el campo");
+});

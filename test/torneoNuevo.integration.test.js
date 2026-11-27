@@ -300,6 +300,30 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
   });
 
+  itest("Technical QA P1 (heredado de main): con resultados publicados, un cierre en el futuro no reabre los pronósticos de esa jornada", async () => {
+    const q = await jugado("tn-reabre");
+    const m = await stored(q);
+    m.rounds.find((r) => r.id === "r1").deadline = enHoras(240);
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+    const pickRow = async () => (await dbQuery("SELECT value FROM kv WHERE key = $1", [`quiniela:${q.slug}:picks:${q.beto.id}`])).rows[0].value;
+    const before = await pickRow();
+    // Con la base correcta (como la pantalla): lo único que lo frena es la regla.
+    const changed = await call("POST", "/api/kv/" + encodeURIComponent(`quiniela:${q.slug}:picks:${q.beto.id}`), {
+      headers: { "X-Qracks-Auth": q.beto.pin, "X-Qracks-Participant": q.beto.id }, body: { value: { r1: { m1: "B" } }, base: { r1: before.r1 } },
+    });
+    assert.notEqual(changed.status, 200, "no se cambia un pronóstico viendo el resultado: " + JSON.stringify(changed.body));
+    assert.notEqual(changed.body.reason, "picks_reload_required", "lo frena la regla, no la concurrencia");
+    // Control: la jornada abierta (r2), con la misma forma de guardar, sí cambia.
+    const open = await call("POST", "/api/kv/" + encodeURIComponent(`quiniela:${q.slug}:picks:${q.beto.id}`), {
+      headers: { "X-Qracks-Auth": q.beto.pin, "X-Qracks-Participant": q.beto.id }, body: { value: { r2: { m2: "A" } }, base: { r2: before.r2 } },
+    });
+    assert.equal(open.status, 200, JSON.stringify(open.body));
+    before.r2 = { m2: "A" };
+    // Un guardado que no la incluye se combina con lo guardado: tampoco la borra.
+    await pickAs(q, q.beto, { r2: before.r2 });
+    assert.deepEqual(await pickRow(), before, "el pronóstico guardado no cambió");
+  });
+
   itest("Product: la regla de descuentos por no pagar NO pasa al torneo nuevo; queda en el archivo con sus descuentos", async () => {
     for (const kind of ["interrupted", "closed"]) {
       const q = await jugado("tn-pen-" + kind[0]);
