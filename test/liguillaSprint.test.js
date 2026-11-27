@@ -164,7 +164,7 @@ const NOW = "2026-11-20T00:00:00.000Z";
 const match = (id, a = "Club " + id, b = "Rival " + id) => ({ id, teamA: a, teamB: b });
 function meta(over = {}) {
   return {
-    settings: { pointsPerCorrectPick: 1, liguilla: { ...RULES_BOTH } },
+    settings: { pointsPerCorrectPick: 1, sportsdbLeagueId: "4350", liguilla: { ...RULES_BOTH } },
     rounds: [
       { id: "r17", number: 17, matches: [match("m0")], deadline: "2026-11-01T00:00:00Z", published: true, resultsPublished: true, results: { m0: "A" } },
       { id: "r18", number: 18, stage: "liguilla", phase: { round: "quarter", leg: "ida", source: "admin" }, matches: [match("m1"), match("m2")], deadline: "2026-11-27T01:00:00Z", published: false, results: {} },
@@ -192,7 +192,7 @@ test("D1 · publicar la primera jornada de liguilla fija las reglas del torneo y
 });
 
 test("D1 · no se puede publicar una jornada de liguilla sin reglas", () => {
-  const old = meta({ settings: { pointsPerCorrectPick: 1 } });
+  const old = meta({ settings: { pointsPerCorrectPick: 1, sportsdbLeagueId: "4350" } });
   const { out } = apply(old, publish(old, "r18"));
   assert.equal(out.error, "liguilla_rules_required");
   assert.equal(out.status, 409);

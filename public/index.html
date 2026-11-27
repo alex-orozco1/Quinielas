@@ -1996,6 +1996,8 @@
   const ERROR_MESSAGES = {
     round_locked: "Esta jornada ya cerró — ya no se puede cambiar.",
     // Liguilla (sprint de liguilla).
+    liguilla_not_available: "La liguilla sólo está disponible para quinielas de Liga MX.",
+    liguilla_league_change_blocked: "Esta quiniela tiene una liguilla en curso: no se puede cambiar la competencia.",
     liguilla_rules_required: "Antes de publicar una jornada de liguilla, guarda las reglas de liguilla en Admin → Reglas.",
     liguilla_rules_locked: "Las reglas de liguilla ya quedaron fijas para este torneo: se fijaron al publicar la primera jornada de liguilla.",
     liguilla_stage_locked: "Esta jornada ya se publicó: conserva su tipo (regular o liguilla) y sus reglas.",
@@ -9342,6 +9344,13 @@
   // servidor: aquí sólo se pinta. Una jornada sin `stage` es fase regular y
   // nada de este bloque la toca.
   const LG = window.QracksLiguilla || null;
+  // La liguilla es sólo de Liga MX y según la competencia GUARDADA en la
+  // quiniela (liguillaScoring.isLigaMxSettings, la misma regla que aplica el
+  // servidor). Fuera de Liga MX no se ofrece configurarla ni crear jornadas de
+  // liguilla; lo que ya existiera se sigue viendo (Jornada, Tabla, Historial).
+  function lgAvailable(){
+    return !!(LG && typeof LG.isLigaMxSettings === "function" && meta && LG.isLigaMxSettings(meta.settings));
+  }
   function isLg(r){ return !!(LG && r && r.stage === "liguilla"); }
   function lgPhaseText(r){ return LG && r ? LG.phaseLabel(r.phase) : null; }
   // La fase primero; el número de jornada es dato secundario.
@@ -10337,6 +10346,9 @@
   // candado, se confirma que quedan fijas. El servidor revisa lo mismo.
   async function lgPublishGate(round){
     if(!isLg(round)) return true;
+    // Fuera de Liga MX no se publica liguilla (el servidor tampoco lo acepta):
+    // se dice aquí, sin mandar a una configuración que no existe.
+    if(!lgAvailable()){ toast(ERROR_MESSAGES.liguilla_not_available, 6000); return false; }
     const pending = round.matches.filter(m => !m.teamA || !m.teamB).length;
     if(pending){ toast(`Falta confirmar ${pending} rival${pending===1?"":"es"} para publicar.`, 5000); return false; }
     const rules = lgConfigRules();
@@ -10693,7 +10705,8 @@
   function lgEditorState(editingRound){
     const key = editingRound ? editingRound.id : "__new";
     const cur = renderAdminRondas._lgForm;
-    if(cur && cur.key === key) return cur;
+    // Una jornada nueva fuera de Liga MX siempre es regular.
+    if(cur && cur.key === key){ if(key === "__new" && !lgAvailable()) cur.stage = "regular"; return cur; }
     const ph = editingRound && editingRound.phase;
     return (renderAdminRondas._lgForm = {
       key, stage: editingRound && editingRound.stage === "liguilla" ? "liguilla" : "regular",
@@ -10703,6 +10716,9 @@
   }
   function lgEditorHtml(editingRound){
     if(!LG) return "";
+    // Fuera de Liga MX no hay elección de fase; una jornada de liguilla que ya
+    // existiera conserva su tipo y se sigue viendo como tal.
+    if(!lgAvailable() && !(editingRound && editingRound.stage === "liguilla")) return "";
     const f = lgEditorState(editingRound);
     const fixed = !!(editingRound && editingRound.published !== false);
     const opt = (v, text, cur) => `<option value="${esc(v)}" ${cur === v ? "selected" : ""}>${esc(text)}</option>`;
@@ -10742,7 +10758,7 @@
     const f = lgEditorState(null);
     const draftOnly = renderAdminRondas._lgDraftOnly === true;
     renderAdminRondas._lgDraftOnly = false;
-    const liguilla = f.stage === "liguilla";
+    const liguilla = f.stage === "liguilla" && lgAvailable();
     const ph = liguilla ? lgPhaseFromEditor(f) : null;
     // Un borrador nace sin publicar; nunca se despublica una jornada existente.
     const fields = liguilla ? { stage: "liguilla", ...(ph ? { phase: ph } : {}), ...(draftOnly ? { published: false } : {}) } : null;
@@ -12130,7 +12146,7 @@
             <p class="qz-field-error" id="qz-r-pen-err" role="alert" hidden></p>
             <button class="btn btn-primary" id="qz-r-pen-save" ${st.pen.enabled === !!penalty.enabled && !st.pen.enabled ? "hidden" : ""}>Guardar penalización</button>
           </section>
-          ${LG ? reglasLiguillaCardHtml(st.lg, unlocked, noPasswordYet) : ``}
+          ${lgAvailable() ? reglasLiguillaCardHtml(st.lg, unlocked, noPasswordYet) : ``}
           <section class="card qz-r-wide" aria-labelledby="qz-r-extras-t">
             <div class="qz-sec-head"><div class="eyebrow" id="qz-r-extras-t">Preguntas extra</div>${helpLinkHtml("reglas.extras")}</div>
             ${helpBlockHtml("reglas.extras")}
@@ -12203,7 +12219,7 @@
       toast(okMsg);
       return true;
     }
-    if(LG) wireReglasLiguilla(body, st.lg, repaint, saveProtected);
+    if(lgAvailable()) wireReglasLiguilla(body, st.lg, repaint, saveProtected);
     const pointsInput = document.getElementById("qz-r-points");
     if(pointsInput){
       pointsInput.addEventListener("input", () => {
@@ -13077,7 +13093,7 @@
     `;
 
     // Liguilla: organizar borradores y pendientes de colocar (D4).
-    const lgTopCardsHtml = (renderAdminRondas._org ? lgOrganizerHtml(lgOrganizerPlan())
+    const lgTopCardsHtml = !lgAvailable() ? lgStagedHtml() : (renderAdminRondas._org ? lgOrganizerHtml(lgOrganizerPlan())
       : (lgDrafts_rounds().length ? `<div class="card"><div class="eyebrow">Liguilla</div><p class="muted">Organiza qué partidos van en cada jornada borrador (ida, vuelta) antes de publicar. Sólo borradores: nada publicado se mueve.</p><button class="btn btn-ghost btn-sm" id="qz-lg-organize">Organizar partidos</button></div>` : ``))
       + lgStagedHtml();
     body.innerHTML = `
@@ -13111,7 +13127,7 @@
           // Liguilla: de dónde viene la fase (proveedor o Admin), o que falta.
           const faseTxt = isLg(r)
             ? (r.phase ? (r.phase.source === "provider" ? " · fase del calendario" : " · fase indicada por ti") : ` · <span style="color:var(--gold);">fase sin confirmar · indícala en Editar</span>`)
-            : (r.phaseLabel ? ` · ${esc(r.phaseLabel)}${r.phase && r.published === false ? " · ¿es de liguilla? márcala en Editar" : ""}` : "");
+            : (r.phaseLabel ? ` · ${esc(r.phaseLabel)}${r.phase && r.published === false && lgAvailable() ? " · ¿es de liguilla? márcala en Editar" : ""}` : "");
           return `
           <div class="history-item">
             <div><strong>${esc(roundTitle(r))}</strong>${isLg(r) ? ` <span class="lg-chip on">Liguilla</span>` : ``} <span class="muted">· ${isLg(r) ? esc("Jornada " + r.number + " · ") : ""}${esc(r.matches.length)} ${r.matches.length === 1 ? "partido" : "partidos"} · ${statusLabel}${r.provider ? " · importada" : ""}${faseTxt}</span>${pendientesTxt}</div>
@@ -14596,6 +14612,15 @@
       meta.groupName = document.getElementById("qz-group-name").value.trim() || meta.groupName;
       const newOwnerPw = typedPw;
       if(newOwnerPw) meta.settings.ownerPassword = newOwnerPw; // left blank = don't touch it, server keeps the old one
+      // Si el guardado no pasa, la competencia de esta pestaña vuelve a la
+      // guardada: nada de esta pantalla puede leer una competencia que el
+      // servidor no aceptó (p. ej. habilitar la liguilla).
+      const hadLeague = Object.prototype.hasOwnProperty.call(meta.settings, "sportsdbLeagueId"), prevLeague = meta.settings.sportsdbLeagueId;
+      const hadSeason = Object.prototype.hasOwnProperty.call(meta.settings, "sportsdbSeason"), prevSeason = meta.settings.sportsdbSeason;
+      const restoreCompetition = () => {
+        if(hadLeague) meta.settings.sportsdbLeagueId = prevLeague; else delete meta.settings.sportsdbLeagueId;
+        if(hadSeason) meta.settings.sportsdbSeason = prevSeason; else delete meta.settings.sportsdbSeason;
+      };
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
       sportsdbTeamsCache = null; // league may have changed — next visit to Jornadas re-fetches its real roster
@@ -14604,9 +14629,10 @@
         const ok = saved.ok;
         delete meta.settings.ownerPassword; // never keep it around locally longer than the request needs
         if(!ok){
+          restoreCompetition();
           saveBtn.disabled = false;
           saveBtn.textContent = originalLabel;
-          toast(saved.error === "admin_password_too_short" ? humanizeError(saved.error, saved) : "No se pudo guardar, intenta de nuevo");
+          toast(saved.error && ERROR_MESSAGES[saved.error] ? humanizeError(saved.error, saved) : "No se pudo guardar, intenta de nuevo", 6000);
           return;
         }
         // Onboarding B: the server kept the stored name, fee and points
@@ -14628,6 +14654,7 @@
       }catch(e){
         console.error(e);
         delete meta.settings.ownerPassword;
+        restoreCompetition();
         saveBtn.disabled = false;
         saveBtn.textContent = originalLabel;
         toast("No se pudo guardar, intenta de nuevo");

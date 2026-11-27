@@ -6,7 +6,9 @@
 //     node --test test/liguillaRulesCorrection.integration.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { itest, setup, teardown, dbQuery, call, kvPath, quiniela, Browser, freshIp } = require("./helpers/realServer");
+const { itest, setup, teardown, dbQuery, call, kvPath, quiniela: quinielaBase, Browser, freshIp } = require("./helpers/realServer");
+// La liguilla es sólo de Liga MX: estas quinielas guardan esa competencia.
+const quiniela = (tag) => quinielaBase(tag, { league: "4350" });
 const L = require("../liguillaScoring");
 
 const read = async (q) => (await call("GET", kvPath(q.slug), { headers: { "X-Qracks-Auth": q.owner } })).body.value;

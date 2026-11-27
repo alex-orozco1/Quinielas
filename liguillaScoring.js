@@ -192,7 +192,19 @@
     return Object.keys(p).every((k) => k === "round" || k === "leg" || k === "source");
   }
 
+  // La liguilla es EXCLUSIVA de Liga MX (TheSportsDB 4350). Cuenta sólo la
+  // competencia GUARDADA en la quiniela: sin competencia no hay liguilla, y
+  // nunca se deduce de un valor de respaldo de la pantalla.
+  const LIGA_MX_LEAGUE_ID = "4350";
+  function isLigaMxSettings(settings) {
+    if (!isObj(settings)) return false;
+    const id = settings.sportsdbLeagueId;
+    if (typeof id !== "string" && typeof id !== "number") return false;
+    return String(id).trim() === LIGA_MX_LEAGUE_ID;
+  }
+
   return Object.freeze({
+    LIGA_MX_LEAGUE_ID, isLigaMxSettings,
     GOALS_MIN, GOALS_MAX, POINTS_MAX, CAPTURES, OUTCOMES, MATCH_STATUS, STATUSES,
     PHASE_ROUNDS, PHASE_LEGS, PHASE_SOURCES, ROUND_LABEL, LEG_LABEL,
     isGoals, isScore, outcomeOfScore, isPoints, validateRules, sameRules,

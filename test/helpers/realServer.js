@@ -95,12 +95,13 @@ function Browser(ip) {
 const kvPath = (slug) => "/api/kv/" + encodeURIComponent(`quiniela:${slug}:meta`);
 
 // A quiniela with Ana (admin, PIN, admin password) and Beto (participant, PIN).
-async function quiniela(tag) {
+// opts.league: competencia guardada al crearla (p. ej. "4350", Liga MX).
+async function quiniela(tag, opts = {}) {
   const slug = `it-${tag}-${Date.now().toString(36)}${crypto.randomBytes(2).toString("hex")}`;
   const metaKey = `quiniela:${slug}:meta`;
   const owner = "owner-" + crypto.randomBytes(6).toString("hex");
   const anaPhone = Browser(freshIp());
-  const created = anaPhone.take(await call("POST", "/api/create-quiniela", { ip: anaPhone.ip, body: { slug, groupName: "IT " + tag, creatorName: "Ana", contact: "it", password: owner } }));
+  const created = anaPhone.take(await call("POST", "/api/create-quiniela", { ip: anaPhone.ip, body: { slug, groupName: "IT " + tag, creatorName: "Ana", contact: "it", password: owner, ...(opts.league ? { sportsdbLeagueId: opts.league } : {}) } }));
   assert.ok(created.status === 200 || created.status === 201, "create " + created.status);
   const ana = (await call("GET", kvPath(slug), { ip: anaPhone.ip })).body.value.participants[0];
   const anaPin = "4321";
