@@ -60,11 +60,11 @@ async function jugado(tag, { league = null, liguilla = false } = {}) {
 }
 const standingsOf = (st, q) => [{ id: q.beto.id, name: "Beto", pts: 1 }, { id: st.participants.find((p) => p.id !== q.beto.id).id, name: "Ana", pts: 0 }];
 async function terminar(q, kind, extra = {}) {
-  const st = await stored(q);
   const e = await entryOf(q);
   return closeWithSnapshot(q.slug, own(q), {
     expectedCycle: e.tournamentScope.editionSeq, closeIntentId: extra.closeIntentId || intentId(kind),
-    interrupt: kind === "interrupted", standings: extra.standings || standingsOf(st, q), ...extra.body,
+    // Sin tabla explícita, el helper la arma como la pantalla (standings.js).
+    interrupt: kind === "interrupted", standings: extra.standings, ...extra.body,
   });
 }
 // Lo que tiene que quedar SIEMPRE al empezar un torneo nuevo.
@@ -229,5 +229,48 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.equal(st.settings.sportsdbLeagueId, undefined, "la competencia sigue por confirmar");
     assert.equal(st.settings.liguilla, undefined, "las reglas archivadas no vuelven");
     assert.equal(st.settings.previousCompetition.sportsdbLeagueId, "4350");
+  });
+
+  itest("Technical QA P1: sólo la contraseña de administrador termina el torneo; un PIN de admin (co-admin o creadora) no", async () => {
+    const q = await jugado("tn-pin");
+    let v = await read(q);
+    v.participants.find((p) => p.id === q.beto.id).isAdmin = true;   // Beto co-admin
+    assert.equal((await write(q, v)).status, 200);
+    const c0 = (await entryOf(q)).tournamentScope.editionSeq;
+    const before = JSON.stringify(await stored(q));
+    const st = await stored(q);
+    for (const [name, headers] of [
+      ["PIN del co-admin", { "X-Qracks-Auth": q.beto.pin, "X-Qracks-Participant": q.beto.id }],
+      ["PIN de la creadora", { "X-Qracks-Auth": q.ana.pin, "X-Qracks-Participant": q.ana.id }],
+    ]) {
+      for (const interrupt of [true, false]) {
+        const r = await closeWithSnapshot(q.slug, headers, { expectedCycle: c0, closeIntentId: intentId("pin"), interrupt, standings: standingsOf(st, q) });
+        assert.deepEqual([r.status, r.body.error], [403, "tournament_owner_password_required"], name + " " + JSON.stringify(r.body));
+      }
+    }
+    assert.equal(JSON.stringify(await stored(q)), before, "nada cambió");
+    assert.equal(await picksRows(q), 1, "ningún pronóstico se borró");
+    assert.equal((await entryOf(q)).tournamentScope.editionSeq, c0);
+    const ok = await terminar(q, "interrupted");
+    assert.equal(ok.status, 200, "con la contraseña de administrador sí: " + JSON.stringify(ok.body));
+  });
+
+  itest("Technical QA P2: una tabla con puntos que no salen de los pronósticos se rechaza y no se borra nada", async () => {
+    const q = await jugado("tn-tabla");
+    const st = await stored(q);
+    const c0 = (await entryOf(q)).tournamentScope.editionSeq;
+    const ana = st.participants.find((p) => p.id !== q.beto.id);
+    for (const interrupt of [true, false]) {
+      const r = await closeWithSnapshot(q.slug, own(q), { expectedCycle: c0, closeIntentId: intentId("forge"), interrupt,
+        standings: [{ id: ana.id, name: "Ana", pts: 999 }, { id: q.beto.id, name: "Beto", pts: 0 }] });
+      assert.deepEqual([r.status, r.body.error], [409, "close_standings_mismatch"], JSON.stringify(r.body));
+    }
+    assert.equal(await picksRows(q), 1, "ningún pronóstico se borró");
+    assert.equal((await stored(q)).rounds.length, 3);
+    assert.equal((await entryOf(q)).tournamentScope.editionSeq, c0);
+    // La tabla verdadera (la de standings.js) sí pasa y queda archivada.
+    const ok = await terminar(q, "closed", { standings: [{ id: q.beto.id, name: "Beto", pts: 1 }, { id: ana.id, name: "Ana", pts: 0 }] });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
   });
 });

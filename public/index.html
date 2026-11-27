@@ -1712,6 +1712,7 @@
 <div id="quiniela-root"></div>
 
 <script src="/liguillaScoring.js"></script>
+<script src="/standings.js"></script>
 <script>
 (function(){
   const TEAMS = ["América","Atlante","Atlas","Atlético San Luis","Cruz Azul","Chivas","Juárez","León","Monterrey","Necaxa","Pachuca","Puebla","Pumas","Querétaro","Santos","Tigres","Toluca","Xolos"];
@@ -2018,6 +2019,8 @@
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     too_many_attempts: "Demasiados intentos. Espera un rato e intenta de nuevo, o entra desde un dispositivo donde ya hayas entrado.",
     owner_password_required: "Para cambiar quién es admin se necesita la contraseña de administrador.",
+    close_standings_mismatch: "La tabla no coincide con los puntos guardados, así que no se guardó nada. Vuelve a intentarlo; si se repite, descarga el respaldo y avísanos.",
+    tournament_owner_password_required: "Para cerrar el torneo o empezar uno nuevo se necesita la contraseña de administrador. No se cambió nada.",
     // Onboarding B (quinielas that remember their creator).
     creator_only: "Mientras no haya contraseña de administrador, sólo quien creó la quiniela puede nombrar o quitar admins.",
     creator_protected: "A quien creó la quiniela sólo se le puede quitar, quitar de admin o resetear el PIN con la contraseña de administrador.",
@@ -4463,44 +4466,10 @@
   // Claridad de puntos: las preguntas separadas en las de cada jornada
   // (byRound, por id de jornada) y las del torneo (temporada). Mismas reglas
   // de siempre; customBetPointsFor() es su suma.
+  // P1 · torneo nuevo: la Tabla se calcula en standings.js, el MISMO módulo
+  // con el que el servidor verifica la tabla final antes de archivarla.
   function customBetParts(participantId, participantMap, cutoffRoundNumber){
-    const parts = { byRound: Object.create(null), temporada: 0, total: 0 };
-    if(!meta.customBets || !meta.customBets.length) return parts;
-    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    if(!p) return parts;
-    // "temporada" bets have no round of their own, so they can't be placed on
-    // any specific past jornada. They must never leak backwards into earlier
-    // chart points (that would let a bet graded today rewrite what J1's real
-    // position was) — only "now" (cutoffRoundNumber omitted, the official
-    // table's case) or the most recent played round (progressData()'s final
-    // chart point, which represents "as of today") should see them.
-    const latestPlayedRoundNumber = Math.max(0, ...meta.rounds.filter(r => r.resultsPublished).map(r => r.number));
-    const includeTemporadaBets = cutoffRoundNumber == null || cutoffRoundNumber >= latestPlayedRoundNumber;
-    meta.customBets.forEach(bet => {
-      if(bet.scope === "temporada"){
-        if(!includeTemporadaBets) return;
-        const ans = p.customBetAnswers && p.customBetAnswers[bet.id];
-        if(ans && ans.correct === true){ parts.temporada += bet.points; parts.total += bet.points; }
-      } else if(bet.scope === "jornada"){
-        meta.rounds.forEach(r => {
-          // AUTO-001 HOTFIX: unlike per-match points (which can only exist
-          // for resultsPublished:true rounds, and resultsPublished can only
-          // ever become true through the one guarded handler that already
-          // requires published !== false — see the publish-results click
-          // handler), jornada-scope custom bet correctness is toggled by a
-          // separate checkbox that isn't gated by resultsPublished at all.
-          // An unpublished round must never contribute points either way.
-          if(r.published === false) return;
-          if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-          const res = r.customBetResults && r.customBetResults[bet.id];
-          if(res && res[participantId] === true){
-            parts.byRound[r.id] = (parts.byRound[r.id] || 0) + bet.points;
-            parts.total += bet.points;
-          }
-        });
-      }
-    });
-    return parts;
+    return QS.customBetParts(meta, participantId, participantMap, cutoffRoundNumber);
   }
   function customBetPointsFor(participantId, participantMap, cutoffRoundNumber){
     return customBetParts(participantId, participantMap, cutoffRoundNumber).total;
@@ -4541,7 +4510,7 @@
   // penalized, even after its deadline passes; participants do not even see
   // it.
   function isRoundEligibleForPenalty(round, penalty){
-    return round.published !== false && round.number >= penalty.startsAtRound && isRoundLocked(round);
+    return QS.isRoundEligibleForPenalty(round, penalty, serverNow());
   }
   // Resolves the fate of every currently eligible+closed+not-yet-resolved
   // round, for EVERY participant (paid or not) -- using each participant's
@@ -4596,47 +4565,7 @@
   // existe (byRound, por id) y los de jornadas eliminadas (deleted). Mismas
   // reglas de siempre; penaltyPointsFor() es su suma.
   function penaltyParts(p, cutoffRoundNumber){
-    const parts = { byRound: Object.create(null), deleted: 0, total: 0 };
-    const penalty = meta.paymentPenalty;
-    if(!penalty || !penalty.enabled || !penalty.startsAtRound || !p) return parts;
-    const perRound = penalty.pointsPerRound != null ? penalty.pointsPerRound : 1;
-    const ledger = p.penalizedRounds || {};
-    const add = (roundId, n) => { parts.byRound[roundId] = (parts.byRound[roundId] || 0) + n; parts.total += n; };
-    // Permanent ledger entries always count exactly as resolved (0 for
-    // exempt, perRound-at-the-time for penalized) -- this is what survives
-    // reopening/deadline edits/round deletion/later paid toggles. The round
-    // object may not even exist anymore; the ledger is keyed by id with the
-    // outcome already frozen in.
-    meta.rounds.forEach(r => {
-      if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-      if(r.id in ledger) add(r.id, ledger[r.id]);
-    });
-    // A round could be deleted after being resolved -- its outcome still
-    // counts even though it no longer appears in meta.rounds at all.
-    // AUD-03: except a round of a CLOSED tournament (archived in
-    // pastTournaments). Its discount belongs to that tournament's history and
-    // never subtracts in the current one -- also for quinielas closed before
-    // the close started archiving the ledger.
-    if(cutoffRoundNumber == null){
-      const archived = new Set();
-      (meta.pastTournaments || []).forEach(t => ((t && t.rounds) || []).forEach(r => { if(r && r.id != null) archived.add(String(r.id)); }));
-      Object.keys(ledger).forEach(roundId => {
-        if(archived.has(String(roundId))) return;
-        if(!meta.rounds.some(r => r.id === roundId)){ parts.deleted += ledger[roundId]; parts.total += ledger[roundId]; }
-      });
-    }
-    // Live top-up: only for rounds that have NEVER been resolved before
-    // (not in the ledger at all -- not even as a 0/exempt entry), and only
-    // while currently unpaid. Once a round has ANY resolution, it never
-    // re-enters live evaluation, which is exactly what stops "closed while
-    // paid" rounds from starting to penalize after a later unpaid toggle.
-    if(!p.paid){
-      meta.rounds.forEach(r => {
-        if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-        if(isRoundEligibleForPenalty(r, penalty) && !(r.id in ledger)) add(r.id, perRound);
-      });
-    }
-    return parts;
+    return QS.penaltyParts(meta, p, cutoffRoundNumber, serverNow());
   }
   function penaltyPointsFor(p, cutoffRoundNumber){
     return penaltyParts(p, cutoffRoundNumber).total;
@@ -4646,37 +4575,11 @@
   // cuentan con resultados publicados. Regular: aciertos × puntos por acierto;
   // liguilla: base + bono con las reglas de ESA jornada (liguillaScoring.js).
   function roundMatchScore(r, roundPicks){
-    const lg = isLg(r);
-    if(!r.resultsPublished) return { pts: 0, played: 0, hits: 0, exact: 0, base: 0, bonus: 0, lg, scored: false };
-    if(lg){
-      const sr = LG.scoreRound(r, roundPicks);
-      return { pts: sr.total, played: sr.scored, hits: sr.resultHits, exact: sr.exactHits, base: sr.base, bonus: sr.bonus, lg, scored: true };
-    }
-    const perPick = (meta.settings && meta.settings.pointsPerCorrectPick != null) ? meta.settings.pointsPerCorrectPick : 1;
-    let pts = 0, played = 0, hits = 0;
-    r.matches.forEach(m => {
-      const result = r.results ? r.results[m.id] : null;
-      if(!result) return;
-      played++;
-      const pick = roundPicks ? roundPicks[m.id] : null;
-      if(pick && pick === result){ pts += perPick; hits++; }
-    });
-    return { pts, played, hits, exact: 0, base: pts, bonus: 0, lg, scored: true };
+    return QS.roundMatchScore(meta, r, roundPicks, LG);
   }
 
   function pointsFor(participantId, participantMap, cutoffRoundNumber){
-    const picks = allPicksCache[participantId] || {};
-    let pts = 0, played = 0;
-    meta.rounds.forEach(r => {
-      if(!r.resultsPublished) return;
-      if(cutoffRoundNumber != null && r.number > cutoffRoundNumber) return;
-      const sm = roundMatchScore(r, picks[r.id]);
-      pts += sm.pts; played += sm.played;
-    });
-    const p = participantMap ? participantMap.get(participantId) : meta.participants.find(x => x.id === participantId);
-    pts += customBetPointsFor(participantId, participantMap, cutoffRoundNumber);
-    pts -= penaltyPointsFor(p, cutoffRoundNumber);
-    return {pts, played};
+    return QS.pointsFor(meta, allPicksCache[participantId] || {}, participantId, participantMap, cutoffRoundNumber, serverNow(), LG);
   }
 
   function penaltyFor(participantId, participantMap){
@@ -4725,14 +4628,7 @@
   function ptsText(n){ return (n < 0 ? "−" + Math.abs(n) : String(n)) + " " + (Math.abs(n) === 1 ? "pt" : "pts"); }
 
   function standingsList(){
-    // Built once per call instead of doing a linear .find() per participant
-    // inside pointsFor/penaltyFor/customBetPointsFor — turns what was an O(n²)
-    // pass into O(n) for the whole standings table.
-    const participantMap = new Map(meta.participants.map(p => [p.id, p]));
-    return meta.participants.map(p => {
-      const {pts} = pointsFor(p.id, participantMap);
-      return {...p, pts, penalty: penaltyFor(p.id, participantMap)};
-    }).sort((a,b) => b.pts - a.pts);
+    return QS.standingsList(meta, allPicksCache, serverNow(), LG);
   }
 
   // Dense ranking: participants tied on points share the same position, and the
@@ -4764,6 +4660,10 @@
     }
     // Liguilla: sin /liguillaScoring.js no se puede puntuar la liguilla. Se
     // detiene la pantalla en vez de puntuarla como fase regular sin avisar.
+    if(!QS){
+      root.innerHTML = `<div class="login-wrap"><div class="login-card"><p style="text-align:center;">No pudimos cargar la tabla de puntos. Revisa tu conexión y recarga la página.</p><button class="btn btn-primary" style="width:100%;" onclick="location.reload()">Recargar</button></div></div>`;
+      return;
+    }
     if(!LG && Array.isArray(meta.rounds) && meta.rounds.some(r => r && r.stage === "liguilla")){
       root.innerHTML = `<div class="login-wrap"><div class="login-card"><p style="text-align:center;">No pudimos cargar las reglas de liguilla. Revisa tu conexión y recarga la página.</p><button class="btn btn-primary" style="width:100%;" onclick="location.reload()">Recargar</button></div></div>`;
       return;
@@ -9342,6 +9242,8 @@
   // servidor: aquí sólo se pinta. Una jornada sin `stage` es fase regular y
   // nada de este bloque la toca.
   const LG = window.QracksLiguilla || null;
+  // La Tabla (standings.js): la misma fórmula que usa el servidor.
+  const QS = window.QracksStandings || null;
   // La liguilla es sólo de Liga MX y según la competencia GUARDADA en la
   // quiniela (liguillaScoring.isLigaMxSettings, la misma regla que aplica el
   // servidor). Fuera de Liga MX no se ofrece configurarla ni crear jornadas de

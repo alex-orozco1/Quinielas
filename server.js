@@ -25,6 +25,8 @@ const { outcomeFromRegulation } = require("./scoreContract");
 const liguillaRules = require("./liguillaRules");
 const { mergePicksWrite } = require("./picksMerge");
 const liguillaScoringModule = require("./liguillaScoring");
+// La Tabla: el MISMO módulo que usa el navegador (standings.js).
+const standingsModule = require("./standings");
 const { canonical } = require("./roundsConcurrency");
 const {
   readStoredVersion, readExpectedVersion, isFreshWrite, stampVersion, mergePlatformIndex,
@@ -2732,6 +2734,13 @@ app.post("/api/quinielas/:slug/staged/place", async (req, res) => {
 
 // El módulo de puntos de la liguilla, el MISMO archivo que usa el servidor.
 // Sin caché larga: si cambia con un deploy, el navegador lo vuelve a pedir.
+// La Tabla, el MISMO archivo que usa el servidor para verificar la tabla final.
+app.get("/standings.js", (req, res) => {
+  res.set("Cache-Control", "no-cache");
+  res.type("application/javascript");
+  res.sendFile(path.join(__dirname, "standings.js"));
+});
+
 app.get("/liguillaScoring.js", (req, res) => {
   res.set("Cache-Control", "no-cache");
   res.type("application/javascript");
@@ -3655,6 +3664,22 @@ function closePenaltiesOf(meta, nowMs) {
   return out;
 }
 
+// true si la tabla recibida NO coincide, participante por participante, con la
+// que calcula el servidor (standings.js) a la hora de la lectura o a la de
+// ahora. Sólo compara puntos: el orden y la lista completa ya los valida
+// closeStandingsProblem().
+function closeStandingsMismatch(meta, picksById, standings, standingsAt) {
+  const nowMs = Date.now();
+  const askedAt = typeof standingsAt === "string" ? Date.parse(standingsAt) : NaN;
+  const readAtMs = Number.isFinite(askedAt) && askedAt <= nowMs && askedAt >= nowMs - 6 * 3600 * 1000 ? askedAt : nowMs;
+  const sent = new Map((Array.isArray(standings) ? standings : []).map((r) => [r.id, r.pts]));
+  const matchesAt = (ms) => {
+    const table = standingsModule.standingsList(meta, picksById || {}, ms, liguillaScoringModule);
+    return table.length === sent.size && table.every((r) => sent.has(r.id) && sent.get(r.id) === r.pts);
+  };
+  return !(matchesAt(readAtMs) || (readAtMs !== nowMs && matchesAt(nowMs)));
+}
+
 function archivedCloseSummary(meta, standings) {
   const names = new Map((Array.isArray(meta && meta.participants) ? meta.participants : [])
     .filter((p) => p && p.id != null).map((p) => [p.id, typeof p.name === "string" ? p.name.trim().slice(0, 80) : ""]));
@@ -3750,11 +3775,25 @@ async function finishTournament(req, res, kind) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "not_found" });
     }
-    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, metaBefore);
-    if (!isAdminOrOwner) {
-      await client.query("ROLLBACK");
-      if (sendIfCredentialThrottled(req, res)) return;
-      return res.status(403).json({ error: "forbidden" });
+    // Terminar el torneo borra los pronósticos de todos (irreversible). Con
+    // contraseña de administrador guardada, sólo esa contraseña lo hace: un
+    // PIN de admin (co-admin) no basta, igual que no basta para cambiar
+    // cuota, puntos o nombre (RULE_SETTINGS_FIELDS). Se comprueba UNA vez,
+    // para no contar dos intentos fallidos (Technical QA P1).
+    const storedOwnerPassword = !!(metaBefore.settings && metaBefore.settings.ownerPassword);
+    if (storedOwnerPassword) {
+      if (!headerIsOwnerPassword(req, slug, metaBefore)) {
+        await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
+        return res.status(403).json({ error: "tournament_owner_password_required" });
+      }
+    } else {
+      const { isAdminOrOwner } = computeRequesterIdentity(req, slug, metaBefore);
+      if (!isAdminOrOwner) {
+        await client.query("ROLLBACK");
+        if (sendIfCredentialThrottled(req, res)) return;
+        return res.status(403).json({ error: "forbidden" });
+      }
     }
     if (!isUsableIntentId(intentId)) {
       await client.query("ROLLBACK");
@@ -3810,7 +3849,8 @@ async function finishTournament(req, res, kind) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "close_basis_required" });
     }
-    const basisNow = closeBasisOf(metaBefore, await readPicksRows(slug, metaBefore, client));
+    const picksRowsNow = await readPicksRows(slug, metaBefore, client);
+    const basisNow = closeBasisOf(metaBefore, picksRowsNow);
     if (basisNow !== body.basis) {
       await client.query("ROLLBACK");
       console.log("close refused: stale basis", { slug });
@@ -3820,6 +3860,18 @@ async function finishTournament(req, res, kind) {
     if (standingsProblem) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: standingsProblem });
+    }
+    // Technical QA P2 (P1 · torneo nuevo). Los pronósticos se borran abajo, así
+    // que la tabla que se archiva NO se toma a la palabra: el servidor la
+    // recalcula con la MISMA fórmula que el navegador (standings.js), sobre la
+    // meta y los pronósticos leídos bajo lock, y sólo sigue si los puntos de
+    // cada participante coinciden. La hora de los descuentos en vivo: la de la
+    // lectura de la pantalla (standingsAt, acotada) o la de ahora — la pantalla
+    // calculó entre las dos.
+    if (closeStandingsMismatch(metaBefore, picksRowsNow, body.standings, body.standingsAt)) {
+      await client.query("ROLLBACK");
+      console.log("close refused: standings mismatch", { slug, kind });
+      return res.status(409).json({ error: "close_standings_mismatch" });
     }
     // Lo que se archiva sale de la tabla ya validada (cada participante una
     // vez, en orden) con los NOMBRES guardados, leídos bajo lock: una fila

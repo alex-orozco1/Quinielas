@@ -4,6 +4,7 @@
 // (fijación, alineación, desplazamiento) lo cubre el recorrido en navegador.
 
 const test = require("node:test");
+require("./helpers/standingsGlobal");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");

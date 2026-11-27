@@ -190,9 +190,12 @@ const databaseUrl = () => dbUrl;
 async function closeWithSnapshot(slug, headers, { expectedCycle, closeIntentId, interrupt, standings: given, ...rest } = {}) {
   const snap = await call("POST", `/api/quinielas/${slug}/admin-snapshot`, { headers, body: {} });
   if (snap.status !== 200) return snap;
-  const standings = given || snap.body.meta.participants.map((p) => ({ id: p.id, name: p.name, pts: 0 }));
+  // La tabla, como la arma la pantalla: standings.js sobre la lectura de admin,
+  // a la hora de esa lectura (el servidor la recalcula y debe coincidir).
+  const standings = given || require("../../standings").standingsList(snap.body.meta, snap.body.picks, Date.parse(snap.body.readAt), require("../../liguillaScoring"))
+    .map((p) => ({ id: p.id, name: p.name, pts: p.pts }));
   return call("POST", `/api/quinielas/${slug}/tournament/${interrupt ? "new-cycle" : "close"}`, {
-    headers, body: { expectedCycle, closeIntentId, standings, basis: snap.body.basis, ...rest },
+    headers, body: { expectedCycle, closeIntentId, standings, basis: snap.body.basis, standingsAt: snap.body.readAt, ...rest },
   });
 }
 

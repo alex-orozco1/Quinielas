@@ -8,6 +8,7 @@
 // E2E de la entrega.
 
 const test = require("node:test");
+require("./helpers/standingsGlobal");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -59,9 +60,9 @@ test("R4 · el texto se arma con los números reales: total, personas y singular
 });
 
 test("R4 · con la penalización ya apagada, penaltyPointsFor da 0 y no hay aviso", () => {
-  const f = new Function("meta", `${fn("function penaltyParts(p, cutoffRoundNumber)")}\n${fn("function penaltyPointsFor(p, cutoffRoundNumber)")}\nreturn penaltyPointsFor;`);
+  const f = new Function("meta", "serverNow", `${fn("function penaltyParts(p, cutoffRoundNumber)")}\n${fn("function penaltyPointsFor(p, cutoffRoundNumber)")}\nreturn penaltyPointsFor;`);
   const meta = { paymentPenalty: { enabled: false, startsAtRound: 1, pointsPerRound: 2 }, rounds: [{ id: "r1", number: 1 }] };
-  assert.equal(f(meta)({ penalizedRounds: { r1: 2 } }), 0);
+  assert.equal(f(meta, () => Date.now())({ penalizedRounds: { r1: 2 } }), 0);
 });
 
 // ---- R5 ---------------------------------------------------------------------

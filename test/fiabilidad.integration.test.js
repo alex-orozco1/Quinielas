@@ -381,8 +381,11 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     m.paymentPenalty.enabled = false;
     await putMeta(q, m);
     const snap = await snapshot(q);
-    const standings = [{ id: q.ana.id, name: "Ana", pts: 0 }, { id: q.beto.id, name: "Beto", pts: 0 }];
-    assert.equal((await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis })).status, 200);
+    // La tabla como la arma la pantalla (standings.js): con la penalización
+    // apagada no resta nada. El servidor la recalcula y debe coincidir.
+    const standings = require("../standings").standingsList(snap.body.meta, snap.body.picks, Date.parse(snap.body.readAt), require("../liguillaScoring"))
+      .map((p) => ({ id: p.id, name: p.name, pts: p.pts }));
+    assert.equal((await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis, standingsAt: snap.body.readAt })).status, 200);
     const after = await storedMeta(q);
     assert.equal(after.pastTournaments.at(-1).penalties, undefined);
     after.participants.forEach((p) => assert.deepEqual(p.penalizedRounds || {}, {}));
