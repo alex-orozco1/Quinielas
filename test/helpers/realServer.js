@@ -199,7 +199,19 @@ async function closeWithSnapshot(slug, headers, { expectedCycle, closeIntentId, 
   });
 }
 
+// Cierre formal = hace falta al menos un resultado publicado (409
+// close_requires_results). Para las pruebas cuyo tema es otro: agrega, directo
+// en la base, una jornada ya jugada (cierre pasado, resultado publicado, sin
+// pronósticos) con un número que no usa nadie más.
+async function withPlayedRound(metaKey) {
+  const row = (await dbQuery("SELECT value FROM kv WHERE key = $1", [metaKey])).rows[0];
+  const v = row.value;
+  v.rounds = (v.rounds || []).concat([{ id: "r_jugada90", number: 90, deadline: new Date(Date.now() - 3600e3).toISOString(),
+    published: true, resultsPublished: true, results: { m_jugada90: "A" }, matches: [{ id: "m_jugada90", teamA: "Local 90", teamB: "Visita 90" }] }]);
+  await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [metaKey, JSON.stringify(v)]);
+}
+
 module.exports = {
   SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, withRowLocked, serverOutput, databaseUrl,
-  freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom, closeWithSnapshot,
+  freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom, closeWithSnapshot, withPlayedRound,
 };

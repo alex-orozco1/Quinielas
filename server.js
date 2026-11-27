@@ -1290,6 +1290,9 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
       if (f in oldSettings) merged.settings[f] = JSON.parse(JSON.stringify(oldSettings[f]));
       else delete merged.settings[f];
     }
+    // Ni la regla de descuentos del torneo anterior.
+    if (oldValue && "paymentPenalty" in oldValue) merged.paymentPenalty = JSON.parse(JSON.stringify(oldValue.paymentPenalty));
+    else delete merged.paymentPenalty;
   }
   merged.tournamentEpoch = storedEpoch;
 
@@ -3873,6 +3876,13 @@ async function finishTournament(req, res, kind) {
     // de la pantalla, así que su tabla nunca coincidiría con la del servidor.
     // Se dice CUÁL y cómo salir, en vez de un desacuerdo sin salida
     // (Technical QA P2 de 587d1d8). No se revelan pronósticos abiertos.
+    // Un cierre FORMAL declara campeón: sin ningún resultado de partidos
+    // publicado no hay de dónde (Product). La salida es «sin cierre formal».
+    if (!interrupted && !(Array.isArray(metaBefore.rounds) ? metaBefore.rounds : [])
+      .some((r) => r && r.published !== false && r.resultsPublished)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "close_requires_results" });
+    }
     const openWithResults = (Array.isArray(metaBefore.rounds) ? metaBefore.rounds : []).find((r) => {
       if (!r || !r.resultsPublished || r.published === false) return false;
       const t = new Date(r.deadline).getTime();
@@ -3932,6 +3942,11 @@ async function finishTournament(req, res, kind) {
     // nuevo empieza sin configurar (los candados ya son por ciclo).
     const liguillaRulesArchived = meta.settings && meta.settings.liguilla != null
       ? JSON.parse(JSON.stringify(meta.settings.liguilla)) : null;
+    // La regla de descuentos por no pagar es de ESTE torneo (Product): queda
+    // en su archivo y el torneo nuevo empieza sin ella (desactivada, sin
+    // puntos); el organizador la vuelve a configurar si la quiere.
+    const paymentPenaltyArchived = meta.paymentPenalty != null
+      ? JSON.parse(JSON.stringify(meta.paymentPenalty)) : null;
     meta.pastTournaments = Array.isArray(meta.pastTournaments) ? meta.pastTournaments : [];
     // Interrumpido sin nada que guardar (ninguna jornada publicada, pregunta
     // ni descuento): no se crea una entrada vacía en el historial.
@@ -3944,6 +3959,7 @@ async function finishTournament(req, res, kind) {
       ...(Object.keys(archivedPenalties).length ? { penalties: archivedPenalties } : {}),
       ...(archivedBets.legacyScorer ? { legacyScorerBet: archivedBets.legacyScorer } : {}),
       ...(liguillaRulesArchived ? { liguillaRules: liguillaRulesArchived } : {}),
+      ...(paymentPenaltyArchived ? { paymentPenaltyRules: paymentPenaltyArchived } : {}),
       // Which cycle this archive belongs to, and which intention produced it.
       // Both are written by the server; they make a duplicated archive
       // detectable after the fact instead of being an indistinguishable
@@ -3969,6 +3985,8 @@ async function finishTournament(req, res, kind) {
     meta.settings = meta.settings && typeof meta.settings === "object" ? meta.settings : {};
     // Liguilla del torneo nuevo: sin configurar (lo anterior quedó archivado).
     delete meta.settings.liguilla;
+    // Descuentos por no pagar: el estado de una quiniela nueva (sin regla).
+    delete meta.paymentPenalty;
     // Competencia del torneo nuevo: la anterior queda como SUGERENCIA y el
     // organizador la confirma o elige otra (Product). Mientras tanto la
     // quiniela no tiene competencia: nada se importa ni se habilita por ella.

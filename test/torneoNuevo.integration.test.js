@@ -288,12 +288,56 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.equal(await picksRows(q), 1, "ningún pronóstico se borró");
     assert.equal((await stored(q)).rounds.length, 3);
     assert.equal((await entryOf(q)).tournamentScope.editionSeq, c0);
-    // La salida que indica el mensaje: su cierre a una fecha que ya pasó.
-    const m2 = await stored(q);
-    m2.rounds.find((r) => r.id === "r1").deadline = new Date(Date.now() - 60e3).toISOString();
-    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m2)]);
+    // La salida que indica el mensaje (Technical QA P2 de db5bb9f): el
+    // organizador edita esa jornada y le pone un cierre que ya pasó — por la
+    // API normal, como el editor de Jornadas (que lo permite con resultados).
+    const v2 = await read(q);
+    v2.rounds.find((r) => r.id === "r1").deadline = new Date(Date.now() - 60e3).toISOString();
+    const moved = await write(q, v2);
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
     const ok = await terminar(q, "closed");
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
+  });
+
+  itest("Product: la regla de descuentos por no pagar NO pasa al torneo nuevo; queda en el archivo con sus descuentos", async () => {
+    for (const kind of ["interrupted", "closed"]) {
+      const q = await jugado("tn-pen-" + kind[0]);
+      // Regla activa desde la Jornada 1, 2 puntos; Ana no ha pagado y ya tiene un descuento registrado.
+      const m = await stored(q);
+      m.paymentPenalty = { enabled: true, startsAtRound: 1, pointsPerRound: 2 };
+      const ana = m.participants.find((p) => p.id !== q.beto.id);
+      ana.penalizedRounds = { r1: 2 };
+      await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+      const r = await terminar(q, kind);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      const st = await stored(q);
+      assert.equal(st.paymentPenalty, undefined, "el torneo nuevo empieza sin regla de descuentos (desactivada, sin puntos)");
+      assert.ok(st.participants.every((p) => !p.penalizedRounds || Object.keys(p.penalizedRounds).length === 0), "sin descuentos acumulados");
+      const past = st.pastTournaments[0];
+      assert.deepEqual(past.paymentPenaltyRules, { enabled: true, startsAtRound: 1, pointsPerRound: 2 }, "la regla queda en el archivo");
+      assert.equal(past.penalties[ana.id].r1, 2, "y los descuentos históricos también");
+      // Un guardado normal del organizador no la revive sola: hay que configurarla otra vez.
+      const v = await read(q);
+      v.groupName = "Otra";
+      assert.equal((await write(q, v)).status, 200);
+      assert.equal((await stored(q)).paymentPenalty, undefined);
+    }
+  });
+
+  itest("Product: el cierre formal sin resultados publicados se bloquea; «sin cierre formal» sí funciona", async () => {
+    const q = await quiniela("tn-nores");
+    let v = await read(q);
+    v.rounds = [{ id: "p1", number: 1, deadline: enHoras(24), results: {}, resultsPublished: false, published: true, matches: [{ id: "pm", teamA: "A", teamB: "B" }] }];
+    assert.equal((await write(q, v)).status, 200);
+    const c0 = (await entryOf(q)).tournamentScope.editionSeq;
+    const r = await terminar(q, "closed");
+    assert.deepEqual([r.status, r.body.error], [409, "close_requires_results"], JSON.stringify(r.body));
+    assert.equal((await entryOf(q)).tournamentScope.editionSeq, c0, "no avanzó");
+    assert.equal((await stored(q)).rounds.length, 1, "nada se archivó ni se vació");
+    const ok = await terminar(q, "interrupted");
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const st = await stored(q);
+    assert.deepEqual([st.rounds.length, st.pastTournaments[0].kind, st.pastTournaments[0].champion], [0, "interrupted", null]);
   });
 });

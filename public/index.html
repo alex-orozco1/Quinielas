@@ -2019,7 +2019,8 @@
     pin_required: "Necesitas activar tu PIN antes de continuar.",
     too_many_attempts: "Demasiados intentos. Espera un rato e intenta de nuevo, o entra desde un dispositivo donde ya hayas entrado.",
     owner_password_required: "Para cambiar quién es admin se necesita la contraseña de administrador.",
-    close_round_results_open: "Una jornada tiene resultados publicados pero su cierre todavía no llega, así que sus pronósticos siguen ocultos y no se puede armar la tabla. Cambia su fecha de cierre a una que ya pasó en Admin → Jornadas y vuelve a intentarlo. No se cambió nada.",
+    close_requires_results: "Todavía no hay resultados de partidos publicados, así que no hay un campeón que declarar. Usa «Empezar torneo nuevo sin cierre formal». No se cambió nada.",
+    close_round_results_open: "Una jornada tiene resultados publicados pero su cierre todavía no llega, así que sus pronósticos siguen ocultos y no se puede armar la tabla. En Admin → Jornadas, toca «Editar» en esa jornada, pon una fecha de cierre que ya pasó y guarda; luego vuelve a intentarlo. No se cambió nada.",
     close_standings_mismatch: "La tabla no coincide con los puntos guardados, así que no se guardó nada. Vuelve a intentarlo; si se repite, descarga el respaldo y avísanos.",
     tournament_owner_password_required: "Para cerrar el torneo o empezar uno nuevo se necesita la contraseña de administrador. No se cambió nada.",
     // Onboarding B (quinielas that remember their creator).
@@ -4721,7 +4722,7 @@
       const dest = resolveSetupDestination(meta, currentUser);
       if(dest === "review" || dest === "manual"){ startSetupFlow(); return; }
       if(dest === "invite"){ activeTab = "jornada"; renderApp(); openInviteSheet({ first: true }); return; }
-      if(dest === "tournament"){ activeTab = "admin"; adminSubTab = "rondas"; renderApp(); return; }
+      if(dest === "tournament"){ activeTab = "admin"; adminSubTab = "rondas"; renderAdminRondas._revealCompetition = true; renderApp(); return; }
     }
     renderApp();
   }
@@ -5216,6 +5217,7 @@
     } else if(dest === "tournament"){
       setupContinuityResolved = true;
       activeTab = "admin"; adminSubTab = "rondas";
+      renderAdminRondas._revealCompetition = true;
       await render();
     } else if(dest === "invite"){
       setupContinuityResolved = true;
@@ -7984,7 +7986,7 @@
       return {
         title: "Empieza el torneo nuevo",
         text: pendingCompetition() ? "Confirma la competencia y crea la primera jornada en Admin → Jornadas." : "Crea la primera jornada del torneo nuevo en Admin → Jornadas.",
-        actions: [{ id: "rounds", label: "Ir a Jornadas" }],
+        actions: [{ id: "rounds", label: "Ir a Jornadas", reveal: true }],
       };
     }
     if(!published.length){
@@ -8066,6 +8068,7 @@
       if(id === "table"){ activeTab = "tabla"; await render(); return; }
       activeTab = "admin";
       adminSubTab = id === "results" ? "resultados" : id === "participation" ? "participacion" : "rondas";
+      if(id === "rounds" && pendingCompetition()) renderAdminRondas._revealCompetition = true;
       await render();
     }));
   }
@@ -9075,7 +9078,7 @@
                   ? `<strong>Torneo sin cierre formal</strong> <span class="muted">· sin campeón</span>`
                   : (t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${esc(t.champion.pts)} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`)}
               </div>
-              <div class="muted" style="margin-bottom:6px;">${interrupted ? "Interrumpido" : "Cerrado"} el ${date} · ${esc(rounds.length)} ${rounds.length === 1 ? "jornada jugada" : "jornadas jugadas"}</div>
+              <div class="muted" style="margin-bottom:6px;">${interrupted ? "Interrumpido" : "Cerrado"} el ${date} · ${esc(rounds.length)} ${rounds.length === 1 ? "jornada publicada" : "jornadas publicadas"}</div>
               ${archivedBetsHtml(t)}
               ${tableBlock}
             </div>
@@ -11206,11 +11209,30 @@
       const pw = document.getElementById("qz-owner-pw");
       if(pw){
         pw.focus({ preventScroll: true });
-        scrollBelowHeader(pw.closest(".card") || pw);
         toast("Para cerrar el torneo o empezar uno nuevo, entra con la contraseña de administrador.", 6000);
+        // Ajustes sigue acomodándose (plan, avisos): se vuelve a llevar la
+        // contraseña a la vista hasta que deje de moverse (UX P2-2b).
+        keepInView(pw.closest(".card") || pw);
         return;
       }
       await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  // Mantiene `el` a la vista mientras la pantalla termina de pintarse
+  // (~1.5 s): si algo arriba lo empuja, se vuelve a llevar. Se detiene si la
+  // persona desplaza o el elemento desaparece.
+  async function keepInView(el){
+    if(!el) return;
+    scrollBelowHeader(el);
+    let lastY = window.scrollY;
+    for(let i = 0; i < 10; i++){
+      await new Promise(r => setTimeout(r, 150));
+      if(!document.body.contains(el) || Math.abs(window.scrollY - lastY) > 2) return;
+      const headerEl = document.querySelector("#quiniela-root .qz-header");
+      const hb = headerEl ? headerEl.getBoundingClientRect().bottom : 0;
+      const r = el.getBoundingClientRect();
+      if(r.top < hb || r.bottom > window.innerHeight) scrollBelowHeader(el);
+      lastY = window.scrollY;
     }
   }
   // Lleva la vista a `el`, por debajo del encabezado fijo.
@@ -13044,7 +13066,7 @@
         <button class="btn btn-ghost btn-sm" id="qz-add-match" style="margin-bottom:14px;">+ Agregar partido</button>
         <div class="field">
           <label>Fecha y hora límite para votar</label>
-          <input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">
+          <input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" ${editingRound && editingRound.resultsPublished ? "" : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}>
           <p class="muted" id="qz-deadline-error" style="color:var(--red);display:none;margin-top:4px;"></p>
         </div>
         <div style="display:flex;gap:8px;">
@@ -13108,6 +13130,17 @@
 
     lgWireEditor(body, editingRound);
     wireConfirmCompetition(body);
+    // Llegar a un torneo nuevo (volver a entrar, «Ir a Jornadas»): la tarjeta de
+    // la competencia, a la vista y con el foco, también a 320 px (UX P3-B).
+    if(renderAdminRondas._revealCompetition){
+      renderAdminRondas._revealCompetition = false;
+      const card = document.getElementById("qz-confirm-competition");
+      if(card){
+        const t = document.getElementById("qz-cc-t");
+        if(t){ t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); }
+        keepInView(card);
+      }
+    }
     const organizeBtn = document.getElementById("qz-lg-organize");
     if(organizeBtn) organizeBtn.addEventListener("click", () => { renderAdminRondas._org = null; lgOrganizerPlan(); renderAdminRondas(body); });
     if(renderAdminRondas._org && document.getElementById("qz-lg-organizer")) wireOrganizer(body);
@@ -13297,7 +13330,16 @@
       // rendered, since time can pass while the editor stays open -- see
       // CASE F).
       const deadlineErrorEl = document.getElementById("qz-deadline-error");
-      if(!isSetupDeadlineValid(draft.deadline, serverNow())){
+      // Una jornada con resultados publicados ya se jugó: su cierre puede
+      // quedar en el pasado (es la salida que da close_round_results_open
+      // cuando datos antiguos la dejaron con un cierre en el futuro).
+      const resultsAlreadyPublished = !!(editingRound && editingRound.resultsPublished);
+      if(resultsAlreadyPublished && !Number.isFinite(new Date(deadlineIsoFromInput(draft.deadline, editingRound.deadline)).getTime())){
+        deadlineErrorEl.textContent = "Elige una fecha y hora válidas.";
+        deadlineErrorEl.style.display = "block";
+        return;
+      }
+      if(!resultsAlreadyPublished && !isSetupDeadlineValid(draft.deadline, serverNow())){
         deadlineErrorEl.textContent = "Elige una fecha y hora a partir de ahora.";
         deadlineErrorEl.style.display = "block";
         return;
@@ -14485,15 +14527,15 @@
         <p class="muted">Las dos opciones dejan el tablero <strong>vacío</strong>: el torneo nuevo empieza sin jornadas.</p>
         <ul class="muted qz-tight" style="margin:0 0 10px 18px;padding:0;">
           <li><strong>Se conserva:</strong> la quiniela, su link, participantes, admins y accesos, tus ajustes y todo el historial.</li>
-          <li><strong>Queda en el historial:</strong> el campeón y la tabla final (si cierras) o la tabla al interrumpir, cuántas jornadas se jugaron y las preguntas extra. También se guardan, aunque hoy el Historial no los muestra, los resultados de cada jornada, los descuentos y las reglas de liguilla.</li>
-          <li><strong>Empieza de cero:</strong> jornadas (también borradores y partidos pendientes), puntos, preguntas extra, descuentos y quién pagó. La liguilla, sin configurar. El plan empieza en Gratis.</li>
+          <li><strong>Queda en el historial:</strong> el campeón y la tabla final (si cierras) o la tabla al interrumpir, cuántas jornadas se publicaron y las preguntas extra. También se guardan, aunque hoy el Historial no los muestra, los resultados de cada jornada, los descuentos, la regla de descuentos por no pagar y las reglas de liguilla.</li>
+          <li><strong>Empieza de cero:</strong> jornadas (también borradores y partidos pendientes), puntos, preguntas extra, descuentos y quién pagó. La regla de descuentos por no pagar queda desactivada y la liguilla sin configurar: vuelve a configurarlas si las quieres. El plan empieza en Gratis.</li>
           <li><strong>Competencia:</strong> te sugerimos la anterior y la confirmas o eliges otra.</li>
         </ul>
         <p class="muted qz-tight"><strong>Los pronósticos de cada quien se borran y no se pueden recuperar.</strong> Antes guardamos la tabla que salía de ellos. Si los quieres, descarga el respaldo de arriba primero.</p>
         <p class="muted" id="qz-new-tournament-note" style="margin-top:4px;"></p>
         <div class="divider"></div>
         <div class="eyebrow">Cerrar torneo</div>
-        <p class="muted">Cuando el torneo terminó: anuncia al campeón y guarda la tabla final.</p>
+        <p class="muted">Cuando el torneo terminó: anuncia al campeón y guarda la tabla final. Hace falta al menos un resultado de partidos publicado.</p>
         <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
         <div class="divider"></div>
         <div class="eyebrow">Empezar un torneo nuevo sin cierre formal</div>
@@ -14708,7 +14750,7 @@
       toast("No pudimos confirmar si el torneo se cerró. Revisa el estado abajo y verifica.");
     }
 
-    function closeFailed(r){
+    function closeFailed(r, kind){
       if(r.error === "stale_tournament_cycle"){
         // Esta intención ya no aplica: el torneo cambió por otro lado.
         clearCloseIntent();
@@ -14724,7 +14766,7 @@
         renderAdmin(document.getElementById("qz-main"));
         const named = r.error === "close_round_results_open" && Number.isFinite(r.roundNumber)
           ? ERROR_MESSAGES.close_round_results_open.replace("Una jornada", "La Jornada " + r.roundNumber) : null;
-        qzAlert(named || ERROR_MESSAGES[r.error] || "No se cerró el torneo. Vuelve a intentarlo.", { title: "No se cerró el torneo" });
+        qzAlert(named || ERROR_MESSAGES[r.error] || "No se cambió nada. Vuelve a intentarlo.", { title: kind === "interrupted" ? "No se empezó el torneo nuevo" : "No se cerró el torneo" });
         return;
       }
       toast(ERROR_MESSAGES[r.error] || "No se pudo cerrar el torneo, intenta de nuevo");
@@ -14752,7 +14794,7 @@
         verifyBtn.disabled = false;
         if(r.ok) return finishClose(r);
         if(r.error === "unknown_result") return closeUnknown();
-        closeFailed(r);
+        closeFailed(r, pending.kind);
       });
     }
 
@@ -14810,8 +14852,13 @@
     async function runCloseTournament(kind){
       const interrupted = kind === "interrupted";
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
+      // Cerrar formalmente declara campeón: sin ningún resultado publicado no
+      // hay de dónde (Product; el servidor también lo rechaza). La salida que
+      // existe: empezar el torneo nuevo sin cierre formal.
       if(!interrupted && !playedRounds.length){
-        if(!(await qzConfirm("Todavía no hay jornadas con resultados.", { title: "¿De todos modos quieres cerrar y limpiar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
+        if(!(await qzConfirm("Todavía no hay resultados de partidos publicados, así que no hay un campeón que declarar. Puedes empezar el torneo nuevo sin cierre formal: el torneo queda en el historial como interrumpido, sin campeón.",
+          { title: "No se puede cerrar formalmente", confirmLabel: "Empezar sin cierre formal", cancelLabel: "Cancelar", destructive: false }))) return;
+        return runCloseTournament("interrupted");
       }
       // AUD-02: la tabla final sale de UNA lectura completa del servidor. Si
       // falla, no se arma ninguna tabla ni se cierra nada.
@@ -14833,12 +14880,12 @@
       const planNow = await loadPlan();
       const losingPlus = !!(planNow && planNow.plan && planNow.plan !== "FREE");
       const head = interrupted
-        ? "El torneo se guarda en el historial como interrumpido, sin campeón. Guardamos la tabla al momento de interrumpir (no es la final) y las jornadas jugadas con sus resultados.\n\n"
+        ? "El torneo queda en el historial como interrumpido, sin campeón, con la tabla al momento de interrumpir (no es la final). Si no se jugó nada, no queda ninguna entrada.\n\n"
         : (champion
           ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nSe guarda en el historial, se archivan las jornadas de este torneo y empieza un torneo nuevo.\n\n`
           : "Se cierra el torneo (sin jornadas jugadas), se archivan las jornadas y empieza un torneo nuevo.\n\n");
       const confirmMsg = head
-        + "El torneo nuevo empieza con el tablero vacío: sin jornadas ni borradores, puntos en cero, nadie marcado como pagado y la liguilla sin configurar. Confirmarás la competencia.\n\n"
+        + "El torneo nuevo empieza con el tablero vacío: sin jornadas ni borradores, puntos en cero, nadie marcado como pagado, sin regla de descuentos por no pagar y la liguilla sin configurar. Confirmarás la competencia.\n\n"
         + "Los pronósticos de cada quien se borran y no se pueden recuperar.\n\n"
         + (losingPlus
           ? "Ojo: tu plan actual cubre ESTE torneo. El torneo nuevo empieza en Gratis y tu Plus no se transfiere."
@@ -14862,7 +14909,7 @@
       const r = await apiCloseTournament(intent);
       if(r.ok) return finishClose(r);
       if(r.error === "unknown_result") return closeUnknown();
-      closeFailed(r);
+      closeFailed(r, intent.kind);
     }
 
     const migrateBtn = document.getElementById("qz-migrate-btn");

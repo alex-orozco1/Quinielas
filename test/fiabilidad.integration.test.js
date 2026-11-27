@@ -257,6 +257,7 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
 
   itest("AUD-02 e · una quiniela donde nadie pronosticó (carga vacía válida) sí se cierra", async () => {
     const q = await quiniela("a02e");
+    await require("./helpers/realServer").withPlayedRound(q.metaKey); // cierre formal: con una jornada jugada, sin pronósticos
     const snap = await snapshot(q);
     assert.equal(snap.status, 200);
     const standings = (await storedMeta(q)).participants.map((p) => ({ id: p.id, name: p.name, pts: 0 }));

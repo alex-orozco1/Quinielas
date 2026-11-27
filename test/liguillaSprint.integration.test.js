@@ -131,6 +131,7 @@ test.describe("liguilla en el servidor real", () => {
   itest("D1 · cerrar el torneo archiva y despeja el tablero (como antes); el siguiente empieza sin candado", async () => {
     const q = await conLiguilla("cierre");
     assert.equal((await publicar(q, "r_lgcierre")).status, 200);
+    await require("./helpers/realServer").withPlayedRound(q.metaKey); // cierre formal: con una jornada jugada
     const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
     const entry = idx.quinielas.find((x) => x.slug === q.slug);
     const close = await require("./helpers/realServer").closeWithSnapshot(q.slug, { "X-Qracks-Auth": q.owner },

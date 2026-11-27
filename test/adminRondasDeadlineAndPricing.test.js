@@ -68,7 +68,7 @@ test("CASE C: a genuine future datetime is accepted", () => {
 
 test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's reconcilePenaltyLedger/mutation, and before the create-new-round branch's meta.rounds.push", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 6200);
+  const body = indexSrc.slice(idx, idx + 7400);
   const validateIdx = body.indexOf("isSetupDeadlineValid(draft.deadline, serverNow())");
   const reconcileIdx = body.indexOf("reconcilePenaltyLedger(meta);");
   const pushIdx = body.indexOf("meta.rounds.push(round);");
@@ -79,8 +79,10 @@ test("CASE D/E: the deadline validation runs BEFORE the editingRound branch's re
 
 test("CASE D: on a past deadline, editingRound itself is never touched (not even entered) -- the original round stays completely intact", () => {
   const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
-  const body = indexSrc.slice(idx, idx + 2400);
-  const validateBlockIdx = body.indexOf("if(!isSetupDeadlineValid(draft.deadline, serverNow())){");
+  const body = indexSrc.slice(idx, idx + 3400);
+  // P1 · torneo nuevo: una jornada con resultados ya publicados puede llevar
+  // su cierre al pasado; el resto, como siempre, sólo a partir de ahora.
+  const validateBlockIdx = body.indexOf("if(!resultsAlreadyPublished && !isSetupDeadlineValid(draft.deadline, serverNow())){");
   const editingRoundIdx = body.indexOf("if(editingRound){");
   assert.ok(validateBlockIdx !== -1 && editingRoundIdx !== -1 && validateBlockIdx < editingRoundIdx);
 });
@@ -92,7 +94,7 @@ test("CASE G: the exact required inline copy is shown via a real DOM error eleme
   const body = indexSrc.slice(idx, idx + 2200);
   assert.ok(body.includes('deadlineErrorEl.textContent = "Elige una fecha y hora a partir de ahora.";'));
   assert.ok(body.includes("deadlineErrorEl.style.display = \"block\";"));
-  const errBlockIdx = body.indexOf("if(!isSetupDeadlineValid");
+  const errBlockIdx = body.indexOf("if(!resultsAlreadyPublished && !isSetupDeadlineValid");
   const errBlockEnd = body.indexOf("return;", errBlockIdx);
   const errBlock = body.slice(errBlockIdx, errBlockEnd);
   assert.ok(!errBlock.includes("draft.matches"), "must never clear match data alongside this error");
@@ -105,7 +107,8 @@ test("qz-deadline-error is a real DOM element rendered in the form, not just ref
 });
 
 test("the datetime-local input has a min attribute computed from serverNow(), same helper pattern as Admin Setup Continuity", () => {
-  assert.ok(indexSrc.includes('<input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" min="${toLocalInputValue(new Date(serverNow()).toISOString())}">'));
+  // P1 · torneo nuevo: salvo en una jornada con resultados ya publicados.
+  assert.ok(indexSrc.includes('<input type="datetime-local" id="qz-deadline" value="${esc(draft.deadline)}" ${editingRound && editingRound.resultsPublished ? "" : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}>'));
 });
 
 // ---- Payment Penalty invariant preserved exactly ----
@@ -147,4 +150,12 @@ test("FIX 2: renderCrear no longer fetches platform settings it doesn't use anym
 test("the SAME old pricing copy does not appear anywhere else in the file", () => {
   const occurrences = [...indexSrc.matchAll(/Gratis las primeras.*jornadas\. Después/g)];
   assert.equal(occurrences.length, 0, "the exact old pricing sentence must not exist anywhere in the file anymore");
+});
+
+test("P1 · torneo nuevo: sólo una jornada con resultados publicados acepta un cierre en el pasado (la salida de close_round_results_open)", () => {
+  const idx = indexSrc.indexOf('document.getElementById("qz-publish-round").addEventListener("click"');
+  const body = indexSrc.slice(idx, idx + 3200);
+  assert.ok(body.includes("const resultsAlreadyPublished = !!(editingRound && editingRound.resultsPublished);"));
+  assert.ok(indexSrc.includes('${editingRound && editingRound.resultsPublished ? "" : `min="${toLocalInputValue(new Date(serverNow()).toISOString())}"`}'),
+    "el campo sólo quita el mínimo para esa jornada");
 });

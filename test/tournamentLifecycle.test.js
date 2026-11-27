@@ -1146,3 +1146,29 @@ test("THE MISSING DATUM is documented in code, not worked around", () => {
   assert.ok(!/displayName[^\n]*(match|test|indexOf|includes|split)/.test(code),
     "el displayName nunca se parsea para decidir nada");
 });
+
+// P1 · torneo nuevo — decisiones de Product.
+test("FRONTEND: sin resultados publicados, «Cerrar torneo» no declara campeón: lleva a «sin cierre formal»", () => {
+  const fn = stripComments(blockFrom(indexSrc, "async function runCloseTournament(kind)"));
+  const at = fn.indexOf("if(!interrupted && !playedRounds.length){");
+  assert.ok(at !== -1);
+  const branch = fn.slice(at, fn.indexOf("}", fn.indexOf('return runCloseTournament("interrupted");', at)) + 1);
+  assert.ok(branch.includes('confirmLabel: "Empezar sin cierre formal"'));
+  assert.ok(branch.includes('return runCloseTournament("interrupted");'), "nunca sigue al cierre formal");
+  assert.ok(indexSrc.includes('close_requires_results: "'), "y el servidor tiene su mensaje");
+  assert.ok(stripComments(serverSrc).includes('return res.status(409).json({ error: "close_requires_results" });'));
+});
+
+test("FRONTEND: el Historial cuenta «jornadas publicadas» (no «jugadas»); los contadores comerciales no cambian", () => {
+  const fn = blockFrom(indexSrc, "function pastTournamentsHtml()");
+  assert.ok(fn.includes('rounds.length === 1 ? "jornada publicada" : "jornadas publicadas"'));
+  assert.ok(!fn.includes("jornadas jugadas"));
+  assert.ok(!/jornadas jugadas/.test(indexSrc.slice(indexSrc.indexOf('<div class="card" id="qz-tournament-actions">'), indexSrc.indexOf('<div class="card" id="qz-tournament-actions">') + 4000)));
+});
+
+test("SERVER: el torneo nuevo empieza sin regla de descuentos por no pagar; la anterior queda en el archivo", () => {
+  const h = stripComments(blockFrom(serverSrc, "async function finishTournament("));
+  assert.ok(h.includes("...(paymentPenaltyArchived ? { paymentPenaltyRules: paymentPenaltyArchived } : {}),"));
+  assert.ok(h.includes("delete meta.paymentPenalty;"));
+  assert.ok(h.indexOf("const paymentPenaltyArchived") < h.indexOf("delete meta.paymentPenalty;"), "se archiva antes de quitarla");
+});
