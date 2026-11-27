@@ -143,7 +143,7 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
   // y saca al campeón de la tabla que recibe, así que este arreglo no puede
   // alterar cómo se calculan puntos ni campeón.
   const clickHandler = (() => {
-    const marker = 'async function runCloseTournament()';
+    const marker = 'async function runCloseTournament(kind)';
     const at = indexSrc.indexOf(marker);
     assert.ok(at !== -1);
     const braceStart = indexSrc.indexOf("{", indexSrc.indexOf(")", at));

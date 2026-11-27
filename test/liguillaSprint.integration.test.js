@@ -102,20 +102,30 @@ test.describe("liguilla en el servidor real", () => {
     assert.equal((await write(q, otra)).body.error, "liguilla_rules_locked");
   });
 
-  itest("D1 · empezar torneo sin cerrar: el tablero se conserva con sus reglas; el torneo nuevo empieza sin candado", async () => {
+  itest("D1 · empezar torneo sin cierre formal: tablero vacío, la jornada y sus reglas al historial; el torneo nuevo sin candado ni reglas", async () => {
     const q = await conLiguilla("ciclo");
     assert.equal((await publicar(q, "r_lgciclo")).status, 200);
     const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
     const entry = idx.quinielas.find((x) => x.slug === q.slug);
-    const nc = await call("POST", `/api/quinielas/${q.slug}/tournament/new-cycle`, { headers: { "X-Qracks-Auth": q.owner }, body: { expectedCycle: entry.tournamentScope.editionSeq } });
+    const nc = await require("./helpers/realServer").closeWithSnapshot(q.slug, { "X-Qracks-Auth": q.owner },
+      { expectedCycle: entry.tournamentScope.editionSeq, closeIntentId: "lgnew" + Date.now().toString(36), interrupt: true });
     assert.equal(nc.status, 200, JSON.stringify(nc.body));
+    const st0 = await stored(q);
+    assert.equal(st0.rounds.length, 0, "empezar un torneo nuevo deja el tablero vacío");
+    const past = st0.pastTournaments[0];
+    assert.deepEqual([past.kind, past.champion], ["interrupted", null]);
+    assert.deepEqual(past.rounds[0].scoring, RULES, "la jornada archivada conserva sus reglas");
+    assert.deepEqual(past.liguillaRules, RULES, "y las reglas del torneo quedan con él");
+    assert.equal(st0.settings.liguilla, undefined, "el torneo nuevo empieza sin configurar");
+    assert.equal(st0.liguillaLocks.length, 1, "el candado anterior sigue, asociado a su ciclo");
+    // Liga MX confirmada otra vez, y la liguilla nueva se configura sin candado.
     const v = await read(q);
-    assert.equal(v.rounds.length, 1, "empezar sin cerrar conserva el tablero");
-    v.settings.liguilla = { capture: "result", resultPoints: 2, exactBonus: 0 };
-    const r = await write(q, v);
+    v.settings.sportsdbLeagueId = "4350"; delete v.settings.previousCompetition;
+    assert.equal((await write(q, v)).status, 200);
+    const v2 = await read(q);
+    v2.settings.liguilla = { capture: "result", resultPoints: 2, exactBonus: 0 };
+    const r = await write(q, v2);
     assert.equal(r.status, 200, "el torneo nuevo no tiene candado: " + JSON.stringify(r.body));
-    const st = await stored(q);
-    assert.deepEqual(st.rounds[0].scoring, RULES, "la jornada anterior conserva sus reglas");
   });
 
   itest("D1 · cerrar el torneo archiva y despeja el tablero (como antes); el siguiente empieza sin candado", async () => {
@@ -129,8 +139,15 @@ test.describe("liguilla en el servidor real", () => {
     const v = await read(q);
     assert.equal(v.rounds.length, 0, "cerrar despeja el tablero");
     assert.ok(Array.isArray(v.pastTournaments) && v.pastTournaments.length === 1, "y archiva");
-    v.settings.liguilla = { capture: "result", resultPoints: 2, exactBonus: 0 };
+    assert.equal(v.pastTournaments[0].kind, "closed");
+    // P1: la competencia se confirma en el torneo nuevo (aquí, Liga MX otra vez).
+    assert.equal(v.settings.sportsdbLeagueId, undefined);
+    assert.equal(v.settings.previousCompetition.sportsdbLeagueId, "4350");
+    v.settings.sportsdbLeagueId = "4350"; delete v.settings.previousCompetition;
     assert.equal((await write(q, v)).status, 200);
+    const v2 = await read(q);
+    v2.settings.liguilla = { capture: "result", resultPoints: 2, exactBonus: 0 };
+    assert.equal((await write(q, v2)).status, 200);
   });
 
   itest("D1 · el admin con PIN (sin contraseña) no cambia las reglas de liguilla: se conservan las guardadas", async () => {

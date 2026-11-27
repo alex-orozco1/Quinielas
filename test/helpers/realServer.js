@@ -185,11 +185,13 @@ const databaseUrl = () => dbUrl;
 // AUD-02: cerrar el torneo exige la lectura completa (admin-snapshot) y una
 // tabla con cada participante. Para las pruebas a las que la tabla no les
 // importa: todos con 0 puntos, en el orden de la lectura.
-async function closeWithSnapshot(slug, headers, { expectedCycle, closeIntentId, ...rest } = {}) {
+// opts.interrupt: «empezar torneo nuevo sin cierre formal» (/new-cycle), que es
+// la misma operación que el cierre (P1 · torneo nuevo con el tablero vacío).
+async function closeWithSnapshot(slug, headers, { expectedCycle, closeIntentId, interrupt, standings: given, ...rest } = {}) {
   const snap = await call("POST", `/api/quinielas/${slug}/admin-snapshot`, { headers, body: {} });
   if (snap.status !== 200) return snap;
-  const standings = snap.body.meta.participants.map((p) => ({ id: p.id, name: p.name, pts: 0 }));
-  return call("POST", `/api/quinielas/${slug}/tournament/close`, {
+  const standings = given || snap.body.meta.participants.map((p) => ({ id: p.id, name: p.name, pts: 0 }));
+  return call("POST", `/api/quinielas/${slug}/tournament/${interrupt ? "new-cycle" : "close"}`, {
     headers, body: { expectedCycle, closeIntentId, standings, basis: snap.body.basis, ...rest },
   });
 }

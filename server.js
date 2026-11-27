@@ -1279,6 +1279,15 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   const roundsAreStale = readTournamentEpoch(merged) < storedEpoch;
   if (roundsAreStale) {
     merged.rounds = Array.isArray(oldValue && oldValue.rounds) ? oldValue.rounds : [];
+    // P1 · torneo nuevo. Una pestaña del torneo ANTERIOR tampoco repone la
+    // competencia (que el organizador tiene que confirmar), ni su sugerencia,
+    // ni las reglas de liguilla archivadas: manda lo guardado.
+    const oldSettings = oldValue && oldValue.settings && typeof oldValue.settings === "object" ? oldValue.settings : {};
+    if (!merged.settings || typeof merged.settings !== "object") merged.settings = {};
+    for (const f of ["sportsdbLeagueId", "sportsdbSeason", "previousCompetition", "liguilla"]) {
+      if (f in oldSettings) merged.settings[f] = JSON.parse(JSON.stringify(oldSettings[f]));
+      else delete merged.settings[f];
+    }
   }
   merged.tournamentEpoch = storedEpoch;
 
@@ -3470,111 +3479,16 @@ function advanceTournamentCycle(entry, { meta, displayName, now, commercialConfi
 // transaction. Each call also appends to scopeHistory, so an unthrottled loop
 // would grow one JSONB row without bound — a slow way to hurt the whole
 // platform from a single authenticated organizer account.
-app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), async (req, res) => {
-  const slug = req.params.slug;
-  const metaKey = `quiniela:${slug}:meta`;
-  const body = req.body || {};
-  const displayName = typeof body.name === "string" && body.name.trim() !== ""
-    ? body.name.trim().slice(0, 120) : null;
-
-  // MON-002C QA-1: the freshness precondition. WITHOUT it, holding a lock only
-  // serialises the two writers — it does not stop them both writing. Two tabs
-  // both loaded on cycle 1 produced e1->e2 and then e2->e3, and five tabs
-  // produced five cycles; a double click or a retry after a commit did the
-  // same. Each of those transitions also resets the entitlement, so a Plus
-  // bought in between could be destroyed by a stale second click.
-  //
-  // `expectedCycle` says WHICH cycle the Admin was looking at when they
-  // pressed the button. It is a precondition and nothing else:
-  //
-  //   - it never chooses the next cycle (buildNextScope computes that from the
-  //     STORED scope, so expectedCycle=99 can never produce e100);
-  //   - it is compared INSIDE the transaction, after the lock, against the row
-  //     that was just re-read — which is what makes the second writer see the
-  //     first writer's commit;
-  //   - a mismatch writes nothing at all and is recoverable: the screen
-  //     refreshes and the Admin decides again.
-  //
-  // Required, not optional. A caller that may omit it is a caller that can
-  // opt out of the guard, which is the bug rather than a fallback for it.
-  //
-  // It is VALIDATED further down, after authorisation — never here. Answering
-  // "your body is malformed" to somebody who has not proven they may call this
-  // endpoint at all tells them something about the request shape before they
-  // have earned any answer but 403.
-  const expectedCycle = body.expectedCycle;
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    // Same lock order as every other multi-row transaction in this file:
-    // platform_index first, then the quiniela's own meta row.
-    const platformIdx = await getRowLocked("platform_index", client);
-    const meta = await getRowLocked(metaKey, client);
-    if (!meta) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "not_found" });
-    }
-    // The organizer's decision, not the platform's: they are the one who
-    // knows their group is starting a new tournament.
-    const { isAdminOrOwner } = computeRequesterIdentity(req, slug, meta);
-    if (!isAdminOrOwner) {
-      await client.query("ROLLBACK");
-      if (sendIfCredentialThrottled(req, res)) return;
-      return res.status(403).json({ error: "forbidden" });
-    }
-    // Shape before freshness: a body that is not a whole positive number is not
-    // a stale precondition, it is not a precondition at all. Nothing has been
-    // written at this point, so this rollback leaves the row untouched.
-    if (!Number.isSafeInteger(expectedCycle) || expectedCycle < 1) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "invalid_expected_cycle" });
-    }
-    const entry = platformIdx && Array.isArray(platformIdx.quinielas)
-      ? platformIdx.quinielas.find((q) => q.slug === slug)
-      : null;
-    if (!entry || !entry.entitlement || !entry.tournamentScope) {
-      console.error("new-cycle blocked: incomplete platform_index entry", { slug });
-      await client.query("ROLLBACK");
-      return res.status(402).json({ error: "entitlement_unavailable" });
-    }
-
-    // The precondition, checked against the row read under lock a few lines
-    // above. Everything before this point is a read; nothing has been written,
-    // so a rollback here leaves the quiniela exactly as it was.
-    const storedCycle = entry.tournamentScope.editionSeq;
-    if (expectedCycle !== storedCycle) {
-      await client.query("ROLLBACK");
-      console.log("new-cycle refused: stale cycle", { slug, expectedCycle, storedCycle });
-      // The current cycle travels back so the screen can say what actually
-      // happened without another round trip. It is the same number /plan
-      // already reports, so nothing new is exposed.
-      return res.status(409).json({ error: "stale_tournament_cycle", currentCycle: storedCycle });
-    }
-
-    const now = new Date().toISOString();
-    const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
-    const moved = advanceTournamentCycle(entry, { meta, displayName, now, commercialConfig });
-    if (!moved) {
-      await client.query("ROLLBACK");
-      return res.status(500).json({ error: "server_error" });
-    }
-    const next = moved.next;
-    await putRow("platform_index", stampVersion(platformIdx, readStoredVersion(platformIdx)), client);
-    await client.query("COMMIT");
-    res.json({
-      ok: true,
-      tournament: { cycle: next.editionSeq, name: next.displayName, state: next.lifecycle },
-      previousCycles: entry.scopeHistory.length,
-    });
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    console.error("new tournament cycle failed", err);
-    res.status(500).json({ error: "server_error" });
-  } finally {
-    client.release();
-  }
-});
+// P1 · torneo nuevo con el tablero vacío. «Empezar un torneo nuevo» ya no deja
+// las jornadas del anterior a la vista: es la MISMA operación atómica que el
+// cierre (finishTournament, más abajo), con dos diferencias que decide Product:
+// el torneo queda archivado como INTERRUMPIDO (kind "interrupted") y nunca se
+// declara campeón; su tabla se guarda como «tabla al interrumpir», no como
+// final. Exige lo mismo que el cierre: intención (closeIntentId), ciclo
+// esperado, y la tabla armada de una lectura completa con su huella (basis).
+// Un navegador con la versión anterior (sólo expectedCycle) recibe 400 y no
+// avanza nada: ya no existe un torneo nuevo que conserve el tablero viejo.
+app.post("/api/quinielas/:slug/tournament/new-cycle", rateLimit("new-cycle"), (req, res) => finishTournament(req, res, "interrupted"));
 
 
 // ---------- closing the tournament, atomically (MON-002C QA-2) ----------
@@ -3802,8 +3716,24 @@ app.post("/api/quinielas/:slug/admin-snapshot", async (req, res) => {
   }
 });
 
-app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async (req, res) => {
+app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), (req, res) => finishTournament(req, res, "closed"));
+
+// Cerrar ("closed") o interrumpir ("interrupted") el torneo en curso y empezar
+// el siguiente, en UNA transacción: archivo, tablero vacío (jornadas,
+// borradores y partidos pendientes), pronósticos individuales borrados,
+// pagos/penalizaciones/preguntas reiniciados, reglas de liguilla archivadas,
+// competencia a confirmar, y el ciclo avanzado. O todo, o nada.
+//
+// IRREVERSIBLE: borrar los pronósticos individuales (filas
+// quiniela:<slug>:picks:*) no se deshace. Antes se valida y se archiva la
+// tabla (final o «al interrumpir») calculada de esos mismos pronósticos; el
+// historial sólo lee lo archivado. Un rollback de código NO los recupera.
+async function finishTournament(req, res, kind) {
+  const interrupted = kind === "interrupted";
   const slug = req.params.slug;
+  // Defensa explícita: el borrado de pronósticos usa LIKE sobre este slug, así
+  // que sólo pasan slugs con la forma de siempre (sin % ni _).
+  if (!QUINIELA_SLUG.test(slug)) return res.status(400).json({ error: "invalid_key" });
   const metaKey = `quiniela:${slug}:meta`;
   const body = req.body || {};
   const expectedCycle = body.expectedCycle;
@@ -3856,7 +3786,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     if (recorded && recorded.intentId === intentId) {
       await client.query("ROLLBACK");
       return res.json({
-        ok: true, replayed: true,
+        ok: true, replayed: true, kind: recorded.kind || "closed",
         closedAt: recorded.at,
         tournament: { cycle: entry.tournamentScope.editionSeq, name: entry.tournamentScope.displayName, state: tournamentScope.readLifecycle(entry.tournamentScope) },
         previousCycles: Array.isArray(entry.scopeHistory) ? entry.scopeHistory.length : 0,
@@ -3894,7 +3824,9 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // Lo que se archiva sale de la tabla ya validada (cada participante una
     // vez, en orden) con los NOMBRES guardados, leídos bajo lock: una fila
     // nunca se cae por un nombre raro y el campeón es siempre el primero.
+    // Interrumpido: la misma tabla, pero NUNCA hay campeón (Product).
     summary = archivedCloseSummary(metaBefore, body.standings);
+    if (interrupted) summary = { standings: summary.standings, champion: null };
 
     const now = new Date().toISOString();
     const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
@@ -3930,23 +3862,34 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     if (Array.isArray(meta.participants)) meta.participants.forEach((p) => {
       if (p && "penalizedRounds" in p) p.penalizedRounds = {};
     });
+    // Las reglas de liguilla de este torneo quedan con su archivo; el torneo
+    // nuevo empieza sin configurar (los candados ya son por ciclo).
+    const liguillaRulesArchived = meta.settings && meta.settings.liguilla != null
+      ? JSON.parse(JSON.stringify(meta.settings.liguilla)) : null;
     meta.pastTournaments = Array.isArray(meta.pastTournaments) ? meta.pastTournaments : [];
-    meta.pastTournaments.push({
-      closedAt: now,
-      champion: summary.champion,
-      standings: summary.standings,
+    // Interrumpido sin nada que guardar (ninguna jornada publicada, pregunta
+    // ni descuento): no se crea una entrada vacía en el historial.
+    const hasActivity = archived.length > 0 || (archivedBets.customBets || []).length > 0
+      || Object.keys(archivedPenalties).length > 0 || !!archivedBets.legacyScorer;
+    const archivedCommon = {
       rounds: archived,
       customBets: archivedBets.customBets,
       betAnswers: archivedBets.betAnswers,
       ...(Object.keys(archivedPenalties).length ? { penalties: archivedPenalties } : {}),
       ...(archivedBets.legacyScorer ? { legacyScorerBet: archivedBets.legacyScorer } : {}),
+      ...(liguillaRulesArchived ? { liguillaRules: liguillaRulesArchived } : {}),
       // Which cycle this archive belongs to, and which intention produced it.
       // Both are written by the server; they make a duplicated archive
       // detectable after the fact instead of being an indistinguishable
       // repeat of the same table.
       cycle: storedCycle,
       closeIntentId: intentId,
-    });
+    };
+    const archiveEntry = interrupted
+      // NUNCA tabla final ni campeón: es la tabla al momento de interrumpir.
+      ? (hasActivity ? { closedAt: now, kind: "interrupted", interruptedAt: now, champion: null, standings: null, interruptedStandings: summary.standings, ...archivedCommon } : null)
+      : { closedAt: now, kind: "closed", champion: summary.champion, standings: summary.standings, ...archivedCommon };
+    if (archiveEntry) meta.pastTournaments.push(archiveEntry);
     meta.rounds = [];
     // DATA-004C — hallazgo del QA adversarial de este mismo ticket. Los fixtures
     // en staging pertenecen al torneo que se está cerrando. Dejarlos vivos los
@@ -3957,6 +3900,21 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // resultados—: un resync los vuelve a traer si siguen siendo relevantes.
     meta.stagedFixtures = [];
     if (Array.isArray(meta.participants)) meta.participants.forEach((p) => { if (p) p.paid = false; });
+    meta.settings = meta.settings && typeof meta.settings === "object" ? meta.settings : {};
+    // Liguilla del torneo nuevo: sin configurar (lo anterior quedó archivado).
+    delete meta.settings.liguilla;
+    // Competencia del torneo nuevo: la anterior queda como SUGERENCIA y el
+    // organizador la confirma o elige otra (Product). Mientras tanto la
+    // quiniela no tiene competencia: nada se importa ni se habilita por ella.
+    const prevLeague = meta.settings.sportsdbLeagueId;
+    const prevSeason = meta.settings.sportsdbSeason;
+    if (prevLeague != null && prevLeague !== "") {
+      meta.settings.previousCompetition = { sportsdbLeagueId: prevLeague, ...(prevSeason ? { sportsdbSeason: prevSeason } : {}) };
+    } else {
+      delete meta.settings.previousCompetition;
+    }
+    delete meta.settings.sportsdbLeagueId;
+    delete meta.settings.sportsdbSeason;
     // Marca el corte. Cualquier documento leído antes de este punto queda
     // identificable como una vista pre-cierre del tablero.
     meta.tournamentEpoch = readTournamentEpoch(metaBefore) + 1;
@@ -3967,7 +3925,7 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
       return res.status(500).json({ error: "server_error" });
     }
     entry.lastClose = {
-      intentId, at: now,
+      intentId, at: now, kind,
       fromCycle: storedCycle, toCycle: moved.next.editionSeq,
       archivedRounds: archived.length,
       champion: summary.champion,
@@ -3977,9 +3935,14 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     // which the cycle has moved and the board has not.
     await putRow("platform_index", stampVersion(platformIdx, readStoredVersion(platformIdx)), client);
     await putRow(metaKey, stampMetaWrite(meta, metaBefore), client);
+    // Los pronósticos individuales del torneo que termina: ya están reflejados
+    // en la tabla archivada (validada contra su huella arriba). Se borran en
+    // esta MISMA transacción: si algo falla, no se borra nada. IRREVERSIBLE.
+    const picksDeleted = await client.query("DELETE FROM kv WHERE key LIKE $1", [`quiniela:${slug}:picks:%`]);
     await client.query("COMMIT");
+    console.log("tournament_finished", { slug, kind, fromCycle: storedCycle, toCycle: moved.next.editionSeq, archivedRounds: archived.length, archived: !!archiveEntry, picksDeleted: picksDeleted.rowCount });
     res.json({
-      ok: true, replayed: false,
+      ok: true, replayed: false, kind,
       closedAt: now,
       tournament: { cycle: moved.next.editionSeq, name: moved.next.displayName, state: moved.next.lifecycle },
       previousCycles: entry.scopeHistory.length,
@@ -3988,12 +3951,12 @@ app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), async 
     });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("close tournament failed", err);
+    console.error("finish tournament failed", { kind, message: err && err.message });
     res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
   }
-});
+}
 
 // Slug rules shared by creation: lowercase letters/numbers/hyphens only, no
 // leading/trailing hyphens, reasonable length. Anything else gets normalized

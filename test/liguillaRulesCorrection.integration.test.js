@@ -254,10 +254,22 @@ test.describe("HOTFIX · corregir la puntuación de liguilla", () => {
     assert.equal((await write(q, v)).status, 200);
     const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
     const entry = idx.quinielas.find((x) => x.slug === q.slug);
-    const nc = await call("POST", `/api/quinielas/${q.slug}/tournament/new-cycle`, { headers: { "X-Qracks-Auth": q.owner }, body: { expectedCycle: entry.tournamentScope.editionSeq } });
+    // P1: empezar el torneo nuevo deja el tablero vacío (la r1 retirada se
+    // descarta); en el ciclo 2 se crea otra jornada con el MISMO id r1.
+    const nc = await require("./helpers/realServer").closeWithSnapshot(q.slug, { "X-Qracks-Auth": q.owner },
+      { expectedCycle: entry.tournamentScope.editionSeq, closeIntentId: "p2c" + Date.now().toString(36), interrupt: true });
     assert.equal(nc.status, 200, JSON.stringify(nc.body));
     v = await read(q);
-    Object.assign(v.rounds[0], { stage: "liguilla", number: 18, phase: { round: "quarter", leg: "ida", source: "admin" }, published: true });
+    assert.equal(v.rounds.length, 0);
+    v.settings.sportsdbLeagueId = "4350"; delete v.settings.previousCompetition;
+    assert.equal((await write(q, v)).status, 200);
+    v = await read(q);
+    v.settings.liguilla = { ...RULES };
+    v.rounds = [{ id: "r1", number: 18, deadline: enHoras(24), results: {}, resultsPublished: false, published: false, stage: "liguilla",
+      phase: { round: "quarter", leg: "ida", source: "admin" }, matches: [{ id: "m1", teamA: "León", teamB: "Santos" }] }];
+    assert.equal((await write(q, v)).status, 200);
+    v = await read(q);
+    v.rounds[0].published = true;
     const w = await write(q, v);
     assert.equal(w.status, 200, JSON.stringify(w.body));
     const before = await stored(q);

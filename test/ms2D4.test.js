@@ -214,7 +214,7 @@ test("D4 · cerrar el torneo dice qué pasa con las preguntas y avisa de las que
   assert.ok(msg.includes("Tus 2 preguntas extra se cierran y se guardan en el historial con sus respuestas y aciertos. En el torneo nuevo ya no cuentan"));
   assert.ok(msg.includes("Ojo: esta pregunta tiene respuestas y ningún acierto marcado: «Campeón». Si alguien acertó, márcalo antes de cerrar"));
   assert.equal(run({ customBets: [] }, () => 0, () => 0), "");
-  assert.ok(fn("async function runCloseTournament()").includes("await qzConfirm(confirmMsg + closeTournamentBetsNote(),"));
+  assert.ok(fn("async function runCloseTournament(kind)").includes("await qzConfirm(confirmMsg + closeTournamentBetsNote(),"));
 });
 
 test("D4 · el historial muestra las preguntas archivadas: cierre, respuestas, aciertos y la respuesta propia", () => {

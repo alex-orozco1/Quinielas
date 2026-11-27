@@ -2475,20 +2475,6 @@
   // el servidor calcula el ciclo siguiente desde lo que tiene guardado, y si
   // este número ya quedó viejo (otra pestaña, un doble click, un reintento
   // después de que la petición sí entró) responde 409 y no escribe nada.
-  async function apiStartNewTournament(name, expectedCycle){
-    try{
-      const headers = { "Content-Type": "application/json" };
-      const cred = adminOrOwnerCred();
-      setAuthHeaders(headers, cred);
-      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/new-cycle", {
-        method: "POST", headers, credentials: "same-origin",
-        body: JSON.stringify({ name: name || null, expectedCycle })
-      });
-      const data = await res.json().catch(() => ({}));
-      return { ok: res.ok, ...data };
-    }catch(e){ console.error("apiStartNewTournament failed", e); return { ok: false, error: "network_error" }; }
-  }
-
   // MON-002C QA-2: cerrar el torneo es UNA operación del servidor —
   // archivar, despejar el tablero, resetear pagos y avanzar el ciclo commitean
   // juntos o no pasa nada. Antes eran dos llamadas que orquestaba el
@@ -2543,12 +2529,16 @@
     }catch(e){ console.error("admin snapshot failed", e); return null; }
   }
 
-  async function apiCloseTournament({ intentId, expectedCycle, standings, basis, standingsAt }){
+  // P1 · torneo nuevo: «Cerrar torneo» (kind "closed", con campeón) y «Empezar
+  // torneo nuevo sin cierre formal» (kind "interrupted", sin campeón) son la
+  // MISMA operación atómica del servidor; cambia sólo cómo queda archivado.
+  async function apiCloseTournament({ intentId, expectedCycle, standings, basis, standingsAt, kind }){
     try{
       const headers = { "Content-Type": "application/json" };
       const cred = adminOrOwnerCred();
       setAuthHeaders(headers, cred);
-      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + "/tournament/close", {
+      const path = kind === "interrupted" ? "/tournament/new-cycle" : "/tournament/close";
+      const res = await fetch("/api/quinielas/" + encodeURIComponent(SLUG) + path, {
         method: "POST", headers, credentials: "same-origin",
         body: JSON.stringify({ closeIntentId: intentId, expectedCycle, standings, basis, standingsAt })
       });
@@ -9135,27 +9125,35 @@
       <div class="card">
         <div class="eyebrow">Torneos anteriores</div>
         ${list.map(t => {
-          const date = new Date(t.closedAt).toLocaleDateString("es-MX", {year:"numeric", month:"long", day:"numeric"});
-          return `
-            <div style="padding:10px 0;border-bottom:1px solid var(--line);">
-              <div>
-                ${t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${esc(t.champion.pts)} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`}
-              </div>
-              <div class="muted" style="margin-bottom:6px;">Cerrado el ${date} · ${esc(t.rounds.length)} jornadas jugadas</div>
-              ${archivedBetsHtml(t)}
-              ${t.standings && t.standings.length ? `
+          // P1: un torneo interrumpido (kind "interrupted") nunca tiene campeón y
+          // su tabla es la del momento de interrumpir, nunca la final.
+          const interrupted = t.kind === "interrupted";
+          const date = new Date(interrupted && t.interruptedAt ? t.interruptedAt : t.closedAt).toLocaleDateString("es-MX", {year:"numeric", month:"long", day:"numeric"});
+          const rounds = Array.isArray(t.rounds) ? t.rounds : [];
+          const table = interrupted ? t.interruptedStandings : t.standings;
+          const tableHtml = (rows, label) => `
                 <details>
-                  <summary class="muted" style="cursor:pointer;">Ver tabla final completa</summary>
+                  <summary class="muted" style="cursor:pointer;">${esc(label)}</summary>
                   <table style="margin-top:6px;">
                     <tbody>
                       ${(() => {
-                        const tRanks = computeDenseRanks(t.standings);
-                        return t.standings.map((s,i) => `<tr><td class="pos ${tRanks[i]===1?'top1':''}">${tRanks[i]}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${esc(s.pts)}</td></tr>`).join("");
+                        const tRanks = computeDenseRanks(rows);
+                        return rows.map((s,i) => `<tr><td class="pos ${!interrupted && tRanks[i]===1?'top1':''}">${tRanks[i]}</td><td>${esc(s.name)}</td><td style="text-align:right;font-weight:700;">${esc(s.pts)}</td></tr>`).join("");
                       })()}
                     </tbody>
                   </table>
-                </details>
-              ` : ``}
+                </details>`;
+          const tableBlock = Array.isArray(table) && table.length ? tableHtml(table, interrupted ? "Ver tabla al interrumpir (no es la final)" : "Ver tabla final completa") : "";
+          return `
+            <div style="padding:10px 0;border-bottom:1px solid var(--line);">
+              <div>
+                ${interrupted
+                  ? `<strong>Torneo sin cierre formal</strong> <span class="muted">· sin campeón</span>`
+                  : (t.champion ? `<strong>🏆 ${esc(t.champion.name)}</strong> <span class="muted">· ${esc(t.champion.pts)} pts</span>` : `<span class="muted">Sin campeón (no se jugaron jornadas)</span>`)}
+              </div>
+              <div class="muted" style="margin-bottom:6px;">${interrupted ? "Interrumpido" : "Cerrado"} el ${date} · ${esc(rounds.length)} ${rounds.length === 1 ? "jornada jugada" : "jornadas jugadas"}</div>
+              ${archivedBetsHtml(t)}
+              ${tableBlock}
             </div>
           `;
         }).join("")}
@@ -11260,75 +11258,31 @@
     return `
       <div class="card" id="qz-tournament-ended" style="border-color:var(--gold);background:#FFF9EC;">
         <p style="margin:0 0 6px;font-weight:700;">Este torneo terminó</p>
-        <p class="muted" style="margin:0 0 10px;">Para jugar el siguiente, inicia un torneo nuevo. Se conservan tus participantes, tus jornadas y todo el historial.</p>
-        <button class="btn btn-gold btn-sm" data-start-new-tournament>Iniciar torneo nuevo</button>
+        <p class="muted" style="margin:0 0 10px;">Para jugar el siguiente, ciérralo o empieza uno nuevo desde Ajustes. El torneo nuevo empieza con el tablero vacío; lo de este pasa al historial.</p>
+        <button class="btn btn-gold btn-sm" data-start-new-tournament>Ir a las acciones del torneo</button>
       </div>
     `;
   }
 
-  // El diálogo dice lo único que puede sorprender: el Plus no se transfiere.
-  async function startNewTournamentFlow(plan){
-    // Sin un ciclo que citar no hay precondición que mandar, y mandar algo
-    // inventado sería justo lo que la precondición existe para impedir.
-    const expectedCycle = plan && plan.tournament && plan.tournament.cycle;
-    if(!Number.isSafeInteger(expectedCycle) || expectedCycle < 1){
-      toast("No pudimos leer el estado del torneo. Recarga la página e intenta de nuevo.");
-      return;
+  // P1 · torneo nuevo. Empezar un torneo nuevo siempre vacía el tablero, así que
+  // se hace en UN solo lugar —Ajustes → Acciones del torneo—, donde se explica
+  // qué se conserva, qué pasa al historial y qué empieza de cero.
+  async function goToTournamentActions(){
+    activeTab = "admin";
+    adminSubTab = "dueno";
+    renderApp();
+    // Ajustes se pinta después de leer el plan: se espera a que exista.
+    for(let i = 0; i < 20; i++){
+      const box = document.getElementById("qz-tournament-actions");
+      if(box){ box.scrollIntoView({ block: "start" }); return; }
+      await new Promise(r => setTimeout(r, 100));
     }
-    const hadPlus = !!(plan && plan.plan && plan.plan !== "FREE");
-    const message = (hadPlus
-      ? "Tu Plus anterior no se transfiere: el torneo nuevo empieza en Gratis, y puedes pasarlo a Plus cuando quieras.\n\n"
-      : "El torneo nuevo empieza en Gratis, con su propio conteo de jornadas.\n\n")
-      + "Se conservan tus participantes, tus jornadas y todos los resultados de antes.";
-    if(!(await qzConfirm(message, {
-      title: "¿Empezar un torneo nuevo?",
-      confirmLabel: "Empezar torneo nuevo",
-      cancelLabel: "Cancelar",
-      destructive: false
-    }))) return;
-
-    const name = await qzPrompt("¿Cómo se llama el torneo nuevo? (opcional)", {
-      title: "Torneo nuevo", confirmLabel: "Empezar"
-    });
-    if(name === null) return;
-
-    const r = await apiStartNewTournament(name.trim(), expectedCycle);
-    if(r.error === "stale_tournament_cycle"){
-      // Alguien más ya lo hizo (otra pestaña, otro admin, o esta misma
-      // pantalla que quedó vieja). NO se reintenta solo: reintentar sería
-      // empezar un SEGUNDO torneo sin que nadie lo haya pedido. Se refresca y
-      // se le dice qué pasó; si de verdad quiere otro, vuelve a apretar.
-      invalidatePlan();
-      // El orden importa: toast() cuelga el mensaje de `root`, y render()
-      // reemplaza root.innerHTML entero — avisar antes de repintar destruye el
-      // aviso en el mismo tick y la persona no llega a leer nada.
-      render();
-      toast("El torneo ya cambió. Actualizamos la pantalla.");
-      return;
-    }
-    if(!r.ok){
-      toast(ERROR_MESSAGES[r.error] || "No se pudo empezar el torneo nuevo, intenta de nuevo");
-      return;
-    }
-    invalidatePlan();
-    // Los avisos de límite son por torneo: el nuevo merece los suyos.
-    try{
-      window.localStorage.removeItem(planWarningKey("people"));
-      window.localStorage.removeItem(planWarningKey("rounds"));
-    }catch(e){}
-    // Repintar primero, avisar después: si no, el toast muere con el render.
-    render();
-    toast("✅ Listo, empezaste un torneo nuevo. Tu historial sigue completo.");
   }
 
   function wireTournamentActions(scope){
     if(!scope) return;
     scope.querySelectorAll("[data-start-new-tournament]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        await startNewTournamentFlow(await loadPlan());
-        btn.disabled = false;
-      });
+      btn.addEventListener("click", () => { goToTournamentActions(); });
     });
   }
 
@@ -13020,6 +12974,65 @@
     window.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
   }
 
+  // P1 · torneo nuevo. La competencia del torneo anterior queda como
+  // SUGERENCIA (settings.previousCompetition, la pone el servidor al empezar el
+  // torneo nuevo); el organizador la confirma o elige otra. Mientras tanto la
+  // quiniela no tiene competencia.
+  function pendingCompetition(){
+    const s = meta && meta.settings;
+    if(!s || s.sportsdbLeagueId) return null;
+    const p = s.previousCompetition;
+    return p && typeof p === "object" && p.sportsdbLeagueId ? p : null;
+  }
+  function confirmCompetitionHtml(){
+    const prev = pendingCompetition();
+    if(!prev) return "";
+    const known = SPORTSDB_LEAGUES.find(l => l.id === String(prev.sportsdbLeagueId));
+    return `<div class="card" id="qz-confirm-competition" style="border-color:var(--gold);background:#FFF9EC;">
+      <div class="eyebrow">Torneo nuevo</div>
+      <p style="margin:0 0 6px;font-weight:700;" id="qz-cc-t">Confirma la competencia de este torneo</p>
+      <p class="muted qz-tight">El torneo anterior era de <strong>${esc(known ? known.label : "otra competencia")}</strong>. Confírmala o elige otra: con ella puedes importar el calendario.</p>
+      <div class="row2 qz-row-narrow">
+        <div class="field"><label for="qz-cc-league">Competencia</label>
+          <select id="qz-cc-league">
+            ${SPORTSDB_LEAGUES.map(l => `<option value="${esc(l.id)}" ${l.id === String(prev.sportsdbLeagueId) ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
+            <option value="">Sin competencia (armo las jornadas a mano)</option>
+          </select></div>
+        <div class="field"><label for="qz-cc-season">Temporada</label>
+          <input type="text" id="qz-cc-season" value="${esc(prev.sportsdbSeason || "")}" placeholder="2026-2027" autocomplete="off"></div>
+      </div>
+      <p class="qz-field-error" id="qz-cc-err" role="alert" hidden></p>
+      <button class="btn btn-gold" id="qz-cc-save">Confirmar competencia</button>
+    </div>`;
+  }
+  function wireConfirmCompetition(body){
+    const btn = document.getElementById("qz-cc-save");
+    if(!btn) return;
+    btn.addEventListener("click", async () => {
+      if(btn.disabled) return;
+      const league = document.getElementById("qz-cc-league").value;
+      const season = document.getElementById("qz-cc-season").value.trim();
+      const before = JSON.parse(JSON.stringify(meta.settings));
+      if(league) meta.settings.sportsdbLeagueId = league; else delete meta.settings.sportsdbLeagueId;
+      if(league && season) meta.settings.sportsdbSeason = season; else delete meta.settings.sportsdbSeason;
+      delete meta.settings.previousCompetition;
+      btn.disabled = true;
+      let saved = null;
+      try{ saved = await setMetaWithError(meta); }catch(e){ console.error("confirm competition failed", e); }
+      btn.disabled = false;
+      if(!saved || !saved.ok){
+        // Lo guardado manda: nada de esta pantalla lee una competencia que el
+        // servidor no aceptó.
+        meta.settings = before;
+        setupFieldError("qz-cc-err", saved && saved.error && ERROR_MESSAGES[saved.error] ? humanizeError(saved.error, saved) : "No se pudo guardar la competencia. Intenta de nuevo.");
+        return;
+      }
+      sportsdbTeamsCache = null;
+      renderAdminRondas(body);
+      toast(league ? "✅ Listo, la competencia del torneo nuevo quedó confirmada." : "✅ Listo: este torneo lo armas a mano, sin competencia.");
+    });
+  }
+
   async function renderAdminRondas(body){
     const editingId = renderAdminRondas._editingId || null;
     const editingRound = editingId ? meta.rounds.find(r => r.id === editingId) : null;
@@ -13097,6 +13110,7 @@
       : (lgDrafts_rounds().length ? `<div class="card"><div class="eyebrow">Liguilla</div><p class="muted">Organiza qué partidos van en cada jornada borrador (ida, vuelta) antes de publicar. Sólo borradores: nada publicado se mueve.</p><button class="btn btn-ghost btn-sm" id="qz-lg-organize">Organizar partidos</button></div>` : ``))
       + lgStagedHtml();
     body.innerHTML = `
+      ${confirmCompetitionHtml()}
       ${createCardHtml}
       ${meta.settings.sportsdbLeagueId ? `
       <div class="card">
@@ -13143,6 +13157,7 @@
     `;
 
     lgWireEditor(body, editingRound);
+    wireConfirmCompetition(body);
     const organizeBtn = document.getElementById("qz-lg-organize");
     if(organizeBtn) organizeBtn.addEventListener("click", () => { renderAdminRondas._org = null; lgOrganizerPlan(); renderAdminRondas(body); });
     if(renderAdminRondas._org && document.getElementById("qz-lg-organizer")) wireOrganizer(body);
@@ -14493,7 +14508,7 @@
         <p class="muted" style="margin-top:0;margin-bottom:12px;">Este botón guarda los cambios de <strong>Configuración general</strong> y <strong>Acceso</strong>, de las dos tarjetas de arriba.</p>
         <button class="btn btn-primary" id="qz-save-settings" style="width:100%;padding:12px;">Guardar ajustes</button>
       </div>
-      <div class="card">
+      <div class="card" id="qz-tournament-actions">
         <div class="section-title"><span class="display" style="font-size:18px;">Acciones del torneo</span></div>
         <div class="eyebrow">Respaldo de esta quiniela</div>
         <p class="muted">Descarga en un archivo los participantes, las jornadas, los resultados, tus reglas y los pronósticos de cada quien. Guárdalo por si acaso.</p>
@@ -14509,25 +14524,34 @@
           if(!pending) return "";
           return `
             <div class="card" id="qz-close-pending" style="border-color:var(--gold);background:#FFF9EC;margin-bottom:12px;">
-              <p style="margin:0 0 6px;font-weight:700;">Un cierre quedó sin confirmar</p>
-              <p class="muted" style="margin:0 0 10px;">Mandaste cerrar el torneo y no supimos si se completó. Verificar no cierra un torneo nuevo: pregunta por <strong>ese mismo cierre</strong> y termina lo que falte.</p>
+              <p style="margin:0 0 6px;font-weight:700;">${pending.kind === "interrupted" ? "Un torneo nuevo quedó sin confirmar" : "Un cierre quedó sin confirmar"}</p>
+              <p class="muted" style="margin:0 0 10px;">${pending.kind === "interrupted" ? "Mandaste empezar un torneo nuevo y no supimos si se completó." : "Mandaste cerrar el torneo y no supimos si se completó."} Verificar no empieza otro torneo: pregunta por <strong>esa misma acción</strong> y termina lo que falte.</p>
               <button class="btn btn-gold btn-sm" id="qz-verify-close">Verificar ese cierre</button>
               <button class="btn btn-ghost btn-sm" id="qz-discard-close">Descartar aviso</button>
             </div>
           `;
         })()}
+        <div class="eyebrow">Empezar el siguiente torneo</div>
+        <p class="muted">Las dos opciones dejan el tablero <strong>vacío</strong>: el torneo nuevo empieza sin jornadas.</p>
+        <ul class="muted qz-tight" style="margin:0 0 10px 18px;padding:0;">
+          <li><strong>Se conserva:</strong> la quiniela, su link, participantes, admins y accesos, tus ajustes y todo el historial.</li>
+          <li><strong>Pasa al historial:</strong> las jornadas jugadas con sus resultados, la tabla, las preguntas extra y los descuentos por no pagar, y las reglas de liguilla.</li>
+          <li><strong>Empieza de cero:</strong> jornadas (también borradores y partidos pendientes), puntos, preguntas extra, descuentos y quién pagó. La liguilla, sin configurar. El plan empieza en Gratis.</li>
+          <li><strong>Competencia:</strong> te sugerimos la anterior y la confirmas o eliges otra.</li>
+        </ul>
+        <p class="muted qz-tight"><strong>Los pronósticos de cada quien se borran y no se pueden recuperar.</strong> Antes guardamos la tabla que salía de ellos. Si los quieres, descarga el respaldo de arriba primero.</p>
+        <p class="muted" id="qz-new-tournament-note" style="margin-top:4px;"></p>
+        <div class="divider"></div>
         <div class="eyebrow">Cerrar torneo</div>
-        <p class="muted">Cuando termine el torneo, esto anuncia al campeón, guarda la tabla final y las jornadas jugadas en el historial, <strong>despeja el tablero</strong> y empieza el torneo nuevo. Nada se pierde: lo archivado se sigue consultando.</p>
+        <p class="muted">Cuando el torneo terminó: anuncia al campeón y guarda la tabla final.</p>
         <button class="btn btn-danger" id="qz-close-tournament">Cerrar torneo y empezar uno nuevo</button>
         <div class="divider"></div>
-        <div class="eyebrow">Empezar un torneo nuevo sin cerrar este</div>
-        <p class="muted">Lo mismo, pero <strong>sin archivar ni despejar</strong>: tus jornadas y resultados siguen a la vista tal como están. Úsalo si el torneo anterior nunca se cerró formalmente. En ambos casos el torneo nuevo empieza en Gratis, con su propio conteo de jornadas.</p>
-        <p class="muted" id="qz-new-tournament-note" style="margin-top:-4px;"></p>
-        <button class="btn btn-ghost" data-start-new-tournament>Empezar un torneo nuevo sin cerrar este</button>
+        <div class="eyebrow">Empezar un torneo nuevo sin cierre formal</div>
+        <p class="muted">Si este torneo no terminó o no quieres declarar campeón: se archiva como <strong>interrumpido</strong>, sin campeón, con la tabla al momento de interrumpir (no es la final).</p>
+        <button class="btn btn-ghost" id="qz-interrupt-tournament">Empezar torneo nuevo sin cierre formal</button>
       </div>
     `;
     renderSettingsPlan();
-    wireTournamentActions(body);
     (async () => {
       const plan = await loadPlan();
       const note = document.getElementById("qz-new-tournament-note");
@@ -14617,12 +14641,16 @@
       // servidor no aceptó (p. ej. habilitar la liguilla).
       const hadLeague = Object.prototype.hasOwnProperty.call(meta.settings, "sportsdbLeagueId"), prevLeague = meta.settings.sportsdbLeagueId;
       const hadSeason = Object.prototype.hasOwnProperty.call(meta.settings, "sportsdbSeason"), prevSeason = meta.settings.sportsdbSeason;
+      const hadPrevComp = Object.prototype.hasOwnProperty.call(meta.settings, "previousCompetition"), prevComp = meta.settings.previousCompetition;
       const restoreCompetition = () => {
         if(hadLeague) meta.settings.sportsdbLeagueId = prevLeague; else delete meta.settings.sportsdbLeagueId;
         if(hadSeason) meta.settings.sportsdbSeason = prevSeason; else delete meta.settings.sportsdbSeason;
+        if(hadPrevComp) meta.settings.previousCompetition = prevComp; else delete meta.settings.previousCompetition;
       };
       meta.settings.sportsdbLeagueId = document.getElementById("qz-sportsdb-league").value;
       meta.settings.sportsdbSeason = document.getElementById("qz-sportsdb-season").value.trim() || meta.settings.sportsdbSeason;
+      // Elegir competencia aquí también confirma la del torneo nuevo.
+      if(meta.settings.sportsdbLeagueId) delete meta.settings.previousCompetition;
       sportsdbTeamsCache = null; // league may have changed — next visit to Jornadas re-fetches its real roster
       try{
         const saved = await setMetaWithError(meta);
@@ -14682,11 +14710,19 @@
       clearAllRoundDrafts();
       renderAdminRondas._editingId = null;
       renderAdminRondas._draft = null;
+      renderAdminRondas._org = null;
+      renderAdminRondas._lgForm = null;
+      allPicksCache = {};
+      // P1: el torneo nuevo empieza en Jornadas, con el tablero vacío y la
+      // competencia por confirmar.
+      adminSubTab = "rondas";
       renderAdmin(document.getElementById("qz-main"));
-      const who = r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
+      const interrupted = r.kind === "interrupted";
+      const who = !interrupted && r.champion ? ` 🏆 Campeón: ${r.champion.name}.` : "";
+      const done = interrupted ? "El torneo anterior quedó en el historial, sin cierre formal." : `Torneo cerrado.${who}`;
       toast(r.replayed
-        ? `Ese cierre ya se había completado.${who} Sigues en el torneo nuevo — no se creó otro.`
-        : `Torneo cerrado.${who} Ya estás en un torneo nuevo, con tu conteo de jornadas en cero.`);
+        ? `Eso ya se había completado. ${done} Sigues en el torneo nuevo — no se creó otro.`
+        : `${done} Empieza el torneo nuevo: confirma la competencia y crea la primera jornada.`, 7000);
     }
 
     // Resultado desconocido: la petición pudo haber llegado. NO se reintenta
@@ -14742,6 +14778,7 @@
           standings: pending.standings || [],
           basis: pending.basis,
           standingsAt: pending.standingsAt,
+          kind: pending.kind === "interrupted" ? "interrupted" : "closed",
         });
         verifyBtn.disabled = false;
         if(r.ok) return finishClose(r);
@@ -14766,19 +14803,24 @@
     // Admin termina confirmando cierres que ya no aplican y leyendo dos avisos
     // de "el torneo ya cambió" que él mismo provocó. El flag va fuera del
     // handler porque el botón se vuelve a pintar en cada render.
-    const closeBtn = document.getElementById("qz-close-tournament");
-    closeBtn.addEventListener("click", async () => {
-      if(closeInFlight) return;
-      closeInFlight = true;
-      closeBtn.disabled = true;
-      try{
-        await runCloseTournament();
-      } finally {
-        closeInFlight = false;
-        // El botón puede haber desaparecido con el re-render; reactivarlo sólo
-        // tiene sentido si sigue en pantalla.
-        if(document.body.contains(closeBtn)) closeBtn.disabled = false;
-      }
+    // Las dos acciones comparten el candado: no se puede cerrar e interrumpir
+    // a la vez desde la misma pantalla.
+    [["qz-close-tournament", "closed"], ["qz-interrupt-tournament", "interrupted"]].forEach(([id, kind]) => {
+      const btn = document.getElementById(id);
+      if(!btn) return;
+      btn.addEventListener("click", async () => {
+        if(closeInFlight) return;
+        closeInFlight = true;
+        btn.disabled = true;
+        try{
+          await runCloseTournament(kind);
+        } finally {
+          closeInFlight = false;
+          // El botón puede haber desaparecido con el re-render; reactivarlo sólo
+          // tiene sentido si sigue en pantalla.
+          if(document.body.contains(btn)) btn.disabled = false;
+        }
+      });
     });
 
     // MS2 · D4: what closing does to the extra questions, and the tournament
@@ -14793,16 +14835,19 @@
       return note;
     }
 
-    async function runCloseTournament(){
+    async function runCloseTournament(kind){
+      const interrupted = kind === "interrupted";
       const playedRounds = meta.rounds.filter(r => r.resultsPublished);
-      if(!playedRounds.length){
+      if(!interrupted && !playedRounds.length){
         if(!(await qzConfirm("Todavía no hay jornadas con resultados.", { title: "¿De todos modos quieres cerrar y limpiar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
       }
       // AUD-02: la tabla final sale de UNA lectura completa del servidor. Si
       // falla, no se arma ninguna tabla ni se cierra nada.
       const snap = await loadAdminSnapshot();
       if(!snap){
-        await qzAlert("No pudimos cargar todos los pronósticos, así que no podemos armar la tabla final. No se cerró nada. Revisa tu conexión e intenta de nuevo.", { title: "No se cerró el torneo" });
+        await qzAlert(interrupted
+          ? "No pudimos cargar todos los pronósticos, así que no podemos guardar la tabla al interrumpir. No se cambió nada. Revisa tu conexión e intenta de nuevo."
+          : "No pudimos cargar todos los pronósticos, así que no podemos armar la tabla final. No se cerró nada. Revisa tu conexión e intenta de nuevo.", { title: interrupted ? "No se empezó el torneo nuevo" : "No se cerró el torneo" });
         return;
       }
       adoptFreshMeta(meta, snap.meta);
@@ -14815,13 +14860,20 @@
       const champion = finalStandings.length ? finalStandings[0] : null;
       const planNow = await loadPlan();
       const losingPlus = !!(planNow && planNow.plan && planNow.plan !== "FREE");
-      const confirmMsg = (champion
-        ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nSe guarda en el historial, se archivan las jornadas de este torneo y empieza un torneo nuevo.\n\n`
-        : "Se cierra el torneo (sin jornadas jugadas), se archivan las jornadas y empieza un torneo nuevo.\n\n")
+      const head = interrupted
+        ? "El torneo se guarda en el historial como interrumpido, sin campeón. Guardamos la tabla al momento de interrumpir (no es la final) y las jornadas jugadas con sus resultados.\n\n"
+        : (champion
+          ? `🏆 El campeón es ${champion.name} con ${champion.pts} puntos.\n\nSe guarda en el historial, se archivan las jornadas de este torneo y empieza un torneo nuevo.\n\n`
+          : "Se cierra el torneo (sin jornadas jugadas), se archivan las jornadas y empieza un torneo nuevo.\n\n");
+      const confirmMsg = head
+        + "El torneo nuevo empieza con el tablero vacío: sin jornadas ni borradores, puntos en cero, nadie marcado como pagado y la liguilla sin configurar. Confirmarás la competencia.\n\n"
+        + "Los pronósticos de cada quien se borran y no se pueden recuperar.\n\n"
         + (losingPlus
           ? "Ojo: tu plan actual cubre ESTE torneo. El torneo nuevo empieza en Gratis y tu Plus no se transfiere."
           : "El torneo nuevo empieza en Gratis, con su propio conteo de jornadas.");
-      if(!(await qzConfirm(confirmMsg + closeTournamentBetsNote(), { title: "¿Cerrar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
+      if(!(await qzConfirm(confirmMsg + closeTournamentBetsNote(), interrupted
+        ? { title: "¿Empezar un torneo nuevo sin cierre formal?", confirmLabel: "Empezar torneo nuevo" }
+        : { title: "¿Cerrar el torneo?", confirmLabel: "Cerrar torneo" }))) return;
 
       const expectedCycle = planNow && planNow.tournament && planNow.tournament.cycle;
       if(!Number.isSafeInteger(expectedCycle) || expectedCycle < 1){
@@ -14832,7 +14884,7 @@
       // El token se guarda ANTES de mandar nada. Si el navegador se cae entre
       // el envío y la respuesta, al volver sigue existiendo la intención y se
       // puede preguntar por ella en vez de adivinar.
-      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, basis: snap.basis, standingsAt: snap.readAt, startedAt: Date.now() };
+      const intent = { intentId: newCloseIntentId(), expectedCycle, standings: finalStandings, basis: snap.basis, standingsAt: snap.readAt, startedAt: Date.now(), kind: interrupted ? "interrupted" : "closed" };
       writeCloseIntent(intent);
 
       const r = await apiCloseTournament(intent);
