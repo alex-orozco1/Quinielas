@@ -300,6 +300,30 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
   });
 
+  itest("Product QA P2 (heredado de main): con resultados y cierre en el futuro, la Tabla de los demás sí trae sus pronósticos; y el cierre no se mueve al futuro", async () => {
+    const q = await jugado("tn-tabla");
+    // Datos antiguos: r1 con resultados y cierre en el futuro (directo en la base).
+    const m = await stored(q);
+    m.rounds.find((r) => r.id === "r1").deadline = enHoras(240);
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+    // Ana (otra participante) lee los pronósticos de Beto: r1 ya se jugó → visible; r2 abierta → no.
+    const batch = await call("POST", "/api/picks-batch", { headers: { "X-Qracks-Auth": q.ana.pin, "X-Qracks-Participant": q.ana.id }, body: { metaKey: q.metaKey, participantIds: [q.beto.id] } });
+    assert.equal(batch.status, 200, JSON.stringify(batch.body));
+    const beto = JSON.stringify(batch.body);
+    assert.ok(/"r1":\{"m1":"A"\}/.test(beto), "la jornada jugada se ve (sus puntos cuentan en la Tabla): " + beto);
+    assert.ok(!/"m2":"D"/.test(beto), "la jornada abierta sigue oculta: " + beto);
+    // El organizador no puede mover al futuro el cierre de una jornada jugada…
+    const v = await read(q);
+    v.rounds.find((r) => r.id === "r1").deadline = enHoras(500);
+    const w = await write(q, v);
+    assert.equal(w.status, 400, JSON.stringify(w.body));
+    assert.deepEqual([w.body.error, w.body.roundNumber], ["results_round_deadline_future", 1]);
+    // …pero el cierre futuro heredado que no cambia no bloquea otros cambios.
+    const v2 = await read(q);
+    v2.participants.find((p) => p.id === q.beto.id).paid = false;
+    assert.equal((await write(q, v2)).status, 200);
+  });
+
   itest("Technical QA P1 (heredado de main): con resultados publicados, un cierre en el futuro no reabre los pronósticos de esa jornada", async () => {
     const q = await jugado("tn-reabre");
     const m = await stored(q);

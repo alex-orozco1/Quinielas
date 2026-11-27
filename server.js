@@ -1608,7 +1608,11 @@ async function filterPicksForRequest(req, info, picksValue, preloadedMeta, reque
   // numérico (heredada) no puede dejar de contar como abierta por el tipo.
   const openRoundIds = new Set(
     (meta.rounds || [])
-      .filter((r) => new Date(r.deadline).getTime() > now)
+      // Con resultados publicados ya se jugó (y sus pronósticos ya no
+      // cambian: validatePicksDeadline), aunque su cierre quedara en el
+      // futuro; si no, la Tabla de los demás sale sin sus puntos (Product QA,
+      // P2 heredado de main).
+      .filter((r) => !r.resultsPublished && new Date(r.deadline).getTime() > now)
       .map((r) => String(r && r.id))
   );
   const filtered = {};
@@ -1721,6 +1725,14 @@ function validateRoundsIntegrity(newValue, oldValue, nowMs) {
     // never block a legitimate correction of results already live.
     const oldRound = oldRoundsById[round.id];
     const wasAlreadyPublished = !!(oldRound && oldRound.resultsPublished);
+    // Una jornada ya jugada no se reabre: su cierre no se mueve al futuro (un
+    // cierre futuro heredado que no cambia sigue pasando).
+    if (wasAlreadyPublished && round.deadline !== oldRound.deadline) {
+      const movedMs = new Date(round.deadline).getTime();
+      if (Number.isFinite(movedMs) && movedMs > now) {
+        return { ok: false, reason: "results_round_deadline_future", roundNumber: round.number };
+      }
+    }
     if (!wasAlreadyPublished) {
       const deadlineMs = new Date(round.deadline).getTime();
       if (Number.isFinite(deadlineMs) && now <= deadlineMs) {
