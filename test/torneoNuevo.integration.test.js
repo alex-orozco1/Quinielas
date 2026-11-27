@@ -300,6 +300,64 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
   });
 
+  // P2-A (Product): con empates, el orden y el campeón salen de la tabla
+  // OFICIAL del servidor (puntos de mayor a menor; en empate, el orden de la
+  // lista de participantes: la regla de siempre de QRACKS), nunca del orden
+  // que mande la petición.
+  async function empatados(tag, conPunto) {
+    const q = await jugado(tag);            // Beto acertó r1 (1 punto); Ana, 0
+    const m = await stored(q);
+    const base = m.participants.find((p) => p.id === q.beto.id);
+    const extra = ["Carla", "Dani"].map((name) => ({ ...JSON.parse(JSON.stringify(base)), id: "p_" + tag + name.toLowerCase(), name, paid: false }));
+    m.participants.push(...extra);
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+    for (const p of extra.filter((x) => conPunto.includes(x.name))) {
+      await dbQuery("INSERT INTO kv(key, value) VALUES ($1, $2)", [`quiniela:${q.slug}:picks:${p.id}`, JSON.stringify({ r1: { m1: "A" } })]);
+    }
+    const ids = Object.fromEntries([["Ana", q.ana.id], ["Beto", q.beto.id], ...extra.map((p) => [p.name, p.id])]);
+    return { q, ids };
+  }
+  const fila = (ids, name, pts) => ({ id: ids[name], name, pts });
+
+  for (const kind of ["closed", "interrupted"]) {
+    itest(`P2-A · ${kind} · dos empatados arriba: una petición que los invierte no cambia el orden archivado ni al campeón`, async () => {
+      const { q, ids } = await empatados("tn-e2" + kind[0], ["Carla"]);   // Beto 1, Carla 1, Ana 0, Dani 0
+      const manipulada = [fila(ids, "Carla", 1), fila(ids, "Beto", 1), fila(ids, "Dani", 0), fila(ids, "Ana", 0)];
+      const r = await terminar(q, kind, { standings: manipulada });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      const arch = (await stored(q)).pastTournaments.at(-1);
+      const table = kind === "closed" ? arch.standings : arch.interruptedStandings;
+      assert.deepEqual(table.map((x) => [x.name, x.pts]), [["Beto", 1], ["Carla", 1], ["Ana", 0], ["Dani", 0]], "el orden oficial, no el de la petición");
+      if (kind === "closed") {
+        assert.deepEqual(arch.champion, { name: "Beto", pts: 1 });
+        assert.deepEqual(r.body.champion, { name: "Beto", pts: 1 });
+      } else assert.equal(arch.champion, null);
+    });
+  }
+
+  itest("P2-A · tres empatados arriba (y dos abajo): la petición manipulada no elige campeón; la pantalla y el servidor coinciden", async () => {
+    const { q, ids } = await empatados("tn-e3", ["Carla", "Dani"]);      // Beto, Carla, Dani 1; Ana 0
+    const manipulada = [fila(ids, "Dani", 1), fila(ids, "Carla", 1), fila(ids, "Beto", 1), fila(ids, "Ana", 0)];
+    const r = await terminar(q, "closed", { standings: manipulada });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const arch = (await stored(q)).pastTournaments.at(-1);
+    assert.deepEqual(arch.standings.map((x) => x.name), ["Beto", "Carla", "Dani", "Ana"]);
+    assert.deepEqual(arch.champion, { name: "Beto", pts: 1 });
+    // Sin manipular (la tabla como la arma la pantalla) el resultado es el mismo.
+    const { q: q2 } = await empatados("tn-e3b", ["Carla", "Dani"]);
+    const r2 = await terminar(q2, "closed");
+    assert.equal(r2.status, 200, JSON.stringify(r2.body));
+    assert.deepEqual((await stored(q2)).pastTournaments.at(-1).standings.map((x) => x.name), ["Beto", "Carla", "Dani", "Ana"]);
+  });
+
+  itest("P2-A · una petición con puntos cambiados entre empatados sigue rechazada (no se normaliza lo que no es sólo orden)", async () => {
+    const { q, ids } = await empatados("tn-e4", ["Carla"]);
+    const mala = [fila(ids, "Carla", 2), fila(ids, "Beto", 0), fila(ids, "Ana", 0), fila(ids, "Dani", 0)];
+    const r = await terminar(q, "closed", { standings: mala });
+    assert.deepEqual([r.status, r.body.error], [409, "close_standings_mismatch"]);
+    assert.deepEqual((await stored(q)).pastTournaments || [], []);
+  });
+
   itest("Product QA P2 (heredado de main): con resultados y cierre en el futuro, la Tabla de los demás sí trae sus pronósticos; y el cierre no se mueve al futuro", async () => {
     const q = await jugado("tn-tabla");
     // Datos antiguos: r1 con resultados y cierre en el futuro (directo en la base).

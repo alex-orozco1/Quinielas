@@ -164,13 +164,14 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
   // servidor ya no guarda la tabla a la palabra: la RECALCULA con la misma
   // fórmula que la página (standings.js) y rechaza si no coincide.
   const handlerBody = closeTournamentHandler();
-  assert.ok(handlerBody.includes("closeStandingsMismatch(metaBefore, picksRowsNow, body.standings, body.standingsAt)"),
+  assert.ok(handlerBody.includes("closeStandingsCheck(metaBefore, picksRowsNow, body.standings, body.standingsAt, refMs)"),
     "el servidor verifica la tabla antes de archivar y borrar");
   assert.ok(serverSrc.includes("standingsModule.standingsList(meta, picksById || {}, ms, liguillaScoringModule)"),
     "con el mismo módulo que la página");
   assert.ok(indexSrc.includes("return QS.standingsList(meta, allPicksCache, serverNow(), LG);"), "la página usa ese mismo módulo");
   // Y el campeón no se toma del cliente: se deriva de la tabla ya saneada, así
-  // que nunca puede contradecir lo que se guarda junto a él.
+  // que nunca puede contradecir lo que se guarda junto a él (y en el cierre,
+  // de la tabla oficial del servidor: archivedCloseSummary(checked.table)).
   assert.ok(serverSrc.includes("const champion = standings.length ? { ...standings[0] } : null;"),
     "el campeón sale de la tabla saneada, no de un campo aparte del cliente");
 });
@@ -184,6 +185,6 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
 test("the close archives the discounts of the final table (closePenaltiesOf) and never reconciles the ledger", () => {
   const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
-  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, penaltiesAt);"));
+  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, refMs);"));
   assert.ok(handlerBody.includes('if (p && "penalizedRounds" in p) p.penalizedRounds = {};'));
 });

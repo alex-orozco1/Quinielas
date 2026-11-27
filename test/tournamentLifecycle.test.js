@@ -617,8 +617,9 @@ test("SECURITY: the client never supplies a scope, a sequence or a lifecycle", (
     // AUD-02: además la huella de la lectura (`basis`, una precondición que se
     // compara con lo guardado, como expectedCycle) y la tabla, sólo para
     // comprobar que lista a cada participante, y su hora de lectura
-    // (standingsAt, acotada) para los descuentos archivados: ninguna elige
-    // ciclo ni scope.
+    // (standingsAt, acotada), sólo para distinguir «algo venció en medio»
+    // (close_standings_changed) de una tabla equivocada: ninguna elige ciclo
+    // ni scope, ni la hora con la que se valida y se archiva (P2-B).
     'async function finishTournament(': ["body.basis", "body.closeIntentId", "body.expectedCycle", "body.name", "body.standings", "body.standingsAt"],
   };
   for (const [marker, allowed] of Object.entries(expected)) {
@@ -1196,4 +1197,19 @@ test("FRONTEND (UX P2-2b): la contraseña se lleva a la vista sin animación y c
   const kv = blockFrom(indexSrc, "async function keepInView(el, must){");
   assert.ok(kv.includes("Math.abs(window.scrollY - expectedY) > 2"));
   assert.ok(indexSrc.includes('keepInView(pw.closest(".card") || pw, pw.closest(".field") || pw);'), "lo que debe verse es el campo");
+});
+
+test("SERVER (P2-A/P2-B): el cierre valida y archiva con la tabla oficial del servidor a UNA sola hora", () => {
+  const h = stripComments(blockFrom(serverSrc, "async function finishTournament("));
+  assert.ok(h.includes("const refMs = Date.now();"));
+  assert.ok(h.includes("closeStandingsCheck(metaBefore, picksRowsNow, body.standings, body.standingsAt, refMs)"));
+  assert.ok(h.includes("summary = archivedCloseSummary(metaBefore, checked.table);"), "orden y campeón del servidor, no de la petición");
+  assert.ok(h.includes("const now = new Date(refMs).toISOString();"));
+  assert.ok(h.includes("const archivedPenalties = closePenaltiesOf(meta, refMs);"), "descuentos a la misma hora que la tabla");
+  assert.ok(!h.includes("archivedCloseSummary(metaBefore, body.standings)"));
+  assert.ok(!/Date\.now\(\)/.test(h.slice(h.indexOf("const refMs = Date.now();") + 25)), "ninguna otra hora después");
+  const fn = stripComments(blockFrom(serverSrc, "function closeStandingsCheck("));
+  assert.ok(fn.includes("const table = tableAt(refMs);"));
+  assert.ok(fn.includes('return { error: "close_standings_changed" };'));
+  assert.ok(indexSrc.includes("close_standings_changed:"), "la pantalla lo explica");
 });

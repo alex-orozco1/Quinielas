@@ -3687,20 +3687,28 @@ function closePenaltiesOf(meta, nowMs) {
   return out;
 }
 
-// true si la tabla recibida NO coincide, participante por participante, con la
-// que calcula el servidor (standings.js) a la hora de la lectura o a la de
-// ahora. Sólo compara puntos: el orden y la lista completa ya los valida
-// closeStandingsProblem().
-function closeStandingsMismatch(meta, picksById, standings, standingsAt) {
-  const nowMs = Date.now();
-  const askedAt = typeof standingsAt === "string" ? Date.parse(standingsAt) : NaN;
-  const readAtMs = Number.isFinite(askedAt) && askedAt <= nowMs && askedAt >= nowMs - 6 * 3600 * 1000 ? askedAt : nowMs;
+// La tabla oficial del cierre la calcula el SERVIDOR (standings.js, la misma
+// cuenta y el mismo orden que la Tabla: puntos de mayor a menor y, en empate,
+// el orden de la lista de participantes) sobre la meta y los pronósticos
+// leídos bajo lock, a UNA sola hora: la del cierre (refMs). Con esa misma
+// hora se archivan los descuentos y se cierran las preguntas (P2-B).
+// - La tabla de la pantalla debe tener los mismos puntos por participante.
+//   Su orden entre empatados no decide nada: se archiva el orden oficial, así
+//   que una petición que reordene empatados no cambia al campeón (P2-A).
+// - Si no coincide ahora pero sí a la hora de la lectura de la pantalla
+//   (standingsAt, acotada), algo venció en medio (una jornada que cierra, un
+//   descuento por no pagar): 409 close_standings_changed; se vuelve a leer y
+//   a cerrar. Si no coincide en ninguna: 409 close_standings_mismatch.
+function closeStandingsCheck(meta, picksById, standings, standingsAt, refMs) {
   const sent = new Map((Array.isArray(standings) ? standings : []).map((r) => [r.id, r.pts]));
-  const matchesAt = (ms) => {
-    const table = standingsModule.standingsList(meta, picksById || {}, ms, liguillaScoringModule);
-    return table.length === sent.size && table.every((r) => sent.has(r.id) && sent.get(r.id) === r.pts);
-  };
-  return !(matchesAt(readAtMs) || (readAtMs !== nowMs && matchesAt(nowMs)));
+  const tableAt = (ms) => standingsModule.standingsList(meta, picksById || {}, ms, liguillaScoringModule);
+  const samePoints = (table) => table.length === sent.size && table.every((r) => sent.has(r.id) && sent.get(r.id) === r.pts);
+  const table = tableAt(refMs);
+  if (samePoints(table)) return { table: table.map((r) => ({ id: r.id, pts: r.pts })) };
+  const askedAt = typeof standingsAt === "string" ? Date.parse(standingsAt) : NaN;
+  const readAtMs = Number.isFinite(askedAt) && askedAt <= refMs && askedAt >= refMs - 6 * 3600 * 1000 ? askedAt : null;
+  if (readAtMs != null && readAtMs !== refMs && samePoints(tableAt(readAtMs))) return { error: "close_standings_changed" };
+  return { error: "close_standings_mismatch" };
 }
 
 function archivedCloseSummary(meta, standings) {
@@ -3887,10 +3895,8 @@ async function finishTournament(req, res, kind) {
     // Technical QA P2 (P1 · torneo nuevo). Los pronósticos se borran abajo, así
     // que la tabla que se archiva NO se toma a la palabra: el servidor la
     // recalcula con la MISMA fórmula que el navegador (standings.js), sobre la
-    // meta y los pronósticos leídos bajo lock, y sólo sigue si los puntos de
-    // cada participante coinciden. La hora de los descuentos en vivo: la de la
-    // lectura de la pantalla (standingsAt, acotada) o la de ahora — la pantalla
-    // calculó entre las dos.
+    // meta y los pronósticos leídos bajo lock, a la hora del cierre, y sólo
+    // sigue si los puntos de cada participante coinciden (closeStandingsCheck).
     // Una jornada con resultados publicados y su cierre todavía en el futuro
     // (datos antiguos, o la API): sus pronósticos siguen ocultos en la lectura
     // de la pantalla, así que su tabla nunca coincidiría con la del servidor.
@@ -3903,28 +3909,33 @@ async function finishTournament(req, res, kind) {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "close_requires_results" });
     }
+    // P2-B: UNA hora para todo el cierre (tabla, descuentos, preguntas,
+    // archivo), tomada ya bajo lock.
+    const refMs = Date.now();
     const openWithResults = (Array.isArray(metaBefore.rounds) ? metaBefore.rounds : []).find((r) => {
       if (!r || !r.resultsPublished || r.published === false) return false;
       const t = new Date(r.deadline).getTime();
-      return Number.isFinite(t) && t > Date.now();
+      return Number.isFinite(t) && t > refMs;
     });
     if (openWithResults) {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "close_round_results_open", roundNumber: openWithResults.number });
     }
-    if (closeStandingsMismatch(metaBefore, picksRowsNow, body.standings, body.standingsAt)) {
+    const checked = closeStandingsCheck(metaBefore, picksRowsNow, body.standings, body.standingsAt, refMs);
+    if (checked.error) {
       await client.query("ROLLBACK");
-      console.log("close refused: standings mismatch", { slug, kind });
-      return res.status(409).json({ error: "close_standings_mismatch" });
+      console.log("close refused: standings", { slug, kind, error: checked.error });
+      return res.status(409).json({ error: checked.error });
     }
-    // Lo que se archiva sale de la tabla ya validada (cada participante una
-    // vez, en orden) con los NOMBRES guardados, leídos bajo lock: una fila
-    // nunca se cae por un nombre raro y el campeón es siempre el primero.
-    // Interrumpido: la misma tabla, pero NUNCA hay campeón (Product).
-    summary = archivedCloseSummary(metaBefore, body.standings);
+    // Lo que se archiva sale de la tabla OFICIAL del servidor (su orden, con
+    // el desempate de siempre; P2-A) con los NOMBRES guardados, leídos bajo
+    // lock: una fila nunca se cae por un nombre raro y el campeón es siempre
+    // el primero de ese orden. Interrumpido: la misma tabla, pero NUNCA hay
+    // campeón (Product).
+    summary = archivedCloseSummary(metaBefore, checked.table);
     if (interrupted) summary = { standings: summary.standings, champion: null };
 
-    const now = new Date().toISOString();
+    const now = new Date(refMs).toISOString();
     const commercialConfig = (await getRow("commercial_config", client)) || DEFAULT_COMMERCIAL_CONFIG;
 
     // The meta is rebuilt from the row read UNDER LOCK, never from anything
@@ -3947,14 +3958,11 @@ async function finishTournament(req, res, kind) {
     // FIA-GPT-03: se archivan los descuentos que restaron en ESA tabla, con la
     // misma regla que la pantalla (penaltyPointsFor), también los que se
     // calculaban en vivo sin registro previo; una sola vez cada uno.
-    // A la hora en que se leyó lo que armó la tabla (admin-snapshot.readAt,
-    // que la pantalla devuelve como standingsAt), no a la del cierre: una
-    // jornada que cierra en medio no agrega un descuento que la tabla no
-    // restó. Sólo se acepta una hora de las últimas 6 h y no futura.
-    const nowMs = Date.parse(now);
-    const askedAt = typeof body.standingsAt === "string" ? Date.parse(body.standingsAt) : NaN;
-    const penaltiesAt = Number.isFinite(askedAt) && askedAt <= nowMs && askedAt >= nowMs - 6 * 3600 * 1000 ? askedAt : nowMs;
-    const archivedPenalties = closePenaltiesOf(meta, penaltiesAt);
+    // P2-B: a la MISMA hora con la que el servidor validó la tabla (refMs):
+    // nunca se valida con una hora y se archiva con otra. Si algo venció
+    // entre la lectura de la pantalla y ahora y cambió los puntos, el cierre
+    // ya se rechazó arriba (close_standings_changed).
+    const archivedPenalties = closePenaltiesOf(meta, refMs);
     if (Array.isArray(meta.participants)) meta.participants.forEach((p) => {
       if (p && "penalizedRounds" in p) p.penalizedRounds = {};
     });

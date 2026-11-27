@@ -361,19 +361,56 @@ test.describe("fiabilidad: guardado de pronósticos, cierre de torneo, descuento
     assert.deepEqual(arch.penalties, { [q.beto.id]: { r1: 0, rx: 2, r2: 2 } }, "r1 como se registró, rx como se registró, r2 en vivo; Ana pagó");
   });
 
-  itest("FIA-GPT-03 d · los descuentos se archivan a la hora de la lectura (standingsAt): una jornada que cierra después no agrega uno que la tabla no restó", async () => {
-    const q = await playedTournament("g03d");
+  // P2-B (Product): UNA hora para el cierre. La tabla, los descuentos que
+  // restaron en ella y los que se archivan salen del mismo momento; una
+  // jornada que vence entre la lectura y la confirmación y cambia los puntos
+  // es un 409 sin tocar nada, y se vuelve a leer y a cerrar.
+  async function venceEnMedio(tag) {
+    const q = await playedTournament(tag);
     const m = await storedMeta(q);
     m.paymentPenalty = { enabled: true, startsAtRound: 1, pointsPerRound: 2 };
     m.participants.forEach((p) => { p.paid = false; delete p.penalizedRounds; });
     const soon = new Date(Date.now() + 1500).toISOString();
     m.rounds.push({ id: "r2", number: 2, deadline: soon, published: true, resultsPublished: false, results: {}, matches: matches("r2") });
     await putMeta(q, m);
-    const snap = await snapshot(q);                       // r2 todavía abierta
-    await new Promise((r) => setTimeout(r, 2000));        // r2 cierra antes de confirmar
-    const standings = [{ id: q.beto.id, name: "Beto", pts: 0 }, { id: q.ana.id, name: "Ana", pts: -2 }];
-    assert.equal((await close(q, { expectedCycle: await cycleOf(q), standings, basis: snap.body.basis, standingsAt: snap.body.readAt })).status, 200);
-    assert.deepEqual((await storedMeta(q)).pastTournaments.at(-1).penalties, { [q.beto.id]: { r1: 2 }, [q.ana.id]: { r1: 2 } }, "sin r2");
+    const snap = await snapshot(q);                       // r2 todavía abierta: sólo r1 descuenta
+    await new Promise((r) => setTimeout(r, 2000));        // r2 vence antes de confirmar: también descuenta
+    return { q, snap };
+  }
+  const picksCount = async (q) => Number((await dbQuery("SELECT count(*) FROM kv WHERE key LIKE $1", [`quiniela:${q.slug}:picks:%`])).rows[0].count);
+
+  itest("P2-B · una jornada vence entre la lectura y la confirmación y cambia los puntos (descuento por no pagar): 409 sin archivar, sin avanzar ni borrar; al volver a leer, se cierra", async () => {
+    const { q, snap } = await venceEnMedio("g03d");
+    const c0 = await cycleOf(q), p0 = await picksCount(q), before = await storedMeta(q);
+    const atRead = [{ id: q.beto.id, name: "Beto", pts: 0 }, { id: q.ana.id, name: "Ana", pts: -2 }];
+    const r = await close(q, { expectedCycle: c0, standings: atRead, basis: snap.body.basis, standingsAt: snap.body.readAt });
+    assert.deepEqual([r.status, r.body.error], [409, "close_standings_changed"], JSON.stringify(r.body));
+    assert.deepEqual(await storedMeta(q), before, "nada cambió");
+    assert.equal(await cycleOf(q), c0, "el ciclo no avanza");
+    assert.equal(await picksCount(q), p0, "ningún pronóstico se borró");
+    // El organizador actualiza la tabla (nueva lectura) y repite el cierre.
+    const snap2 = await snapshot(q);
+    const fresh = require("../standings").standingsList(snap2.body.meta, snap2.body.picks, Date.parse(snap2.body.readAt), require("../liguillaScoring"))
+      .map((x) => ({ id: x.id, name: x.name, pts: x.pts }));
+    assert.deepEqual(fresh.map((x) => x.pts), [-2, -4], "ahora r2 también descuenta");
+    const ok = await close(q, { expectedCycle: c0, standings: fresh, basis: snap2.body.basis, standingsAt: snap2.body.readAt });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const arch = (await storedMeta(q)).pastTournaments.at(-1);
+    assert.deepEqual(arch.standings.map((x) => x.pts), [-2, -4]);
+    assert.deepEqual(arch.penalties, { [q.beto.id]: { r1: 2, r2: 2 }, [q.ana.id]: { r1: 2, r2: 2 } }, "los descuentos archivados son los que restaron en esa tabla");
+  });
+
+  itest("P2-B · (el fallo original) la tabla no se valida con una hora y sus descuentos se archivan con otra", async () => {
+    const { q, snap } = await venceEnMedio("g03e");
+    // Tabla de AHORA (r2 ya descuenta) con la hora de la lectura vieja: antes
+    // se aceptaba por «ahora» y los descuentos se archivaban a la hora vieja
+    // (sin r2) → el archivo no cuadraba con su propia tabla.
+    const now = [{ id: q.beto.id, name: "Beto", pts: -2 }, { id: q.ana.id, name: "Ana", pts: -4 }];
+    const r = await close(q, { expectedCycle: await cycleOf(q), standings: now, basis: snap.body.basis, standingsAt: snap.body.readAt });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const arch = (await storedMeta(q)).pastTournaments.at(-1);
+    assert.deepEqual(arch.standings.map((x) => x.pts), [-2, -4]);
+    assert.deepEqual(arch.penalties, { [q.beto.id]: { r1: 2, r2: 2 }, [q.ana.id]: { r1: 2, r2: 2 } }, "misma hora que la tabla");
   });
 
   itest("FIA-GPT-03 c · penalización apagada: no restaba en la tabla, no se archiva como descuento, y el torneo nuevo empieza limpio", async () => {
