@@ -1028,6 +1028,12 @@ function stripQuinielaSecrets(value, isAdminOrOwner, selfParticipantId) {
       if (!t || typeof t !== "object") return;
       if (t.betAnswers) t.betAnswers = maskByBet(t.betAnswers);
       if (t.legacyScorerBet && t.legacyScorerBet.answers) t.legacyScorerBet.answers = maskFlat(t.legacyScorerBet.answers);
+      // P2-C: los borradores de resultados (una corrección sin publicar) de
+      // una jornada archivada son del admin, igual que en las activas (abajo).
+      // El resultado oficial (results/resultsPublished) y lo demás se quedan.
+      if (Array.isArray(t.rounds)) t.rounds.forEach((r) => {
+        if (r && typeof r === "object") { delete r.draftResults; delete r.draftScores; delete r.draftMatchStatus; }
+      });
     });
   }
   if (!isAdminOrOwner && Array.isArray(clone.rounds)) {
@@ -1230,6 +1236,9 @@ function stampMetaWrite(doc, oldValue) {
 // `requesterIsCreator`: the request is authenticated as the quiniela's creator
 // (requestIsCreator), which only matters while a quiniela with a creator has
 // no admin password yet.
+// Lo de cada participante que pertenece a UN torneo (el cierre lo reinicia o
+// lo archiva). Una pestaña del torneo anterior no lo escribe en el nuevo.
+const TOURNAMENT_PARTICIPANT_FIELDS = ["paid", "penalizedRounds", "customBetAnswers", "golScorerGuess", "golScorerCorrect"];
 function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opts) {
   const requesterIsCreator = !!(opts && opts.requesterIsCreator);
   const merged = JSON.parse(JSON.stringify(newValue));
@@ -1371,6 +1380,27 @@ function mergeProtectedMetaFields(oldValue, newValue, authTier, roundsWrite, opt
   // that merge.
   const participantMerge = mergeParticipants(oldValue, merged);
   merged.participants = participantMerge.participants;
+  // Pestaña del torneo ANTERIOR (época vieja): lo de cada participante que es
+  // de un torneo —pagó, descuentos registrados, respuestas a preguntas— lo
+  // decide lo guardado, aunque su `rev` no haya cambiado con el cierre (quien
+  // ya estaba en paid=false sigue igual). Lo demás (nombre, PIN, admin) sigue
+  // la regla de siempre. Quien la pestaña agregue entra como en un torneo
+  // nuevo: sin pago ni datos del anterior.
+  if (roundsAreStale) {
+    const storedById = new Map((Array.isArray(oldValue && oldValue.participants) ? oldValue.participants : [])
+      .filter((p) => p && p.id != null).map((p) => [String(p.id), p]));
+    merged.participants = merged.participants.map((p) => {
+      if (!p || typeof p !== "object" || p.id == null) return p;
+      const st = storedById.get(String(p.id));
+      const out = { ...p };
+      TOURNAMENT_PARTICIPANT_FIELDS.forEach((f) => {
+        if (st && f in st) out[f] = JSON.parse(JSON.stringify(st[f]));
+        else delete out[f];
+      });
+      if (!st) out.paid = false;
+      return out;
+    });
+  }
 
   // Onboarding B. The creator is nobody else's to remove, demote or reset:
   // only the admin password (or the platform) does that, before the password
@@ -3585,6 +3615,9 @@ function isUsableIntentId(value) {
 // commercial decision, and it does not: nothing below reads it except to
 // store it. It is still bounded and shape-checked, because a malformed or
 // enormous payload would corrupt the row for everyone reading it later.
+// Sólo acota lo que llega en la petición antes de validarlo; lo que se
+// archiva sale de la tabla oficial del servidor (archivedCloseSummary), con
+// todos los participantes (P2-D).
 const MAX_ARCHIVED_STANDINGS = 500;
 function sanitizeStandingRow(row) {
   if (!row || typeof row !== "object") return null;
@@ -3714,7 +3747,11 @@ function closeStandingsCheck(meta, picksById, standings, standingsAt, refMs) {
 function archivedCloseSummary(meta, standings) {
   const names = new Map((Array.isArray(meta && meta.participants) ? meta.participants : [])
     .filter((p) => p && p.id != null).map((p) => [p.id, typeof p.name === "string" ? p.name.trim().slice(0, 80) : ""]));
-  const rows = standings.slice(0, MAX_ARCHIVED_STANDINGS).map((r) => ({ name: names.get(r.id) || "Sin nombre", pts: r.pts }));
+  // P2-D: TODOS, sin recortar. La tabla oficial ya tiene exactamente una fila
+  // por participante guardado (los pronósticos se borran al cerrar: quien
+  // quedara fuera no tendría cómo recuperar su lugar). El tamaño lo acota la
+  // lista de participantes, no un número fijo.
+  const rows = standings.map((r) => ({ name: names.get(r.id) || "Sin nombre", pts: r.pts }));
   return { standings: rows, champion: rows.length ? { ...rows[0] } : null };
 }
 

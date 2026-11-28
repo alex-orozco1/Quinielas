@@ -300,6 +300,75 @@ test.describe("P1 · torneo nuevo con el tablero vacío (servidor real)", () => 
     assert.deepEqual(ok.body.champion, { name: "Beto", pts: 1 });
   });
 
+  // P2-C: los borradores administrativos (draftResults, draftScores,
+  // draftMatchStatus) de una jornada ARCHIVADA son del admin, como los de una
+  // jornada activa; el resultado oficial y el resto del historial se ven.
+  itest("P2-C · un participante o un anónimo no reciben los borradores de una jornada archivada; el resultado oficial sí", async () => {
+    const q = await jugado("tn-borr");
+    const m = await stored(q);
+    Object.assign(m.rounds.find((r) => r.id === "r1"), {
+      draftResults: { m1: "B" }, draftScores: { m1: { a: 0, b: 3 } }, draftMatchStatus: { m1: "played" },
+    });
+    await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+    assert.equal((await terminar(q, "closed")).status, 200);
+    const asBeto = (await call("GET", kvPath(q.slug), { headers: { "X-Qracks-Auth": q.beto.pin, "X-Qracks-Participant": q.beto.id } })).body.value;
+    const asAnon = (await call("GET", kvPath(q.slug), {})).body.value;
+    for (const [who, v] of [["participante", asBeto], ["anónimo", asAnon]]) {
+      const r1 = v.pastTournaments.at(-1).rounds.find((r) => r.id === "r1");
+      assert.deepEqual(r1.results, { m1: "A" }, who + ": el resultado oficial se conserva");
+      assert.equal(r1.resultsPublished, true);
+      for (const f of ["draftResults", "draftScores", "draftMatchStatus"]) assert.ok(!(f in r1), `${who} no recibe ${f}`);
+      assert.equal(v.pastTournaments.at(-1).champion.name, "Beto", who + ": el historial sigue completo");
+    }
+    // El admin sí (son suyos) y lo guardado no cambia.
+    const asAdmin = (await read(q)).pastTournaments.at(-1).rounds.find((r) => r.id === "r1");
+    assert.deepEqual(asAdmin.draftResults, { m1: "B" });
+    assert.deepEqual((await stored(q)).pastTournaments.at(-1).rounds.find((r) => r.id === "r1").draftScores, { m1: { a: 0, b: 3 } });
+  });
+
+  // P2-D: la clasificación archivada lista a TODOS (los pronósticos se borran
+  // al cerrar); nada de recortar a 500.
+  for (const kind of ["closed", "interrupted"]) {
+    itest(`P2-D · ${kind} · con 501 participantes nadie queda fuera de la clasificación archivada`, async () => {
+      const q = await jugado("tn-501" + kind[0]);
+      const m = await stored(q);
+      const base = m.participants.find((p) => p.id === q.beto.id);
+      for (let i = 0; m.participants.length < 501; i++) {
+        m.participants.push({ ...JSON.parse(JSON.stringify(base)), id: `p_501_${kind[0]}_${i}`, name: `Persona ${i + 1}`, paid: false, rev: 0 });
+      }
+      await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [q.metaKey, JSON.stringify(m)]);
+      const r = await terminar(q, kind);
+      assert.equal(r.status, 200, JSON.stringify(r.body).slice(0, 300));
+      const arch = (await stored(q)).pastTournaments.at(-1);
+      const table = kind === "closed" ? arch.standings : arch.interruptedStandings;
+      assert.equal(table.length, 501, "los 501, ninguno recortado");
+      assert.deepEqual(new Set(table.map((x) => x.name)).size, 501);
+      assert.ok(table.some((x) => x.name === "Persona 499"), "el último en entrar también");
+      assert.equal(await picksRows(q), 0);
+    });
+  }
+
+  // Pestaña del torneo ANTERIOR: un participante con paid=false; la pestaña A
+  // se abrió antes de empezar el torneo nuevo (pestaña B) y después marca el
+  // pago. Ese cambio era del torneo anterior: no llega al nuevo.
+  itest("pestaña del torneo anterior · marcar «pagó» después de empezar el torneo nuevo no afecta al nuevo", async () => {
+    const q = await quiniela("tn-pago");                 // sin jornadas activas
+    const tabA = await read(q);
+    assert.equal(tabA.participants.find((p) => p.id === q.beto.id).paid, false);
+    const b = await terminar(q, "interrupted");           // pestaña B: torneo nuevo
+    assert.equal(b.status, 200, JSON.stringify(b.body));
+    tabA.participants.find((p) => p.id === q.beto.id).paid = true;
+    const w = await write(q, tabA);                       // pestaña A, atrasada
+    assert.ok(w.status === 200 || w.status === 409, JSON.stringify(w.body));
+    const after = await stored(q);
+    assert.equal(after.participants.find((p) => p.id === q.beto.id).paid, false, "el pago del torneo anterior no pasa al nuevo");
+    // En el torneo nuevo, una pestaña al día sí lo marca.
+    const fresh = await read(q);
+    fresh.participants.find((p) => p.id === q.beto.id).paid = true;
+    assert.equal((await write(q, fresh)).status, 200);
+    assert.equal((await stored(q)).participants.find((p) => p.id === q.beto.id).paid, true);
+  });
+
   // P2-A (Product): con empates, el orden y el campeón salen de la tabla
   // OFICIAL del servidor (puntos de mayor a menor; en empate, el orden de la
   // lista de participantes: la regla de siempre de QRACKS), nunca del orden
