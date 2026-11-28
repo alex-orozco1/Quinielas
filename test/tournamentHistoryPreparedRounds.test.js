@@ -35,10 +35,12 @@ function runCloseTournamentRoundsFilter(rounds){
 // un falso negativo silencioso (la aserción "no contiene X" pasa porque X
 // quedó fuera del recorte, no porque no exista).
 function closeTournamentHandler(){
-  const marker = 'app.post("/api/quinielas/:slug/tournament/close"';
+  // P1 · torneo nuevo: cerrar y empezar torneo nuevo son finishTournament().
+  assert.ok(serverSrc.includes('app.post("/api/quinielas/:slug/tournament/close", rateLimit("new-cycle"), (req, res) => finishTournament(req, res, "closed"));'));
+  const marker = 'async function finishTournament(';
   const at = serverSrc.indexOf(marker);
-  assert.ok(at !== -1, "no se encontró el endpoint de cerrar torneo");
-  const braceStart = serverSrc.indexOf("{", serverSrc.indexOf("=>", at));
+  assert.ok(at !== -1, "no se encontró el handler de cerrar torneo");
+  const braceStart = serverSrc.indexOf("{", at);
   let depth = 0;
   for(let i = braceStart; i < serverSrc.length; i++){
     if(serverSrc[i] === "{") depth++;
@@ -143,7 +145,7 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
   // y saca al campeón de la tabla que recibe, así que este arreglo no puede
   // alterar cómo se calculan puntos ni campeón.
   const clickHandler = (() => {
-    const marker = 'async function runCloseTournament()';
+    const marker = 'async function runCloseTournament(kind)';
     const at = indexSrc.indexOf(marker);
     assert.ok(at !== -1);
     const braceStart = indexSrc.indexOf("{", indexSrc.indexOf(")", at));
@@ -158,11 +160,18 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
   const sendIdx = clickHandler.indexOf("apiCloseTournament(intent)");
   assert.ok(standingsIdx !== -1 && sendIdx !== -1 && standingsIdx < sendIdx,
     "los puntos se calculan igual que siempre, antes de mandar el cierre");
+  // P1 · torneo nuevo (Technical QA P2): como los pronósticos se borran, el
+  // servidor ya no guarda la tabla a la palabra: la RECALCULA con la misma
+  // fórmula que la página (standings.js) y rechaza si no coincide.
   const handlerBody = closeTournamentHandler();
-  assert.ok(!/standingsList|puntos|computeStandings/.test(handlerBody),
-    "el servidor no calcula puntos");
+  assert.ok(handlerBody.includes("closeStandingsCheck(metaBefore, picksRowsNow, body.standings, body.standingsAt, refMs)"),
+    "el servidor verifica la tabla antes de archivar y borrar");
+  assert.ok(serverSrc.includes("standingsModule.standingsList(meta, picksById || {}, ms, liguillaScoringModule)"),
+    "con el mismo módulo que la página");
+  assert.ok(indexSrc.includes("return QS.standingsList(meta, allPicksCache, serverNow(), LG);"), "la página usa ese mismo módulo");
   // Y el campeón no se toma del cliente: se deriva de la tabla ya saneada, así
-  // que nunca puede contradecir lo que se guarda junto a él.
+  // que nunca puede contradecir lo que se guarda junto a él (y en el cierre,
+  // de la tabla oficial del servidor: archivedCloseSummary(checked.table)).
   assert.ok(serverSrc.includes("const champion = standings.length ? { ...standings[0] } : null;"),
     "el campeón sale de la tabla saneada, no de un campo aparte del cliente");
 });
@@ -176,6 +185,6 @@ test("CASE F: scoring is untouched -- standings are computed by the browser and 
 test("the close archives the discounts of the final table (closePenaltiesOf) and never reconciles the ledger", () => {
   const handlerBody = closeTournamentHandler();
   assert.ok(!handlerBody.includes("reconcilePenaltyLedger"));
-  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, penaltiesAt);"));
+  assert.ok(handlerBody.includes("const archivedPenalties = closePenaltiesOf(meta, refMs);"));
   assert.ok(handlerBody.includes('if (p && "penalizedRounds" in p) p.penalizedRounds = {};'));
 });

@@ -4,6 +4,7 @@
 // descuentos de un torneo archivado no restan en el nuevo.
 
 const test = require("node:test");
+require("./helpers/standingsGlobal");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -162,7 +163,7 @@ test("AUD-03 · el descuento de una jornada archivada no resta en el torneo nuev
 
 // ---------------------------------------------------------------- AUD-02 / AUD-05
 test("AUD-02 · el cierre arma la tabla sólo con la lectura completa; si falla, no pregunta ni cierra", () => {
-  const run = fn("async function runCloseTournament()");
+  const run = fn("async function runCloseTournament(kind)");
   assert.ok(!run.includes("ensureAllPicksLoaded"), "ya no usa la carga que convertía un error en «nadie pronosticó»");
   const snapAt = run.indexOf("const snap = await loadAdminSnapshot();");
   assert.ok(snapAt > 0);

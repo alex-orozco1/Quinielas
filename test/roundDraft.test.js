@@ -343,7 +343,7 @@ test("#35 · pasar a «Editar» otra jornada abandona la edición anterior, como
 test("#35 · al cerrar el torneo, lo que se estaba escribiendo era del torneo que terminó", () => {
   const body = extractFunctionBody(indexSrc, "async function finishClose(r)");
   const clear = body.indexOf("clearAllRoundDrafts();");
-  assert.ok(clear !== -1 && clear > body.indexOf("adoptFreshMeta(meta, fresh)") && clear < body.indexOf('renderAdmin(document.getElementById("qz-main"));'));
+  assert.ok(clear !== -1 && clear > body.indexOf("adoptFreshMeta(meta, fresh)") && clear < body.indexOf("renderApp();"));
   assert.ok(body.includes("renderAdminRondas._editingId = null;") && body.includes("renderAdminRondas._draft = null;"));
 });
 

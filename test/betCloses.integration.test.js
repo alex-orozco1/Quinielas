@@ -28,6 +28,8 @@ const jornada = (tag, number, deadline) => ({ id: "r_d4" + tag + number, number,
 const BET = "cb_d4campeon";
 const campeon = (closesAtRound) => ({ id: BET, label: "¿Qué equipo será campeón del torneo?", scope: "temporada", points: 5, closesAtRound });
 async function closeTournament(q) {
+  // Cierre formal: con al menos una jornada jugada (close_requires_results).
+  await require("./helpers/realServer").withPlayedRound(q.metaKey);
   const idx = (await dbQuery("SELECT value FROM kv WHERE key = 'platform_index'")).rows[0].value;
   const entry = idx.quinielas.find((x) => x.slug === q.slug);
   return require("./helpers/realServer").closeWithSnapshot(q.slug, { "X-Qracks-Auth": q.owner },

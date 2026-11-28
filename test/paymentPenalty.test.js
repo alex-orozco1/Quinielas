@@ -11,6 +11,7 @@
 // eligible-closed round's closed-state stop being monotonic.
 
 const test = require("node:test");
+require("./helpers/standingsGlobal");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -472,10 +473,16 @@ test("QA fix #3: reconcilePenaltyLedger DOES resolve a closed round while disabl
 // ---- Scoring-surface consistency ----
 
 test("standingsList()/pointsFor()/penaltyFor() all route through the same shared penaltyPointsFor()", () => {
-  const standingsListBody = extractFunctionBody(indexSrc, "function standingsList()");
-  assert.ok(standingsListBody.includes("penaltyFor(p.id, participantMap)"));
-  const pointsForBody = extractFunctionBody(indexSrc, "function pointsFor(participantId, participantMap, cutoffRoundNumber)");
-  assert.ok(pointsForBody.includes("penaltyPointsFor(p, cutoffRoundNumber)"));
+  // P1 · torneo nuevo: la Tabla está en standings.js (la usa también el
+  // servidor); la página delega en ella. Allí los descuentos salen de UNA
+  // función, penaltyParts(), en la tabla y en los puntos de cada quien.
+  const shared = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "standings.js"), "utf8");
+  const sharedStandings = extractFunctionBody(shared, "function standingsList(meta, picksByParticipant, nowMs, L)");
+  assert.ok(sharedStandings.includes("penalty: penaltyParts(meta, participantMap.get(p.id), null, nowMs).total"));
+  const sharedPoints = extractFunctionBody(shared, "function pointsFor(meta, picks, participantId, participantMap, cutoffRoundNumber, nowMs, L)");
+  assert.ok(sharedPoints.includes("pts -= penaltyParts(meta, p, cutoffRoundNumber, nowMs).total;"));
+  assert.ok(extractFunctionBody(indexSrc, "function standingsList()").includes("QS.standingsList(meta, allPicksCache, serverNow(), LG)"));
+  assert.ok(extractFunctionBody(indexSrc, "function penaltyParts(p, cutoffRoundNumber)").includes("QS.penaltyParts(meta, p, cutoffRoundNumber, serverNow())"));
   const penaltyForBody = extractFunctionBody(indexSrc, "function penaltyFor(participantId, participantMap)");
   assert.ok(penaltyForBody.includes("penaltyPointsFor(p, null)"));
 });

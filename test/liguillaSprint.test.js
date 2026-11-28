@@ -278,6 +278,13 @@ test("PRONÓSTICO · dos números se guardan; el 1X2 se deduce", () => {
   assert.deepEqual(out.doc.r18, { m1: "A", __score: { m1: s(2, 1) } });
 });
 
+test("PRONÓSTICO · con resultados publicados la jornada ya se jugó: no se pronostica aunque su cierre esté en el futuro (Technical QA)", () => {
+  const m = published();
+  m.rounds.find((r) => r.id === "r18").resultsPublished = true;
+  const out = R.applyMatchPick({ meta: m, picksDoc: {}, roundId: "r18", matchId: "m1", value: s(2, 1), expected: null, nowMs: BEFORE });
+  assert.deepEqual([out.ok, out.status, out.error], [false, 403, "round_locked"]);
+});
+
 test("PRONÓSTICO · formatos inválidos se rechazan igual que en la interfaz", () => {
   for (const v of [{ a: -1, b: 0 }, { a: 2.5, b: 1 }, { a: "2", b: 1 }, { a: 31, b: 0 }, { a: 1 }, "A", null]) {
     const out = R.applyMatchPick({ meta: published(), picksDoc: {}, roundId: "r18", matchId: "m1", value: v, expected: null, nowMs: BEFORE });

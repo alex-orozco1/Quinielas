@@ -343,6 +343,9 @@ function applyMatchPick({ meta, picksDoc, roundId, matchId, value, expected, now
   const match = (round.matches || []).find((m) => m && m.id === matchId);
   if (!match) return fail(404, "match_not_found");
   const current = storedMatchPick(picksDoc, round, matchId);
+  // Con resultados publicados ya se jugó, aunque su cierre esté en el futuro
+  // (igual que validatePicksDeadline en server.js).
+  if (round.resultsPublished) return fail(403, "round_locked", { current });
   const deadline = new Date(round.deadline).getTime();
   if (!Number.isFinite(deadline) || nowMs > deadline) return fail(403, "round_locked", { current });
   const norm = L.normalizePick(rules.capture, value);

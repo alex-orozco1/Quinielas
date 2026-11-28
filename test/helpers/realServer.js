@@ -185,16 +185,33 @@ const databaseUrl = () => dbUrl;
 // AUD-02: cerrar el torneo exige la lectura completa (admin-snapshot) y una
 // tabla con cada participante. Para las pruebas a las que la tabla no les
 // importa: todos con 0 puntos, en el orden de la lectura.
-async function closeWithSnapshot(slug, headers, { expectedCycle, closeIntentId, ...rest } = {}) {
+// opts.interrupt: «empezar torneo nuevo sin cierre formal» (/new-cycle), que es
+// la misma operación que el cierre (P1 · torneo nuevo con el tablero vacío).
+async function closeWithSnapshot(slug, headers, { expectedCycle, closeIntentId, interrupt, standings: given, ...rest } = {}) {
   const snap = await call("POST", `/api/quinielas/${slug}/admin-snapshot`, { headers, body: {} });
   if (snap.status !== 200) return snap;
-  const standings = snap.body.meta.participants.map((p) => ({ id: p.id, name: p.name, pts: 0 }));
-  return call("POST", `/api/quinielas/${slug}/tournament/close`, {
-    headers, body: { expectedCycle, closeIntentId, standings, basis: snap.body.basis, ...rest },
+  // La tabla, como la arma la pantalla: standings.js sobre la lectura de admin,
+  // a la hora de esa lectura (el servidor la recalcula y debe coincidir).
+  const standings = given || require("../../standings").standingsList(snap.body.meta, snap.body.picks, Date.parse(snap.body.readAt), require("../../liguillaScoring"))
+    .map((p) => ({ id: p.id, name: p.name, pts: p.pts }));
+  return call("POST", `/api/quinielas/${slug}/tournament/${interrupt ? "new-cycle" : "close"}`, {
+    headers, body: { expectedCycle, closeIntentId, standings, basis: snap.body.basis, standingsAt: snap.body.readAt, ...rest },
   });
+}
+
+// Cierre formal = hace falta al menos un resultado publicado (409
+// close_requires_results). Para las pruebas cuyo tema es otro: agrega, directo
+// en la base, una jornada ya jugada (cierre pasado, resultado publicado, sin
+// pronósticos) con un número que no usa nadie más.
+async function withPlayedRound(metaKey) {
+  const row = (await dbQuery("SELECT value FROM kv WHERE key = $1", [metaKey])).rows[0];
+  const v = row.value;
+  v.rounds = (v.rounds || []).concat([{ id: "r_jugada90", number: 90, deadline: new Date(Date.now() - 3600e3).toISOString(),
+    published: true, resultsPublished: true, results: { m_jugada90: "A" }, matches: [{ id: "m_jugada90", teamA: "Local 90", teamB: "Visita 90" }] }]);
+  await dbQuery("UPDATE kv SET value = $2 WHERE key = $1", [metaKey, JSON.stringify(v)]);
 }
 
 module.exports = {
   SKIP, itest, PLATFORM_PASSWORD, setup, teardown, startServer, stopServer, dbQuery, withRowLocked, serverOutput, databaseUrl,
-  freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom, closeWithSnapshot,
+  freshIp, call, Browser, kvPath, quiniela, trustedBrowsers, guessFrom, closeWithSnapshot, withPlayedRound,
 };

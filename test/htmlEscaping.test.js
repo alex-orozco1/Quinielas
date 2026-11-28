@@ -161,7 +161,7 @@ const PERMITIDAS = [
   { expr: "p.name", en: "toast(checkbox.checked ? `${p.name} ✅` : `Se quitó el punto de ${p.name}`)", por: "toast" },
   { expr: "round.number", en: "toast(`✅ La Jornada ${round.number} está abierta. Cierra el ${fmtWhenTz(round.deadline)}.`", por: "toast" },
   { expr: "fmtWhenTz(round.deadline)", en: "toast(`✅ La Jornada ${round.number} está abierta. Cierra el ${fmtWhenTz(round.deadline)}.`", por: "toast" },
-  { expr: "r.champion.name", en: "const who = r.champion ? ` 🏆 Campeón: ${r.champion.name}.`", por: "va a un toast" },
+  { expr: "r.champion.name", en: "const who = !interrupted && r.champion ? ` 🏆 Campeón: ${r.champion.name}.`", por: "va a un toast" },
   { expr: "round.number", en: "const confirmTitle = correcting ?", por: "título de qzConfirm" },
   { expr: "round.number", en: "{ title: `¿Reabrir la Jornada ${round.number}?`", por: "título de qzConfirm" },
   { expr: "round.number", en: "qzPromptDeadline(`Elige la nueva fecha y hora límite para votar la Jornada ${round.number}:`", por: "mensaje de qzPromptDeadline" },

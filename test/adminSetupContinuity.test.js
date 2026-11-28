@@ -28,7 +28,9 @@ function extractFunctionBody(source, signature) {
 
 function runResolveSetupDestination(meta, user){
   const body = extractFunctionBody(indexSrc, "function resolveSetupDestination(m, user)");
-  const fn = new Function(`return function resolveSetupDestination(m, user)${body.slice(body.indexOf("{"))}`)();
+  // P1 · torneo nuevo: resolveSetupDestination() consulta isNewTournamentStart().
+  const isNew = extractFunctionBody(indexSrc, "function isNewTournamentStart(m)");
+  const fn = new Function(`${isNew}\nreturn function resolveSetupDestination(m, user)${body.slice(body.indexOf("{"))}`)();
   return fn(meta, user);
 }
 
@@ -65,9 +67,20 @@ test("a published round exists alongside OTHER still-unpublished rounds -> never
   assert.equal(dest, "invite");
 });
 
-test("documented limitation: 0 current rounds always resolves to manual regardless of history (acceptable, since the only way to reach it is the admin deleting their own only published round, and 'prepare your first round' remains a coherent screen either way)", () => {
+test("0 current rounds and NO history resolves to manual (a quiniela that never played)", () => {
   const meta = { rounds: [], participants: [admin, participant] };
   assert.equal(runResolveSetupDestination(meta, admin), "manual");
+});
+
+// P1 · torneo nuevo (UX P2-1): una quiniela que ya jugó un torneo, o con una
+// competencia sugerida por confirmar, no vuelve al asistente de primera vez.
+test("0 current rounds WITH history or a suggested competition resolves to tournament (Admin → Jornadas)", () => {
+  assert.equal(runResolveSetupDestination({ rounds: [], participants: [admin, participant], pastTournaments: [{ kind: "closed" }] }, admin), "tournament");
+  assert.equal(runResolveSetupDestination({ rounds: [], participants: [admin], settings: { previousCompetition: { sportsdbLeagueId: "4350" } } }, admin), "tournament");
+  // Ya confirmada la competencia y sin historial: el asistente de siempre.
+  assert.equal(runResolveSetupDestination({ rounds: [], participants: [admin], settings: { sportsdbLeagueId: "4350", previousCompetition: { sportsdbLeagueId: "4350" } } }, admin), "manual");
+  // Con una jornada publicada en el torneo nuevo, la lógica de siempre.
+  assert.equal(runResolveSetupDestination({ rounds: [{ id: "r1", number: 1, published: true }], participants: [admin, participant], pastTournaments: [{}] }, admin), "app");
 });
 
 test("CASE S: legacy round (published undefined) counts as published -- never misread as still-preparing", () => {

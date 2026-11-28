@@ -17,10 +17,15 @@ test("UI · Tabla, Historial y Panel Plataforma suman la liguilla con LG.scoreRo
   // Claridad de puntos: pointsFor() suma roundMatchScore() por jornada (la
   // misma fórmula, compartida con el desglose; test/puntosClaridad.test.js la
   // compara contra main 6ef81ce). Las flechas ya no calculan nada (AUD-11).
-  assert.ok(ui.includes("const sm = roundMatchScore(r, picks[r.id]);\n      pts += sm.pts; played += sm.played;"));
-  assert.ok(ui.includes("const sr = LG.scoreRound(r, roundPicks);\n      return { pts: sr.total, played: sr.scored,"));
+  // P1 · torneo nuevo: la fórmula vive en standings.js, compartida con el
+  // servidor; la página delega en ella (QS) pasándole LG.
+  const shared = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "standings.js"), "utf8");
+  assert.ok(shared.includes("const sm = roundMatchScore(meta, r, own[r.id], L);\n      pts += sm.pts; played += sm.played;"));
+  assert.ok(shared.includes("const sr = L.scoreRound(r, roundPicks);\n      return { pts: sr.total, played: sr.scored,"));
+  assert.ok(shared.includes("if (pick && pick === result) { pts += perPick; hits++; }"), "la fórmula regular no cambia");
+  assert.ok(ui.includes("return QS.roundMatchScore(meta, r, roundPicks, LG);"));
+  assert.ok(ui.includes("return QS.pointsFor(meta, allPicksCache[participantId] || {}, participantId, participantMap, cutoffRoundNumber, serverNow(), LG);"));
   assert.ok(ui.includes("if(isLg(rnd)){ pts += LG.scoreRound(rnd, picksCache[pid] && picksCache[pid][rnd.id]).total; return; }"));
-  assert.ok(ui.includes("if(pick && pick === result){ pts += perPick; hits++; }"), "la fórmula regular no cambia");
   assert.ok(ui.includes("if(isLg(round)){\n      renderLiguillaHistDetail(detail, round);"));
 });
 
